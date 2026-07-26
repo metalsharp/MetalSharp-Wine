@@ -1,8 +1,8 @@
 # WineForge DXCompat
 
-WineForge DXCompat is an x86_64 PE compatibility frontend for the D3D12
-backend selected by WineForge. Calls outside its compatibility scope are
-forwarded to that backend.
+WineForge DXCompat is a set of x86_64 PE compatibility components for the
+D3DMetal backend selected by WineForge. Calls outside their compatibility
+scope are forwarded to that backend.
 
 The project provides focused compatibility for missing D3DMetal behavior until
 equivalent support becomes available in GPTK. Individual compatibility paths
@@ -23,6 +23,16 @@ The D3D12 frontend currently provides:
   resource contract
 - passthrough behavior for unrelated D3D12 calls
 
+The D3D11 launcher companion currently provides:
+
+- `ID3D11DeviceContext1` context-state switching
+- GDI-compatible `IDXGISurface` access for D3D11 textures
+- the D3D10 device bridge used by the validated Rockstar launcher path
+- passthrough to the canonical D3DMetal D3D11 implementation
+
+Application selection and backend routing are implemented in WineForge. This
+repository does not contain application-name routing.
+
 ## Runtime files
 
 ```text
@@ -30,11 +40,13 @@ lib/wfdxcompat/
   x86_64-windows/
     d3d12.dll
     wfdxbackend-d3d12.dll
+    wfdx-launchers-v1.dll
 ```
 
 `d3d12.dll` is the compatibility frontend. `wfdxbackend-d3d12.dll` is a Wine
 loader marker mapped to the active D3D12 backend; it does not contain a
-graphics implementation.
+graphics implementation. `wfdx-launchers-v1.dll` is the optional D3D11
+launcher companion.
 
 ## Build
 

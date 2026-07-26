@@ -1,0 +1,7 @@
+LIBRARY wfdx-launchers-v1
+EXPORTS
+    wfdx_launcher_init
+    wfdx_launcher_get_counters
+    wfdx_launcher_D3D11CreateDevice
+    wfdx_launcher_D3D11CreateDeviceAndSwapChain
+    wfdx_launcher_DXGID3D10CreateDevice
