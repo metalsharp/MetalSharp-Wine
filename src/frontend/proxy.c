@@ -12,6 +12,7 @@
 #include "wfdxcompat/nv12_resource.h"
 #include "wfdxcompat/command_list_proxy.h"
 #include "wfdxcompat/resource_notifier.h"
+#include "wfdxcompat/agility_shim.h"
 
 #ifndef WFDX_BACKEND_MODULE
 #define WFDX_BACKEND_MODULE L"wfdxbackend-d3d12.dll"
@@ -640,6 +641,25 @@ static HRESULT wrap_device(void *object, REFIID iid)
 }
 
 typedef HRESULT (WINAPI *backend_create_device_fn)(IUnknown *, D3D_FEATURE_LEVEL, REFIID, void **);
+typedef HRESULT (WINAPI *backend_get_interface_fn)(REFCLSID, REFIID, void **);
+
+HRESULT WINAPI D3D12GetInterface(REFCLSID clsid, REFIID iid, void **object)
+{
+    backend_get_interface_fn get_interface;
+    HMODULE module;
+    HRESULT hr;
+
+    if (!object) return E_POINTER;
+    *object = NULL;
+    if ((module = LoadLibraryW(WFDX_BACKEND_MODULE)) &&
+        (get_interface = (backend_get_interface_fn)(void *)GetProcAddress(module,
+                "D3D12GetInterface")))
+    {
+        hr = get_interface(clsid, iid, object);
+        if (SUCCEEDED(hr)) return hr;
+    }
+    return wfdx_agility_get_interface(clsid, iid, object);
+}
 
 HRESULT WINAPI D3D12CreateDevice(IUnknown *adapter,
         D3D_FEATURE_LEVEL minimum_level, REFIID iid, void **device)
@@ -648,6 +668,7 @@ HRESULT WINAPI D3D12CreateDevice(IUnknown *adapter,
     backend_create_device_fn create_device;
     HRESULT hr, wrap_hr;
 
+    wfdx_agility_initialize_from_application();
     if (!(module = LoadLibraryW(WFDX_BACKEND_MODULE))) return HRESULT_FROM_WIN32(GetLastError());
     create_device = (backend_create_device_fn)(void *)GetProcAddress(module, "D3D12CreateDevice");
     if (!create_device) return HRESULT_FROM_WIN32(GetLastError());

@@ -16,6 +16,8 @@ application stalls.
 
 The D3D12 frontend currently provides:
 
+- automatic D3D12 Agility SDK activation through the standard application
+  exports and `ID3D12SDKConfiguration`
 - an NV12 facade backed by `R8` and `RG8` textures
 - NV12 format and copyable-footprint handling
 - SRV, copy, legacy barrier, and enhanced barrier translation
@@ -39,14 +41,16 @@ repository does not contain application-name routing.
 lib/wfdxcompat/
   x86_64-windows/
     d3d12.dll
+    d3d12core.dll
     wfdxbackend-d3d12.dll
     wfdx-launchers-v1.dll
 ```
 
-`d3d12.dll` is the compatibility frontend. `wfdxbackend-d3d12.dll` is a Wine
-loader marker mapped to the active D3D12 backend; it does not contain a
-graphics implementation. `wfdx-launchers-v1.dll` is the optional D3D11
-launcher companion.
+`d3d12.dll` is the compatibility frontend. `d3d12core.dll` bridges the Agility
+SDK layered-core exports to the active D3D12 backend. `wfdxbackend-d3d12.dll`
+is a Wine loader marker mapped to that backend; it does not contain a graphics
+implementation. `wfdx-launchers-v1.dll` is the optional D3D11 launcher
+companion.
 
 ## Build
 

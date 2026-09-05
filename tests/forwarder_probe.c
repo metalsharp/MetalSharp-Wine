@@ -11,9 +11,13 @@
 #endif
 
 typedef HRESULT (WINAPI *create_device_fn)(IUnknown *, D3D_FEATURE_LEVEL, REFIID, void **);
+typedef HRESULT (WINAPI *get_interface_fn)(REFCLSID, REFIID, void **);
 typedef void (WINAPI *set_native_fn)(BOOL);
 typedef LONG (WINAPI *get_long_fn)(void);
 struct callback_state { ID3DDestructionNotifier *notifier; LONG calls; HRESULT reenter_hr; };
+
+__declspec(dllexport) const UINT D3D12SDKVersion = 611;
+__declspec(dllexport) const char *D3D12SDKPath = ".\\D3D12-REDIST\\";
 struct thread_state { ID3DDestructionNotifier *notifier; LONG *calls; LONG failures; };
 struct probe_heap { ID3D12Heap iface; D3D12_HEAP_DESC desc; };
 
@@ -136,6 +140,8 @@ int main(void)
 {
     HMODULE frontend = LoadLibraryA("d3d12.dll"), backend;
     create_device_fn create_device;
+    get_interface_fn get_interface;
+    ID3D12SDKConfiguration *sdk_configuration;
     set_native_fn set_native;
     get_long_fn get_native_registers, get_destroyed, get_device_destroyed, get_resource_queries;
     ID3D12Device10 *device, *device2;
@@ -154,8 +160,18 @@ int main(void)
 
     check(frontend != NULL);
     create_device = (create_device_fn)(void *)GetProcAddress(frontend, "D3D12CreateDevice");
+    get_interface = (get_interface_fn)(void *)GetProcAddress(frontend, "D3D12GetInterface");
     check(create_device != NULL);
+    check(get_interface != NULL);
     check(create_device(NULL, D3D_FEATURE_LEVEL_11_0, &IID_ID3D12Device10, (void **)&device) == S_OK);
+    check(GetModuleHandleA("d3d12core.dll") != NULL);
+    sdk_configuration = NULL;
+    check(get_interface(&CLSID_D3D12SDKConfiguration, &IID_ID3D12SDKConfiguration,
+            (void **)&sdk_configuration) == S_OK);
+    check(sdk_configuration != NULL);
+    check(ID3D12SDKConfiguration_SetSDKVersion(sdk_configuration, 610,
+            ".\\D3D12\\") == S_OK);
+    check(ID3D12SDKConfiguration_Release(sdk_configuration) == 0);
     check(ID3D12Device10_QueryInterface(device, &IID_IUnknown, (void **)&identity) == S_OK);
     check(identity == (IUnknown *)device);
     check(IUnknown_Release(identity) == 1);

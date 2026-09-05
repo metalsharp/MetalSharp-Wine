@@ -1,0 +1,5 @@
+LIBRARY d3d12core
+EXPORTS
+    D3D12CoreCreateLayeredDevice=wfdxbackend-d3d12.D3D12CoreCreateLayeredDevice
+    D3D12CoreGetLayeredDeviceSize=wfdxbackend-d3d12.D3D12CoreGetLayeredDeviceSize
+    D3D12CoreRegisterLayers=wfdxbackend-d3d12.D3D12CoreRegisterLayers

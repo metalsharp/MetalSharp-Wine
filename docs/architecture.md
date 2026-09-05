@@ -22,12 +22,14 @@ belongs to the WineForge loader.
 ```text
 exports/
   d3d12.exports              Public export list
+  d3d12core.def              Agility layered-core bridge exports
 include/wfdxcompat/          Internal interfaces
 src/core/
   notifier_registry.c       Thread-safe callback lifetime registry
 src/frontend/
   module.c                   DLL entry point
   proxy.c                    D3D12 entry points and device interception
+  agility_shim.c             D3D12 Agility SDK activation bridge
   nv12_resource.c            Two-plane NV12 facade
   command_list_proxy.c       Copy and barrier translation
   resource_notifier.c        Narrow resource-lifetime compatibility
@@ -41,10 +43,13 @@ tools/
 ```text
 lib/wfdxcompat/x86_64-windows/
   d3d12.dll
+  d3d12core.dll
   wfdxbackend-d3d12.dll
 ```
 
-The second file is a Wine loader marker. It is not a graphics backend.
+`d3d12core.dll` forwards the Agility layered-core exports to the selected
+backend. `wfdxbackend-d3d12.dll` is a Wine loader marker, not a graphics
+backend.
 
 ## Loader contract
 
@@ -61,6 +66,11 @@ textures, translates the required views, copies, and barriers, and supplies a
 narrowly matched resource-lifetime contract. Exact matching rules live beside
 their implementation in `src/frontend/` and require a new probe before they
 are generalized.
+
+It also recognizes the standard `D3D12SDKVersion` and `D3D12SDKPath`
+application exports and implements `ID3D12SDKConfiguration`. These entry paths
+activate the packaged `d3d12core.dll` bridge without application-name routing
+or a behavior environment variable.
 
 ## Build
 

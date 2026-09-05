@@ -37,11 +37,16 @@ mkdir -p "$OUT" "$STAGE" "$SENTINEL"
 "$CC" -shared -O2 -Wall -Wextra -Werror -I"$ROOT/include" \
     $WFDXCOMPAT_CFLAGS \
     "$ROOT/src/frontend/module.c" "$ROOT/src/frontend/proxy.c" \
+    "$ROOT/src/frontend/agility_shim.c" \
     "$ROOT/src/frontend/nv12_resource.c" "$ROOT/src/frontend/resource_notifier.c" \
     "$ROOT/src/frontend/command_list_proxy.c" \
     "$ROOT/src/core/notifier_registry.c" \
     "$OUT/d3d12.def" -o "$OUT/d3d12.dll"
 "$WINEBUILD" --builtin "$OUT/d3d12.dll"
+"$CC" -shared -O2 -Wall -Wextra -Werror \
+    "$ROOT/src/frontend/module.c" "$ROOT/exports/d3d12core.def" \
+    -o "$OUT/d3d12core.dll"
+"$WINEBUILD" --builtin "$OUT/d3d12core.dll"
 "$WINEBUILD" --dll --fake-module -m64 -F wfdxbackend-d3d12.dll \
     -o "$OUT/wfdxbackend-d3d12.dll"
 "$CC" -shared -O2 -Wall -Wextra -Werror -I"$ROOT/include" \
@@ -56,6 +61,6 @@ mkdir -p "$OUT" "$STAGE" "$SENTINEL"
     -o "$SENTINEL/wfdx-launchers-v1.dll"
 rm -f "$OUT/d3d11.dll" "$OUT/wfdxbackend-d3d11.dll" "$OUT/wfdxcompat-core.dll" "$OUT/libwfdxcompat-core.a"
 rm -f "$STAGE/d3d11.dll" "$STAGE/wfdxbackend-d3d11.dll" "$STAGE/wfdxcompat-core.dll" "$STAGE/.DS_Store"
-cp -f "$OUT/d3d12.dll" "$OUT/wfdxbackend-d3d12.dll" \
+cp -f "$OUT/d3d12.dll" "$OUT/d3d12core.dll" "$OUT/wfdxbackend-d3d12.dll" \
     "$OUT/wfdx-launchers-v1.dll" "$STAGE/"
 echo "staged: $STAGE"
