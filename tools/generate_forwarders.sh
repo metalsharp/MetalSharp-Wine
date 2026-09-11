@@ -21,6 +21,7 @@ trap 'rm -f "$tmp"' EXIT HUP INT TERM
     echo 'EXPORTS'
     echo '    D3D12CreateDevice @101'
     echo '    D3D12GetInterface'
+    echo '    D3D12SerializeVersionedRootSignature @110'
     while read -r symbol ordinal extra; do
         case "$symbol" in ''|'#'*) continue ;; esac
         case "$symbol" in *[!A-Za-z0-9_@?]*) echo "invalid export: $symbol" >&2; exit 2 ;; esac

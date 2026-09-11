@@ -9,4 +9,4 @@ D3D12CreateRootSignatureDeserializer @106
 D3D12CreateVersionedRootSignatureDeserializer @107
 D3D12EnableExperimentalFeatures @108
 D3D12SerializeRootSignature @109
-D3D12SerializeVersionedRootSignature @110
+# D3D12SerializeVersionedRootSignature @110 is an executable frontend entry.

@@ -640,6 +640,43 @@ static HRESULT wrap_device(void *object, REFIID iid)
     return S_OK;
 }
 
+
+/* WineForge-Internal: wfdxcompat/versioned-root-signature-callable-export-v1.
+ * Some export-table consumers call the raw export RVA without resolving PE
+ * forwarders. Keep this entry executable and resolve the backend through the
+ * loader. Retain the backend reference for the lifetime of returned blobs. */
+static INIT_ONCE serialize_versioned_once = INIT_ONCE_STATIC_INIT;
+static PFN_D3D12_SERIALIZE_VERSIONED_ROOT_SIGNATURE serialize_versioned_backend;
+
+static BOOL CALLBACK initialize_serialize_versioned(INIT_ONCE *once,
+        void *parameter, void **context)
+{
+    HMODULE module;
+    DWORD error;
+
+    (void)once;
+    (void)parameter;
+    (void)context;
+    if (!(module = LoadLibraryW(WFDX_BACKEND_MODULE))) return FALSE;
+    serialize_versioned_backend = (PFN_D3D12_SERIALIZE_VERSIONED_ROOT_SIGNATURE)
+            (void *)GetProcAddress(module, "D3D12SerializeVersionedRootSignature");
+    if (serialize_versioned_backend) return TRUE;
+    error = GetLastError();
+    FreeLibrary(module);
+    SetLastError(error);
+    return FALSE;
+}
+
+HRESULT WINAPI D3D12SerializeVersionedRootSignature(
+        const D3D12_VERSIONED_ROOT_SIGNATURE_DESC *desc,
+        ID3DBlob **blob, ID3DBlob **error_blob)
+{
+    if (!InitOnceExecuteOnce(&serialize_versioned_once,
+            initialize_serialize_versioned, NULL, NULL))
+        return HRESULT_FROM_WIN32(GetLastError());
+    return serialize_versioned_backend(desc, blob, error_blob);
+}
+
 typedef HRESULT (WINAPI *backend_create_device_fn)(IUnknown *, D3D_FEATURE_LEVEL, REFIID, void **);
 typedef HRESULT (WINAPI *backend_get_interface_fn)(REFCLSID, REFIID, void **);
 
