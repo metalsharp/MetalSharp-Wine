@@ -4,6 +4,8 @@
 
 **Cross-architecture ARM64 Wine with FEX for Apple Silicon macOS.**
 
+Developer Note: This project is under active development. It should be noted that you can install / run steam but the current i386 / WoW64 mapping is not 100% completed so you will experience issues. 
+
 <a href="https://github.com/metalsharp/VKMT-Wine/releases/tag/VKMT-1.0"><img src="https://img.shields.io/github/v/release/metalsharp/VKMT-Wine?filter=VKMT-1.0&style=for-the-badge" alt="Release"></a>
 <a href="https://github.com/metalsharp/VKMT-Wine/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/metalsharp/VKMT-Wine/ci.yml?branch=main&style=for-the-badge&label=CI" alt="CI"></a>
 <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge" alt="License: MIT for VKMT-authored material"></a>
