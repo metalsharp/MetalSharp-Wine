@@ -173,6 +173,17 @@ static inline NSUInteger adjusted_modifiers_for_settings(NSUInteger modifiers)
     return new_modifiers;
 }
 
+/***********************************************************************
+ *              macdrv_get_modifier_flags
+ *
+ * The modifier keys down now, with the device-dependent flags, as the
+ * keyboard driver sees them (after the Option and Command settings).
+ */
+uint64_t macdrv_get_modifier_flags(void)
+{
+    return adjusted_modifiers_for_settings(CGEventSourceFlagsState(kCGEventSourceStateCombinedSessionState));
+}
+
 static inline BOOL stage_manager_enabled(void)
 {
     /* There is no documented way to determine if Stage Manager is enabled,
@@ -2676,6 +2687,19 @@ static inline BOOL stage_manager_enabled(void)
     {
         WineApplicationController* controller = [WineApplicationController sharedController];
         NSEvent* event = [controller lastFlagsChanged];
+        CGEventRef current;
+
+        /* The last flags-changed event this application saw is stale when
+           modifiers changed while another application was active: Command
+           held to switch away (Command-Tab) stays down, as Alt, and letters
+           become Alt shortcuts that beep. Use the modifiers down now. */
+        if ((current = CGEventCreate(NULL)))
+        {
+            CGEventSetType(current, kCGEventFlagsChanged);
+            CGEventSetFlags(current, CGEventSourceFlagsState(kCGEventSourceStateCombinedSessionState));
+            event = [NSEvent eventWithCGEvent:current] ?: event;
+            CFRelease(current);
+        }
         if (event)
             [self flagsChanged:event];
 

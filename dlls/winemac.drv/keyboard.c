@@ -1049,6 +1049,44 @@ void macdrv_keyboard_changed(const macdrv_event *event)
 
 
 /***********************************************************************
+ *              macdrv_release_stale_modifiers
+ *
+ * Releases the modifier keys that Windows holds down but that are up now:
+ * their key-up went to another application (Command held to switch away
+ * with Command-Tab, or a process that quit with Command-Q, leaves Alt down
+ * in the desktop's key state, and letters become Alt shortcuts that beep).
+ */
+void macdrv_release_stale_modifiers(void)
+{
+    static const struct
+    {
+        uint64_t mask;
+        WORD vkey, scan;
+    } keys[] = {
+        { NX_DEVICELCMDKEYMASK,   VK_LMENU,    0x38 },
+        { NX_DEVICERCMDKEYMASK,   VK_RMENU,    0x138 },
+        { NX_DEVICELCTLKEYMASK,   VK_LCONTROL, 0x1D },
+        { NX_DEVICERCTLKEYMASK,   VK_RCONTROL, 0x11D },
+        { NX_DEVICELSHIFTKEYMASK, VK_LSHIFT,   0x2A },
+        { NX_DEVICERSHIFTKEYMASK, VK_RSHIFT,   0x36 },
+    };
+    uint64_t modifiers = macdrv_get_modifier_flags();
+    BYTE keystate[256];
+    unsigned int i;
+
+    if (!NtUserGetAsyncKeyboardState(keystate)) return;
+    for (i = 0; i < ARRAY_SIZE(keys); i++)
+    {
+        if (!(keystate[keys[i].vkey] & 0x80) || (modifiers & keys[i].mask)) continue;
+        TRACE_(key)("releasing vkey 0x%04x, up since another application had the keyboard\n", keys[i].vkey);
+        macdrv_send_keyboard_input(NULL, keys[i].vkey, keys[i].scan & 0xff,
+                                   KEYEVENTF_KEYUP | ((keys[i].scan & 0x100) ? KEYEVENTF_EXTENDEDKEY : 0),
+                                   NtGetTickCount());
+    }
+}
+
+
+/***********************************************************************
  *              macdrv_hotkey_press
  *
  * Handler for HOTKEY_PRESS events.

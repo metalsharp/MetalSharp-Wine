@@ -529,6 +529,7 @@ extern const CFStringRef macdrv_input_source_input_key;
 extern const CFStringRef macdrv_input_source_type_key;
 extern const CFStringRef macdrv_input_source_lang_key;
 extern int macdrv_layout_list_needs_update;
+extern uint64_t macdrv_get_modifier_flags(void);
 
 
 /* clipboard */
