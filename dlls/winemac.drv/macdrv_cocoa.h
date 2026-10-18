@@ -273,7 +273,7 @@ enum {
     APP_ACTIVATED,
     APP_DEACTIVATED,
     APP_QUIT_REQUESTED,
-    CLIENT_SURFACE_PRESENTED, /* CW HACK 22435 */
+    CLIENT_SURFACE_PRESENTED, /* MS HACK 22435 */
     DISPLAYS_CHANGED,
     HOTKEY_PRESS,
     IM_SET_TEXT,
@@ -325,7 +325,7 @@ typedef struct macdrv_event {
         struct {
             int reason;
         }                                           app_quit_requested;
-        /* CW HACK 22435 */
+        /* MS HACK 22435 */
         struct {
             void           *client_surface;
         }                                           client_surface_presented;
@@ -589,7 +589,7 @@ extern pthread_mutex_t ime_composition_rect_mutex;
 extern CGRect ime_composition_rect;
 extern void macdrv_clear_ime_text(void);
 
-/* CW HACK 22435 */
+/* MS HACK 22435 */
 extern void macdrv_client_surface_presented(const macdrv_event *event);
 extern void *macdrv_get_view_d3dmetal_client_surface(macdrv_view v);
 extern void macdrv_set_view_d3dmetal_client_surface(macdrv_view v, void *client_surface);

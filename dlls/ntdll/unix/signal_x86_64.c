@@ -73,6 +73,12 @@
  * Note that the dispatchers do the syscall directly to avoid using the stack.
  */
 extern void _thread_set_tsd_base(uint64_t);
+
+/* MetalSharp: in DXMT processes Windows code runs with GSBASE pointing at the
+ * TEB (so gs-relative TEB reads such as Mono's TlsSlots fast path work), and
+ * GSBASE is moved back to the pthread TSD whenever Unix code runs. Other
+ * processes (D3DMetal) keep Wine's default macOS TSD behavior. */
+__attribute__((visibility("hidden"))) unsigned char ms_gsbase_switch = 0;
 #endif
 
 #include "ntstatus.h"
@@ -797,6 +803,11 @@ static inline struct thread_data *init_handler( void *sigcontext )
     amd64_data->syscall_dispatch = 0; /* SYSCALL_DISPATCH_FILTER_ALLOW */
     if (fs32_sel) arch_prctl( ARCH_SET_FS, amd64_data->pthread_teb );
 #elif defined __APPLE__
+    /* DXMT/Unity uses the GSBASE fix from the Rain World Mono workaround.
+     * Keep D3DMetal on Wine's default macOS TSD behavior. */
+    if (ms_gsbase_switch && amd64_data->pthread_teb)
+        _thread_set_tsd_base((uint64_t)amd64_data->pthread_teb);
+
     /* When in a syscall, CS will be the kernel's selector (0x07, SYSCALL_CS in xnu source)
      * instead of the user selector (cs64_sel: 0x2b, USER64_CS).
      * Fix up sigcontext so later code can compare it to cs64_sel.
@@ -825,6 +836,10 @@ static inline void leave_handler( struct thread_data *data, ucontext_t *sigconte
         amd64_data->syscall_dispatch = 1;  /* SYSCALL_DISPATCH_FILTER_BLOCK */
         if (fs32_sel) __asm__ volatile( "movw %0,%%fs" :: "r" (fs32_sel) );
     }
+#elif defined __APPLE__
+    if (ms_gsbase_switch && !is_inside_signal_stack( data, (void *)RSP_sig(sigcontext )) &&
+        !is_inside_syscall( data, RSP_sig(sigcontext) ))
+        _thread_set_tsd_base( (uint64_t)NtCurrentTeb() );
 #endif
     if (is_16bit( sigcontext )) return;
 #ifdef DS_sig
@@ -1686,6 +1701,32 @@ __ASM_GLOBAL_FUNC( call_user_mode_callback,
                    "1:\tmovq %rdi,%rsp\n\t"    /* user_rsp */
                    "movq 0x98(%r14),%rbp\n\t"  /* prev_frame->rbp */
                    "ldmxcsr 0xd8(%r14)\n\t"    /* prev_frame->xsave.MxCsr */
+#ifdef __APPLE__
+                   "cmpb $0," __ASM_NAME("ms_gsbase_switch") "(%rip)\n\t"
+                   "jz Lms_gs_callback\n\t"
+                   "pushq %rax\n\t"
+                   "pushq %rcx\n\t"
+                   "pushq %rdx\n\t"
+                   "pushq %rsi\n\t"
+                   "pushq %rdi\n\t"
+                   "pushq %r8\n\t"
+                   "pushq %r9\n\t"
+                   "pushq %r10\n\t"
+                   "pushq %r11\n\t"
+                   "movq %r13,%rdi\n\t"            /* teb */
+                   "movl $0x3000003,%eax\n\t"      /* thread_fast_set_cthread_self (GSBASE) */
+                   "syscall\n\t"
+                   "popq %r11\n\t"
+                   "popq %r10\n\t"
+                   "popq %r9\n\t"
+                   "popq %r8\n\t"
+                   "popq %rdi\n\t"
+                   "popq %rsi\n\t"
+                   "popq %rdx\n\t"
+                   "popq %rcx\n\t"
+                   "popq %rax\n\t"
+                   "Lms_gs_callback:\n\t"
+#endif
 #if defined(__linux__) || defined(__FreeBSD__)
                    "movb $1,0x340(%r13)\n\t"   /* amd64_thread_data()->syscall_dispatch */
                    "movw 0x338(%r13),%ax\n"    /* amd64_thread_data()->fs */
@@ -2907,6 +2948,9 @@ void signal_init_process( TEB *teb )
     WOW_TEB *wow_teb = get_wow_teb( teb );
     void *ptr;
 
+#ifdef __APPLE__
+    ms_gsbase_switch = dxmt_graphics_backend_enabled();
+#endif
     if (user_shared_data->XState.Size) xstate_size = user_shared_data->XState.Size - sizeof(XSAVE_FORMAT);
     frame_size = offsetof( struct syscall_frame, xstate ) + xstate_size;
     xstate_extended_features = user_shared_data->XState.EnabledFeatures & ~(UINT64)3;
@@ -3261,6 +3305,26 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
                    "popq %r8\n\t"
                    "leaq -0x98(%rbp),%rcx\n"
                    "2:\n\t"
+#elif defined(__APPLE__)
+                   "cmpb $0," __ASM_NAME("ms_gsbase_switch") "(%rip)\n\t"
+                   "jz Lms_gs_sys_entry\n\t"
+                   "movq 0x320(%r13),%rdi\n\t"     /* amd64_thread_data()->pthread_teb */
+                   "testq %rdi,%rdi\n\t"
+                   "jz Lms_gs_sys_entry\n\t"
+                   "pushq %rdx\n\t"
+                   "pushq %r8\n\t"
+                   "pushq %r9\n\t"
+                   "pushq %r10\n\t"
+                   "pushq %r11\n\t"
+                   "movl $0x3000003,%eax\n\t"      /* thread_fast_set_cthread_self (GSBASE) */
+                   "syscall\n\t"
+                   "popq %r11\n\t"
+                   "popq %r10\n\t"
+                   "popq %r9\n\t"
+                   "popq %r8\n\t"
+                   "popq %rdx\n\t"
+                   "leaq -0x98(%rbp),%rcx\n"
+                   "Lms_gs_sys_entry:\n\t"
 #endif
                    "ldmxcsr 0x33c(%r13)\n\t"       /* amd64_thread_data()->mxcsr */
                    "movl 0xb0(%rcx),%eax\n\t"      /* frame->syscall_id */
@@ -3297,6 +3361,30 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
                    "callq *%r12\n\t"
                    "leaq -0x98(%rbp),%rcx\n\t"
                    __ASM_LOCAL_LABEL("__wine_syscall_dispatcher_return") ":\n\t"
+#ifdef __APPLE__
+                   "cmpb $0," __ASM_NAME("ms_gsbase_switch") "(%rip)\n\t"
+                   "jz Lms_gs_sys_ret\n\t"
+                   "pushq %rax\n\t"
+                   "pushq %rcx\n\t"
+                   "pushq %rdx\n\t"
+                   "pushq %rsi\n\t"
+                   "pushq %r8\n\t"
+                   "pushq %r9\n\t"
+                   "pushq %r10\n\t"
+                   "pushq %r11\n\t"
+                   "movq %gs:0x30,%rdi\n\t"        /* teb */
+                   "movl $0x3000003,%eax\n\t"      /* thread_fast_set_cthread_self (GSBASE) */
+                   "syscall\n\t"
+                   "popq %r11\n\t"
+                   "popq %r10\n\t"
+                   "popq %r9\n\t"
+                   "popq %r8\n\t"
+                   "popq %rsi\n\t"
+                   "popq %rdx\n\t"
+                   "popq %rcx\n\t"
+                   "popq %rax\n\t"
+                   "Lms_gs_sys_ret:\n\t"
+#endif
                    /* push rbp-based kernel stack cfi */
                    __ASM_CFI(".cfi_remember_state\n\t")
                    __ASM_CFI_CFA_IS_AT2(rcx, 0xa8, 0x01) /* frame->syscall_cfa */
@@ -3577,6 +3665,29 @@ __ASM_GLOBAL_FUNC( __wine_unix_call_dispatcher,
                    "popq %r9\n\t"
                    "popq %r8\n\t"
                    "2:\n\t"
+#elif defined(__APPLE__)
+                   "cmpb $0," __ASM_NAME("ms_gsbase_switch") "(%rip)\n\t"
+                   "jz Lms_gs_unix_entry\n\t"
+                   "movq 0x320(%r13),%rdi\n\t"     /* amd64_thread_data()->pthread_teb */
+                   "testq %rdi,%rdi\n\t"
+                   "jz Lms_gs_unix_entry\n\t"
+                   "pushq %rcx\n\t"
+                   "pushq %rdx\n\t"
+                   "pushq %rsi\n\t"
+                   "pushq %r8\n\t"
+                   "pushq %r9\n\t"
+                   "pushq %r10\n\t"
+                   "pushq %r11\n\t"
+                   "movl $0x3000003,%eax\n\t"      /* thread_fast_set_cthread_self (GSBASE) */
+                   "syscall\n\t"
+                   "popq %r11\n\t"
+                   "popq %r10\n\t"
+                   "popq %r9\n\t"
+                   "popq %r8\n\t"
+                   "popq %rsi\n\t"
+                   "popq %rdx\n\t"
+                   "popq %rcx\n\t"
+                   "Lms_gs_unix_entry:\n\t"
 #endif
                    "ldmxcsr 0x33c(%r13)\n\t"       /* amd64_thread_data()->mxcsr */
                    "movq %r8,%rdi\n\t"             /* args */
@@ -3595,6 +3706,30 @@ __ASM_GLOBAL_FUNC( __wine_unix_call_dispatcher,
                    "movdqa 0x250(%rcx),%xmm15\n\t"
                    "testl $0xffff,0xb4(%rcx)\n\t"  /* frame->restore_flags */
                    "jnz " __ASM_LOCAL_LABEL("__wine_syscall_dispatcher_return") "\n\t"
+#ifdef __APPLE__
+                   "cmpb $0," __ASM_NAME("ms_gsbase_switch") "(%rip)\n\t"
+                   "jz Lms_gs_unix_ret\n\t"
+                   "pushq %rax\n\t"
+                   "pushq %rcx\n\t"
+                   "pushq %rdx\n\t"
+                   "pushq %rsi\n\t"
+                   "pushq %r8\n\t"
+                   "pushq %r9\n\t"
+                   "pushq %r10\n\t"
+                   "pushq %r11\n\t"
+                   "movq %gs:0x30,%rdi\n\t"        /* teb */
+                   "movl $0x3000003,%eax\n\t"      /* thread_fast_set_cthread_self (GSBASE) */
+                   "syscall\n\t"
+                   "popq %r11\n\t"
+                   "popq %r10\n\t"
+                   "popq %r9\n\t"
+                   "popq %r8\n\t"
+                   "popq %rsi\n\t"
+                   "popq %rdx\n\t"
+                   "popq %rcx\n\t"
+                   "popq %rax\n\t"
+                   "Lms_gs_unix_ret:\n\t"
+#endif
                    /* switch to user stack */
                    "movq 0x88(%rcx),%rsp\n\t"
                    __ASM_CFI(".cfi_restore_state\n\t")

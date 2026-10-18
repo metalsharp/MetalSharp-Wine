@@ -471,14 +471,7 @@ NTSTATUS WINAPI __wine_unix_spawnvp( char * const argv[], int wait )
     pid_t pid, wret;
     int fd[2], status, err;
 
-#ifdef HAVE_PIPE2
-    if (pipe2( fd, O_CLOEXEC ) == -1)
-#endif
-    {
-        if (pipe(fd) == -1) return STATUS_TOO_MANY_OPENED_FILES;
-        fcntl( fd[0], F_SETFD, FD_CLOEXEC );
-        fcntl( fd[1], F_SETFD, FD_CLOEXEC );
-    }
+    if (ntdll_pipe_cloexec( fd ) == -1) return STATUS_TOO_MANY_OPENED_FILES;
 
     if (!(pid = fork()))
     {
@@ -567,14 +560,7 @@ static NTSTATUS fork_and_exec( OBJECT_ATTRIBUTES *attr, const char *unix_name, i
     char **argv;
     NTSTATUS status = STATUS_SUCCESS;
 
-#ifdef HAVE_PIPE2
-    if (pipe2( fd, O_CLOEXEC ) == -1)
-#endif
-    {
-        if (pipe(fd) == -1) return STATUS_TOO_MANY_OPENED_FILES;
-        fcntl( fd[0], F_SETFD, FD_CLOEXEC );
-        fcntl( fd[1], F_SETFD, FD_CLOEXEC );
-    }
+    if (ntdll_pipe_cloexec( fd ) == -1) return STATUS_TOO_MANY_OPENED_FILES;
 
     if (wine_server_handle_to_fd( params->hStdInput, FILE_READ_DATA, &stdin_fd, NULL ) &&
         isatty(0) && is_unix_console_handle( params->hStdInput ))

@@ -438,6 +438,17 @@ static VkResult convert_instance_create_info( struct mempool *pool, VkInstanceCr
     driver_funcs->p_map_instance_extensions( &instance->obj.extensions );
     instance->obj.extensions.has_VK_KHR_win32_surface = 0;
 
+    /* MoltenVK is exposed by the Vulkan loader as a portability driver. The
+     * loader will not enumerate portability devices unless the portability
+     * enumeration extension and its instance-create flag are enabled. Wine
+     * owns the host instance creation here, so add both on behalf of the
+     * Windows client when the host supports the extension. */
+    if (vulkan_funcs.host_extensions.has_VK_KHR_portability_enumeration)
+    {
+        instance->obj.extensions.has_VK_KHR_portability_enumeration = 1;
+        info->flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+    }
+
     if (instance->obj.extensions.has_VK_EXT_debug_utils || instance->obj.extensions.has_VK_EXT_debug_report)
     {
         rb_init( &instance->objects, vulkan_object_compare );

@@ -1,7 +1,7 @@
 /*
- * WineForge launcher compatibility policy
+ * MetalSharp launcher compatibility policy
  *
- * Copyright (C) 2026 Radim Vesely for WineForge
+ * Copyright (C) 2026 Radim Vesely for MetalSharp
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public

@@ -1,7 +1,7 @@
 /*
- * WineForge launcher security compatibility
+ * MetalSharp launcher security compatibility
  *
- * Copyright (C) 2026 Radim Vesely for WineForge
+ * Copyright (C) 2026 Radim Vesely for MetalSharp
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -23,7 +23,7 @@
 
 WINE_DEFAULT_DEBUG_CHANNEL(advapi);
 
-/* WineForge-Internal: launcher-compat/battlenet-install-acl-v1. */
+/* MetalSharp-Internal: launcher-compat/battlenet-install-acl-v1. */
 static const WCHAR *const battlenet_security_paths[] =
 {
     L"\\ProgramData\\Battle.net\\Agent",
@@ -83,7 +83,7 @@ static BOOL create_well_known_sid( WELL_KNOWN_SID_TYPE type, BYTE *buffer )
     return CreateWellKnownSid( type, NULL, buffer, &size );
 }
 
-void wineforge_adjust_launcher_file_security( const WCHAR *name, PSID *owner, PSID *group,
+void metalsharp_adjust_launcher_file_security( const WCHAR *name, PSID *owner, PSID *group,
                                               PACL *dacl, PACL *sacl,
                                               PSECURITY_DESCRIPTOR *descriptor )
 {

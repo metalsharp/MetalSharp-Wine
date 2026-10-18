@@ -1,7 +1,7 @@
 /*
- * WineForge launcher compatibility policy
+ * MetalSharp launcher compatibility policy
  *
- * Copyright (C) 2026 Radim Vesely for WineForge
+ * Copyright (C) 2026 Radim Vesely for MetalSharp
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -30,7 +30,7 @@ struct launcher_process_policy
 
 static const struct launcher_process_policy launcher_process_policies[] =
 {
-    /* WineForge-Internal: launcher-compat/steam-cef-swiftshader-v1. */
+    /* MetalSharp-Internal: launcher-compat/steam-cef-swiftshader-v1. */
     {
         L"steamwebhelper.exe",
         L"\\Steam\\bin\\cef\\",
@@ -46,7 +46,7 @@ static const struct launcher_process_policy launcher_process_policies[] =
         L" --use-gl=angle"
         L" --use-angle=swiftshader",
     },
-    /* WineForge-Internal: launcher-compat/rockstar-cef-in-process-gpu-v1. */
+    /* MetalSharp-Internal: launcher-compat/rockstar-cef-in-process-gpu-v1. */
     {
         L"SocialClubHelper.exe",
         L"\\Rockstar Games\\Social Club\\",
@@ -56,7 +56,7 @@ static const struct launcher_process_policy launcher_process_policies[] =
         {L"--type=", L"--in-process-gpu", NULL},
         L" --in-process-gpu",
     },
-    /* WineForge-Internal: launcher-compat/ea-app-in-process-gpu-v1. */
+    /* MetalSharp-Internal: launcher-compat/ea-app-in-process-gpu-v1. */
     {
         L"EADesktop.exe",
         L"\\Program Files\\Electronic Arts\\EA Desktop\\",
@@ -66,7 +66,7 @@ static const struct launcher_process_policy launcher_process_policies[] =
         {L"--type=", L"--in-process-gpu", NULL},
         L" --in-process-gpu",
     },
-    /* WineForge-Internal: launcher-compat/battlenet-in-process-gpu-v1. */
+    /* MetalSharp-Internal: launcher-compat/battlenet-in-process-gpu-v1. */
     {
         L"Battle.net.exe",
         L"\\Program Files (x86)\\Battle.net\\",
@@ -76,7 +76,7 @@ static const struct launcher_process_policy launcher_process_policies[] =
         {L"--type=", L"--in-process-gpu", NULL},
         L" --in-process-gpu",
     },
-    /* WineForge-Internal: launcher-compat/ubisoft-connect-in-process-gpu-v1. */
+    /* MetalSharp-Internal: launcher-compat/ubisoft-connect-in-process-gpu-v1. */
     {
         L"upc.exe",
         L"\\Program Files (x86)\\Ubisoft\\Ubisoft Game Launcher\\",

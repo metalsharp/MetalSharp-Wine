@@ -49,7 +49,7 @@ HRESULT WINAPI D3D10CoreCreateDevice(IDXGIFactory *factory, IDXGIAdapter *adapte
             factory, adapter, flags, feature_level, device);
 
     d3d11 = LoadLibraryA("d3d11.dll");
-    /* WineForge-Internal: wfdxcompat/d3d10-late-device-dispatch-v1.
+    /* MetalSharp-Internal: msdxcompat/d3d10-late-device-dispatch-v1.
      * Loading D3D11 can activate the launcher companion after our DXGI import
      * was bound. Keep that import unless the loader confirms activation. */
     if ((ntdll = GetModuleHandleA("ntdll.dll")))

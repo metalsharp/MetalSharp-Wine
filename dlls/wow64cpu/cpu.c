@@ -244,7 +244,7 @@ __ASM_GLOBAL_FUNC( syscall_32to64,
                    "movl %edx,4(%rsp)\n\t"
                    "movl 0xc4(%r13),%r14d\n\t"  /* context->Esp */
                    "xchgq %r14,%rsp\n\t"
-                   /* CW HACK 20760 */
+                   /* MS HACK 20760 */
                    "cmpl $0, " __ASM_NAME("use_rosetta2_workaround") "\n\t"
                    "jne syscall_32to64_rosetta2_return\n\t"
                    "ljmp *(%r14)\n\t"
@@ -314,7 +314,7 @@ __ASM_GLOBAL_FUNC( unix_call_32to64,
                    "movl %edx,4(%rsp)\n\t"
                    "movl 0xc4(%r13),%r14d\n\t"  /* context->Esp */
                    "xchgq %r14,%rsp\n\t"
-                   /* CW HACK 20760 */
+                   /* MS HACK 20760 */
                    "cmpl $0, " __ASM_NAME("use_rosetta2_workaround") "\n\t"
                    "jne unix_call_32to64_rosetta2_return\n\t"
                    "ljmp *(%r14)\n\t"
@@ -390,7 +390,7 @@ NTSTATUS WINAPI BTCpuProcessInit(void)
     cs32_sel = context_i386.SegCs;
     ss32_sel = context_i386.SegSs;
 
-    /* CW HACK 20760 */
+    /* MS HACK 20760 */
     if (use_rosetta2_workaround)
     {
         thunk->syscall_thunk_rosetta.lcall     = 0xff;
@@ -415,7 +415,7 @@ NTSTATUS WINAPI BTCpuProcessInit(void)
         thunk->syscall_thunk.cs    = cs64_sel;
     }
 
-    /* CW HACK 20760 */
+    /* MS HACK 20760 */
     if (use_rosetta2_workaround)
     {
         thunk->unix_thunk_rosetta.lcall     = 0xff;

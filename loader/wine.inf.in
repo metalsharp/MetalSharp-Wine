@@ -745,7 +745,7 @@ HKLM,SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x86,"Version",2,"14.42.344
 [FakeDllsWin64]
 10,twain_64,sane.ds
 10,twain_64,gphoto2.ds
-; CW HACK 22435: fake DLLs for D3DMetal
+; MS HACK 22435: fake DLLs for D3DMetal
 11,,atidxx64.dll,*
 11,,nvapi64.dll,*
 11,,nvngx.dll,*

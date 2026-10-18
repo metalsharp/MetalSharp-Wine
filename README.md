@@ -1,38 +1,38 @@
-# WineForge
+# MetalSharp
 
-![WineForge](https://img.shields.io/badge/WineForge-0.6.0.4-blue)
+![MetalSharp](https://img.shields.io/badge/MetalSharp-0.6.0.4-blue)
 ![Wine](https://img.shields.io/badge/Wine-11.17-8a2be2)
 ![Platform](https://img.shields.io/badge/platform-macOS-lightgrey)
 ![License](https://img.shields.io/badge/license-LGPL--2.1--or--later-green)
-![Downloads](https://img.shields.io/github/downloads/Alien4042x/WineForge/total)
+![Downloads](https://img.shields.io/github/downloads/Alien4042x/MetalSharp/total)
 
-WineForge is a macOS-focused Wine 11.17 source tree focused on improving Windows game compatibility through D3DMetal, Rosetta, and launcher compatibility.
+MetalSharp is a macOS-focused Wine 11.17 source tree focused on improving Windows game compatibility through D3DMetal, Rosetta, and launcher compatibility.
 
 It is built around one idea: keep the Wine side understandable while making the Apple Game Porting Toolkit / D3DMetal runtime path easier to test for Windows games on macOS.
 
-For users who do not want to configure Wine manually, the packaged [WineForge release](https://github.com/Alien4042x/WineForge/releases) includes the WineForge Launcher, a convenient graphical interface for managing bottles, game launchers, installed games, and runtime settings.
+For users who do not want to configure Wine manually, the packaged [MetalSharp release](https://github.com/Alien4042x/MetalSharp/releases) includes the MetalSharp Launcher, a convenient graphical interface for managing bottles, game launchers, installed games, and runtime settings.
 
-<img width="1486" height="906" alt="WineForge-launcher" src="https://github.com/user-attachments/assets/c4447308-f9af-4401-b801-4594b6c8bf50" />
+<img width="1486" height="906" alt="MetalSharp-launcher" src="https://github.com/user-attachments/assets/c4447308-f9af-4401-b801-4594b6c8bf50" />
 
 This repository is not upstream Wine, not CrossOver, and not a complete runtime bundle. It is a prepared Wine source tree with a focused patch set.
 
 Current build identity:
 
 ```text
-wine-11.17 (WineForge 0.6.0.4)
+wine-11.17 (MetalSharp 0.6.0.4)
 ```
 
 ## Credits
 
-WineForge is based on Wine.
+MetalSharp is based on Wine.
 
-The macOS, winemac, Rosetta, and D3DMetal work in this tree builds upon publicly available work from the Wine project, CodeWeavers, CrossOver, and the Apple Game Porting Toolkit ecosystem. WineForge keeps that provenance visible where practical and does not claim those parts as original WineForge code.
+The macOS, winemac, Rosetta, and D3DMetal work in this tree builds upon publicly available work from the Wine project, CodeWeavers, CrossOver, and the Apple Game Porting Toolkit ecosystem. MetalSharp keeps that provenance visible where practical and does not claim those parts as original MetalSharp code.
 
 Thank you to the Wine project, CodeWeavers, CrossOver developers, and everyone involved in the Apple Game Porting Toolkit ecosystem.
 
 ## Patch Provenance
 
-WineForge keeps provenance visible in the source where practical. The current tree contains references to the following CrossOver / CodeWeavers patch IDs:
+MetalSharp keeps provenance visible in the source where practical. The current tree contains references to the following CrossOver / CodeWeavers patch IDs:
 
 - `18947`
 - `20186`
@@ -47,7 +47,7 @@ WineForge keeps provenance visible in the source where practical. The current tr
 - `26456`
 - `26470`
 
-These references are kept intentionally so the origin of the low-level compatibility work remains visible. WineForge-local changes are marked in source and local patch files where practical.
+These references are kept intentionally so the origin of the low-level compatibility work remains visible. MetalSharp-local changes are marked in source and local patch files where practical.
 
 ## Build Notes
 
@@ -118,20 +118,20 @@ The exact prefix, dependency paths, and runtime sync are intentionally left to t
 
 ## Runtime Notes
 
-WineForge expects the D3DMetal runtime to be available from a local runtime directory. The active source patches route D3DMetal DLL and Unix library lookup through that local layout instead of relying on a system-wide install.
+MetalSharp expects the D3DMetal runtime to be available from a local runtime directory. The active source patches route D3DMetal DLL and Unix library lookup through that local layout instead of relying on a system-wide install.
 
 Wine's Mono and Gecko handling remains upstream Wine behavior. This source tree does not bundle Mono or Gecko unpacked directories.
 
 ## Graphics Backends
 
-D3DMetal remains the primary D3D11 and D3D12 backend. WineForge also supports process-selectable [DXMT](https://github.com/3Shain/dxmt) for D3D10 and D3D11 applications and games. DXMT does not provide D3D12 support.
+D3DMetal remains the primary D3D11 and D3D12 backend. MetalSharp also supports process-selectable [DXMT](https://github.com/3Shain/dxmt) for D3D10 and D3D11 applications and games. DXMT does not provide D3D12 support.
 
 DXMT runtime binaries are maintained separately and are not bundled in this
 source repository.
 
-### WineForge DXCompat
+### MetalSharp DXCompat
 
-WineForge DXCompat (`WFDXCompat`) is an optional external compatibility
+MetalSharp DXCompat (`MSDXCompat`) is an optional external compatibility
 frontend placed in front of the process-selected D3DMetal backend. It fills
 focused DirectX interfaces and resource behavior that D3DMetal does not yet
 provide, while forwarding supported graphics behavior to the selected
@@ -140,7 +140,7 @@ backend.
 The D3D12 frontend extends the backend with missing video-resource, plane-copy,
 barrier, and resource-lifetime behavior. A separate D3D11 companion supplies
 the context-state, GDI-surface, and D3D10 bridge behavior required by the
-validated Rockstar launcher path. WFDXCompat activates only when D3DMetal is
+validated Rockstar launcher path. MSDXCompat activates only when D3DMetal is
 the selected process backend; processes without the matching external module
 keep their existing graphics path.
 
@@ -148,16 +148,16 @@ The external runtime is not bundled in this source repository. Its current
 layout is:
 
 ```text
-lib/wfdxcompat/
+lib/msdxcompat/
   x86_64-windows/
     d3d12.dll
     wfdxbackend-d3d12.dll
     wfdx-launchers-v1.dll
 ```
 
-WineForge reads an explicit `WFDXCOMPAT_RUNTIME_DIR`, or derives the sibling
-`lib/wfdxcompat` directory from `D3DMETAL_RUNTIME_DIR`. If the frontend is
-absent, WineForge retains the normal D3DMetal D3D12 path.
+MetalSharp reads an explicit `MSDXCOMPAT_RUNTIME_DIR`, or derives the sibling
+`lib/msdxcompat` directory from `D3DMETAL_RUNTIME_DIR`. If the frontend is
+absent, MetalSharp retains the normal D3DMetal D3D12 path.
 
 ## Running a Local Build
 
@@ -166,11 +166,11 @@ The examples below assume that the Wine build and the external graphics runtimes
 Set the common paths first:
 
 ```sh
-export WINE=/path/to/wineforge/bin/wine
+export WINE=/path/to/metalsharp/bin/wine
 export WINEPREFIX=/path/to/prefix
 export D3DMETAL_RUNTIME_DIR=/path/to/lib/d3dmetal
 export DXMT_RUNTIME_DIR=/path/to/lib/dxmt
-export WFDXCOMPAT_RUNTIME_DIR=/path/to/lib/wfdxcompat
+export MSDXCOMPAT_RUNTIME_DIR=/path/to/lib/msdxcompat
 ```
 
 Run with D3DMetal using the AMD / FidelityFX identity:
@@ -217,16 +217,16 @@ env GRAPHICS_BACKEND=dxmt \
     "$WINE" /path/to/game.exe
 ```
 
-When the WFDXCompat launcher companion is available, WineForge routes only its
+When the MSDXCompat launcher companion is available, MetalSharp routes only its
 built-in exact-path Rockstar launcher processes through D3DMetal with the
 companion enabled. The launched game continues to use the global
 `GRAPHICS_BACKEND`; no application list or registry value is required.
 
-WFUSync remains independent of graphics selection and can be enabled for any of these commands with `WINEWFUSYNC=1`.
+WFUSync remains independent of graphics selection and can be enabled for any of these commands with `WINEMSYNC=1`.
 
 ## Supported Launchers
 
-Launcher compatibility is tested as part of the WineForge game-focused runtime path.
+Launcher compatibility is tested as part of the MetalSharp game-focused runtime path.
 
 ### Steam
 
@@ -236,7 +236,7 @@ Steam is supported for storefront, library, download, and game launch workflows.
 
 Epic Games Launcher is supported for storefront, download, install, and game launch workflows.
 
-Known issue: opening the Friends/social panel can show a black surface in the Store UI. The launcher otherwise remains functional. This appears tied to Epic's accelerated browser surface; WineForge does not currently have a reliable launcher-side switch to disable that GPU acceleration path.
+Known issue: opening the Friends/social panel can show a black surface in the Store UI. The launcher otherwise remains functional. This appears tied to Epic's accelerated browser surface; MetalSharp does not currently have a reliable launcher-side switch to disable that GPU acceleration path.
 
 ### EA App
 
@@ -247,7 +247,7 @@ EA App is supported for installation, sign-in, library, download, and game launc
 Rockstar Games Launcher and Social Club are supported for installation, updates, sign-in, service startup, and game launch workflows. The standalone launcher and the Epic Games Launcher to Rockstar Games Launcher path have been validated with Red Dead Redemption 2.
 
 Selected Rockstar launcher processes use the
-[WFDXCompat](https://github.com/Alien4042x/WFDXCompat) D3D11 companion with
+[MSDXCompat](https://github.com/Alien4042x/MSDXCompat) D3D11 companion with
 D3DMetal, while the launched game keeps the configured global graphics backend.
 
 ### Battle.net
@@ -260,31 +260,31 @@ Ubisoft Connect is supported for installation, sign-in, library, download, and g
 
 ## WFUSync
 
-WFUSync is an opt-in WineForge userspace synchronization backend for macOS.
+WFUSync is an opt-in MetalSharp userspace synchronization backend for macOS.
 
 Enable it with:
 
 ```sh
-WINEWFUSYNC=1
+WINEMSYNC=1
 ```
 
 Disable it by unsetting the variable or setting:
 
 ```sh
-WINEWFUSYNC=0
+WINEMSYNC=0
 ```
 
 Unsupported waits and sensitive synchronization semantics remain on the Wine server fallback path. Probe and targeted validation have shown good results, but this is not claimed as a guaranteed per-game performance improvement.
 
 ## Status
 
-WineForge 0.6.0.4 is the current stable WineForge release line for tested macOS gaming workflows.
+MetalSharp 0.6.0.4 is the current stable MetalSharp release line for tested macOS gaming workflows.
 
-Compatibility remains application-specific. Unsupported games and launchers may still require profiling or targeted compatibility patches, but this does not change the release status of the tested WineForge runtime.
+Compatibility remains application-specific. Unsupported games and launchers may still require profiling or targeted compatibility patches, but this does not change the release status of the tested MetalSharp runtime.
 
 ## License
 
-WineForge is based on Wine and keeps Wine's license files in this repository.
+MetalSharp is based on Wine and keeps Wine's license files in this repository.
 
 Wine is free software under the GNU Lesser General Public License. See `LICENSE` and `LICENSE.OLD`.
 

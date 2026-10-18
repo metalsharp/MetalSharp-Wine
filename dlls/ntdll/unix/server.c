@@ -28,6 +28,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <dlfcn.h>
 #ifdef HAVE_LWP_H
 #include <lwp.h>
 #endif
@@ -1277,9 +1278,40 @@ NTSTATUS unixcall_wine_server_handle_to_fd( void *args )
  *
  * Create a pipe for communicating with the server.
  */
+/* MetalSharp: macOS only exports pipe2 from macOS 27 on (and the SDK does not
+ * declare it), so look it up at run time there and fall back to pipe(). */
+int ntdll_pipe_cloexec( int fd[2] )
+{
+    int ret;
+#ifdef __APPLE__
+    if (__builtin_available( macOS 27.0, * ))
+    {
+        static int (*p_pipe2)( int *, int );
+        static BOOL resolved;
+        if (!resolved)
+        {
+            p_pipe2 = dlsym( RTLD_DEFAULT, "pipe2" );
+            resolved = TRUE;
+        }
+        if (p_pipe2 && !(ret = p_pipe2( fd, O_CLOEXEC ))) return ret;
+    }
+#elif defined(HAVE_PIPE2)
+    if (!(ret = pipe2( fd, O_CLOEXEC ))) return ret;
+#endif
+    if (!(ret = pipe( fd )))
+    {
+        fcntl( fd[0], F_SETFD, FD_CLOEXEC );
+        fcntl( fd[1], F_SETFD, FD_CLOEXEC );
+    }
+    return ret;
+}
+
 int server_pipe( int fd[2] )
 {
     int ret;
+#ifdef __APPLE__
+    return ntdll_pipe_cloexec( fd );
+#endif
 #ifdef HAVE_PIPE2
     static BOOL have_pipe2 = TRUE;
 

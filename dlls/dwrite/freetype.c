@@ -116,6 +116,7 @@ static NTSTATUS process_attach(void *args)
     FT_Version_t FT_Version;
 
     ft_handle = dlopen(SONAME_LIBFREETYPE, RTLD_NOW);
+    if (!ft_handle) ft_handle = dlopen("@loader_path/../../../lib/libfreetype.6.dylib", RTLD_NOW);
     if (!ft_handle)
     {
         WINE_MESSAGE("Wine cannot find the FreeType font library.\n");

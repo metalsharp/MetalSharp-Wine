@@ -31,7 +31,7 @@
 #import "cocoa_app.h"
 #import "cocoa_event.h"
 #import "cocoa_opengl.h"
-#import "d3dmetal_objc.h" /* CW HACK 22435 */
+#import "d3dmetal_objc.h" /* MS HACK 22435 */
 
 #pragma GCC diagnostic ignored "-Wdeclaration-after-statement"
 
@@ -253,8 +253,8 @@ static inline BOOL stage_manager_enabled(void)
 
     WineMetalView *_metalView;
     /*
-     * WineForge-Internal: launcher-compat/epic-launcher-v1.
-     * WineForge-Feature: launcher-compat/epic-unreal-cef-metal-mask-v1.
+     * MetalSharp-Internal: launcher-compat/epic-launcher-v1.
+     * MetalSharp-Feature: launcher-compat/epic-unreal-cef-metal-mask-v1.
      */
     BOOL _metalViewHidden;
     BOOL _hasMetalViewExclusionRect;
@@ -262,7 +262,7 @@ static inline BOOL stage_manager_enabled(void)
     CAShapeLayer *_metalViewMaskLayer;
     NSMutableDictionary<NSNumber*, CALayerHost*>* _caLayerHosts;
 @public
-    void *d3dmetal_client_surface;   /* CW HACK 22435 */
+    void *d3dmetal_client_surface;   /* MS HACK 22435 */
 }
 
 @property (readonly, nonatomic) BOOL everHadGLContext;
@@ -976,7 +976,7 @@ static inline BOOL stage_manager_enabled(void)
 
     - (CALayer*) makeBackingLayer
     {
-        CAMetalLayer *layer = [WineMetalLayer layer];   /* CW HACK 22435 */
+        CAMetalLayer *layer = [WineMetalLayer layer];   /* MS HACK 22435 */
         layer.device = _device;
         layer.framebufferOnly = YES;
         layer.magnificationFilter = kCAFilterNearest;
@@ -4072,7 +4072,7 @@ void macdrv_set_view_backing_size(macdrv_view v, const int backing_size[2])
         [view wine_setBackingSize:backing_size];
 }
 
-/* CW HACK 22435 */
+/* MS HACK 22435 */
 void *macdrv_get_view_d3dmetal_client_surface(macdrv_view v)
 {
     WineContentView* view = (WineContentView*)v;

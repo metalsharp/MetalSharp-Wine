@@ -1562,12 +1562,10 @@ static void *wow64_map_buffer( TEB *teb, struct buffer *buffer, GLenum target, G
         return buffer->map_ptr;
     }
 
-    if (access & GL_MAP_PERSISTENT_BIT)
-    {
-        FIXME( "GL_MAP_PERSISTENT_BIT not supported!\n" );
-        goto unmap;
-    }
-
+    /* A Metal sidecar may expose a valid host mapping even when Wine's
+     * Vulkan-backed persistent-storage path is unavailable. Keep the
+     * wow64 low-address copy mapping in that case and synchronize writes on
+     * flush/unmap instead of rejecting GL_MAP_PERSISTENT_BIT outright. */
     if (!buffer_vm_alloc( teb, buffer, length + (offset & 0xf) )) goto unmap;
     buffer->map_ptr = (char *)buffer->vm_ptr + (offset & 0xf);
     buffer->copy_length = (access & GL_MAP_WRITE_BIT) ? length : 0;
@@ -1774,7 +1772,12 @@ void wow64_glFlushMappedBufferRange( TEB *teb, GLenum target, GLintptr offset, G
 {
     struct buffer *buffer;
 
-    if ((buffer = get_target_buffer_storage( teb, target ))) flush_buffer( teb, buffer, offset, length );
+    if ((buffer = get_target_buffer_storage( teb, target )))
+    {
+        if (buffer->vk_memory) flush_buffer( teb, buffer, offset, length );
+        else if (buffer->host_ptr && buffer->map_ptr)
+            memcpy((char *)buffer->host_ptr + offset, (char *)buffer->map_ptr + offset, length);
+    }
     if (use_driver_buffer_map( buffer )) p_glFlushMappedBufferRange( target, offset, length );
 }
 
@@ -1783,7 +1786,12 @@ void wow64_glFlushMappedNamedBufferRange( TEB *teb, GLuint name, GLintptr offset
 {
     struct buffer *buffer;
 
-    if ((buffer = get_named_buffer_storage( teb, name ))) flush_buffer( teb, buffer, offset, length );
+    if ((buffer = get_named_buffer_storage( teb, name )))
+    {
+        if (buffer->vk_memory) flush_buffer( teb, buffer, offset, length );
+        else if (buffer->host_ptr && buffer->map_ptr)
+            memcpy((char *)buffer->host_ptr + offset, (char *)buffer->map_ptr + offset, length);
+    }
     if (use_driver_buffer_map( buffer )) p_glFlushMappedNamedBufferRange( name, offset, length );
 }
 

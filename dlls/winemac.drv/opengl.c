@@ -39,7 +39,10 @@
 #include <OpenGL/OpenGL.h>
 #include <OpenGL/glu.h>
 #include <OpenGL/CGLRenderers.h>
+#include <ctype.h>
 #include <dlfcn.h>
+#include <limits.h>
+#include <stdio.h>
 
 WINE_DEFAULT_DEBUG_CHANNEL(wgl);
 
@@ -53,6 +56,27 @@ struct gl_info {
 
 static struct gl_info gl_info;
 
+static void winemetalgl_max_feature_level(unsigned int *major, unsigned int *minor)
+{
+    const char *value = getenv("WINEMETALGL_MAX_FEATURE_LEVEL");
+    unsigned int parsed_major, parsed_minor;
+
+    *major = 3;
+    *minor = 3;
+    if (value && sscanf(value, "%u.%u", &parsed_major, &parsed_minor) == 2)
+    {
+        *major = parsed_major;
+        *minor = parsed_minor;
+    }
+}
+
+static BOOL winemetalgl_feature_level_allowed(unsigned int major, unsigned int minor)
+{
+    unsigned int max_major, max_minor;
+
+    winemetalgl_max_feature_level(&max_major, &max_minor);
+    return major < max_major || (major == max_major && minor <= max_minor);
+}
 
 struct macdrv_context
 {
@@ -69,6 +93,10 @@ struct macdrv_context
     macdrv_view             read_view;
     CGLPBufferObj           read_pbuffer;
     int                     swap_interval;
+    macdrv_metal_device     metal_device;
+    macdrv_metal_view       metal_view;
+    macdrv_view             metal_source_view;
+    macdrv_metal_layer      metal_layer;
 };
 
 struct gl_drawable
@@ -83,6 +111,7 @@ static struct gl_drawable *impl_from_opengl_drawable(struct opengl_drawable *bas
 }
 
 static void *opengl_handle;
+static void *metalsharp_opengl_handle;
 static const struct opengl_funcs *funcs;
 static const struct opengl_driver_funcs macdrv_driver_funcs;
 static const struct opengl_drawable_funcs macdrv_surface_funcs;
@@ -95,6 +124,113 @@ static const GLubyte *(*pglGetString)(GLenum name);
 static PFN_glGetIntegerv pglGetIntegerv;
 static void (*pglReadPixels)(GLint x, GLint y, GLsizei width, GLsizei height,
                              GLenum format, GLenum type, void *pixels);
+static void (*pmetalsharp_set_metal_layer)(void *layer);
+static int (*pmetalsharp_modern_context_ready)(void);
+static int (*pmetalsharp_is_drawable_backed)(void);
+static void (*pmetalsharp_set_current_context)(void *context);
+static void (*pmetalsharp_set_swap_interval)(int interval);
+
+static char *trim_winemetalgl_config(char *value)
+{
+    char *end;
+
+    while (*value && isspace((unsigned char)*value)) value++;
+    end = value + strlen(value);
+    while (end > value && isspace((unsigned char)end[-1])) *--end = 0;
+    return value;
+}
+
+static void set_winemetalgl_config_default(const char *name, const char *value)
+{
+    if (!getenv(name)) setenv(name, value, 1);
+}
+
+static void load_winemetalgl_config(void)
+{
+    const char *override = getenv("WINEMETALGL_CONFIG_FILE");
+    char path[PATH_MAX], line[512];
+    FILE *file = NULL;
+
+    if (override && override[0]) file = fopen(override, "r");
+    else
+    {
+        Dl_info info;
+        char *slash;
+
+        if (dladdr((void *)load_winemetalgl_config, &info) && info.dli_fname &&
+            strlen(info.dli_fname) < sizeof(path))
+        {
+            strcpy(path, info.dli_fname);
+            slash = strrchr(path, '/');
+            if (slash)
+            {
+                slash[1] = 0;
+                strncat(path, "winemetalgl.conf", sizeof(path) - strlen(path) - 1);
+                file = fopen(path, "r");
+            }
+        }
+    }
+
+    if (!file) return;
+    while (fgets(line, sizeof(line), file))
+    {
+        char *key, *value, *equals, *comment;
+
+        if ((comment = strchr(line, '#'))) *comment = 0;
+        key = trim_winemetalgl_config(line);
+        if (!*key || !(equals = strchr(key, '='))) continue;
+        *equals = 0;
+        key = trim_winemetalgl_config(key);
+        value = trim_winemetalgl_config(equals + 1);
+        if (!strcmp(key, "winemetalgl.enabled")) set_winemetalgl_config_default("WINEMETALGL", value);
+        else if (!strcmp(key, "winemetalgl.experimental"))
+            set_winemetalgl_config_default("WINEMETALGL_EXPERIMENTAL", value);
+        else if (!strcmp(key, "winemetalgl.maxFeatureLevel"))
+            set_winemetalgl_config_default("WINEMETALGL_MAX_FEATURE_LEVEL", value);
+    }
+    fclose(file);
+    TRACE("loaded WineMetalGL config %s\n", override && override[0] ? debugstr_a(override) : "next to winemac.so");
+}
+
+static void update_metal_surface(struct macdrv_context *context)
+{
+    if (!pmetalsharp_set_metal_layer) return;
+
+    if (!context->draw_view)
+    {
+        if (context->metal_view)
+        {
+            macdrv_view_release_metal_view(context->metal_view);
+            context->metal_view = NULL;
+        }
+        if (context->metal_device)
+        {
+            macdrv_release_metal_device(context->metal_device);
+            context->metal_device = NULL;
+        }
+        context->metal_source_view = NULL;
+        context->metal_layer = NULL;
+        pmetalsharp_set_metal_layer(NULL);
+        return;
+    }
+
+    if (context->metal_source_view != context->draw_view && context->metal_view)
+    {
+        macdrv_view_release_metal_view(context->metal_view);
+        context->metal_view = NULL;
+        context->metal_layer = NULL;
+    }
+    if (!context->metal_device)
+        context->metal_device = macdrv_create_metal_device();
+    if (!context->metal_view && context->metal_device)
+    {
+        context->metal_view = macdrv_view_create_metal_view(context->draw_view, context->metal_device);
+        context->metal_source_view = context->draw_view;
+    }
+    if (context->metal_view)
+        context->metal_layer = macdrv_view_get_metal_layer(context->metal_view);
+    pmetalsharp_set_metal_layer(context->metal_layer);
+}
 
 
 struct color_mode {
@@ -1393,7 +1529,6 @@ static BOOL create_context(struct macdrv_context *context, CGLContextObj share, 
         RtlSetLastWin32Error(ERROR_INVALID_OPERATION);
         return FALSE;
     }
-
     if (gl_surface_mode == GL_SURFACE_IN_FRONT_TRANSPARENT)
     {
         GLint opacity = 0;
@@ -1980,10 +2115,15 @@ static void macdrv_surface_flush(struct opengl_drawable *base, UINT flags)
     TRACE("%s flags %#x\n", debugstr_opengl_drawable(base), flags);
 
     if (!context) return;
-    if (flags & GL_FLUSH_INTERVAL) set_swap_interval(context, base->interval);
+    if (flags & GL_FLUSH_INTERVAL) { set_swap_interval(context, base->interval); if(pmetalsharp_set_swap_interval)pmetalsharp_set_swap_interval(base->interval); }
     if (flags & GL_FLUSH_UPDATED) make_context_current(context, context->read_view == client->cocoa_view);
     if (flags & GL_FLUSH_PRESENT)
     {
+        if (getenv("WINEMETALGL_EXPERIMENTAL") && !strcmp(getenv("WINEMETALGL_EXPERIMENTAL"), "1"))
+        {
+            TRACE("WineMetalGL owns experimental surface flush/present\n");
+            return;
+        }
         macdrv_flush_opengl_context(context->context);
         client_surface_present(base->client);
     }
@@ -2003,10 +2143,14 @@ static void macdrv_surface_flush(struct opengl_drawable *base, UINT flags)
  */
 static const GLubyte *macdrv_glGetString(GLenum name)
 {
+    void *(*sidecar_get_string)(GLenum) = NULL;
+    if (pmetalsharp_modern_context_ready && pmetalsharp_modern_context_ready() &&
+        name != GL_EXTENSIONS && metalsharp_opengl_handle &&
+        (sidecar_get_string = dlsym(metalsharp_opengl_handle, "glGetString")))
+        return sidecar_get_string(name);
     if (name == GL_EXTENSIONS && gl_info.glExtensions)
         return (const GLubyte *)gl_info.glExtensions;
-    else
-        return pglGetString(name);
+    return pglGetString(name);
 }
 
 
@@ -2027,7 +2171,11 @@ static void macdrv_glReadPixels(GLint x, GLint y, GLsizei width, GLsizei height,
     if (context->read_view || context->read_pbuffer)
         make_context_current(context, TRUE);
 
-    pglReadPixels(x, y, width, height, format, type, pixels);
+    if (metalsharp_opengl_handle && getenv("WINEMETALGL_EXPERIMENTAL") && !strcmp(getenv("WINEMETALGL_EXPERIMENTAL"), "1")) {
+        void (*sidecar_read_pixels)(GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, void *) = dlsym(metalsharp_opengl_handle, "glReadPixels");
+        if (sidecar_read_pixels) sidecar_read_pixels(x, y, width, height, format, type, pixels);
+        else pglReadPixels(x, y, width, height, format, type, pixels);
+    } else pglReadPixels(x, y, width, height, format, type, pixels);
 
     if (context->read_view || context->read_pbuffer)
         make_context_current(context, FALSE);
@@ -2076,7 +2224,6 @@ static BOOL macdrv_context_create(int format, void *share, const int *attrib_lis
     BOOL core = FALSE;
 
     TRACE("format %d, share_context %p, attrib_list %p\n", format, share_context, attrib_list);
-
     for (iptr = attrib_list; iptr && *iptr; iptr += 2)
     {
         int attr = iptr[0];
@@ -2117,6 +2264,16 @@ static BOOL macdrv_context_create(int format, void *share, const int *attrib_lis
                 profile = value;
                 break;
 
+            case WGL_CONTEXT_RESET_NOTIFICATION_STRATEGY_ARB:
+                if (value != WGL_NO_RESET_NOTIFICATION_ARB && value != WGL_LOSE_CONTEXT_ON_RESET_ARB)
+                {
+                    WARN("WGL_CONTEXT_RESET_NOTIFICATION_STRATEGY_ARB value %#x invalid\n", value);
+                    RtlSetLastWin32Error(ERROR_INVALID_PARAMETER);
+                    return FALSE;
+                }
+                WARN("WGL reset notification strategy %#x is not observable on the Metal backend\n", value);
+                break;
+
             default:
                 WARN("Unknown attribute %s.\n", debugstr_attrib(attr, value));
                 RtlSetLastWin32Error(ERROR_INVALID_PARAMETER);
@@ -2124,14 +2281,21 @@ static BOOL macdrv_context_create(int format, void *share, const int *attrib_lis
         }
     }
 
-    if (major > gl_info.max_major || (major == gl_info.max_major && minor > gl_info.max_minor))
+    const BOOL metalsharp_experimental = getenv("WINEMETALGL_EXPERIMENTAL") && !strcmp(getenv("WINEMETALGL_EXPERIMENTAL"), "1");
+    if (metalsharp_experimental && major >= 3 && !winemetalgl_feature_level_allowed(major, minor))
+    {
+        WARN("WineMetalGL max feature level rejects %u.%u\n", major, minor);
+        RtlSetLastWin32Error(ERROR_INVALID_VERSION_ARB);
+        return FALSE;
+    }
+    if (!metalsharp_experimental && (major > gl_info.max_major || (major == gl_info.max_major && minor > gl_info.max_minor)))
     {
         WARN("Profile version %u.%u not supported\n", major, minor);
         RtlSetLastWin32Error(ERROR_INVALID_VERSION_ARB);
         return FALSE;
     }
-
-    if ((major == 3 && (minor == 2 || minor == 3)) ||
+    if (metalsharp_experimental && major >= 3) { core = TRUE; profile = WGL_CONTEXT_CORE_PROFILE_BIT_ARB; }
+    else if ((major == 3 && (minor == 2 || minor == 3)) ||
         (major == 4 && (minor == 0 || minor == 1)))
     {
         if (!(flags & WGL_CONTEXT_FORWARD_COMPATIBLE_BIT_ARB))
@@ -2233,12 +2397,16 @@ static BOOL macdrv_make_current(struct opengl_drawable *draw_base, struct opengl
     if (!private)
     {
         macdrv_make_context_current(NULL, NULL, CGRectNull);
+        if (pmetalsharp_set_metal_layer) pmetalsharp_set_metal_layer(NULL);
+        if (pmetalsharp_set_current_context) pmetalsharp_set_current_context(NULL);
         NtCurrentTeb()->glReserved2 = NULL;
         return TRUE;
     }
     if (!draw || !read)
     {
         CGLSetCurrentContext(context->cglcontext);
+        if (pmetalsharp_set_current_context) pmetalsharp_set_current_context(context);
+        update_metal_surface(context);
         return TRUE;
     }
 
@@ -2276,6 +2444,8 @@ static BOOL macdrv_make_current(struct opengl_drawable *draw_base, struct opengl
 
     make_context_current(context, FALSE);
     NtCurrentTeb()->glReserved2 = context;
+    if (pmetalsharp_set_current_context) pmetalsharp_set_current_context(context);
+    update_metal_surface(context);
 
     return TRUE;
 }
@@ -2511,6 +2681,20 @@ static BOOL macdrv_pbuffer_updated(HDC hdc, struct opengl_drawable *base, GLenum
 
 static void macdrv_init_extensions(struct opengl_funcs *funcs, BOOLEAN extensions[GL_EXTENSION_COUNT])
 {
+    /* WineMetalGL owns these modern entry points even though the legacy CGL
+     * context used for bootstrap reports OpenGL 2.1. Expose their ARB
+     * extension gates so wglGetProcAddress returns the Wine thunks. */
+    extensions[GL_ARB_draw_instanced] = 1;
+    extensions[GL_ARB_instanced_arrays] = 1;
+    extensions[GL_ARB_vertex_array_object] = 1;
+    extensions[GL_ARB_framebuffer_object] = 1;
+    if (getenv("WINEMETALGL_GL40_COVERAGE") && !strcmp(getenv("WINEMETALGL_GL40_COVERAGE"), "1"))
+    {
+        /* The bounded GL 4.0 API coverage case initializes several entry
+         * points through extension gates even though the shim reports GL 3.3. */
+        extensions[GL_ARB_separate_shader_objects] = 1;
+        extensions[GL_EXT_direct_state_access] = 1;
+    }
     extensions[WGL_WINE_query_renderer] = 1;
     funcs->p_wglQueryCurrentRendererIntegerWINE = macdrv_wglQueryCurrentRendererIntegerWINE;
     funcs->p_wglQueryCurrentRendererStringWINE = macdrv_wglQueryCurrentRendererStringWINE;
@@ -2523,6 +2707,9 @@ static void macdrv_init_extensions(struct opengl_funcs *funcs, BOOLEAN extension
  */
 UINT macdrv_OpenGLInit(UINT version, const struct opengl_funcs *opengl_funcs, const struct opengl_driver_funcs **driver_funcs)
 {
+    const char *metalsharp;
+
+    load_winemetalgl_config();
     TRACE("()\n");
 
     if (version != WINE_OPENGL_DRIVER_VERSION)
@@ -2557,10 +2744,389 @@ UINT macdrv_OpenGLInit(UINT version, const struct opengl_funcs *opengl_funcs, co
 
 #undef LOAD_FUNCPTR
 
+    /* Optional x86_64 WineMetalGL sidecar. Wine continues to own WGL
+     * contexts, guest thunks, drawables, and the legacy fallback. */
+    metalsharp = getenv("WINEMETALGL");
+    if (!metalsharp || strcmp(metalsharp, "0"))
+    {
+        metalsharp_opengl_handle = dlopen("@loader_path/metalsharp-opengl.dylib", RTLD_NOW | RTLD_LOCAL);
+        if (metalsharp_opengl_handle)
+        {
+            pmetalsharp_set_metal_layer = dlsym(metalsharp_opengl_handle, "metalsharp_opengl_set_metal_layer");
+            pmetalsharp_modern_context_ready = dlsym(metalsharp_opengl_handle, "metalsharp_opengl_modern_context_ready");
+            pmetalsharp_is_drawable_backed = dlsym(metalsharp_opengl_handle, "metalsharp_opengl_is_drawable_backed");
+            pmetalsharp_set_current_context = dlsym(metalsharp_opengl_handle, "metalsharp_opengl_set_current_context");
+            pmetalsharp_set_swap_interval = dlsym(metalsharp_opengl_handle, "metalsharp_opengl_set_swap_interval");
+            if (getenv("WINEMETALGL_EXPERIMENTAL") && !strcmp(getenv("WINEMETALGL_EXPERIMENTAL"), "1")) pglReadPixels = dlsym(metalsharp_opengl_handle, "glReadPixels");
+            /* Core OpenGL entry points are resolved once during Wine's
+             * display-function bootstrap, before a later wglGetProcAddress
+             * lookup can see the sidecar. Replace the Unix callbacks here so
+             * core state, texture, buffer, and clear calls reach the same
+             * Metal implementation as extension entry points. */
+#define WINEMETALGL_BIND(name) do { void *sidecar_proc = dlsym(metalsharp_opengl_handle, #name); \
+                if (sidecar_proc) ((struct opengl_funcs *)(ULONG_PTR)funcs)->p_##name = sidecar_proc; } while (0)
+            WINEMETALGL_BIND(glBegin);
+            WINEMETALGL_BIND(glEnd);
+            WINEMETALGL_BIND(glMatrixMode);
+            WINEMETALGL_BIND(glLoadIdentity);
+            WINEMETALGL_BIND(glPushMatrix);
+            WINEMETALGL_BIND(glPopMatrix);
+            WINEMETALGL_BIND(glTranslatef);
+            WINEMETALGL_BIND(glRotatef);
+            WINEMETALGL_BIND(glScalef);
+            WINEMETALGL_BIND(glTexCoord1f);
+            WINEMETALGL_BIND(glTexCoord2f);
+            WINEMETALGL_BIND(glTexCoord3f);
+            WINEMETALGL_BIND(glTexCoord4f);
+            WINEMETALGL_BIND(glMultiTexCoord2f);
+            WINEMETALGL_BIND(glVertex2f);
+            WINEMETALGL_BIND(glVertex3f);
+            WINEMETALGL_BIND(glVertex4f);
+            WINEMETALGL_BIND(glNormal3f);
+            WINEMETALGL_BIND(glClipPlane);
+            WINEMETALGL_BIND(glTexGeni);
+            WINEMETALGL_BIND(glTexGenf);
+            WINEMETALGL_BIND(glTexGenfv);
+            WINEMETALGL_BIND(glTexGeniv);
+            WINEMETALGL_BIND(glLightfv);
+            WINEMETALGL_BIND(glMaterialfv);
+            WINEMETALGL_BIND(glMaterialf);
+            WINEMETALGL_BIND(glFogfv);
+            WINEMETALGL_BIND(glFogi);
+            WINEMETALGL_BIND(glFogf);
+            WINEMETALGL_BIND(glColor3f);
+            WINEMETALGL_BIND(glColor4f);
+            WINEMETALGL_BIND(glColor3ub);
+            WINEMETALGL_BIND(glColor4ub);
+            WINEMETALGL_BIND(glTexEnvf);
+            WINEMETALGL_BIND(glTexEnvfv);
+            WINEMETALGL_BIND(glTexEnvi);
+            WINEMETALGL_BIND(glTexEnviv);
+            WINEMETALGL_BIND(glClear);
+            WINEMETALGL_BIND(glClearBufferfv);
+            WINEMETALGL_BIND(glClearBufferiv);
+            WINEMETALGL_BIND(glClearBufferuiv);
+            WINEMETALGL_BIND(glClearBufferfi);
+            WINEMETALGL_BIND(glClearColor);
+            WINEMETALGL_BIND(glEnable);
+            WINEMETALGL_BIND(glDisable);
+            WINEMETALGL_BIND(glBlendFunc);
+            WINEMETALGL_BIND(glBlendFuncSeparate);
+            WINEMETALGL_BIND(glBlendFunci);
+            WINEMETALGL_BIND(glBlendFuncSeparatei);
+            WINEMETALGL_BIND(glBlendEquationi);
+            WINEMETALGL_BIND(glBlendEquationSeparatei);
+            WINEMETALGL_BIND(glColorMaski);
+            WINEMETALGL_BIND(glEnablei);
+            WINEMETALGL_BIND(glDisablei);
+            WINEMETALGL_BIND(glCullFace);
+            WINEMETALGL_BIND(glLineWidth);
+            WINEMETALGL_BIND(glPointSize);
+            WINEMETALGL_BIND(glFrontFace);
+            WINEMETALGL_BIND(glDepthFunc);
+            WINEMETALGL_BIND(glDepthRange);
+            WINEMETALGL_BIND(glDepthRangef);
+            WINEMETALGL_BIND(glReadBuffer);
+            WINEMETALGL_BIND(glDrawBuffer);
+            WINEMETALGL_BIND(glDrawBuffers);
+            WINEMETALGL_BIND(glReadPixels);
+            WINEMETALGL_BIND(glReadnPixels);
+            WINEMETALGL_BIND(glGetGraphicsResetStatus);
+            WINEMETALGL_BIND(glGetnUniformfv);
+            WINEMETALGL_BIND(glGetnUniformiv);
+            WINEMETALGL_BIND(glPatchParameteri);
+            WINEMETALGL_BIND(glPatchParameterfv);
+            WINEMETALGL_BIND(glDepthMask);
+            WINEMETALGL_BIND(glStencilFunc);
+            WINEMETALGL_BIND(glStencilFuncSeparate);
+            WINEMETALGL_BIND(glStencilOp);
+            WINEMETALGL_BIND(glStencilOpSeparate);
+            WINEMETALGL_BIND(glStencilMask);
+            WINEMETALGL_BIND(glStencilMaskSeparate);
+            WINEMETALGL_BIND(glClearDepth);
+            WINEMETALGL_BIND(glPolygonOffset);
+            WINEMETALGL_BIND(glClipControl);
+            WINEMETALGL_BIND(glViewport);
+            WINEMETALGL_BIND(glGetString);
+            WINEMETALGL_BIND(glGetStringi);
+            WINEMETALGL_BIND(glGetIntegerv);
+            WINEMETALGL_BIND(glGetError);
+            WINEMETALGL_BIND(glGetFloatv);
+            WINEMETALGL_BIND(glGetDoublev);
+            WINEMETALGL_BIND(glGetBooleanv);
+            WINEMETALGL_BIND(glDebugMessageControl);
+            WINEMETALGL_BIND(glDebugMessageCallback);
+            WINEMETALGL_BIND(glDebugMessageInsert);
+            WINEMETALGL_BIND(glGetDebugMessageLog);
+            WINEMETALGL_BIND(glPushDebugGroup);
+            WINEMETALGL_BIND(glPopDebugGroup);
+            WINEMETALGL_BIND(glObjectLabel);
+            WINEMETALGL_BIND(glGetObjectLabel);
+            WINEMETALGL_BIND(glBindBuffer);
+            WINEMETALGL_BIND(glCreateBuffers);
+            WINEMETALGL_BIND(glBufferData);
+            WINEMETALGL_BIND(glBufferStorage);
+            WINEMETALGL_BIND(glNamedBufferStorage);
+            WINEMETALGL_BIND(glNamedBufferData);
+            WINEMETALGL_BIND(glMapNamedBuffer);
+            WINEMETALGL_BIND(glUnmapNamedBuffer);
+            WINEMETALGL_BIND(glGetBufferParameteriv);
+            WINEMETALGL_BIND(glGetBufferParameteri64v);
+            WINEMETALGL_BIND(glNamedBufferSubData);
+            WINEMETALGL_BIND(glCopyBufferSubData);
+            WINEMETALGL_BIND(glPrimitiveRestartIndex);
+            WINEMETALGL_BIND(glBufferSubData);
+            WINEMETALGL_BIND(glMapBuffer);
+            WINEMETALGL_BIND(glUnmapBuffer);
+            WINEMETALGL_BIND(glMapBufferRange);
+            WINEMETALGL_BIND(glGetBufferPointerv);
+            WINEMETALGL_BIND(glGetNamedBufferPointerv);
+            WINEMETALGL_BIND(glFlushMappedBufferRange);
+            WINEMETALGL_BIND(glFlushMappedNamedBufferRange);
+            WINEMETALGL_BIND(glDrawArrays);
+            WINEMETALGL_BIND(glDrawElements);
+            WINEMETALGL_BIND(glDrawRangeElements);
+            WINEMETALGL_BIND(glDrawElementsBaseVertex);
+            WINEMETALGL_BIND(glDrawElementsInstancedBaseVertex);
+            WINEMETALGL_BIND(glDrawElementsInstancedBaseVertexBaseInstance);
+            WINEMETALGL_BIND(glDrawArraysInstancedBaseInstance);
+            WINEMETALGL_BIND(glDrawArraysInstanced);
+            WINEMETALGL_BIND(glDrawElementsInstanced);
+            WINEMETALGL_BIND(glDrawArraysIndirect);
+            WINEMETALGL_BIND(glDrawElementsIndirect);
+            WINEMETALGL_BIND(glMultiDrawArraysIndirectCount);
+            WINEMETALGL_BIND(glMultiDrawElementsIndirectCount);
+            WINEMETALGL_BIND(glMultiDrawArraysIndirect);
+            WINEMETALGL_BIND(glMultiDrawElementsIndirect);
+            WINEMETALGL_BIND(glMultiDrawArrays);
+            WINEMETALGL_BIND(glMultiDrawElements);
+            WINEMETALGL_BIND(glMultiDrawElementsBaseVertex);
+            WINEMETALGL_BIND(glDispatchCompute);
+            WINEMETALGL_BIND(glDispatchComputeIndirect);
+            WINEMETALGL_BIND(glMemoryBarrier);
+            WINEMETALGL_BIND(glBindBufferBase);
+            WINEMETALGL_BIND(glBindBufferRange);
+            WINEMETALGL_BIND(glBindBuffersBase);
+            WINEMETALGL_BIND(glBindTextures);
+            WINEMETALGL_BIND(glBindSamplers);
+            WINEMETALGL_BIND(glBindImageTextures);
+            WINEMETALGL_BIND(glBindVertexBuffers);
+            WINEMETALGL_BIND(glBindImageTexture);
+            WINEMETALGL_BIND(glGetBufferSubData);
+            WINEMETALGL_BIND(glBeginTransformFeedback);
+            WINEMETALGL_BIND(glEndTransformFeedback);
+            WINEMETALGL_BIND(glTransformFeedbackVaryings);
+            WINEMETALGL_BIND(glVertexAttribPointer);
+            WINEMETALGL_BIND(glGetVertexAttribiv);
+            WINEMETALGL_BIND(glGetVertexAttribPointerv);
+            WINEMETALGL_BIND(glVertexAttribIPointer);
+            WINEMETALGL_BIND(glBindVertexBuffer);
+            WINEMETALGL_BIND(glVertexAttribBinding);
+            WINEMETALGL_BIND(glVertexBindingDivisor);
+            WINEMETALGL_BIND(glVertexAttribFormat);
+            WINEMETALGL_BIND(glVertexAttribIFormat);
+            WINEMETALGL_BIND(glEnableVertexAttribArray);
+            WINEMETALGL_BIND(glDisableVertexAttribArray);
+            WINEMETALGL_BIND(glVertexAttribDivisor);
+            WINEMETALGL_BIND(glGenVertexArrays);
+            WINEMETALGL_BIND(glDeleteVertexArrays);
+            WINEMETALGL_BIND(glBindVertexArray);
+            WINEMETALGL_BIND(glIsVertexArray);
+            WINEMETALGL_BIND(glGenTextures);
+            WINEMETALGL_BIND(glIsTexture);
+            WINEMETALGL_BIND(glCreateTextures);
+            WINEMETALGL_BIND(glDeleteTextures);
+            WINEMETALGL_BIND(glBindTexture);
+            WINEMETALGL_BIND(glActiveTexture);
+            WINEMETALGL_BIND(glBindTextureUnit);
+            WINEMETALGL_BIND(glTextureStorage2D);
+            WINEMETALGL_BIND(glTextureStorage3D);
+            WINEMETALGL_BIND(glTextureView);
+            WINEMETALGL_BIND(glTextureParameteri);
+            WINEMETALGL_BIND(glTextureSubImage2D);
+            WINEMETALGL_BIND(glTextureSubImage3D);
+            WINEMETALGL_BIND(glGenerateTextureMipmap);
+            WINEMETALGL_BIND(glGetTextureLevelParameteriv);
+            WINEMETALGL_BIND(glGetInternalformativ);
+            WINEMETALGL_BIND(glTexImage1D);
+            WINEMETALGL_BIND(glTexSubImage1D);
+            WINEMETALGL_BIND(glTexStorage1D);
+            WINEMETALGL_BIND(glTexImage2D);
+            WINEMETALGL_BIND(glTexImage3D);
+            WINEMETALGL_BIND(glTexStorage2D);
+            WINEMETALGL_BIND(glTexStorage3D);
+            WINEMETALGL_BIND(glTexSubImage3D);
+            WINEMETALGL_BIND(glCopyImageSubData);
+            WINEMETALGL_BIND(glGetTexImage);
+            WINEMETALGL_BIND(glGetTextureImage);
+            WINEMETALGL_BIND(glGetTexLevelParameteriv);
+            WINEMETALGL_BIND(glGetTexParameteriv);
+            WINEMETALGL_BIND(glGetTexParameterfv);
+            WINEMETALGL_BIND(glPixelStorei);
+            WINEMETALGL_BIND(glTexParameteri);
+            WINEMETALGL_BIND(glTexParameterf);
+            WINEMETALGL_BIND(glTexParameteriv);
+            WINEMETALGL_BIND(glTexParameterfv);
+            WINEMETALGL_BIND(glGenerateMipmap);
+            WINEMETALGL_BIND(glTexSubImage2D);
+            WINEMETALGL_BIND(glTexParameterf);
+            WINEMETALGL_BIND(glCopyTexImage2D);
+            WINEMETALGL_BIND(glCopyTexSubImage2D);
+            WINEMETALGL_BIND(glGenSamplers);
+            WINEMETALGL_BIND(glDeleteSamplers);
+            WINEMETALGL_BIND(glIsSampler);
+            WINEMETALGL_BIND(glBindSampler);
+            WINEMETALGL_BIND(glSamplerParameteri);
+            WINEMETALGL_BIND(glSamplerParameterf);
+            WINEMETALGL_BIND(glSamplerParameteriv);
+            WINEMETALGL_BIND(glSamplerParameterfv);
+            WINEMETALGL_BIND(glGetSamplerParameteriv);
+            WINEMETALGL_BIND(glGetSamplerParameterfv);
+            WINEMETALGL_BIND(glGenRenderbuffers);
+            WINEMETALGL_BIND(glDeleteRenderbuffers);
+            WINEMETALGL_BIND(glBindRenderbuffer);
+            WINEMETALGL_BIND(glRenderbufferStorage);
+            WINEMETALGL_BIND(glGetRenderbufferParameteriv);
+            WINEMETALGL_BIND(glRenderbufferStorageMultisample);
+            WINEMETALGL_BIND(glTexImage2DMultisample);
+            WINEMETALGL_BIND(glTexImage3DMultisample);
+            WINEMETALGL_BIND(glTexStorage3DMultisample);
+            WINEMETALGL_BIND(glGenFramebuffers);
+            WINEMETALGL_BIND(glCreateFramebuffers);
+            WINEMETALGL_BIND(glDeleteFramebuffers);
+            WINEMETALGL_BIND(glBindFramebuffer);
+            WINEMETALGL_BIND(glFramebufferTexture2D);
+            WINEMETALGL_BIND(glFramebufferTexture3D);
+            WINEMETALGL_BIND(glFramebufferTexture3DEXT);
+            WINEMETALGL_BIND(glFramebufferTextureLayer);
+            WINEMETALGL_BIND(glNamedFramebufferTexture);
+            WINEMETALGL_BIND(glGetNamedFramebufferAttachmentParameteriv);
+            WINEMETALGL_BIND(glNamedFramebufferRenderbuffer);
+            WINEMETALGL_BIND(glCheckNamedFramebufferStatus);
+            WINEMETALGL_BIND(glFramebufferRenderbuffer);
+            WINEMETALGL_BIND(glBlitFramebuffer);
+            WINEMETALGL_BIND(glInvalidateFramebuffer);
+            WINEMETALGL_BIND(glInvalidateSubFramebuffer);
+            WINEMETALGL_BIND(glCheckFramebufferStatus);
+            WINEMETALGL_BIND(glProgramParameteri);
+            WINEMETALGL_BIND(glGetProgramBinary);
+            WINEMETALGL_BIND(glProgramBinary);
+            WINEMETALGL_BIND(glBindFragDataLocation);
+            WINEMETALGL_BIND(glBindFragDataLocationIndexed);
+            WINEMETALGL_BIND(glGetFragDataLocation);
+            WINEMETALGL_BIND(glGetFragDataIndex);
+            WINEMETALGL_BIND(glGenProgramPipelines);
+            WINEMETALGL_BIND(glDeleteProgramPipelines);
+            WINEMETALGL_BIND(glBindProgramPipeline);
+            WINEMETALGL_BIND(glIsProgramPipeline);
+            WINEMETALGL_BIND(glUseProgramStages);
+            WINEMETALGL_BIND(glValidateProgramPipeline);
+            WINEMETALGL_BIND(glGetProgramPipelineiv);
+            WINEMETALGL_BIND(glUniform1i);
+            WINEMETALGL_BIND(glProgramUniform1f);
+            WINEMETALGL_BIND(glProgramUniform2f);
+            WINEMETALGL_BIND(glProgramUniform3f);
+            WINEMETALGL_BIND(glProgramUniform4f);
+            WINEMETALGL_BIND(glProgramUniform1i);
+            WINEMETALGL_BIND(glProgramUniform2i);
+            WINEMETALGL_BIND(glProgramUniform3i);
+            WINEMETALGL_BIND(glProgramUniform4i);
+            WINEMETALGL_BIND(glProgramUniform1ui);
+            WINEMETALGL_BIND(glProgramUniform2ui);
+            WINEMETALGL_BIND(glProgramUniform3ui);
+            WINEMETALGL_BIND(glProgramUniform4ui);
+            WINEMETALGL_BIND(glUniform1f);
+            WINEMETALGL_BIND(glUniform2f);
+            WINEMETALGL_BIND(glUniform3f);
+            WINEMETALGL_BIND(glUniform4f);
+            WINEMETALGL_BIND(glUniform1fv);
+            WINEMETALGL_BIND(glUniform2fv);
+            WINEMETALGL_BIND(glUniform3fv);
+            WINEMETALGL_BIND(glUniform4fv);
+            WINEMETALGL_BIND(glUniform1iv);
+            WINEMETALGL_BIND(glUniform2iv);
+            WINEMETALGL_BIND(glUniform3iv);
+            WINEMETALGL_BIND(glUniform4iv);
+            WINEMETALGL_BIND(glUniform1ui);
+            WINEMETALGL_BIND(glUniform2ui);
+            WINEMETALGL_BIND(glUniform3ui);
+            WINEMETALGL_BIND(glUniform4ui);
+            WINEMETALGL_BIND(glUniform1uiv);
+            WINEMETALGL_BIND(glUniform2uiv);
+            WINEMETALGL_BIND(glUniform3uiv);
+            WINEMETALGL_BIND(glUniform4uiv);
+            WINEMETALGL_BIND(glUniformMatrix2x3fv);
+            WINEMETALGL_BIND(glUniformMatrix2x4fv);
+            WINEMETALGL_BIND(glUniformMatrix3x2fv);
+            WINEMETALGL_BIND(glUniformMatrix3x4fv);
+            WINEMETALGL_BIND(glUniformMatrix4x2fv);
+            WINEMETALGL_BIND(glUniformMatrix4x3fv);
+            WINEMETALGL_BIND(glUniformMatrix4fv);
+            WINEMETALGL_BIND(glGetUniformIndices);
+            WINEMETALGL_BIND(glGetActiveUniformsiv);
+            WINEMETALGL_BIND(glGetActiveUniformName);
+            WINEMETALGL_BIND(glGetUniformBlockIndex);
+            WINEMETALGL_BIND(glUniformBlockBinding);
+            WINEMETALGL_BIND(glGetProgramResourceIndex);
+            WINEMETALGL_BIND(glGetProgramInterfaceiv);
+            WINEMETALGL_BIND(glGetProgramResourceName);
+            WINEMETALGL_BIND(glGetProgramResourceLocation);
+            WINEMETALGL_BIND(glGetProgramResourceiv);
+            WINEMETALGL_BIND(glShaderStorageBlockBinding);
+            WINEMETALGL_BIND(glGetActiveUniformBlockiv);
+            WINEMETALGL_BIND(glGetActiveUniformBlockName);
+            WINEMETALGL_BIND(glProgramUniform1fv);
+            WINEMETALGL_BIND(glProgramUniform2fv);
+            WINEMETALGL_BIND(glProgramUniform3fv);
+            WINEMETALGL_BIND(glProgramUniform4fv);
+            WINEMETALGL_BIND(glProgramUniform1iv);
+            WINEMETALGL_BIND(glProgramUniform2iv);
+            WINEMETALGL_BIND(glProgramUniform3iv);
+            WINEMETALGL_BIND(glProgramUniform4iv);
+            WINEMETALGL_BIND(glProgramUniform1uiv);
+            WINEMETALGL_BIND(glProgramUniform2uiv);
+            WINEMETALGL_BIND(glProgramUniform3uiv);
+            WINEMETALGL_BIND(glProgramUniform4uiv);
+            WINEMETALGL_BIND(glProgramUniformMatrix2fv);
+            WINEMETALGL_BIND(glProgramUniformMatrix3fv);
+            WINEMETALGL_BIND(glProgramUniformMatrix4fv);
+            WINEMETALGL_BIND(glFlush);
+            WINEMETALGL_BIND(glFinish);
+            WINEMETALGL_BIND(glGenQueries);
+            WINEMETALGL_BIND(glDeleteQueries);
+            WINEMETALGL_BIND(glIsQuery);
+            WINEMETALGL_BIND(glBeginQuery);
+            WINEMETALGL_BIND(glEndQuery);
+            WINEMETALGL_BIND(glGetQueryObjectuiv);
+            WINEMETALGL_BIND(glGetQueryObjectui64v);
+            WINEMETALGL_BIND(glGetQueryBufferObjectuiv);
+            WINEMETALGL_BIND(glGetQueryBufferObjectiv);
+            WINEMETALGL_BIND(glGetQueryBufferObjectui64v);
+            WINEMETALGL_BIND(glGetQueryBufferObjecti64v);
+            WINEMETALGL_BIND(glFenceSync);
+            WINEMETALGL_BIND(glGetSynciv);
+            WINEMETALGL_BIND(glClientWaitSync);
+            WINEMETALGL_BIND(glWaitSync);
+            WINEMETALGL_BIND(glDeleteSync);
+            WINEMETALGL_BIND(glIsSync);
+#undef WINEMETALGL_BIND
+            TRACE("loaded x86_64 WineMetalGL OpenGL sidecar%s\n",
+                  pmetalsharp_set_metal_layer ? " with CAMetalLayer bridge" : "");
+        }
+        else
+            WARN("WineMetalGL sidecar unavailable, using system OpenGL: %s\n", dlerror());
+    }
+    else TRACE("WineMetalGL sidecar disabled by WINEMETALGL=0\n");
+
     *driver_funcs = &macdrv_driver_funcs;
     return STATUS_SUCCESS;
 
 failed:
+    if (metalsharp_opengl_handle)
+    {
+        dlclose(metalsharp_opengl_handle);
+        metalsharp_opengl_handle = NULL;
+    }
     dlclose(opengl_handle);
     opengl_handle = NULL;
     return STATUS_NOT_SUPPORTED;
@@ -2662,6 +3228,9 @@ static BOOL macdrv_context_destroy(void *private)
 
     TRACE("deleting context %p/%p/%p\n", context, context->context, context->cglcontext);
 
+    if (pmetalsharp_set_current_context) pmetalsharp_set_current_context(NULL);
+    if (context->metal_view) macdrv_view_release_metal_view(context->metal_view);
+    if (context->metal_device) macdrv_release_metal_device(context->metal_device);
     macdrv_dispose_opengl_context(context->context);
     free(context);
     return TRUE;
@@ -2669,13 +3238,31 @@ static BOOL macdrv_context_destroy(void *private)
 
 static void *macdrv_get_proc_address(const char *name)
 {
+    void *proc;
+
     /* redirect some standard OpenGL functions */
     if (!strcmp(name, "glCopyPixels")) return macdrv_glCopyPixels;
     if (!strcmp(name, "glGetString")) return macdrv_glGetString;
+    if (!strcmp(name, "glReadPixels") && metalsharp_opengl_handle &&
+        getenv("WINEMETALGL_EXPERIMENTAL") &&
+        !strcmp(getenv("WINEMETALGL_EXPERIMENTAL"), "1") &&
+        (proc = dlsym(metalsharp_opengl_handle, name)))
+        return proc;
     if (!strcmp(name, "glReadPixels")) return macdrv_glReadPixels;
 
     /* redirect some OpenGL extension functions */
     if (!strcmp(name, "glCopyColorTable")) return macdrv_glCopyColorTable;
+
+    /* Dispatch sidecar-owned extension entry points when present. Native
+     * OpenGL remains the symbol-by-symbol fallback. Experimental shader and
+     * Metal draw routing is selected by WINEMETALGL_EXPERIMENTAL. */
+    if (metalsharp_opengl_handle &&
+        (strcmp(name, "glCreateShader") ||
+         (getenv("WINEMETALGL_EXPERIMENTAL") &&
+          !strcmp(getenv("WINEMETALGL_EXPERIMENTAL"), "1"))) &&
+        (proc = dlsym(metalsharp_opengl_handle, name)))
+        return proc;
+
     return dlsym(opengl_handle, name);
 }
 
@@ -2685,6 +3272,17 @@ static BOOL macdrv_surface_swap(struct opengl_drawable *base)
 
     TRACE("%s context %p/%p/%p\n", debugstr_opengl_drawable(base), context, (context ? context->context : NULL),
           (context ? context->cglcontext : NULL));
+
+    /* A Metal-owned context presents its CAMetalDrawable from the sidecar's
+     * command buffer. Do not flush or present Wine's legacy CGL surface a
+     * second time; that would make the visible surface differ from the one
+     * returned by glReadPixels. */
+    if (pmetalsharp_is_drawable_backed && getenv("WINEMETALGL_EXPERIMENTAL") &&
+        !strcmp(getenv("WINEMETALGL_EXPERIMENTAL"), "1") && pmetalsharp_is_drawable_backed())
+    {
+        TRACE("WineMetalGL CAMetalLayer present path\n");
+        return TRUE;
+    }
 
     if (context)
     {

@@ -3414,32 +3414,32 @@ static void dump_get_inproc_sync_fd_reply( const struct get_inproc_sync_fd_reply
     fprintf( stderr, ", shm_idx=%08x", req->shm_idx );
 }
 
-static void dump_get_wfusync_wait_slot_request( const struct get_wfusync_wait_slot_request *req )
+static void dump_get_msync_wait_slot_request( const struct get_msync_wait_slot_request *req )
 {
 }
 
-static void dump_get_wfusync_wait_slot_reply( const struct get_wfusync_wait_slot_reply *req )
+static void dump_get_msync_wait_slot_reply( const struct get_msync_wait_slot_reply *req )
 {
     fprintf( stderr, " shm_idx=%08x", req->shm_idx );
 }
 
-static void dump_register_wfusync_wait_request( const struct register_wfusync_wait_request *req )
+static void dump_register_msync_wait_request( const struct register_msync_wait_request *req )
 {
     fprintf( stderr, " slot_idx=%08x", req->slot_idx );
     dump_varargs_uints( ", shm_idxs=", cur_size );
 }
 
-static void dump_unregister_wfusync_wait_request( const struct unregister_wfusync_wait_request *req )
+static void dump_unregister_msync_wait_request( const struct unregister_msync_wait_request *req )
 {
     fprintf( stderr, " slot_idx=%08x", req->slot_idx );
 }
 
-static void dump_wake_wfusync_waiters_request( const struct wake_wfusync_waiters_request *req )
+static void dump_wake_msync_waiters_request( const struct wake_msync_waiters_request *req )
 {
     fprintf( stderr, " shm_idx=%08x", req->shm_idx );
 }
 
-static void dump_try_wait_all_wfusync_request( const struct try_wait_all_wfusync_request *req )
+static void dump_try_wait_all_msync_request( const struct try_wait_all_msync_request *req )
 {
     fprintf( stderr, " tid=%04x", req->tid );
     fprintf( stderr, ", slot_idx=%08x", req->slot_idx );
@@ -3871,11 +3871,11 @@ static const dump_func req_dumpers[REQ_NB_REQUESTS] =
     (dump_func)dump_get_next_thread_request,
     (dump_func)dump_set_keyboard_repeat_request,
     (dump_func)dump_get_inproc_sync_fd_request,
-    (dump_func)dump_get_wfusync_wait_slot_request,
-    (dump_func)dump_register_wfusync_wait_request,
-    (dump_func)dump_unregister_wfusync_wait_request,
-    (dump_func)dump_wake_wfusync_waiters_request,
-    (dump_func)dump_try_wait_all_wfusync_request,
+    (dump_func)dump_get_msync_wait_slot_request,
+    (dump_func)dump_register_msync_wait_request,
+    (dump_func)dump_unregister_msync_wait_request,
+    (dump_func)dump_wake_msync_waiters_request,
+    (dump_func)dump_try_wait_all_msync_request,
     (dump_func)dump_get_inproc_alert_fd_request,
     (dump_func)dump_d3dkmt_object_create_request,
     (dump_func)dump_d3dkmt_object_update_request,
@@ -4188,7 +4188,7 @@ static const dump_func reply_dumpers[REQ_NB_REQUESTS] =
     (dump_func)dump_get_next_thread_reply,
     (dump_func)dump_set_keyboard_repeat_reply,
     (dump_func)dump_get_inproc_sync_fd_reply,
-    (dump_func)dump_get_wfusync_wait_slot_reply,
+    (dump_func)dump_get_msync_wait_slot_reply,
     NULL,
     NULL,
     NULL,
@@ -4505,11 +4505,11 @@ static const char * const req_names[REQ_NB_REQUESTS] =
     "get_next_thread",
     "set_keyboard_repeat",
     "get_inproc_sync_fd",
-    "get_wfusync_wait_slot",
-    "register_wfusync_wait",
-    "unregister_wfusync_wait",
-    "wake_wfusync_waiters",
-    "try_wait_all_wfusync",
+    "get_msync_wait_slot",
+    "register_msync_wait",
+    "unregister_msync_wait",
+    "wake_msync_waiters",
+    "try_wait_all_msync",
     "get_inproc_alert_fd",
     "d3dkmt_object_create",
     "d3dkmt_object_update",

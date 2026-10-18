@@ -258,6 +258,7 @@ extern size_t server_init_process(void);
 extern void server_init_process_done(void);
 extern void server_init_thread( struct thread_data *data );
 extern int server_pipe( int fd[2] );
+extern int ntdll_pipe_cloexec( int fd[2] );
 
 extern void fpux_to_fpu( I386_FLOATING_SAVE_AREA *fpu, const XSAVE_FORMAT *fpux );
 extern void fpu_to_fpux( XSAVE_FORMAT *fpux, const I386_FLOATING_SAVE_AREA *fpu );

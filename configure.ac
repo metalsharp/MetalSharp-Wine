@@ -3810,8 +3810,8 @@ dnl Rules for generated source files
 WINE_APPEND_RULE(
 [dlls/ntdll/unix/version.c: dummy
 	@base=\`GIT_DIR=${wine_srcdir}.git git describe HEAD 2>/dev/null || echo \"wine-\$(PACKAGE_VERSION)\"\`; \
-	wineforge=\`sed -n -e '1{s/^WineForge version[[:space:]]*//;s/^[[:space:]]*//;s/[[:space:]]*\$\$//;p;q;}' ${wine_srcdir}WINEFORGE_VERSION 2>/dev/null\`; \
-	test -z "\$\$wineforge" || base="\$\$base (WineForge \$\$wineforge)"; \
+	metalsharp=\`sed -n -e '1{s/^MetalSharp version[[:space:]]*//;s/^[[:space:]]*//;s/[[:space:]]*\$\$//;p;q;}' ${wine_srcdir}METALSHARP_VERSION 2>/dev/null\`; \
+	test -z "\$\$metalsharp" || base="\$\$base (MetalSharp \$\$metalsharp)"; \
 	version=\`printf '%s\n' "\$\$base" | sed -n -e '\$\$s/\(.*\)/const char wine_build[[]] = \"\\1\";/p'\` && (echo \$\$version | cmp -s - \$[@]) || echo \$\$version >\$[@] || (rm -f \$[@] && exit 1)
 programs/winetest/build.rc: dummy
 	@build=\"STRINGTABLE { 1 \\\"\`GIT_DIR=${wine_srcdir}.git git rev-parse HEAD 2>/dev/null\`\\\" }\" && (echo \$\$build | cmp -s - \$[@]) || echo \$\$build >\$[@] || (rm -f \$[@] && exit 1)

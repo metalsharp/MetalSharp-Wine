@@ -69,6 +69,9 @@
 # include <mach/mach.h>
 # include <mach/mach_error.h>
 # include <mach-o/getsect.h>
+# include <servers/bootstrap.h>
+# include <libkern/OSCacheControl.h>
+# include "coop_proto.h"
 # include <crt_externs.h>
 # ifndef _POSIX_SPAWN_DISABLE_ASLR
 #  define _POSIX_SPAWN_DISABLE_ASLR 0x0100
@@ -449,8 +452,58 @@ char *get_alternate_wineloader( WORD machine )
 }
 
 
-static void preloader_exec( char **argv )
+#ifdef __APPLE__
+static BOOL x87sidecar_is_regular_file( const char *path )
 {
+    char resolved[PATH_MAX];
+    struct stat path_stat, fd_stat;
+    int fd;
+
+    if (!realpath( path, resolved ) || strcmp( path, resolved )) return FALSE;
+    if (lstat( path, &path_stat ) || !S_ISREG( path_stat.st_mode ) ||
+        (path_stat.st_mode & (S_IWGRP | S_IWOTH)) || access( path, X_OK )) return FALSE;
+    if ((fd = open( path, O_RDONLY | O_CLOEXEC )) == -1) return FALSE;
+    if (fstat( fd, &fd_stat ) || path_stat.st_dev != fd_stat.st_dev || path_stat.st_ino != fd_stat.st_ino)
+    {
+        close( fd );
+        return FALSE;
+    }
+    close( fd );
+    return TRUE;
+}
+#endif
+
+static void preloader_exec( char **argv, WORD machine, BOOL use_x87sidecar )
+{
+#ifdef __APPLE__
+    const char *rosetta_path;
+
+    /* If requested, hand 32-bit Windows images to x87sidecar's cooperative
+     * mode before any optional Wine preloader exec. The sidecar is optional:
+     * if the path is unset or exec fails, Wine continues normally. */
+    if (use_x87sidecar && machine == IMAGE_FILE_MACHINE_I386 && (rosetta_path = getenv( "ROSETTA_X87_PATH" )) &&
+        x87sidecar_is_regular_file( rosetta_path ))
+    {
+        static char coop_flag[] = "--cooperative";
+        char **coop_argv;
+        int i, n;
+
+        for (n = 1; argv[n]; n++) {}
+        coop_argv = malloc( (n + 2) * sizeof(*coop_argv) );
+        if (coop_argv && (coop_argv[0] = strdup( rosetta_path )))
+        {
+            coop_argv[1] = coop_flag;
+            for (i = 1; i <= n; i++) coop_argv[i + 1] = argv[i];
+            ERR( "ROSETTA_X87_PATH: attaching x87sidecar --cooperative (%s)\n", rosetta_path );
+            execv( coop_argv[0], coop_argv );
+            free( coop_argv[0] );
+            free( coop_argv );
+        }
+        else
+            free( coop_argv );
+    }
+#endif
+
 #ifdef HAVE_WINE_PRELOADER
     asprintf( &argv[0], "%s-preloader", argv[1] );
 #ifdef __APPLE__
@@ -465,20 +518,21 @@ static void preloader_exec( char **argv )
     execv( argv[0], argv );
     free( argv[0] );
 #endif
+
     execv( argv[1], argv + 1 );
 }
 
 /* exec the appropriate wine loader for the specified machine */
-static NTSTATUS loader_exec( char **argv, WORD machine )
+static NTSTATUS loader_exec( char **argv, WORD machine, BOOL use_x87sidecar )
 {
     static char noexec[] = "WINELOADERNOEXEC=1";
 
     putenv( noexec );
 
-    if (((argv[1] = get_alternate_wineloader( machine )))) preloader_exec( argv );
+    if (((argv[1] = get_alternate_wineloader( machine )))) preloader_exec( argv, machine, use_x87sidecar );
 
     argv[1] = strdup( wineloader );
-    preloader_exec( argv );
+    preloader_exec( argv, machine, use_x87sidecar );
     return STATUS_INVALID_IMAGE_FORMAT;
 }
 
@@ -508,7 +562,7 @@ NTSTATUS exec_wineloader( char **argv, int socketfd, const struct pe_image_info 
     putenv( preloader_reserve );
     putenv( socket_env );
 
-    return loader_exec( argv, machine );
+    return loader_exec( argv, machine, TRUE );
 }
 
 
@@ -2352,7 +2406,7 @@ static void reexec_loader( int argc, char *argv[], char *extra_arg )
     /* default to 32-bit loader to support 32-bit prefixes */
     if (machine == IMAGE_FILE_MACHINE_AMD64) machine = IMAGE_FILE_MACHINE_I386;
 
-    loader_exec( new_argv, machine );
+    loader_exec( new_argv, machine, FALSE );
     fatal_error( "could not exec the wine loader\n" );
 }
 
@@ -2414,6 +2468,94 @@ static void check_command_line( int argc, char *argv[] )
 }
 
 
+#ifdef __APPLE__
+/***********************************************************************
+ *           x87_cooperative_handshake
+ *
+ * Tracee side of the cooperative x87sidecar attach. The sidecar publishes a
+ * Mach receive port in the bootstrap namespace, the tracee hands over its task
+ * and thread ports, and then waits until the sidecar has installed its hooks
+ * or a bounded receive timeout allows Wine to continue without acceleration.
+ */
+static void x87_cooperative_handshake(void)
+{
+    char *name = getenv( X87_COOP_ENV );
+    int verbose = getenv( "X87_LOGS" ) != NULL;
+    mach_port_t bootstrap_port = MACH_PORT_NULL;
+    mach_port_t service = MACH_PORT_NULL;
+    mach_port_t reply = MACH_PORT_NULL;
+    x87_coop_request_t msg;
+    struct {
+        x87_coop_reply_t reply;
+        mach_msg_trailer_t trailer;
+        char slack[64];
+    } rep;
+    kern_return_t kr;
+    char expected[64];
+    const char *sidecar_path;
+    int i;
+
+    if (!name || !*name) return;
+
+    /* Do not let inherited state cause an unrelated child to hand over its
+     * task port. The sidecar publishes the exact x87sidecar.<pid> name. */
+    if (snprintf( expected, sizeof(expected), "x87sidecar.%d", (int)getpid() ) < 0 ||
+        strcmp( name, expected )) return;
+    if (!(sidecar_path = getenv( "ROSETTA_X87_PATH" )) || !x87sidecar_is_regular_file( sidecar_path )) return;
+
+    if (task_get_bootstrap_port( mach_task_self(), &bootstrap_port ) != KERN_SUCCESS) return;
+    kr = bootstrap_look_up( bootstrap_port, name, &service );
+    if (kr != KERN_SUCCESS)
+    {
+        ERR( "x87 coop: bootstrap_look_up(%s) failed 0x%x\n", name, kr );
+        return;
+    }
+
+    mach_port_allocate( mach_task_self(), MACH_PORT_RIGHT_RECEIVE, &reply );
+
+    memset( &msg, 0, sizeof(msg) );
+    msg.header.msgh_bits = MACH_MSGH_BITS( MACH_MSG_TYPE_COPY_SEND, MACH_MSG_TYPE_MAKE_SEND_ONCE ) |
+                           MACH_MSGH_BITS_COMPLEX;
+    msg.header.msgh_size = sizeof(msg);
+    msg.header.msgh_remote_port = service;
+    msg.header.msgh_local_port = reply;
+    msg.header.msgh_id = X87_COOP_MSGH_ID;
+    msg.body.msgh_descriptor_count = 2;
+    msg.task_port.name = mach_task_self();
+    msg.task_port.disposition = MACH_MSG_TYPE_COPY_SEND;
+    msg.task_port.type = MACH_MSG_PORT_DESCRIPTOR;
+    msg.thread_port.name = mach_thread_self();
+    msg.thread_port.disposition = MACH_MSG_TYPE_COPY_SEND;
+    msg.thread_port.type = MACH_MSG_PORT_DESCRIPTOR;
+
+    kr = mach_msg( &msg.header, MACH_SEND_MSG, sizeof(msg), 0, MACH_PORT_NULL,
+                   MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL );
+    if (kr != KERN_SUCCESS)
+    {
+        ERR( "x87 coop: handshake send failed 0x%x\n", kr );
+        mach_port_mod_refs( mach_task_self(), reply, MACH_PORT_RIGHT_RECEIVE, -1 );
+        return;
+    }
+    if (verbose) ERR( "x87 coop: handed over task+thread ports; blocking for reply\n" );
+
+    memset( &rep, 0, sizeof(rep) );
+    kr = mach_msg( &rep.reply.header, MACH_RCV_MSG | MACH_RCV_TIMEOUT, 0, sizeof(rep), reply, 10000,
+                   MACH_PORT_NULL );
+    if (verbose) ERR( "x87 coop: handshake reply kr=0x%x; continuing\n", kr );
+
+    if (kr == KERN_SUCCESS)
+    {
+        for (i = 0; i < 2; i++)
+            if (rep.reply.icache_len[i] != 0)
+                sys_icache_invalidate( (void *)(uintptr_t)rep.reply.icache_addr[i],
+                                       (size_t)rep.reply.icache_len[i] );
+    }
+
+    mach_port_mod_refs( mach_task_self(), reply, MACH_PORT_RIGHT_RECEIVE, -1 );
+    unsetenv( X87_COOP_ENV );
+}
+#endif
+
 /***********************************************************************
  *           __wine_main
  *
@@ -2423,6 +2565,10 @@ DECLSPEC_EXPORT void __wine_main( int argc, char *argv[] )
 {
     main_argc = argc;
     main_argv = argv;
+
+#ifdef __APPLE__
+    x87_cooperative_handshake();
+#endif
 
     init_paths();
     if (!getenv( "WINELOADERNOEXEC" ) || argc <= 1) check_command_line( argc, argv );

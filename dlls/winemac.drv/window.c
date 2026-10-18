@@ -45,7 +45,7 @@ static CFMutableDictionaryRef win_datas;
 
 static unsigned int activate_on_focus_time;
 
-/* WineForge-Internal: launcher-compat/ea-app-focus-return-redraw-v1. */
+/* MetalSharp-Internal: launcher-compat/ea-app-focus-return-redraw-v1. */
 static LONG ea_app_redraw_pending;
 
 static BOOL is_ea_desktop_process(void)
@@ -1137,9 +1137,9 @@ static BOOL epic_get_browser_rect(HWND root, const struct macdrv_win_data *data,
 static void epic_update_unreal_client_view_frame(HWND hwnd, struct macdrv_win_data *data);
 
 /*
- * WineForge launcher-compat: Epic Unreal/CEF Metal view mask.
- * WineForge-Internal: launcher-compat/epic-launcher-v1.
- * WineForge-Feature: launcher-compat/epic-unreal-cef-metal-mask-v1.
+ * MetalSharp launcher-compat: Epic Unreal/CEF Metal view mask.
+ * MetalSharp-Internal: launcher-compat/epic-launcher-v1.
+ * MetalSharp-Feature: launcher-compat/epic-unreal-cef-metal-mask-v1.
  */
 static void macdrv_client_surface_update(struct client_surface *client)
 {
@@ -1421,7 +1421,7 @@ void macdrv_DestroyWindow(HWND hwnd)
 
     destroy_cocoa_window(data);
 
-    /* CW HACK 22435 */
+    /* MS HACK 22435 */
     if (data->d3dmetal_client_surfaces) CFRelease(data->d3dmetal_client_surfaces);
 
     CFDictionaryRemoveValue(win_datas, hwnd);
@@ -1968,7 +1968,7 @@ void macdrv_window_got_focus(HWND hwnd, const macdrv_event *event)
             NtUserGetAncestor(hwnd, GA_ROOT) == hwnd && is_ea_desktop_process() &&
             InterlockedExchange(&ea_app_redraw_pending, FALSE))
         {
-            /* WineForge-Internal: launcher-compat/ea-app-focus-return-redraw-v1. */
+            /* MetalSharp-Internal: launcher-compat/ea-app-focus-return-redraw-v1. */
             NtUserRedrawWindow(hwnd, NULL, 0,
                                RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN);
             NtUserPostMessage(hwnd, WM_PAINT, 0, 0);
@@ -1993,7 +1993,7 @@ void macdrv_window_lost_focus(HWND hwnd, const macdrv_event *event)
 
     TRACE("win %p/%p fg %p\n", hwnd, event->window, NtUserGetForegroundWindow());
 
-    /* WineForge-Internal: launcher-compat/ea-app-focus-return-redraw-v1. */
+    /* MetalSharp-Internal: launcher-compat/ea-app-focus-return-redraw-v1. */
     if (NtUserGetAncestor(hwnd, GA_ROOT) == hwnd && is_ea_desktop_process())
         InterlockedExchange(&ea_app_redraw_pending, TRUE);
 

@@ -34,7 +34,7 @@
 #include "thread.h"
 #include "request.h"
 #include "security.h"
-#include "wfusync.h"
+#include "msync.h"
 
 static const WCHAR event_name[] = {'E','v','e','n','t'};
 
@@ -55,7 +55,7 @@ struct event_sync
     struct object  obj;             /* object header */
     unsigned int   manual : 1;      /* is it a manual reset event? */
     unsigned int   signaled : 1;    /* event has been signaled */
-    struct wfusync *wfusync;        /* optional shared fast-path state */
+    struct msync *msync;        /* optional shared fast-path state */
 };
 
 static void event_sync_dump( struct object *obj, int verbose );
@@ -86,10 +86,10 @@ static struct object *create_event_sync( int manual, int signaled, int inproc )
     if (!(event = alloc_object( &event_sync_ops ))) return NULL;
     event->manual   = manual;
     event->signaled = signaled;
-    event->wfusync  = NULL;
+    event->msync  = NULL;
 
-    if (inproc && do_wfusync() &&
-        !(event->wfusync = create_wfusync( signaled, manual, INPROC_SYNC_EVENT )))
+    if (inproc && do_msync() &&
+        !(event->msync = create_msync( signaled, manual, INPROC_SYNC_EVENT )))
         clear_error();
 
     return &event->obj;
@@ -102,7 +102,7 @@ struct event_sync *create_server_internal_sync( int manual, int signaled )
     if (!(event = alloc_object( &event_sync_ops ))) return NULL;
     event->manual   = manual;
     event->signaled = signaled;
-    event->wfusync  = NULL;
+    event->msync  = NULL;
 
     return event;
 }
@@ -124,7 +124,7 @@ static int event_sync_signaled( struct object *obj, struct wait_queue_entry *ent
 {
     struct event_sync *event = (struct event_sync *)obj;
     assert( obj->ops == &event_sync_ops );
-    if (event->wfusync) return wfusync_event_signaled( event->wfusync );
+    if (event->msync) return msync_event_signaled( event->msync );
     return event->signaled;
 }
 
@@ -133,7 +133,7 @@ static int event_sync_add_queue( struct object *obj, struct wait_queue_entry *en
     struct event_sync *event = (struct event_sync *)obj;
 
     assert( obj->ops == &event_sync_ops );
-    if (event->wfusync) wfusync_add_server_waiter( event->wfusync );
+    if (event->msync) msync_add_server_waiter( event->msync );
     return add_queue( obj, entry );
 }
 
@@ -142,7 +142,7 @@ static void event_sync_remove_queue( struct object *obj, struct wait_queue_entry
     struct event_sync *event = (struct event_sync *)obj;
 
     assert( obj->ops == &event_sync_ops );
-    if (event->wfusync) wfusync_remove_server_waiter( event->wfusync );
+    if (event->msync) msync_remove_server_waiter( event->msync );
     remove_queue( obj, entry );
 }
 
@@ -151,7 +151,7 @@ static void event_sync_satisfied( struct object *obj, struct wait_queue_entry *e
     struct event_sync *event = (struct event_sync *)obj;
     assert( obj->ops == &event_sync_ops );
     /* Reset if it's an auto-reset event */
-    if (event->wfusync) wfusync_event_satisfied( event->wfusync );
+    if (event->msync) msync_event_satisfied( event->msync );
     if (!event->manual) event->signaled = 0;
 }
 
@@ -162,10 +162,10 @@ static int event_sync_signal( struct object *obj, unsigned int access, int signa
 
     /* wake up all waiters if manual reset, a single one otherwise */
     event->signaled = !!signal;
-    if (event->wfusync)
+    if (event->msync)
     {
-        if (signal) wfusync_set_event( event->wfusync );
-        else wfusync_reset_event( event->wfusync );
+        if (signal) msync_set_event( event->msync );
+        else msync_reset_event( event->msync );
         wake_up( &event->obj, !event->manual );
         return 1;
     }
@@ -177,7 +177,7 @@ static void event_sync_destroy( struct object *obj )
 {
     struct event_sync *event = (struct event_sync *)obj;
     assert( obj->ops == &event_sync_ops );
-    if (event->wfusync) wfusync_destroy( event->wfusync );
+    if (event->msync) msync_destroy( event->msync );
 }
 
 struct event
@@ -329,19 +329,19 @@ static void event_destroy( struct object *obj )
     if (event->sync) release_object( event->sync );
 }
 
-int get_event_wfusync_idx( struct object *obj, int *type )
+int get_event_msync_idx( struct object *obj, int *type )
 {
     struct event_sync *sync;
     struct event *event;
 
-    if (!do_wfusync() || !obj || obj->ops != &event_ops) return -1;
+    if (!do_msync() || !obj || obj->ops != &event_ops) return -1;
     event = (struct event *)obj;
     if (!event->sync || event->sync->ops != &event_sync_ops) return -1;
     sync = (struct event_sync *)event->sync;
-    if (!sync->wfusync) return -1;
-    wfusync_grab_object( sync->wfusync );
+    if (!sync->msync) return -1;
+    msync_grab_object( sync->msync );
     *type = INPROC_SYNC_EVENT;
-    return wfusync_get_index( sync->wfusync );
+    return msync_get_index( sync->msync );
 }
 
 struct keyed_event *create_keyed_event( struct object *root, struct unicode_str name,
@@ -422,7 +422,7 @@ DECL_HANDLER(event_op)
     if (event->sync->ops == &event_sync_ops)
     {
         sync = (struct event_sync *)event->sync;
-        if (!sync->wfusync || !wfusync_get_event_state( sync->wfusync, NULL, &signaled ))
+        if (!sync->msync || !msync_get_event_state( sync->msync, NULL, &signaled ))
             signaled = sync->signaled;
     }
     else if (!get_inproc_event_state( event->sync, NULL, &signaled ))
@@ -474,7 +474,7 @@ DECL_HANDLER(query_event)
     if (event->sync->ops == &event_sync_ops)
     {
         sync = (struct event_sync *)event->sync;
-        if (!sync->wfusync || !wfusync_get_event_state( sync->wfusync, &manual, &signaled ))
+        if (!sync->msync || !msync_get_event_state( sync->msync, &manual, &signaled ))
         {
             manual = sync->manual;
             signaled = sync->signaled;

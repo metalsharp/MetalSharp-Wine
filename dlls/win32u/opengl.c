@@ -275,9 +275,9 @@ static void parse_current_extensions( BOOLEAN extensions[GL_EXTENSION_COUNT] )
     }
     else
     {
-        enum opengl_extension extensions[GL_EXTENSION_COUNT];
-        size_t extension_count = parse_extensions( (const char *)funcs->p_glGetString( GL_EXTENSIONS ), extensions );
-        for (size_t i = 0; i < extension_count; i++) extensions[i] = TRUE;
+        enum opengl_extension parsed_extensions[GL_EXTENSION_COUNT];
+        size_t extension_count = parse_extensions( (const char *)funcs->p_glGetString( GL_EXTENSIONS ), parsed_extensions );
+        for (size_t i = 0; i < extension_count; i++) extensions[parsed_extensions[i]] = TRUE;
     }
 }
 
@@ -2847,7 +2847,10 @@ static int get_window_swap_interval( HWND hwnd )
 
 static struct opengl_context *win32u_context_create( HDC hdc, const int *attribs, BOOL *broken_sharing )
 {
-    struct opengl_context *context, *share = global_context ? global_context->driver_private : NULL;
+    /* Client contexts must not inherit the internal core-profile context. The
+     * compatibility/core mismatch marks every ordinary context as broken for
+     * wglShareLists before applications can request sharing themselves. */
+    struct opengl_context *context, *share = NULL;
     BOOL shared = TRUE, doublebuffer;
     int format;
 
