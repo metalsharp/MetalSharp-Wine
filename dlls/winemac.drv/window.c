@@ -21,6 +21,8 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
+/* WineForge-Internal: fullscreen/native-window-v1. */
+
 #if 0
 #pragma makedep unix
 #endif
@@ -1696,6 +1698,9 @@ void macdrv_WindowPosChanged(HWND hwnd, HWND insert_after, HWND owner_hint, UINT
         sync_window_position(data, swp_flags, &old_rects);
         if (data->cocoa_window)
             set_cocoa_window_properties(data);
+        /* Native frame feedback must not overwrite Win32 fullscreen intent. */
+        macdrv_set_window_native_fullscreen(data->cocoa_window,
+                fullscreen && !(new_style & (WS_CAPTION | WS_CHILD)));
     }
 
     if (new_style & WS_VISIBLE)
@@ -1815,6 +1820,11 @@ void macdrv_window_frame_changed(HWND hwnd, const macdrv_event *event)
         if (send_sizemove)
             send_message(hwnd, WM_EXITSIZEMOVE, 0, 0);
     }
+
+    /* Reapply win32u's foreground fullscreen clipping policy after native entry. */
+    if (macdrv_cocoa_fullscreen_available() && event->window_frame_changed.fullscreen &&
+        hwnd == NtUserGetForegroundWindow())
+        NtUserPostMessage(hwnd, WM_WINE_CLIPCURSOR, SET_CURSOR_FSCLIP, 0);
 }
 
 
