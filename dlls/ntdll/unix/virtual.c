@@ -1697,7 +1697,9 @@ static BOOL set_vprot( struct file_view *view, void *base, size_t size, BYTE vpr
     }
     else
     {
-        if (enable_write_exceptions && is_vprot_exec_write( vprot )) vprot |= VPROT_WRITEWATCH;
+        /* ARM64EC code views belong to the x64 emulator's JIT, not to the application */
+        if (enable_write_exceptions && is_vprot_exec_write( vprot ) && !(view->protect & VPROT_ARM64EC))
+            vprot |= VPROT_WRITEWATCH;
         else if (use_kernel_writewatch && view->protect & VPROT_WRITEWATCH) vprot &= ~VPROT_WRITEWATCH;
         set_page_vprot( base, size, vprot );
     }
@@ -4883,7 +4885,7 @@ void virtual_enable_write_exceptions( BOOL enable )
     if (!enable_write_exceptions && enable)  /* change all existing views */
     {
         WINE_RB_FOR_EACH_ENTRY( view, &views_tree, struct file_view, entry )
-            if (set_page_vprot_exec_write_protect( view->base, view->size ))
+            if (!(view->protect & VPROT_ARM64EC) && set_page_vprot_exec_write_protect( view->base, view->size ))
                 mprotect_range( view->base, view->size, 0, 0 );
     }
     enable_write_exceptions = enable;
