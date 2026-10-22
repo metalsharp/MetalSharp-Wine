@@ -11,6 +11,7 @@
 #else
 #define NTDDI_VERSION 0x0A000005
 #include <memoryapi.h>
+#include <processthreadsapi.h>
 #endif
 
 #include <new>
@@ -64,6 +65,13 @@ inline void* VirtualAlloc(void* Base, size_t Size, bool Execute = false, bool Co
 
 inline void* VirtualAlloc(size_t Size, bool Execute = false, bool Commit = true) {
   return VirtualAlloc(nullptr, Size, Execute, Commit);
+}
+
+// Tell the OS that code was written to an executable allocation. Required semantics on Windows are
+// only the icache flush (already done by ClearICache), but Wine on hosts that enforce W^X (macOS)
+// uses it to make the pages executable again without taking an execute fault.
+inline void FlushCodeWrites(const void* Ptr, size_t Size) {
+  ::FlushInstructionCache(GetCurrentProcess(), Ptr, Size);
 }
 
 inline void VirtualFree(void* Ptr, size_t Size) {
@@ -120,6 +128,8 @@ inline void* VirtualAlloc(size_t Size, bool Execute = false, bool Commit = true)
 inline void* VirtualAlloc(void* Base, size_t Size, bool Execute = false, bool Commit = true) {
   return FEXCore::Allocator::mmap(Base, Size, PROT_READ | PROT_WRITE | (Execute ? PROT_EXEC : 0), MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 }
+
+inline void FlushCodeWrites(const void*, size_t) {}
 
 inline void VirtualFree(void* Ptr, size_t Size) {
   FEXCore::Allocator::munmap(Ptr, Size);

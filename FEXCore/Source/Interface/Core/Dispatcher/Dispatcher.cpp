@@ -666,6 +666,7 @@ void Dispatcher::EmitDispatcher() {
   Start = reinterpret_cast<uint64_t>(DispatchPtr);
   End = GetCursorAddress<uint64_t>();
   ClearICache(reinterpret_cast<void*>(DispatchPtr), End - reinterpret_cast<uint64_t>(DispatchPtr));
+  FEXCore::Allocator::FlushCodeWrites(reinterpret_cast<void*>(DispatchPtr), End - reinterpret_cast<uint64_t>(DispatchPtr));
 
   if (CTX->Config.BlockJITNaming()) {
     fextl::string Name = fextl::fmt::format("Dispatch_{}", FHU::Syscalls::gettid());
