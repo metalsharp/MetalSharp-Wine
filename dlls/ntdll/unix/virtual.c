@@ -6709,6 +6709,24 @@ NTSTATUS WINAPI NtFlushInstructionCache( HANDLE handle, const void *addr, SIZE_T
     if (handle == GetCurrentProcess())
     {
         __clear_cache( (char *)addr, (char *)addr + size );
+#if defined(__APPLE__) && defined(__aarch64__)
+        /* JITs flush after writing code: make W+X pages executable again now rather than
+         * on the next execute fault (see mprotect_exec) */
+        if (size && size <= 16 * 1024 * 1024)
+        {
+            char *page = ROUND_ADDR( addr, host_page_mask ), *end = (char *)addr + size;
+            sigset_t sigset;
+
+            server_enter_uninterrupted_section( &virtual_mutex, &sigset );
+            for (; page < end; page += host_page_size)
+            {
+                BYTE vprot = get_host_page_vprot( page );
+                if (is_vprot_exec_write( vprot ) && (get_unix_prot( vprot ) & PROT_EXEC))
+                    mprotect( page, host_page_size, PROT_READ | PROT_EXEC );
+            }
+            server_leave_uninterrupted_section( &virtual_mutex, &sigset );
+        }
+#endif
     }
     else
     {
