@@ -1,6 +1,6 @@
 <div align="center">
 
-# VKMT Wine
+# MetalSharp Wine
 
 **Cross-architecture ARM64 Wine with FEX for Apple Silicon macOS.**
 
