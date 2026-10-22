@@ -3696,6 +3696,13 @@ struct thread_data *virtual_alloc_first_thread_data(void)
     struct thread_data *thread_data;
     struct file_view *view;
 
+#if defined(__APPLE__) && defined(__aarch64__)
+    /* the low 4G is only mappable for entitled processes, probe without MAP_FIXED */
+    void *probe = mmap( user_shared_data, host_page_size, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0 );
+    if (probe != MAP_FAILED) munmap( probe, host_page_size );
+    if (probe != (void *)user_shared_data) status = STATUS_NO_MEMORY;
+    else
+#endif
     /* reserve space for shared user data */
     status = map_view( &view, user_shared_data, page_size, 0, VPROT_READ | VPROT_COMMITTED, 0, 0, 0 );
 #if defined(__APPLE__) && defined(__aarch64__)
