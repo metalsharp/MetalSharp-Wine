@@ -13,6 +13,19 @@
  * them too. The sidecar is x87sidecar next to winemetalgl.so, or
  * WINEMETALGL_X87_SIDECAR. */
 
+#ifdef __aarch64__
+
+/* An arm64 Wine runs x86 code through FEX, not Rosetta: there is nothing to hook. FEX's
+ * equivalent of x87sidecar is its reduced-precision x87 mode, chosen when the process starts
+ * (FEX_X87REDUCEDPRECISION=1, or ROSETTA_X87_PATH, which MetalSharp's Wine maps to it). */
+#include "wmgl_unix.h"
+
+void wmgl_x87_attach(void)
+{
+}
+
+#else /* __aarch64__ */
+
 #include <dlfcn.h>
 #include <libgen.h>
 #include <libkern/OSCacheControl.h>
@@ -220,3 +233,5 @@ void wmgl_x87_attach(void)
 {
     pthread_once( &x87_once, attach );
 }
+
+#endif /* __aarch64__ */

@@ -195,7 +195,7 @@ static BOOL init_unix_calls( HINSTANCE instance )
     return TRUE;
 }
 
-#ifdef _WIN64
+#ifdef __x86_64__  /* x64 CONTEXT: x86_64 and ARM64EC; not the native ARM64 half of ARM64X */
 /* The application's exceptions that end programs are logged with a backtrace
  * as they are raised, before its own handlers, which often catch them and
  * exit without a word (id Tech 5's "CrashHandler: Aborting"). Invalid handles,
@@ -332,7 +332,7 @@ static BOOL init_pixel_formats(void)
     memcpy( upscale_setting, init.upscale, sizeof(upscale_setting) );
     upscale_setting[sizeof(upscale_setting) - 1] = 0;
     WMGL_INFO( "winemetalgl.dll (%d-bit) in %s\n", (int)sizeof(void *) * 8, program );
-#ifdef _WIN64
+#ifdef __x86_64__
     log_all_exceptions = getenv( "WINEMETALGL_EXCEPTIONS" ) && !strcmp( getenv( "WINEMETALGL_EXCEPTIONS" ), "1" );
     AddVectoredExceptionHandler( 1, log_exception );
 #endif
