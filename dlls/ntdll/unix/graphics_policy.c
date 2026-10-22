@@ -116,8 +116,11 @@ void init_process_graphics_backend( const WCHAR *image_path )
     if (name_len < 0) name_len = 0;
     image_nameA[name_len] = 0;
 
+    /* Mullion (DXMT) is the default when its runtime is present: Wine's own D3D10+ path has no
+     * usable OpenGL on macOS. GRAPHICS_BACKEND=wine opts out. */
     if (!parse_graphics_backend( backend, &configured_backend ))
-        configured_backend = PROCESS_GRAPHICS_BACKEND_WINE;
+        configured_backend = dxmt_runtime_available() ? PROCESS_GRAPHICS_BACKEND_DXMT
+                                                      : PROCESS_GRAPHICS_BACKEND_WINE;
     process_graphics_backend = configured_backend;
     get_launcher_policy( image_pathA, &launcher );
 
@@ -160,7 +163,8 @@ BOOL dxmt_graphics_backend_enabled(void)
     if (process_graphics_backend != PROCESS_GRAPHICS_BACKEND_UNINITIALIZED)
         return process_graphics_backend == PROCESS_GRAPHICS_BACKEND_DXMT;
     if (!backend || !backend[0]) backend = getenv( "ACTIVE_GRAPHICS_BACKEND" );
-    return backend && !strcmp( backend, "dxmt" );
+    if (!backend || !backend[0]) return dxmt_runtime_available();
+    return !strcmp( backend, "dxmt" );
 }
 
 /* WineForge-Internal: graphics/process-backend-policy-v1. */
