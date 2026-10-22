@@ -130,6 +130,7 @@ struct file_view
 #define VPROT_GUARD      0x10
 #define VPROT_COMMITTED  0x20
 #define VPROT_WRITEWATCH 0x40
+#define VPROT_NOEXEC_HOST 0x80  /* executable for Windows, but only run by an emulator: no host PROT_EXEC */
 /* per-mapping protection flags */
 #define VPROT_ARM64EC          0x0100  /* view may contain ARM64EC code */
 #define VPROT_SYSTEM           0x0200  /* system view (underlying mmap not under our control) */
@@ -1088,6 +1089,7 @@ static int get_unix_prot( BYTE vprot )
         if (vprot & VPROT_WRITECOPY) prot |= PROT_WRITE | PROT_READ;
         if (vprot & VPROT_EXEC) prot |= PROT_EXEC | PROT_READ;
         if (vprot & VPROT_WRITEWATCH) prot &= ~PROT_WRITE;
+        if (vprot & VPROT_NOEXEC_HOST) prot &= ~PROT_EXEC;
     }
     if (!prot) prot = PROT_NONE;
     return prot;
@@ -1650,6 +1652,7 @@ static int mprotect_range( void *base, size_t size, BYTE set, BYTE clear )
  */
 static BOOL set_vprot( struct file_view *view, void *base, size_t size, BYTE vprot )
 {
+    vprot |= view->protect & VPROT_NOEXEC_HOST;
     if (!use_kernel_writewatch && view->protect & VPROT_WRITEWATCH)
     {
         /* each page may need different protections depending on write watch flag */
@@ -2668,6 +2671,14 @@ static NTSTATUS map_image_into_view( struct file_view *view, const UNICODE_STRIN
     INT_PTR delta;
 
     TRACE_(module)( "mapping PE file %s at %p-%p\n", debugstr_us(nt_name), ptr, ptr + total_size );
+
+#ifdef __aarch64__
+    /* x86 code is only ever run by the emulator; not asking the host for PROT_EXEC avoids
+     * W+X host pages when 4K sections share a larger host page. */
+    if ((image_info->machine == IMAGE_FILE_MACHINE_I386 || image_info->machine == IMAGE_FILE_MACHINE_AMD64) &&
+        !image_info->is_hybrid)
+        view->protect |= VPROT_NOEXEC_HOST;
+#endif
 
     /* map the header */
 
