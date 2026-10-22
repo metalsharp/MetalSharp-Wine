@@ -939,5 +939,8 @@ NTSTATUS WINAPI wow64_NtWriteVirtualMemory( UINT *args )
 
     status = NtWriteVirtualMemory( process, addr, buffer, size, &ret_size );
     put_size( retlen, ret_size );
+    /* let the target's emulator drop translations of code written into it */
+    if (!status && size && !RtlIsCurrentProcess( process ))
+        send_cross_process_notification( process, CrossProcessMemoryWrite, addr, size, 0 );
     return status;
 }

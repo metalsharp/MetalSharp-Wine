@@ -433,6 +433,7 @@ DEFINE_SYSCALL(NtFindAtom, (const WCHAR *name, ULONG length, RTL_ATOM *atom))
 DEFINE_SYSCALL(NtFlushBuffersFile, (HANDLE handle, IO_STATUS_BLOCK *io))
 DEFINE_SYSCALL(NtFlushBuffersFileEx, (HANDLE handle, ULONG flags, void *params, ULONG size, IO_STATUS_BLOCK *io))
 DEFINE_WRAPPED_SYSCALL(NtFlushInstructionCache, (HANDLE handle, const void *addr, SIZE_T size))
+DEFINE_WRAPPED_SYSCALL(NtWriteVirtualMemory, (HANDLE process, void *addr, const void *buffer, SIZE_T size, SIZE_T *bytes_written))
 DEFINE_SYSCALL(NtFlushKey, (HANDLE key))
 DEFINE_SYSCALL(NtFlushProcessWriteBuffers, (void))
 DEFINE_SYSCALL(NtFlushVirtualMemory, (HANDLE process, LPCVOID *addr_ptr, SIZE_T *size_ptr, IO_STATUS_BLOCK *io))
@@ -611,7 +612,6 @@ DEFINE_SYSCALL(NtWorkerFactoryWorkerReady, (HANDLE handle))
 DEFINE_SYSCALL(NtWriteFile, (HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc_user, IO_STATUS_BLOCK *io, const void *buffer, ULONG length, LARGE_INTEGER *offset, ULONG *key))
 DEFINE_SYSCALL(NtWriteFileGather, (HANDLE file, HANDLE event, PIO_APC_ROUTINE apc, void *apc_user, IO_STATUS_BLOCK *io, FILE_SEGMENT_ELEMENT *segments, ULONG length, LARGE_INTEGER *offset, ULONG *key))
 DEFINE_SYSCALL(NtWriteRequestData, (HANDLE handle, LPC_MESSAGE *request, ULONG id, void *buffer, ULONG len, ULONG *retlen))
-DEFINE_SYSCALL(NtWriteVirtualMemory, (HANDLE process, void *addr, const void *buffer, SIZE_T size, SIZE_T *bytes_written))
 DEFINE_SYSCALL(NtYieldExecution, (void))
 
 NTSTATUS SYSCALL_API NtAllocateVirtualMemory( HANDLE process, PVOID *ret, ULONG_PTR zero_bits,
@@ -678,6 +678,21 @@ NTSTATUS SYSCALL_API NtContinueEx( CONTEXT *context, KCONTINUE_ARGUMENT *args )
 
     context_x64_to_arm( &arm_ctx, (ARM64EC_NT_CONTEXT *)context );
     return syscall_NtContinueEx( &arm_ctx, args );
+}
+
+NTSTATUS SYSCALL_API NtWriteVirtualMemory( HANDLE process, void *addr, const void *buffer, SIZE_T size,
+                                           SIZE_T *bytes_written )
+{
+    NTSTATUS status = syscall_NtWriteVirtualMemory( process, addr, buffer, size, bytes_written );
+
+    /* Let the target's emulator drop translations of code an injector (overlay, launcher,
+     * debugger) wrote with plain NtWriteVirtualMemory instead of WriteProcessMemory. */
+    if (!status && size && !RtlIsCurrentProcess( process ) && enter_syscall_callback())
+    {
+        send_cross_process_notification( process, CrossProcessMemoryWrite, addr, size, 0 );
+        leave_syscall_callback();
+    }
+    return status;
 }
 
 NTSTATUS SYSCALL_API NtFlushInstructionCache( HANDLE process, const void *addr, SIZE_T size )
