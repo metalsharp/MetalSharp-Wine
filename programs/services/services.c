@@ -42,7 +42,7 @@ WINE_DEFAULT_DEBUG_CHANNEL(service);
 struct scmdatabase *active_database;
 
 /* MetalSharp-Internal: launcher-compat/rockstar-service-pipe-timeout-v1.
- * RockstarService under Rosetta can take longer than the default 10 seconds
+ * RockstarService under emulation can take longer than the default 10 seconds
  * to connect back to the SCM pipe. */
 DWORD service_pipe_timeout = 40000;
 DWORD service_kill_timeout = 60000;
