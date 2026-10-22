@@ -1091,6 +1091,12 @@ NTSTATUS ThreadTerm(HANDLE Thread, LONG ExitCode) {
     return Err;
   }
 
+  // Only threads of this process have JIT state here; the TEB of another process's thread is in
+  // that process's address space (TerminateThread on a remote thread used to crash here).
+  if (reinterpret_cast<uint64_t>(Info.ClientId.UniqueProcess) != GetCurrentProcessId()) {
+    return STATUS_SUCCESS;
+  }
+
   const auto ThreadTID = reinterpret_cast<uint64_t>(Info.ClientId.UniqueThread);
   bool Self = ThreadTID == GetCurrentThreadId();
   if (!Self) {

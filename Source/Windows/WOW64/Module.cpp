@@ -629,6 +629,11 @@ void BTCpuThreadTerm(HANDLE Thread, LONG ExitCode) {
     return;
   }
 
+  // Only threads of this process have JIT state here (TerminateThread on a remote thread).
+  if (reinterpret_cast<uint64_t>(Info.ClientId.UniqueProcess) != GetCurrentProcessId()) {
+    return;
+  }
+
   LogMan::Msg::IFmt("Terminating {}", Info.ClientId.UniqueThread);
   const auto ThreadTID = reinterpret_cast<uint64_t>(Info.ClientId.UniqueThread);
   bool Self = ThreadTID == GetCurrentThreadId();
