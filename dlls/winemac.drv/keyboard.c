@@ -1162,6 +1162,15 @@ BOOL macdrv_ActivateKeyboardLayout(HKL hkl, UINT flags)
     {
         if (HIWORD(hkl) == layout->layout_id ? layout->layout_id : layout->lang)
         {
+            if (!is_ime_hkl(hkl))
+            {
+                /* Keep the macOS input source user-controlled: games that request a US
+                 * keyboard layout would otherwise switch the global macOS keyboard (for
+                 * example from Czech to U.S.). Only IME layouts are selected here. */
+                TRACE("not selecting macOS input source for hkl %p\n", hkl);
+                ret = TRUE;
+                break;
+            }
             if (macdrv_select_input_source(layout->input_source))
             {
                 ret = TRUE;
