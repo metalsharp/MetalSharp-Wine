@@ -245,15 +245,36 @@ void abandon_mutexes( struct thread *thread )
         do_release( mutex, thread, mutex->count );
     }
 
-    LIST_FOR_EACH( ptr, &msync_mutexes )
+    /* Waking waiters can release mutexes and unlink them from msync_mutexes, so collect the
+     * abandoned ones (holding a reference) before waking anybody. */
     {
-        struct mutex_sync *mutex = LIST_ENTRY( ptr, struct mutex_sync, msync_entry );
+        struct mutex_sync **abandoned = NULL;
+        unsigned int count = 0, size = 0, i;
 
-        if (msync_abandon_mutex( mutex->msync, thread->id ))
+        LIST_FOR_EACH( ptr, &msync_mutexes )
         {
-            wake_up( &mutex->obj, 0 );
-            msync_wake_waiters( msync_get_index( mutex->msync ) );
+            struct mutex_sync *mutex = LIST_ENTRY( ptr, struct mutex_sync, msync_entry );
+
+            if (!msync_abandon_mutex( mutex->msync, thread->id )) continue;
+            if (count == size)
+            {
+                struct mutex_sync **new_abandoned;
+                size = size ? size * 2 : 8;
+                if (!(new_abandoned = realloc( abandoned, size * sizeof(*abandoned) ))) break;
+                abandoned = new_abandoned;
+            }
+            abandoned[count++] = (struct mutex_sync *)grab_object( &mutex->obj );
         }
+        for (i = 0; i < count; i++)
+        {
+            struct mutex_sync *mutex = abandoned[i];
+            unsigned int shm_idx = msync_get_index( mutex->msync );
+
+            wake_up( &mutex->obj, 0 );
+            if (shm_idx) msync_wake_waiters( shm_idx );
+            release_object( &mutex->obj );
+        }
+        free( abandoned );
     }
 
     abandon_inproc_mutexes( thread->id );
