@@ -34,6 +34,7 @@
 #include "thread.h"
 #include "request.h"
 #include "security.h"
+#include "msync.h"
 
 static const WCHAR semaphore_name[] = {'S','e','m','a','p','h','o','r','e'};
 
@@ -54,26 +55,49 @@ struct semaphore_sync
     struct object       obj;                /* object header */
     unsigned int        count;              /* current count */
     unsigned int        max;                /* maximum possible count */
+#ifdef __APPLE__
+    struct msync     *msync;            /* optional shared fast-path state */
+#endif
 };
 
 static void semaphore_sync_dump( struct object *obj, int verbose );
+static int semaphore_sync_add_queue( struct object *obj, struct wait_queue_entry *entry );
+static void semaphore_sync_remove_queue( struct object *obj, struct wait_queue_entry *entry );
 static int semaphore_sync_signaled( struct object *obj, struct wait_queue_entry *entry );
 static void semaphore_sync_satisfied( struct object *obj, struct wait_queue_entry *entry );
+static void semaphore_sync_destroy( struct object *obj );
 
 static const struct object_ops semaphore_sync_ops =
 {
     .size         = sizeof(struct semaphore_sync),
     .type         = &no_type,
     .dump         = semaphore_sync_dump,
-    .add_queue    = add_queue,
-    .remove_queue = remove_queue,
+    .add_queue    = semaphore_sync_add_queue,
+    .remove_queue = semaphore_sync_remove_queue,
     .signaled     = semaphore_sync_signaled,
     .satisfied    = semaphore_sync_satisfied,
+    .destroy      = semaphore_sync_destroy,
 };
 
 static int release_semaphore( struct semaphore_sync *sem, unsigned int count,
                               unsigned int *prev )
 {
+#ifdef __APPLE__
+    if (sem->msync)
+    {
+        unsigned int old_count;
+
+        if (!msync_release_semaphore( sem->msync, count, &old_count )) return 0;
+        if (prev) *prev = old_count;
+        if (!old_count)
+        {
+            wake_up( &sem->obj, count );
+            msync_wake_waiters( msync_get_index( sem->msync ) );
+        }
+        return 1;
+    }
+#endif
+
     if (prev) *prev = sem->count;
     if (sem->count + count < sem->count || sem->count + count > sem->max)
     {
@@ -100,10 +124,33 @@ static void semaphore_sync_dump( struct object *obj, int verbose )
     fprintf( stderr, "Semaphore count=%d max=%d\n", sem->count, sem->max );
 }
 
+static int semaphore_sync_add_queue( struct object *obj, struct wait_queue_entry *entry )
+{
+    struct semaphore_sync *sem = (struct semaphore_sync *)obj;
+    assert( obj->ops == &semaphore_sync_ops );
+#ifdef __APPLE__
+    if (sem->msync) msync_add_server_waiter( sem->msync );
+#endif
+    return add_queue( obj, entry );
+}
+
+static void semaphore_sync_remove_queue( struct object *obj, struct wait_queue_entry *entry )
+{
+    struct semaphore_sync *sem = (struct semaphore_sync *)obj;
+    assert( obj->ops == &semaphore_sync_ops );
+#ifdef __APPLE__
+    if (sem->msync) msync_remove_server_waiter( sem->msync );
+#endif
+    remove_queue( obj, entry );
+}
+
 static int semaphore_sync_signaled( struct object *obj, struct wait_queue_entry *entry )
 {
     struct semaphore_sync *sem = (struct semaphore_sync *)obj;
     assert( obj->ops == &semaphore_sync_ops );
+#ifdef __APPLE__
+    if (sem->msync) return msync_semaphore_signaled( sem->msync );
+#endif
     return (sem->count > 0);
 }
 
@@ -111,20 +158,40 @@ static void semaphore_sync_satisfied( struct object *obj, struct wait_queue_entr
 {
     struct semaphore_sync *sem = (struct semaphore_sync *)obj;
     assert( obj->ops == &semaphore_sync_ops );
+#ifdef __APPLE__
+    if (sem->msync)
+    {
+        msync_semaphore_satisfied( sem->msync );
+        return;
+    }
+#endif
     assert( sem->count );
     sem->count--;
 }
 
-static struct object *create_semaphore_sync( unsigned int initial, unsigned int max )
+static struct object *create_semaphore_sync( unsigned int initial, unsigned int max, int inproc )
 {
     struct semaphore_sync *sem;
-
-    if (get_inproc_device_fd() >= 0) return (struct object *)create_inproc_semaphore_sync( initial, max );
 
     if (!(sem = alloc_object( &semaphore_sync_ops ))) return NULL;
     sem->count = initial;
     sem->max   = max;
+#ifdef __APPLE__
+    sem->msync = NULL;
+    if (inproc && do_msync() &&
+        !(sem->msync = create_msync( initial, max, INPROC_SYNC_SEMAPHORE )))
+        clear_error();
+#endif
     return &sem->obj;
+}
+
+static void semaphore_sync_destroy( struct object *obj )
+{
+#ifdef __APPLE__
+    struct semaphore_sync *sem = (struct semaphore_sync *)obj;
+    assert( obj->ops == &semaphore_sync_ops );
+    if (sem->msync) msync_destroy( sem->msync );
+#endif
 }
 
 struct semaphore
@@ -168,7 +235,7 @@ static bool semaphore_init( struct object *obj, const void *init_data )
     struct semaphore *sem = (struct semaphore *)obj;
     const struct semaphore_init_data *data = init_data;
 
-    return !!(sem->sync = create_semaphore_sync( data->initial, data->max ));
+    return !!(sem->sync = create_semaphore_sync( data->initial, data->max, 1 ));
 }
 
 static struct object *semaphore_get_sync( struct object *obj )
@@ -199,6 +266,25 @@ static void semaphore_destroy( struct object *obj )
     struct semaphore *sem = (struct semaphore *)obj;
     assert( obj->ops == &semaphore_ops );
     if (sem->sync) release_object( sem->sync );
+}
+
+int get_semaphore_msync_idx( struct object *obj, int *type )
+{
+#ifdef __APPLE__
+    struct semaphore_sync *sync;
+    struct semaphore *sem;
+
+    if (!do_msync() || !obj || obj->ops != &semaphore_ops) return -1;
+    sem = (struct semaphore *)obj;
+    if (!sem->sync || sem->sync->ops != &semaphore_sync_ops) return -1;
+    sync = (struct semaphore_sync *)sem->sync;
+    if (!sync->msync) return -1;
+    msync_grab_object( sync->msync );
+    *type = INPROC_SYNC_SEMAPHORE;
+    return msync_get_index( sync->msync );
+#else
+    return -1;
+#endif
 }
 
 /* create a semaphore */
@@ -252,8 +338,14 @@ DECL_HANDLER(query_semaphore)
         struct semaphore_sync *sync = (struct semaphore_sync *)sem->sync;
         assert( sem->sync->ops == &semaphore_sync_ops ); /* never called with inproc syncs */
 
-        reply->current = sync->count;
-        reply->max = sync->max;
+#ifdef __APPLE__
+        if (sync->msync) msync_get_semaphore_state( sync->msync, &reply->current, &reply->max );
+        else
+#endif
+        {
+            reply->current = sync->count;
+            reply->max = sync->max;
+        }
         release_object( sem );
     }
 }

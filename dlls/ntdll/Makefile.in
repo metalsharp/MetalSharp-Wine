@@ -71,6 +71,7 @@ SOURCES = \
 	unix/tape.c \
 	unix/thread.c \
 	unix/virtual.c \
+	unix/msync.c \
 	unwind.c \
 	version.c \
 	wcstring.c

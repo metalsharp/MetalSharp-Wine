@@ -270,6 +270,11 @@ extern struct inproc_sync *create_inproc_mutex_sync( thread_id_t owner, unsigned
 extern void abandon_inproc_mutexes( thread_id_t owner );
 extern void signal_inproc_sync( struct inproc_sync *sync );
 extern void reset_inproc_sync( struct inproc_sync *sync );
+extern int get_inproc_event_state( struct object *obj, int *manual, int *signaled );
+extern int set_inproc_event_state( struct object *obj, int signaled );
+extern int get_event_msync_idx( struct object *obj, int *type );
+extern int get_semaphore_msync_idx( struct object *obj, int *type );
+extern int get_mutex_msync_idx( struct object *obj, int *type );
 
 /* serial functions */
 
