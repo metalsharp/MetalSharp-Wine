@@ -425,13 +425,21 @@ Ref OpDispatchBuilder::ReconstructX87StateFromFSW_Helper(Ref FSW) {
   auto C1 = _Bfe(OpSize::i32Bit, 1, 9, FSW);
   auto C2 = _Bfe(OpSize::i32Bit, 1, 10, FSW);
   auto C3 = _Bfe(OpSize::i32Bit, 1, 14, FSW);
-  auto IE = _Bfe(OpSize::i32Bit, 1, 0, FSW);
-
   SetRFLAG<FEXCore::X86State::X87FLAG_C0_LOC>(C0);
   SetRFLAG<FEXCore::X86State::X87FLAG_C1_LOC>(C1);
   SetRFLAG<FEXCore::X86State::X87FLAG_C2_LOC>(C2);
   SetRFLAG<FEXCore::X86State::X87FLAG_C3_LOC>(C3);
-  SetRFLAG<FEXCore::X86State::X87FLAG_IE_LOC>(IE);
+
+  // Exception flags IE..ES (bits 0-7). Only IE is ever raised by emulated operations, but the
+  // others must survive FLDENV/FRSTOR/FXRSTOR so software can set and test them (fesetexceptflag).
+  SetRFLAG<FEXCore::X86State::X87FLAG_IE_LOC>(_Bfe(OpSize::i32Bit, 1, 0, FSW));
+  SetRFLAG<FEXCore::X86State::X87FLAG_DE_LOC>(_Bfe(OpSize::i32Bit, 1, 1, FSW));
+  SetRFLAG<FEXCore::X86State::X87FLAG_ZE_LOC>(_Bfe(OpSize::i32Bit, 1, 2, FSW));
+  SetRFLAG<FEXCore::X86State::X87FLAG_OE_LOC>(_Bfe(OpSize::i32Bit, 1, 3, FSW));
+  SetRFLAG<FEXCore::X86State::X87FLAG_UE_LOC>(_Bfe(OpSize::i32Bit, 1, 4, FSW));
+  SetRFLAG<FEXCore::X86State::X87FLAG_PE_LOC>(_Bfe(OpSize::i32Bit, 1, 5, FSW));
+  SetRFLAG<FEXCore::X86State::X87FLAG_SF_LOC>(_Bfe(OpSize::i32Bit, 1, 6, FSW));
+  SetRFLAG<FEXCore::X86State::X87FLAG_ES_LOC>(_Bfe(OpSize::i32Bit, 1, 7, FSW));
   return Top;
 }
 
@@ -762,6 +770,14 @@ Ref OpDispatchBuilder::ReconstructFSW_Helper(Ref T) {
   auto IE = GetRFLAG(FEXCore::X86State::X87FLAG_IE_LOC);
   FSW = _Or(OpSize::i64Bit, FSW, IE);
 
+  FSW = _Orlshl(OpSize::i64Bit, FSW, GetRFLAG(FEXCore::X86State::X87FLAG_DE_LOC), 1);
+  FSW = _Orlshl(OpSize::i64Bit, FSW, GetRFLAG(FEXCore::X86State::X87FLAG_ZE_LOC), 2);
+  FSW = _Orlshl(OpSize::i64Bit, FSW, GetRFLAG(FEXCore::X86State::X87FLAG_OE_LOC), 3);
+  FSW = _Orlshl(OpSize::i64Bit, FSW, GetRFLAG(FEXCore::X86State::X87FLAG_UE_LOC), 4);
+  FSW = _Orlshl(OpSize::i64Bit, FSW, GetRFLAG(FEXCore::X86State::X87FLAG_PE_LOC), 5);
+  FSW = _Orlshl(OpSize::i64Bit, FSW, GetRFLAG(FEXCore::X86State::X87FLAG_SF_LOC), 6);
+  FSW = _Orlshl(OpSize::i64Bit, FSW, GetRFLAG(FEXCore::X86State::X87FLAG_ES_LOC), 7);
+
   return FSW;
 }
 
@@ -779,8 +795,16 @@ void OpDispatchBuilder::X87FNSTSW(OpcodeArgs, bool DestRAX) {
 }
 
 void OpDispatchBuilder::FNCLEX(OpcodeArgs) {
-  // Clear the exception flag bit
-  SetRFLAG<FEXCore::X86State::X87FLAG_IE_LOC>(_Constant(0));
+  // Clear the exception flag bits (IE..ES)
+  auto Zero = _Constant(0);
+  SetRFLAG<FEXCore::X86State::X87FLAG_IE_LOC>(Zero);
+  SetRFLAG<FEXCore::X86State::X87FLAG_DE_LOC>(Zero);
+  SetRFLAG<FEXCore::X86State::X87FLAG_ZE_LOC>(Zero);
+  SetRFLAG<FEXCore::X86State::X87FLAG_OE_LOC>(Zero);
+  SetRFLAG<FEXCore::X86State::X87FLAG_UE_LOC>(Zero);
+  SetRFLAG<FEXCore::X86State::X87FLAG_PE_LOC>(Zero);
+  SetRFLAG<FEXCore::X86State::X87FLAG_SF_LOC>(Zero);
+  SetRFLAG<FEXCore::X86State::X87FLAG_ES_LOC>(Zero);
 }
 
 void OpDispatchBuilder::FNINIT(OpcodeArgs) {
@@ -809,6 +833,13 @@ void OpDispatchBuilder::FNINIT(OpcodeArgs) {
   SetRFLAG<FEXCore::X86State::X87FLAG_C2_LOC>(Zero);
   SetRFLAG<FEXCore::X86State::X87FLAG_C3_LOC>(Zero);
   SetRFLAG<FEXCore::X86State::X87FLAG_IE_LOC>(Zero);
+  SetRFLAG<FEXCore::X86State::X87FLAG_DE_LOC>(Zero);
+  SetRFLAG<FEXCore::X86State::X87FLAG_ZE_LOC>(Zero);
+  SetRFLAG<FEXCore::X86State::X87FLAG_OE_LOC>(Zero);
+  SetRFLAG<FEXCore::X86State::X87FLAG_UE_LOC>(Zero);
+  SetRFLAG<FEXCore::X86State::X87FLAG_PE_LOC>(Zero);
+  SetRFLAG<FEXCore::X86State::X87FLAG_SF_LOC>(Zero);
+  SetRFLAG<FEXCore::X86State::X87FLAG_ES_LOC>(Zero);
 }
 
 void OpDispatchBuilder::X87FFREE(OpcodeArgs) {

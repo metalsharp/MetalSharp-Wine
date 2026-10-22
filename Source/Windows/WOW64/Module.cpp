@@ -239,7 +239,9 @@ void LoadStateFromWowContext(FEXCore::Core::InternalThreadState* Thread) {
   memcpy(State.mm, XSave->FloatRegisters, sizeof(State.mm));
 
   State.FCW = XSave->ControlWord;
-  State.flags[FEXCore::X86State::X87FLAG_IE_LOC] = XSave->StatusWord & 1;
+  for (int i = 0; i < 8; i++) {
+    State.flags[FEXCore::X86State::X87FLAG_IE_LOC + i] = (XSave->StatusWord >> i) & 1; // IE..ES
+  }
   State.flags[FEXCore::X86State::X87FLAG_C0_LOC] = (XSave->StatusWord >> 8) & 1;
   State.flags[FEXCore::X86State::X87FLAG_C1_LOC] = (XSave->StatusWord >> 9) & 1;
   State.flags[FEXCore::X86State::X87FLAG_C2_LOC] = (XSave->StatusWord >> 10) & 1;
@@ -283,7 +285,10 @@ void StoreWowContextFromState(WOW64_CONTEXT* Context) {
   XSave->ControlWord = State.FCW;
   XSave->StatusWord = (State.flags[FEXCore::X86State::X87FLAG_TOP_LOC] << 11) | (State.flags[FEXCore::X86State::X87FLAG_C0_LOC] << 8) |
                       (State.flags[FEXCore::X86State::X87FLAG_C1_LOC] << 9) | (State.flags[FEXCore::X86State::X87FLAG_C2_LOC] << 10) |
-                      (State.flags[FEXCore::X86State::X87FLAG_C3_LOC] << 14) | State.flags[FEXCore::X86State::X87FLAG_IE_LOC];
+                      (State.flags[FEXCore::X86State::X87FLAG_C3_LOC] << 14);
+  for (int i = 0; i < 8; i++) {
+    XSave->StatusWord |= State.flags[FEXCore::X86State::X87FLAG_IE_LOC + i] << i; // IE..ES
+  }
   XSave->TagWord = State.AbridgedFTW;
 
   Context->FloatSave.ControlWord = XSave->ControlWord;
