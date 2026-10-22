@@ -56,6 +56,7 @@
 #include "handle.h"
 #include "process.h"
 #include "thread.h"
+#include "msync.h"
 #include "request.h"
 #include "user.h"
 #include "security.h"
@@ -561,6 +562,10 @@ static void cleanup_thread( struct thread *thread )
     int i;
 
     cleanup_thread_completion( thread );
+#ifdef __APPLE__
+    msync_free_wait_slot( thread->msync_wait_slot );
+    thread->msync_wait_slot = 0;
+#endif
     if (thread->context)
     {
         thread->context->status = STATUS_ACCESS_DENIED;
