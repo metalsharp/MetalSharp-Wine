@@ -21,6 +21,7 @@ extern unsigned int msync_get_index( struct msync *sync );
 extern unsigned int msync_alloc_wait_slot(void);
 extern int msync_register_wait( unsigned int slot_idx, const unsigned int *shm_idxs, unsigned int count );
 extern void msync_unregister_wait( unsigned int slot_idx );
+extern void msync_free_wait_slot( unsigned int slot_idx );
 extern int msync_wake_waiters( unsigned int shm_idx );
 extern void msync_grab_object( struct msync *sync );
 extern void msync_destroy( struct msync *sync );

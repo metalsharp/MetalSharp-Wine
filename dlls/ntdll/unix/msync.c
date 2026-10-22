@@ -136,16 +136,19 @@ int do_msync(void)
     if (do_msync_env_cached == -1)
     {
         const char *env = getenv( "WINEMSYNC" );
+        if (!env) env = getenv( "WINEWFUSYNC" );  /* upstream WineForge name */
         do_msync_env_cached = (env && atoi( env )) ? 1 : 0;
     }
 
     return do_msync_env_cached;
 }
 
+/* Shared state is mapped in fixed 64K granules, independent of the host page size: the
+ * wineserver may run with 16K pages while entitled clients run with 4K pages. Must match
+ * MSYNC_MAP_GRANULE in server/msync.c. */
 static long get_page_size(void)
 {
-    if (!page_size) page_size = sysconf( _SC_PAGESIZE );
-    return page_size;
+    return 0x10000;
 }
 
 static BOOL msync_handle_to_index( HANDLE handle, unsigned int *entry, unsigned int *idx )

@@ -24,7 +24,13 @@ int do_msync(void)
 {
     static int enabled = -1;
 
-    if (enabled == -1) enabled = getenv( "WINEMSYNC" ) && atoi( getenv( "WINEMSYNC" ) );
+    if (enabled == -1)
+    {
+        /* WINEWFUSYNC is the upstream WineForge name */
+        const char *env = getenv( "WINEMSYNC" );
+        if (!env) env = getenv( "WINEWFUSYNC" );
+        enabled = env && atoi( env );
+    }
     return enabled;
 }
 
@@ -39,6 +45,7 @@ int do_msync(void)
 #include <stdio.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <time.h>
 #include <unistd.h>
 #include <AvailabilityMacros.h>
 #ifdef MAC_OS_VERSION_14_4
@@ -87,10 +94,37 @@ static struct msync_waiter *msync_waiters;
 static unsigned int *msync_multi_waiter_counts;
 static unsigned int msync_multi_waiter_counts_count;
 
+/* Shared state is mapped in fixed 64K granules on both sides (clients may run with 4K
+ * pages, the server with 16K). The object is sized once: XNU only allows ftruncate() on a
+ * POSIX shm object once, and the pages are only backed when touched. */
+#define MSYNC_MAP_GRANULE 0x10000
+#define MSYNC_SHM_SIZE    0x4000000  /* 64MB: 4M slots */
+#define MSYNC_LOCK_STEAL_NS (100 * 1000000ull)
+
 static long get_page_size(void)
 {
-    if (!page_size) page_size = sysconf( _SC_PAGESIZE );
-    return page_size;
+    return MSYNC_MAP_GRANULE;
+}
+
+static unsigned int *free_slots;
+static unsigned int free_slots_count, free_slots_size;
+
+static void free_state_slot( unsigned int idx )
+{
+    if (free_slots_count == free_slots_size)
+    {
+        unsigned int new_size = free_slots_size ? free_slots_size * 2 : 256;
+        unsigned int *new_slots = realloc( free_slots, new_size * sizeof(*free_slots) );
+        if (!new_slots) return;  /* leak the slot */
+        free_slots = new_slots;
+        free_slots_size = new_size;
+    }
+    free_slots[free_slots_count++] = idx;
+}
+
+static unsigned long long monotonic_ns(void)
+{
+    return clock_gettime_nsec_np( CLOCK_UPTIME_RAW );
 }
 
 static void wake_address( int *addr, int wake_all )
@@ -123,6 +157,7 @@ static unsigned short get_state_type( struct msync_state *state )
 static int lock_state( struct msync_state *state, unsigned short expected_type )
 {
     unsigned int attempts = 0;
+    unsigned long long start = 0;
     unsigned short type;
 
     for (;;)
@@ -133,7 +168,17 @@ static int lock_state( struct msync_state *state, unsigned short expected_type )
             __atomic_compare_exchange_n( &state->type, &type, type | MSYNC_STATE_LOCKED, FALSE,
                                          __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST ))
             return 1;
-        if (!(++attempts % 64)) sched_yield();
+        if (++attempts % 64) continue;
+        sched_yield();
+        /* Client critical sections are a handful of instructions. A lock held this long
+         * belongs to a client thread that was suspended or killed inside one; spinning
+         * forever would hang the whole wineserver, so take the lock over. */
+        if (!start) start = monotonic_ns();
+        else if (monotonic_ns() - start > MSYNC_LOCK_STEAL_NS)
+        {
+            fprintf( stderr, "wineserver: msync: taking over a lock held for over 100ms\n" );
+            return 1;
+        }
     }
 }
 
@@ -164,17 +209,19 @@ int msync_get_shared_fd(void)
         return -1;
     }
 
+    if (ftruncate( shared_fd, MSYNC_SHM_SIZE ) == -1)
+    {
+        close( shared_fd );
+        shared_fd = -1;
+        return -1;
+    }
     fcntl( shared_fd, F_SETFD, FD_CLOEXEC );
     return shared_fd;
 }
 
 static int ensure_shared_file_size( unsigned int pages )
 {
-    off_t size = (off_t)pages * get_page_size();
-    int fd = msync_get_shared_fd();
-
-    if (fd == -1) return 0;
-    return ftruncate( fd, size ) != -1;
+    return msync_get_shared_fd() != -1 && (off_t)pages * get_page_size() <= MSYNC_SHM_SIZE;
 }
 
 static struct msync_state *alloc_state_slot( unsigned int *idx )
@@ -183,7 +230,8 @@ static struct msync_state *alloc_state_slot( unsigned int *idx )
     unsigned int entry, offset;
     void *page;
 
-    *idx = next_shm_idx++;
+    if (free_slots_count) *idx = free_slots[--free_slots_count];
+    else *idx = next_shm_idx++;
     entry = (*idx * sizeof(struct msync_state)) / get_page_size();
     offset = (*idx * sizeof(struct msync_state)) % get_page_size();
 
@@ -448,6 +496,17 @@ int msync_register_wait( unsigned int slot_idx, const unsigned int *shm_idxs, un
     return 1;
 }
 
+void msync_free_wait_slot( unsigned int slot_idx )
+{
+    struct msync_state *slot;
+
+    if (!slot_idx || !(slot = get_state( slot_idx ))) return;
+    remove_waiter( slot_idx );
+    __atomic_store_n( &slot->type, INPROC_SYNC_UNKNOWN, __ATOMIC_SEQ_CST );
+    __atomic_store_n( &slot->generation, next_generation++, __ATOMIC_SEQ_CST );
+    free_state_slot( slot_idx );
+}
+
 void msync_unregister_wait( unsigned int slot_idx )
 {
     struct msync_state *slot;
@@ -468,8 +527,6 @@ void msync_grab_object( struct msync *sync )
     struct msync_state *state;
 
     if (!sync || !(state = get_state( sync->shm_idx ))) return;
-    assert( state->refcount );
-    state->refcount++;
 }
 
 void msync_destroy( struct msync *sync )
@@ -479,10 +536,10 @@ void msync_destroy( struct msync *sync )
     if (!sync) return;
     if ((state = get_state( sync->shm_idx )))
     {
-        assert( state->refcount );
         __atomic_store_n( &state->type, INPROC_SYNC_UNKNOWN, __ATOMIC_SEQ_CST );
-        state->generation = next_generation++;
-        state->refcount--;
+        __atomic_store_n( &state->generation, next_generation++, __ATOMIC_SEQ_CST );
+        /* clients revalidate the generation on every operation, so the slot can be reused */
+        free_state_slot( sync->shm_idx );
     }
     free( sync );
 }
@@ -928,7 +985,9 @@ DECL_HANDLER(get_msync_wait_slot)
         set_error( STATUS_NOT_IMPLEMENTED );
         return;
     }
-    if (!(reply->shm_idx = msync_alloc_wait_slot())) set_error( STATUS_NO_MEMORY );
+    /* one wait slot per thread, released in msync_free_wait_slot() when the thread goes away */
+    if (!current->msync_wait_slot) current->msync_wait_slot = msync_alloc_wait_slot();
+    if (!(reply->shm_idx = current->msync_wait_slot)) set_error( STATUS_NO_MEMORY );
 #else
     set_error( STATUS_NOT_IMPLEMENTED );
 #endif
