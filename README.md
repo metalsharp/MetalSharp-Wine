@@ -14,7 +14,7 @@ Developer Note: This project is under active development. It should be noted tha
 
 ---
 
-VKMT Wine is an Apple-Silicon-native, cross-architecture Wine runtime for
+MetalSharp Wine is an Apple-Silicon-native, cross-architecture Wine runtime for
 macOS. The Wine host and native Unix boundary are ARM64; FEX supplies the
 execution path for x86_64 and i386/WoW64 Windows applications.
 
