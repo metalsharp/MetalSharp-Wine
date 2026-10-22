@@ -2101,6 +2101,95 @@ static DWORD get_core_id_regs_arm64( struct smbios_wine_id_reg_value_arm64 *regs
     return regidx;
 }
 
+#elif defined(__APPLE__)
+
+static UINT64 arm_feat( const char *name )
+{
+    char buffer[64];
+    int value = 0;
+    size_t size = sizeof(value);
+
+    snprintf( buffer, sizeof(buffer), "hw.optional.arm.%s", name );
+    return !sysctlbyname( buffer, &value, &size, NULL, 0 ) && value;
+}
+
+/* macOS doesn't let EL0 read the ID registers, synthesize them from the sysctl feature flags.
+ * SME and pointer authentication are left out: Wine doesn't save or expose their state. */
+static DWORD get_core_id_regs_arm64( struct smbios_wine_id_reg_value_arm64 *regs,
+                                     WORD logical_thread_id )
+{
+    static const struct { UINT family; WORD ecore, pcore; } parts[] =
+    {
+        { 0x1b588bb3, 0x022, 0x023 },  /* M1 */
+        { 0xda33d83d, 0x032, 0x033 },  /* M2 */
+        { 0xfa33415e, 0x048, 0x049 },  /* M3 */
+    };
+    UINT64 isar0, isar1, isar2, pfr0, pfr1, mmfr1, mmfr2, ctr, midr;
+    UINT family = 0, ecores = 0, i;
+    UINT64 line = 0;
+    size_t size = sizeof(family);
+    DWORD regidx = 0;
+
+    sysctlbyname( "hw.cpufamily", &family, &size, NULL, 0 );
+    size = sizeof(ecores);
+    sysctlbyname( "hw.perflevel1.logicalcpu", &ecores, &size, NULL, 0 );
+    midr = 0x61ul << 24 | 0xful << 16;  /* Apple, architectural ID scheme */
+    for (i = 0; i < ARRAY_SIZE(parts); i++)
+        if (parts[i].family == family)
+            midr |= (UINT64)(logical_thread_id < ecores ? parts[i].ecore : parts[i].pcore) << 4;
+
+    isar0 = (arm_feat( "FEAT_PMULL" ) ? 2ull : arm_feat( "FEAT_AES" )) << 4 |
+            arm_feat( "FEAT_SHA1" ) << 8 |
+            (arm_feat( "FEAT_SHA512" ) ? 2ull : arm_feat( "FEAT_SHA256" )) << 12 |
+            arm_feat( "FEAT_CRC32" ) << 16 |
+            (arm_feat( "FEAT_LSE" ) ? 2ull : 0) << 20 |
+            arm_feat( "FEAT_RDM" ) << 28 |
+            arm_feat( "FEAT_SHA3" ) << 32 |
+            arm_feat( "FEAT_DotProd" ) << 44 |
+            arm_feat( "FEAT_FHM" ) << 48 |
+            (arm_feat( "FEAT_FlagM2" ) ? 2ull : arm_feat( "FEAT_FlagM" )) << 52;
+    isar1 = (arm_feat( "FEAT_DPB2" ) ? 2ull : arm_feat( "FEAT_DPB" )) |
+            arm_feat( "FEAT_JSCVT" ) << 12 |
+            arm_feat( "FEAT_FCMA" ) << 16 |
+            (arm_feat( "FEAT_LRCPC3" ) ? 3ull : arm_feat( "FEAT_LRCPC2" ) ? 2ull : arm_feat( "FEAT_LRCPC" )) << 20 |
+            arm_feat( "FEAT_FRINTTS" ) << 32 |
+            arm_feat( "FEAT_SB" ) << 36 |
+            (arm_feat( "FEAT_EBF16" ) ? 2ull : arm_feat( "FEAT_BF16" )) << 44 |
+            arm_feat( "FEAT_I8MM" ) << 52;
+    isar2 = (arm_feat( "FEAT_WFxT" ) ? 2ull : 0) |
+            arm_feat( "FEAT_RPRES" ) << 4 |
+            arm_feat( "FEAT_MOPS" ) << 16 |
+            arm_feat( "FEAT_HBC" ) << 20 |
+            (arm_feat( "FEAT_CSSC" ) ? 1ull : 0) << 52;
+    pfr0 = 1 | 1 << 4 | 1 << 8 | 1 << 12 |  /* EL0-EL3: AArch64 only */
+           (arm_feat( "FEAT_FP16" ) ? 1ull : 0) << 16 | (arm_feat( "FEAT_FP16" ) ? 1ull : 0) << 20 |
+           arm_feat( "FEAT_DIT" ) << 48 |
+           arm_feat( "FEAT_CSV2" ) << 56 |
+           arm_feat( "FEAT_CSV3" ) << 60;
+    pfr1 = arm_feat( "FEAT_BTI" ) | arm_feat( "FEAT_SSBS" ) << 4;
+    mmfr1 = arm_feat( "FEAT_AFP" ) << 44;
+    mmfr2 = arm_feat( "FEAT_LSE2" ) << 32;
+    /* CTR_EL0 traps at EL0 on macOS; derive it from the cache line size. IDC/DIC are left
+     * clear so that cache maintenance is never skipped. */
+    size = sizeof(line);
+    if (sysctlbyname( "hw.cachelinesize", &line, &size, NULL, 0 ) || !line) line = 64;
+    ctr = 1ull << 31 | 3ull << 14;  /* RES1, PIPT instruction cache */
+    for (i = 0; (4u << i) < line; i++) ;
+    ctr |= (UINT64)i | (UINT64)i << 16 | (UINT64)i << 20 | (UINT64)i << 24;  /* IminLine, DminLine, ERG, CWG */
+
+    regs[regidx++] = (struct smbios_wine_id_reg_value_arm64){ 0x4000, midr };   /* MIDR_EL1 */
+    regs[regidx++] = (struct smbios_wine_id_reg_value_arm64){ 0x4020, pfr0 };   /* ID_AA64PFR0_EL1 */
+    regs[regidx++] = (struct smbios_wine_id_reg_value_arm64){ 0x4021, pfr1 };   /* ID_AA64PFR1_EL1 */
+    regs[regidx++] = (struct smbios_wine_id_reg_value_arm64){ 0x4030, isar0 };  /* ID_AA64ISAR0_EL1 */
+    regs[regidx++] = (struct smbios_wine_id_reg_value_arm64){ 0x4031, isar1 };  /* ID_AA64ISAR1_EL1 */
+    regs[regidx++] = (struct smbios_wine_id_reg_value_arm64){ 0x4032, isar2 };  /* ID_AA64ISAR2_EL1 */
+    regs[regidx++] = (struct smbios_wine_id_reg_value_arm64){ 0x4038, 0 };      /* ID_AA64MMFR0_EL1 */
+    regs[regidx++] = (struct smbios_wine_id_reg_value_arm64){ 0x4039, mmfr1 };  /* ID_AA64MMFR1_EL1 */
+    regs[regidx++] = (struct smbios_wine_id_reg_value_arm64){ 0x403a, mmfr2 };  /* ID_AA64MMFR2_EL1 */
+    regs[regidx++] = (struct smbios_wine_id_reg_value_arm64){ 0x5801, ctr };    /* CTR_EL0 */
+    return regidx;
+}
+
 #else
 
 static DWORD get_core_id_regs_arm64( struct smbios_wine_id_reg_value_arm64 *regs,
