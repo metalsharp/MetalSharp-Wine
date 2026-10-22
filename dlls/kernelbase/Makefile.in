@@ -12,8 +12,8 @@ SOURCES = \
 	debug.c \
 	file.c \
 	kernelbase.rc \
-	loader.c \
 	launchers.c \
+	loader.c \
 	locale.c \
 	main.c \
 	memory.c \

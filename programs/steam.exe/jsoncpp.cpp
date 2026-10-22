@@ -194,7 +194,6 @@ static inline void fixNumericLocale(char* begin, char* end) {
 #include <json/assertions.h>
 #include <json/reader.h>
 #include <json/value.h>
-#include "json_tool.h"
 #endif // if !defined(JSON_IS_AMALGAMATION)
 #include <utility>
 #include <cstdio>
@@ -4048,7 +4047,6 @@ Value& Path::make(Value& root) const {
 
 #if !defined(JSON_IS_AMALGAMATION)
 #include <json/writer.h>
-#include "json_tool.h"
 #endif // if !defined(JSON_IS_AMALGAMATION)
 #include <iomanip>
 #include <memory>

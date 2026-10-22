@@ -23,6 +23,7 @@ SOURCES = \
 	mailslot.c \
 	main.c \
 	mapping.c \
+	msync.c \
 	mutex.c \
 	named_pipe.c \
 	object.c \
@@ -46,7 +47,6 @@ SOURCES = \
 	unicode.c \
 	user.c \
 	window.c \
-	msync.c \
 	wineserver.de.UTF-8.man.in \
 	wineserver.fr.UTF-8.man.in \
 	wineserver.man.in \
