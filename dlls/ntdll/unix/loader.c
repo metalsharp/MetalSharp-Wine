@@ -68,6 +68,7 @@
 # include <pthread.h>
 # include <mach/mach.h>
 # include <mach/mach_error.h>
+# include <mach/mach_vm.h>
 # include <mach-o/getsect.h>
 # include <crt_externs.h>
 # ifndef _POSIX_SPAWN_DISABLE_ASLR
@@ -436,6 +437,26 @@ char *get_alternate_wineloader( WORD machine )
 }
 
 
+#if defined(__APPLE__) && defined(__aarch64__)
+/* With the cross-architecture entitlement, PAGEZERO is an ordinary no-access reservation starting
+ * below 64K instead of a hard limit. virtual_init() records it before releasing that reservation
+ * (see release_low_pagezero()), which also covers children forked after it. */
+static BOOL has_cross_arch_entitlement(void)
+{
+    mach_vm_address_t address = 0x10000;
+    mach_vm_size_t size;
+    vm_region_basic_info_data_64_t info;
+    mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
+    mach_port_t dummy_object_name = MACH_PORT_NULL;
+
+    if (cross_arch_entitled) return TRUE;
+    if (mach_vm_region( mach_task_self(), &address, &size, VM_REGION_BASIC_INFO_64,
+                        (vm_region_info_t)&info, &count, &dummy_object_name ))
+        return FALSE;
+    return address <= 0x10000 && address + size > 0x100000000 && !info.protection && !info.max_protection;
+}
+#endif
+
 static void preloader_exec( char **argv )
 {
 #ifdef HAVE_WINE_PRELOADER
@@ -455,11 +476,12 @@ static void preloader_exec( char **argv )
 #if defined(__APPLE__) && defined(__aarch64__)
     /* Windows has 4K pages; macOS 26 can run a process with them, which avoids all 16K page
      * emulation. It requires the cross-architecture entitlement: without it the kernel kills the
-     * process during the exec, so this is only done when the (entitled) launcher asks for it. */
+     * process during the exec, so it is the default only when this process is entitled (the
+     * loaders are signed together). WINE_4K_PAGES=0/1 overrides. */
     if (__builtin_available( macOS 26.0, * ))
     {
         const char *use4k = getenv( "WINE_4K_PAGES" );
-        if (use4k && atoi( use4k ))
+        if (use4k ? atoi( use4k ) : has_cross_arch_entitlement())
         {
             posix_spawnattr_t attr;
             int err;

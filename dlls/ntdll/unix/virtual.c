@@ -666,6 +666,8 @@ static void reserve_area( void *addr, void *end )
  * (no access, no object) below the main image instead of a hard kernel limit. Unmap the part
  * below 4G so reserve_area() can take it over; without the entitlement there is no such region.
  */
+BOOL cross_arch_entitled = FALSE;
+
 static void release_low_pagezero(void)
 {
     mach_vm_address_t address = 0x10000;
@@ -679,6 +681,7 @@ static void release_low_pagezero(void)
                         (vm_region_info_t)&info, &count, &dummy_object_name ))
         return;
     if (address > 0x10000 || info.protection || info.max_protection) return;
+    cross_arch_entitled = TRUE;
     end = min( address + size, 0x100000000 );
     if (!munmap( (void *)0x10000, end - 0x10000 ))
         TRACE( "released PAGEZERO reservation 0x10000-%#llx\n", end );

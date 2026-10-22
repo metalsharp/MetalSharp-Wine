@@ -232,6 +232,9 @@ extern timeout_t server_start_time;
 extern sigset_t server_block_set;
 extern pthread_mutex_t fd_cache_mutex;
 extern struct _KUSER_SHARED_DATA *user_shared_data;
+#if defined(__APPLE__) && defined(__aarch64__)
+extern BOOL cross_arch_entitled;
+#endif
 extern ULONG process_cookie;
 
 extern void init_environment(void);
