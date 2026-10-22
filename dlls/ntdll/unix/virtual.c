@@ -93,6 +93,7 @@
 #include "wine/debug.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(virtual);
+WINE_DECLARE_DEBUG_CHANNEL(wx);
 WINE_DECLARE_DEBUG_CHANNEL(module);
 WINE_DECLARE_DEBUG_CHANNEL(mem_areas);
 
@@ -4360,7 +4361,10 @@ NTSTATUS virtual_handle_fault( struct thread_data *data, EXCEPTION_RECORD *rec, 
         if (is_vprot_exec_write( get_host_page_vprot( page ) ) &&
             (get_unix_prot( get_host_page_vprot( page ) ) & PROT_WRITE) &&
             !mprotect( page, host_page_size, PROT_READ | PROT_WRITE ))
+        {
+            TRACE_(wx)( "%p: RX -> RW for write to %p\n", page, addr );
             ret = STATUS_SUCCESS;
+        }
         else
 #endif
         /* ignore fault if page is writable now */
@@ -4376,6 +4380,7 @@ NTSTATUS virtual_handle_fault( struct thread_data *data, EXCEPTION_RECORD *rec, 
              !mprotect( page, host_page_size, PROT_READ | PROT_EXEC ))
     {
         /* W^X: page was RW, make it RX again */
+        TRACE_(wx)( "%p: RW -> RX for execution\n", page );
         sys_icache_invalidate( page, host_page_size );
         ret = STATUS_SUCCESS;
     }
@@ -4407,7 +4412,10 @@ BOOL virtual_wx_begin_store( void *addr, SIZE_T size )
         if (!is_vprot_exec_write( vprot ) || !(get_unix_prot( vprot ) & PROT_WRITE)) goto fail;
     }
     if (!mprotect( start, ROUND_SIZE( start, end - start, host_page_mask ), PROT_READ | PROT_WRITE ))
+    {
+        TRACE_(wx)( "%p: emulating store of %lu bytes\n", addr, size );
         return TRUE;
+    }
 fail:
     mutex_unlock( &virtual_mutex );
     return FALSE;

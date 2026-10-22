@@ -44,6 +44,10 @@
 #ifdef HAVE_NETDB_H
 # include <netdb.h>
 #endif
+#ifdef HAVE_IFADDRS_H
+# include <ifaddrs.h>
+# include <net/if.h>
+#endif
 
 #include "ntstatus.h"
 #include "windef.h"
@@ -338,6 +342,30 @@ static NTSTATUS get_hostinfo( void *args )
     memset( params->ip6, 0, sizeof(*params->ip6) );
 
     if (gethostname( params->name, DNS_MAX_NAME_LENGTH )) return map_h_errno( h_errno );
+
+#ifdef HAVE_IFADDRS_H
+    {
+        /* names in .local are resolved with multicast DNS, which can time out (seconds, at every
+         * process start) when the host doesn't answer mDNS queries; use the interface addresses */
+        size_t len = strlen( params->name );
+        struct ifaddrs *ifaddrs, *ifa;
+
+        if (len > 6 && !strcasecmp( params->name + len - 6, ".local" ) && !getifaddrs( &ifaddrs ))
+        {
+            strcpy( params->cname, params->name );
+            for (ifa = ifaddrs; ifa; ifa = ifa->ifa_next)
+            {
+                if (!ifa->ifa_addr || (ifa->ifa_flags & IFF_LOOPBACK) || !(ifa->ifa_flags & IFF_UP)) continue;
+                if (ifa->ifa_addr->sa_family == AF_INET && !*params->ip4)
+                    *params->ip4 = ((struct sockaddr_in *)ifa->ifa_addr)->sin_addr.s_addr;
+                else if (ifa->ifa_addr->sa_family == AF_INET6 && !(params->ip6->IP6Dword[0] | params->ip6->IP6Dword[1] | params->ip6->IP6Dword[2] | params->ip6->IP6Dword[3]))
+                    memcpy( params->ip6, ((struct sockaddr_in6 *)ifa->ifa_addr)->sin6_addr.s6_addr, sizeof(*params->ip6) );
+            }
+            freeifaddrs( ifaddrs );
+            return ERROR_SUCCESS;
+        }
+    }
+#endif
 
     if (!getaddrinfo( params->name, NULL, &hints, &result ))
     {
