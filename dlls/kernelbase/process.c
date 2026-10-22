@@ -30,6 +30,7 @@
 #include "processsnapshot.h"
 
 #include "kernelbase.h"
+#include "launchers.h"
 #include "wine/debug.h"
 #include "wine/condrv.h"
 
@@ -502,6 +503,23 @@ done:
     return ret;
 }
 
+static BOOL append_process_args( WCHAR **cmd_line, const WCHAR *append )
+{
+    WCHAR *new_cmdline;
+    SIZE_T len;
+
+    if (!append) return TRUE;
+
+    len = lstrlenW( *cmd_line ) + lstrlenW( append ) + 1;
+    if (!(new_cmdline = RtlAllocateHeap( GetProcessHeap(), 0, len * sizeof(WCHAR) )))
+        return FALSE;
+
+    lstrcpyW( new_cmdline, *cmd_line );
+    lstrcatW( new_cmdline, append );
+    *cmd_line = new_cmdline;
+    return TRUE;
+}
+
 /**********************************************************************
  *           CreateProcessInternalW   (kernelbase.@)
  */
@@ -518,6 +536,7 @@ BOOL WINAPI DECLSPEC_HOTPATCH CreateProcessInternalW( HANDLE token, const WCHAR 
     RTL_USER_PROCESS_PARAMETERS *params = NULL;
     RTL_USER_PROCESS_INFORMATION rtl_info = { 0 };
     HANDLE parent = 0, debug = 0;
+    const WCHAR *append_args;
     ULONG nt_flags = 0;
     USHORT machine = 0;
     NTSTATUS status;
@@ -541,6 +560,19 @@ BOOL WINAPI DECLSPEC_HOTPATCH CreateProcessInternalW( HANDLE token, const WCHAR 
     {
         if (!(tidy_cmdline = get_file_name( cmd_line, name, ARRAY_SIZE(name) ))) return FALSE;
         app_name = name;
+    }
+
+    if ((append_args = get_launcher_process_args( app_name, tidy_cmdline )))
+    {
+        WCHAR *old_cmdline = tidy_cmdline;
+
+        WARN( "appending launcher CEF arguments %s\n", debugstr_w(append_args) );
+        if (!append_process_args( &tidy_cmdline, append_args ))
+        {
+            status = STATUS_NO_MEMORY;
+            goto done;
+        }
+        if (old_cmdline != cmd_line) HeapFree( GetProcessHeap(), 0, old_cmdline );
     }
 
     /* Warn if unsupported features are used */
