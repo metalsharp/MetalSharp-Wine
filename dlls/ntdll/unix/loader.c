@@ -1181,6 +1181,32 @@ static NTSTATUS open_builtin_pe_file( const char *name, OBJECT_ATTRIBUTES *attr,
 /***********************************************************************
  *           find_builtin_dll
  */
+#ifdef __APPLE__
+/***********************************************************************
+ *           winemetalgl_opengl32_path
+ *
+ * WineMetalGL (OpenGL 4.6 on Metal) is the default OpenGL when it is bundled: opengl32.dll is
+ * its forwarder (lib/winemetalgl), which sends every export to the builtin winemetalgl.dll.
+ * OPENGL_BACKEND=wine or WINEMETALGL=0 selects Wine's own opengl32.
+ */
+static char *winemetalgl_opengl32_path( USHORT machine )
+{
+    const char *backend = getenv( "OPENGL_BACKEND" ), *enabled = getenv( "WINEMETALGL" ), *pe_dir;
+    char *path;
+
+    if (backend && !strcmp( backend, "wine" )) return NULL;
+    if (enabled && !strcmp( enabled, "0" )) return NULL;
+    if (machine == IMAGE_FILE_MACHINE_I386) pe_dir = "i386-windows";
+    else if (machine == IMAGE_FILE_MACHINE_AMD64 || machine == IMAGE_FILE_MACHINE_ARM64)
+        pe_dir = "aarch64-windows";  /* ARM64X */
+    else return NULL;
+    if (asprintf( &path, "%s/../winemetalgl/%s/opengl32.dll", dll_dir, pe_dir ) == -1) return NULL;
+    if (!access( path, R_OK )) return path;
+    free( path );
+    return NULL;
+}
+#endif
+
 static NTSTATUS find_builtin_dll( UNICODE_STRING *nt_name, ANSI_STRING *exp_name, void **module,
                                   SIZE_T *size_ptr, SECTION_IMAGE_INFORMATION *image_info,
                                   ULONG_PTR limit_low, ULONG_PTR limit_high, USHORT search_machine,
@@ -1195,7 +1221,7 @@ static NTSTATUS find_builtin_dll( UNICODE_STRING *nt_name, ANSI_STRING *exp_name
     NTSTATUS status = STATUS_DLL_NOT_FOUND;
     BOOL found_image = FALSE;
 #ifdef __APPLE__
-    BOOL dxmt_runtime_pe = FALSE;
+    BOOL dxmt_runtime_pe = FALSE, winemetalgl_pe = FALSE;
 #endif
 
     InitializeObjectAttributes( &attr, nt_name, 0, 0, NULL );
@@ -1243,6 +1269,25 @@ static NTSTATUS find_builtin_dll( UNICODE_STRING *nt_name, ANSI_STRING *exp_name
     TRACE( "looking for %s for file %s\n", debugstr_a(file + pos + 1), debugstr_us(nt_name) );
 
 #ifdef __APPLE__
+    if (!strcmp( file + pos + 1, "opengl32.dll" ))
+    {
+        char *forwarder = winemetalgl_opengl32_path( search_machine );
+
+        if (forwarder)
+        {
+            status = open_builtin_pe_file( forwarder, &attr, module, size_ptr, image_info,
+                                           limit_low, limit_high, load_machine, prefer_native, offset );
+            TRACE( "WineMetalGL opengl32 %s for %s -> %#lx\n",
+                   debugstr_a(forwarder), debugstr_us(nt_name), (long)status );
+            free( forwarder );
+            if (status != STATUS_DLL_NOT_FOUND)
+            {
+                winemetalgl_pe = TRUE;  /* a forwarder: no unix side */
+                goto done;
+            }
+        }
+    }
+
     /* WineForge-Internal: the selected DXMT runtime must win over Wine's own builtins. */
     if (dxmt_graphics_backend_enabled() && is_dxmt_module_name( file + pos + 1 ))
     {
@@ -1326,7 +1371,8 @@ done:
     {
         strcpy( ext, ".so" );
 #ifdef __APPLE__
-        if (dxmt_runtime_pe)
+        if (winemetalgl_pe) ;
+        else if (dxmt_runtime_pe)
         {
             /* DXMT modules use the runtime's winemetal.so; the others have no unix side */
             char *dxmt_unixlib = resolve_dxmt_unixlib_path( ptr );
