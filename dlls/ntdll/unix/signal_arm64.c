@@ -1216,6 +1216,16 @@ static BOOL emulate_user_shared_data_load( ucontext_t *sigcontext )
         size = 1 << (insn >> 30);
         simd = FALSE;
     }
+    else if ((insn & 0x3f200c00) == 0x19000000)  /* ldapur/ldapurs* (emitted by x86 emulators for TSO) */
+    {
+        unsigned int opc = (insn >> 22) & 3, sz = insn >> 30;
+        if (opc == 0) return FALSE;  /* stlur */
+        size = 1 << sz;
+        if (opc == 2) { if (sz == 3) return FALSE; sext = 64; }
+        else if (opc == 3) { if (sz >= 2) return FALSE; sext = 32; }
+        offset = sign_extend( (insn >> 12) & 0x1ff, 9 );
+        simd = FALSE;
+    }
     else if ((insn & 0x3a000000) == 0x38000000)  /* load/store register */
     {
         unsigned int opc = (insn >> 22) & 3, sz = insn >> 30;
@@ -1260,7 +1270,11 @@ static BOOL emulate_user_shared_data_load( ucontext_t *sigcontext )
         }
         else return FALSE;
     }
-    else return FALSE;
+    else
+    {
+        WARN( "unhandled load %08x at %p\n", (int)insn, (void *)PC_sig(sigcontext) );
+        return FALSE;
+    }
 
     base = get_gpr( sigcontext, rn, TRUE );
     wb_addr = base + offset;
