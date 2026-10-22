@@ -86,6 +86,15 @@ FEXCore::HostFeatures CPUFeatures::FetchHostFeatures(bool IsWine, FEXCore::HostF
   HostFeatures.HostType = HostType;
   HostFeatures.ProcessPID = ProcessPID;
 
+  if (IsWine) {
+    // Wine exports the actual address of the shared user data page, see HostFeatures::KUSERSharedDataDelta.
+    const auto* SharedData =
+      reinterpret_cast<void* const*>(GetProcAddress(GetModuleHandleA("ntdll.dll"), "__wine_user_shared_data"));
+    if (SharedData) {
+      HostFeatures.KUSERSharedDataDelta = reinterpret_cast<uint64_t>(*SharedData) - 0x7ffe0000;
+    }
+  }
+
   if (HostType == FEXCore::HostFeatures::HostTypeEnum::Wow64) {
     // AVX is unsupported for WOW64
     HostFeatures.SupportsAVX = false;

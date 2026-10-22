@@ -97,5 +97,10 @@ struct HostFeatures {
   // The Linux PID of this process. Useful for punching through perf-top information.
   uint32_t ProcessPID {};
   uint32_t pad2 {};
+
+  // Wine on hosts that can't map the low 4GB (macOS without the remapping entitlement) moves
+  // KUSER_SHARED_DATA away from 0x7ffe0000. Constant-address guest loads from that page are
+  // rebased by this delta at JIT time; other accesses are emulated by Wine's fault handler.
+  uint64_t KUSERSharedDataDelta {};
 };
 } // namespace FEXCore

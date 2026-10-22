@@ -4435,6 +4435,12 @@ AddressMode OpDispatchBuilder::DecodeAddress(const X86Tables::DecodedOp& Op, con
     LOGMAN_MSG_A_FMT("Unknown Src Type: {}\n", Operand.Type);
   }
 
+  // Constant loads from a relocated KUSER_SHARED_DATA page go straight to its real address.
+  if (IsLoad && CTX->HostFeatures.KUSERSharedDataDelta && !A.Base && !A.Index && !A.Segment && A.AddrSize == OpSize::i64Bit &&
+      static_cast<uint64_t>(A.Offset) - 0x7ffe0000 < 0x1000) {
+    A.Offset += CTX->HostFeatures.KUSERSharedDataDelta;
+  }
+
   return A;
 }
 
