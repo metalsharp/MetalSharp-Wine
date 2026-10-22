@@ -1777,6 +1777,7 @@
 @ extern -private __wine_unix_call_dispatcher
 @ extern -private -arch=arm64ec __wine_unix_call_dispatcher_arm64ec
 @ extern -private __wine_unixlib_handle
+@ extern __wine_user_shared_data
 
 # Debugging
 @ stdcall -norelay __wine_dbg_write(ptr long)

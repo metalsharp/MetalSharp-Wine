@@ -98,7 +98,9 @@ extern const WCHAR windows_dir[];
 
 extern void (FASTCALL *pBaseThreadInitThunk)(DWORD,LPTHREAD_START_ROUTINE,void *);
 
-extern struct _KUSER_SHARED_DATA *user_shared_data;
+/* set by the Unix side, the page is not always at MM_SHARED_USER_DATA_VA */
+extern struct _KUSER_SHARED_DATA *__wine_user_shared_data;
+#define user_shared_data __wine_user_shared_data
 
 #ifdef _WIN64
 static inline TEB64 *NtCurrentTeb64(void) { return NULL; }

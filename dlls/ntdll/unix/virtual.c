@@ -70,6 +70,7 @@
 # include <mach/task.h>
 # include <mach/thread_state.h>
 # include <mach/vm_map.h>
+# include <libkern/OSCacheControl.h>
 #undef host_page_size
 #endif
 
@@ -190,7 +191,7 @@ static void *host_addr_space_limit;  /* top of the host virtual address space */
 static struct file_view *arm64ec_view;
 
 ULONG_PTR user_space_wow_limit = 0;
-struct _KUSER_SHARED_DATA *user_shared_data = (void *)0x7ffe0000;
+struct _KUSER_SHARED_DATA *user_shared_data = (void *)MM_SHARED_USER_DATA_VA;
 
 /* TEB allocation blocks */
 static void *teb_block;
@@ -1595,6 +1596,11 @@ static NTSTATUS get_vprot_flags( DWORD protect, unsigned int *vprot, BOOL image 
  */
 static inline int mprotect_exec( void *base, size_t size, int unix_prot )
 {
+#if defined(__APPLE__) && defined(__aarch64__)
+    /* W+X is never granted without MAP_JIT; start executable, virtual_handle_fault() flips
+     * the host page between RX and RW as needed. */
+    if ((unix_prot & (PROT_WRITE | PROT_EXEC)) == (PROT_WRITE | PROT_EXEC)) unix_prot &= ~PROT_WRITE;
+#endif
     if (force_exec_prot && (unix_prot & PROT_READ) && !(unix_prot & PROT_EXEC))
     {
         TRACE( "forcing exec permission on %p-%p\n", base, (char *)base + size - 1 );
@@ -3692,6 +3698,16 @@ struct thread_data *virtual_alloc_first_thread_data(void)
 
     /* reserve space for shared user data */
     status = map_view( &view, user_shared_data, page_size, 0, VPROT_READ | VPROT_COMMITTED, 0, 0, 0 );
+#if defined(__APPLE__) && defined(__aarch64__)
+    if (status)
+    {
+        /* arm64 macOS reserves the low 4G (PAGEZERO) unless the process is entitled to remap it.
+         * Move the page 4G up; loads from the canonical address are emulated in the SIGSEGV handler. */
+        user_shared_data = (void *)(MM_SHARED_USER_DATA_VA + 0x100000000);
+        status = map_view( &view, user_shared_data, page_size, 0, VPROT_READ | VPROT_COMMITTED, 0, 0, 0 );
+        if (!status) WARN( "shared user data relocated to %p\n", user_shared_data );
+    }
+#endif
     if (status)
     {
         ERR( "wine: failed to map the shared user data: %08x\n", status );
@@ -4114,6 +4130,18 @@ static const WCHAR shared_data_nameW[] = {'\\','K','e','r','n','e','l','O','b','
                                           '\\','_','_','w','i','n','e','_','u','s','e','r','_','s','h','a','r','e','d','_','d','a','t','a',0};
 
 /***********************************************************************
+ *           ntdll_get_user_shared_data
+ *
+ * Address of the shared user data page; not always MM_SHARED_USER_DATA_VA, see
+ * virtual_alloc_first_thread_data().
+ */
+const struct _KUSER_SHARED_DATA *ntdll_get_user_shared_data(void)
+{
+    return user_shared_data;
+}
+
+
+/***********************************************************************
  *           virtual_map_user_shared_data
  */
 void virtual_map_user_shared_data(void)
@@ -4309,6 +4337,14 @@ NTSTATUS virtual_handle_fault( struct thread_data *data, EXCEPTION_RECORD *rec, 
                 mprotect_range( page, host_page_size, 0, 0 );
             }
         }
+#if defined(__APPLE__) && defined(__aarch64__)
+        /* W^X: a W+X page is mapped RX (see mprotect_exec), make it RW for the write */
+        if (is_vprot_exec_write( get_host_page_vprot( page ) ) &&
+            (get_unix_prot( get_host_page_vprot( page ) ) & PROT_WRITE) &&
+            !mprotect( page, host_page_size, PROT_READ | PROT_WRITE ))
+            ret = STATUS_SUCCESS;
+        else
+#endif
         /* ignore fault if page is writable now */
         if (get_unix_prot( get_host_page_vprot( page )) & PROT_WRITE)
         {
@@ -4316,6 +4352,16 @@ NTSTATUS virtual_handle_fault( struct thread_data *data, EXCEPTION_RECORD *rec, 
                 ret = STATUS_SUCCESS;
         }
     }
+#if defined(__APPLE__) && defined(__aarch64__)
+    else if (err == EXCEPTION_EXECUTE_FAULT && is_vprot_exec_write( vprot ) &&
+             (get_unix_prot( vprot ) & PROT_EXEC) &&
+             !mprotect( page, host_page_size, PROT_READ | PROT_EXEC ))
+    {
+        /* W^X: page was RW, make it RX again */
+        sys_icache_invalidate( page, host_page_size );
+        ret = STATUS_SUCCESS;
+    }
+#endif
     mutex_unlock( &virtual_mutex );
     rec->ExceptionCode = ret;
     return ret;

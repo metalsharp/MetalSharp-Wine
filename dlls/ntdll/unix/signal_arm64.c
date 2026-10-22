@@ -56,6 +56,7 @@
 #include "winnt.h"
 #include "winternl.h"
 #include "wine/asm.h"
+#include "ddk/wdm.h"
 #include "unix_private.h"
 #include "wine/debug.h"
 
@@ -1133,6 +1134,149 @@ static BOOL handle_syscall_fault( struct thread_data *data, ucontext_t *context,
  *
  * Handler for SIGSEGV and related errors.
  */
+#if defined(__APPLE__)
+
+static DWORD64 get_gpr( const ucontext_t *sigcontext, unsigned int reg, BOOL sp )
+{
+    if (reg == 31) return sp ? SP_sig(sigcontext) : 0;
+    if (reg == 29) return FP_sig(sigcontext);
+    if (reg == 30) return LR_sig(sigcontext);
+    return REGn_sig( reg, sigcontext );
+}
+
+static void set_gpr( ucontext_t *sigcontext, unsigned int reg, BOOL sp, DWORD64 val )
+{
+    if (reg == 31) { if (sp) SP_sig(sigcontext) = val; }
+    else if (reg == 29) FP_sig(sigcontext) = val;
+    else if (reg == 30) LR_sig(sigcontext) = val;
+    else REGn_sig( reg, sigcontext ) = val;
+}
+
+static DWORD64 sign_extend( DWORD64 val, unsigned int bits )
+{
+    return (val ^ (1ull << (bits - 1))) - (1ull << (bits - 1));
+}
+
+/* load one register from the relocated page; size in bytes, sext = 0 (zero-extend) or target width 32/64 */
+static void load_reg( ucontext_t *sigcontext, unsigned int rt, BOOL simd, const BYTE *src,
+                      unsigned int size, unsigned int sext )
+{
+    if (simd)
+    {
+        BYTE *v = (BYTE *)&sigcontext->uc_mcontext->__ns.__v[rt];
+        memset( v, 0, 16 );
+        memcpy( v, src, size );
+    }
+    else
+    {
+        DWORD64 val = 0;
+        memcpy( &val, src, size );
+        if (sext) val = sign_extend( val, size * 8 );
+        if (sext == 32) val = (DWORD)val;
+        set_gpr( sigcontext, rt, FALSE, val );
+    }
+}
+
+/***********************************************************************
+ *           emulate_user_shared_data_load
+ *
+ * PAGEZERO covers MM_SHARED_USER_DATA_VA when the process can't remap the low 4G, so the
+ * page lives elsewhere (see virtual_alloc_first_thread_data). Code that hardcodes the
+ * canonical address faults; emulate its load from the relocated page.
+ */
+static BOOL emulate_user_shared_data_load( ucontext_t *sigcontext )
+{
+    const ULONG_PTR start = MM_SHARED_USER_DATA_VA, end = start + 0x1000;
+    DWORD insn = *(const DWORD *)PC_sig(sigcontext);
+    unsigned int rt = insn & 0x1f, rn = (insn >> 5) & 0x1f, rt2 = 0, size, sext = 0, count = 1;
+    BOOL simd = (insn >> 26) & 1, writeback = FALSE, post = FALSE;
+    DWORD64 base, addr, wb_addr;
+    INT64 offset = 0;
+    const BYTE *src;
+
+    if ((ULONG_PTR)user_shared_data == start) return FALSE;
+
+    if ((insn & 0x3a000000) == 0x28000000)  /* load/store pair */
+    {
+        unsigned int opc = insn >> 30, idx = (insn >> 23) & 3;
+        if (!((insn >> 22) & 1)) return FALSE;  /* store */
+        if (simd) { if (opc == 3) return FALSE; size = 4 << opc; }
+        else if (opc == 0) size = 4;
+        else if (opc == 1) { size = 4; sext = 64; }  /* ldpsw */
+        else if (opc == 2) size = 8;
+        else return FALSE;
+        offset = sign_extend( (insn >> 15) & 0x7f, 7 ) * size;
+        rt2 = (insn >> 10) & 0x1f;
+        count = 2;
+        if (idx == 1) { writeback = post = TRUE; }
+        else if (idx == 3) writeback = TRUE;
+    }
+    else if ((insn & 0x3ffffc00) == 0x08dffc00 || (insn & 0x3ffffc00) == 0x38bfc000)  /* ldar/ldapr */
+    {
+        size = 1 << (insn >> 30);
+        simd = FALSE;
+    }
+    else if ((insn & 0x3a000000) == 0x38000000)  /* load/store register */
+    {
+        unsigned int opc = (insn >> 22) & 3, sz = insn >> 30;
+
+        if (simd)
+        {
+            if (opc == 1) size = 1 << sz;
+            else if (opc == 3 && sz == 0) size = 16;
+            else return FALSE;
+        }
+        else
+        {
+            size = 1 << sz;
+            if (opc == 0) return FALSE;  /* store */
+            if (opc == 2) { if (sz == 3) return FALSE; sext = 64; }  /* prfm when sz == 3 */
+            else if (opc == 3) { if (sz >= 2) return FALSE; sext = 32; }
+        }
+
+        if (insn & 0x01000000)  /* unsigned immediate */
+            offset = ((insn >> 10) & 0xfff) * size;
+        else if ((insn & 0x00200c00) == 0x00200800)  /* register offset */
+        {
+            unsigned int option = (insn >> 13) & 7, shift = ((insn >> 12) & 1) ? __builtin_ctz( size ) : 0;
+            DWORD64 rm = get_gpr( sigcontext, (insn >> 16) & 0x1f, FALSE );
+            switch (option)
+            {
+            case 2: rm = (DWORD)rm; break;
+            case 3: case 7: break;
+            case 6: rm = sign_extend( (DWORD)rm, 32 ); break;
+            default: return FALSE;
+            }
+            offset = rm << shift;
+        }
+        else if (!(insn & 0x00200000))  /* unscaled, post/pre-indexed, unprivileged */
+        {
+            offset = sign_extend( (insn >> 12) & 0x1ff, 9 );
+            switch ((insn >> 10) & 3)
+            {
+            case 1: writeback = post = TRUE; break;
+            case 3: writeback = TRUE; break;
+            }
+        }
+        else return FALSE;
+    }
+    else return FALSE;
+
+    base = get_gpr( sigcontext, rn, TRUE );
+    wb_addr = base + offset;
+    addr = post ? base : wb_addr;
+    if (addr < start || addr + count * size > end || addr + count * size < addr) return FALSE;
+
+    src = (const BYTE *)user_shared_data + (addr - start);
+    load_reg( sigcontext, rt, simd, src, size, sext );
+    if (count == 2) load_reg( sigcontext, rt2, simd, src + size, size, sext );
+    if (writeback) set_gpr( sigcontext, rn, TRUE, wb_addr );
+    PC_sig(sigcontext) += 4;
+    return TRUE;
+}
+
+#endif /* __APPLE__ */
+
 static void segv_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
 {
     ucontext_t *sigcontext = _sigcontext;
@@ -1161,7 +1305,14 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
         if (ESR_ELx_ISS_DABT_WNR(esr))
             rec.ExceptionInformation[0] = EXCEPTION_WRITE_FAULT;
         else
+        {
+#ifdef __APPLE__
+            if ((ULONG_PTR)siginfo->si_addr - MM_SHARED_USER_DATA_VA < 0x1000 &&
+                !(PSTATE_sig( sigcontext ) & 0x10) && emulate_user_shared_data_load( sigcontext ))
+                return;
+#endif
             rec.ExceptionInformation[0] = EXCEPTION_READ_FAULT;
+        }
         break;
     default:
         rec.ExceptionInformation[0] = EXCEPTION_READ_FAULT;
