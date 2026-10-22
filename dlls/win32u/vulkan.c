@@ -448,6 +448,12 @@ static VkResult convert_instance_create_info( struct mempool *pool, VkInstanceCr
         instance->obj.extensions.has_VK_EXT_surface_maintenance1 = 1;
     if (vulkan_funcs.host_extensions.has_VK_KHR_get_physical_device_properties2)
         instance->obj.extensions.has_VK_KHR_get_physical_device_properties2 = 1;
+    /* the Vulkan loader only enumerates portability drivers (MoltenVK) when asked to */
+    if (vulkan_funcs.host_extensions.has_VK_KHR_portability_enumeration)
+    {
+        instance->obj.extensions.has_VK_KHR_portability_enumeration = 1;
+        info->flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+    }
     if (use_external_memory())
         instance->obj.extensions.has_VK_KHR_external_memory_capabilities = 1;
 
