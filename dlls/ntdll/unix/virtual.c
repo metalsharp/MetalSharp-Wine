@@ -1316,6 +1316,29 @@ static void* try_map_free_area( void *base, void *end, ptrdiff_t step,
             (step < 0 && (char *)start - (char *)base < -step) ||
             step == 0)
             break;
+#ifdef __APPLE__
+        {
+            /* skip the whole region in the way instead of probing it one step at a time */
+            mach_vm_address_t region = (mach_vm_address_t)start;
+            mach_vm_size_t region_size;
+            vm_region_basic_info_data_64_t info;
+            mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
+            mach_port_t object = MACH_PORT_NULL;
+            size_t align = step > 0 ? step : -step;
+
+            if (!mach_vm_region( mach_task_self(), &region, &region_size, VM_REGION_BASIC_INFO_64,
+                                 (vm_region_info_t)&info, &count, &object ) &&
+                region < (mach_vm_address_t)start + size)
+            {
+                if (step > 0)
+                    start = (void *)(((UINT_PTR)region + region_size + align - 1) & ~(align - 1));
+                else if (region >= (mach_vm_address_t)base + size)
+                    start = (void *)(((UINT_PTR)region - size) & ~(align - 1));
+                else break;
+                continue;
+            }
+        }
+#endif
         start = (char *)start + step;
     }
 
