@@ -62,6 +62,9 @@ static inline UINT eflags_to_cpsr( UINT eflags )
     if (eflags & 0x0080) ret |= 0x80000000;  /* negative */
     if (eflags & 0x0100) ret |= 0x00200000;  /* trap */
     if (eflags & 0x0800) ret |= 0x10000000;  /* overflow */
+    /* not representable in NZCV: kept in RES0 bits, which never reach the hardware PSTATE */
+    if (eflags & 0x0010) ret |= 0x00020000;  /* auxiliary carry */
+    if (eflags & 0x0400) ret |= 0x00010000;  /* direction */
     return ret;
 }
 
@@ -74,6 +77,8 @@ static inline UINT cpsr_to_eflags( UINT cpsr )
     if (cpsr & 0x20000000) ret |= 0x0001;  /* carry */
     if (cpsr & 0x40000000) ret |= 0x0040;  /* zero */
     if (cpsr & 0x80000000) ret |= 0x0080;  /* negative */
+    if (cpsr & 0x00020000) ret |= 0x0010;  /* auxiliary carry */
+    if (cpsr & 0x00010000) ret |= 0x0400;  /* direction */
     return ret;
 }
 
