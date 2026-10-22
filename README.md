@@ -66,7 +66,7 @@ CI-only fixtures are kept out of redistributable runtime source snapshots.
 
 ## License
 
-VKMT-authored repository material is MIT licensed; see [LICENSE](LICENSE).
+Metalsharp-authored repository material is MIT licensed; see [LICENSE](LICENSE).
 Wine, FEX, DXMT, DXVK, VKD3D-Proton, MoltenVK, Mono, and other bundled
 components retain their own licenses. See the [third-party license index](docs/third-party-licenses.md)
 before redistributing the runtime.
