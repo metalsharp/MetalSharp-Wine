@@ -1275,6 +1275,189 @@ static BOOL emulate_user_shared_data_load( ucontext_t *sigcontext )
     return TRUE;
 }
 
+static DWORD64 atomic_op( unsigned int op, DWORD64 old, DWORD64 val, unsigned int size )
+{
+    unsigned int bits = size * 8;
+    DWORD64 mask = bits == 64 ? ~0ull : (1ull << bits) - 1;
+    INT64 sold = sign_extend( old & mask, bits ), sval = sign_extend( val & mask, bits );
+
+    switch (op)
+    {
+    case 0: return old + val;                          /* ldadd */
+    case 1: return old & ~val;                         /* ldclr */
+    case 2: return old ^ val;                          /* ldeor */
+    case 3: return old | val;                          /* ldset */
+    case 4: return sold > sval ? old : val;            /* ldsmax */
+    case 5: return sold < sval ? old : val;            /* ldsmin */
+    case 6: return (old & mask) > (val & mask) ? old : val;  /* ldumax */
+    case 7: return (old & mask) < (val & mask) ? old : val;  /* ldumin */
+    default: return val;                               /* swp */
+    }
+}
+
+static void store_value( BYTE *dst, const ucontext_t *sigcontext, unsigned int rt, BOOL simd, unsigned int size )
+{
+    if (simd) memcpy( dst, &sigcontext->uc_mcontext->__ns.__v[rt], size );
+    else
+    {
+        DWORD64 val = get_gpr( sigcontext, rt, FALSE );
+        memcpy( dst, &val, size );
+    }
+}
+
+/***********************************************************************
+ *           emulate_wx_store
+ *
+ * Emulate a store into a W+X host page from code in that same page, see
+ * virtual_wx_begin_store(). Handles stores, store pairs, release and exclusive
+ * stores and LSE atomics.
+ */
+static BOOL emulate_wx_store( ucontext_t *sigcontext )
+{
+    DWORD insn = *(const DWORD *)PC_sig(sigcontext);
+    unsigned int rt = insn & 0x1f, rn = (insn >> 5) & 0x1f, rt2 = 0, rs = 0, size, count = 1, kind = 0;
+    BOOL simd = (insn >> 26) & 1, writeback = FALSE, post = FALSE;
+    DWORD64 base, addr, wb_addr;
+    INT64 offset = 0;
+    BYTE *dst;
+
+    enum { PLAIN, EXCLUSIVE, ATOMIC, CAS };
+
+    if ((insn & 0x3a000000) == 0x28000000)  /* load/store pair */
+    {
+        unsigned int opc = insn >> 30, idx = (insn >> 23) & 3;
+        if ((insn >> 22) & 1) return FALSE;  /* load */
+        if (simd) { if (opc == 3) return FALSE; size = 4 << opc; }
+        else if (opc == 0) size = 4;
+        else if (opc == 2) size = 8;
+        else return FALSE;
+        offset = sign_extend( (insn >> 15) & 0x7f, 7 ) * size;
+        rt2 = (insn >> 10) & 0x1f;
+        count = 2;
+        if (idx == 1) writeback = post = TRUE;
+        else if (idx == 3) writeback = TRUE;
+    }
+    else if ((insn & 0x3ffffc00) == 0x089ffc00 ||  /* stlr */
+             ((insn & 0x3fe00c00) == 0x19000000))  /* stlur */
+    {
+        size = 1 << (insn >> 30);
+        simd = FALSE;
+        if (insn & 0x10000000) offset = sign_extend( (insn >> 12) & 0x1ff, 9 );
+    }
+    else if ((insn & 0x3fe07c00) == 0x08007c00)  /* stxr/stlxr */
+    {
+        rs = (insn >> 16) & 0x1f;
+        size = 1 << (insn >> 30);
+        simd = FALSE;
+        kind = EXCLUSIVE;
+    }
+    else if ((insn & 0xbfe00000) == 0x88200000)  /* stxp/stlxp */
+    {
+        rs = (insn >> 16) & 0x1f;
+        rt2 = (insn >> 10) & 0x1f;
+        size = (insn & 0x40000000) ? 8 : 4;
+        count = 2;
+        simd = FALSE;
+        kind = EXCLUSIVE;
+    }
+    else if ((insn & 0x3fa07c00) == 0x08a07c00)  /* cas */
+    {
+        rs = (insn >> 16) & 0x1f;
+        size = 1 << (insn >> 30);
+        simd = FALSE;
+        kind = CAS;
+    }
+    else if ((insn & 0x3f200c00) == 0x38200000)  /* lse atomics */
+    {
+        rs = (insn >> 16) & 0x1f;
+        size = 1 << (insn >> 30);
+        kind = ATOMIC;
+    }
+    else if ((insn & 0x3a000000) == 0x38000000)  /* load/store register */
+    {
+        unsigned int opc = (insn >> 22) & 3, sz = insn >> 30;
+
+        if (simd)
+        {
+            if (opc == 0) size = 1 << sz;
+            else if (opc == 2 && sz == 0) size = 16;
+            else return FALSE;
+        }
+        else
+        {
+            if (opc != 0) return FALSE;
+            size = 1 << sz;
+        }
+
+        if (insn & 0x01000000)  /* unsigned immediate */
+            offset = ((insn >> 10) & 0xfff) * size;
+        else if ((insn & 0x00200c00) == 0x00200800)  /* register offset */
+        {
+            unsigned int option = (insn >> 13) & 7, shift = ((insn >> 12) & 1) ? __builtin_ctz( size ) : 0;
+            DWORD64 rm = get_gpr( sigcontext, (insn >> 16) & 0x1f, FALSE );
+            switch (option)
+            {
+            case 2: rm = (DWORD)rm; break;
+            case 3: case 7: break;
+            case 6: rm = sign_extend( (DWORD)rm, 32 ); break;
+            default: return FALSE;
+            }
+            offset = rm << shift;
+        }
+        else if (!(insn & 0x00200000))  /* unscaled, post/pre-indexed, unprivileged */
+        {
+            offset = sign_extend( (insn >> 12) & 0x1ff, 9 );
+            switch ((insn >> 10) & 3)
+            {
+            case 1: writeback = post = TRUE; break;
+            case 3: writeback = TRUE; break;
+            }
+        }
+        else return FALSE;
+    }
+    else return FALSE;
+
+    base = get_gpr( sigcontext, rn, TRUE );
+    wb_addr = base + offset;
+    addr = post ? base : wb_addr;
+    if (!virtual_wx_begin_store( (void *)addr, count * size )) return FALSE;
+
+    dst = (BYTE *)addr;
+    switch (kind)
+    {
+    case PLAIN:
+    case EXCLUSIVE:
+        store_value( dst, sigcontext, rt, simd, size );
+        if (count == 2) store_value( dst + size, sigcontext, rt2, simd, size );
+        /* the page is serialized by virtual_mutex, report exclusive stores as successful */
+        if (kind == EXCLUSIVE) set_gpr( sigcontext, rs, FALSE, 0 );
+        break;
+    case ATOMIC:
+    {
+        unsigned int op = (insn & 0x8000) ? 8 : (insn >> 12) & 7;
+        DWORD64 old = 0, val;
+        memcpy( &old, dst, size );
+        val = atomic_op( op, old, get_gpr( sigcontext, rs, FALSE ), size );
+        memcpy( dst, &val, size );
+        set_gpr( sigcontext, rt, FALSE, old );
+        break;
+    }
+    case CAS:
+    {
+        DWORD64 old = 0, cmp = get_gpr( sigcontext, rs, FALSE );
+        memcpy( &old, dst, size );
+        if (!memcmp( &old, &cmp, size )) store_value( dst, sigcontext, rt, FALSE, size );
+        set_gpr( sigcontext, rs, FALSE, old );
+        break;
+    }
+    }
+    virtual_wx_end_store( (void *)addr, count * size );
+
+    if (writeback) set_gpr( sigcontext, rn, TRUE, wb_addr );
+    PC_sig(sigcontext) += 4;
+    return TRUE;
+}
+
 #endif /* __APPLE__ */
 
 static void segv_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
@@ -1303,7 +1486,15 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
         }
 
         if (ESR_ELx_ISS_DABT_WNR(esr))
+        {
+#ifdef __APPLE__
+            /* a store into its own host page can't complete by flipping W^X, emulate it */
+            if (!((PC_sig( sigcontext ) ^ (ULONG_PTR)siginfo->si_addr) & ~(ULONG_PTR)(getpagesize() - 1)) &&
+                !(PSTATE_sig( sigcontext ) & 0x10) && emulate_wx_store( sigcontext ))
+                return;
+#endif
             rec.ExceptionInformation[0] = EXCEPTION_WRITE_FAULT;
+        }
         else
         {
 #ifdef __APPLE__

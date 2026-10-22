@@ -4386,6 +4386,50 @@ NTSTATUS virtual_handle_fault( struct thread_data *data, EXCEPTION_RECORD *rec, 
 }
 
 
+#if defined(__APPLE__) && defined(__aarch64__)
+
+/***********************************************************************
+ *           virtual_wx_begin_store
+ *
+ * W^X emulation of a store from code in a W+X host page: an instruction that writes
+ * to its own host page can never complete by flipping the page between RX and RW.
+ * On success the range is temporarily writable and virtual_mutex is held until
+ * virtual_wx_end_store(); all writers to such pages are serialized by the mutex.
+ */
+BOOL virtual_wx_begin_store( void *addr, SIZE_T size )
+{
+    char *start = ROUND_ADDR( addr, host_page_mask ), *end = (char *)addr + size, *page;
+
+    mutex_lock( &virtual_mutex );
+    for (page = start; page < end; page += host_page_size)
+    {
+        BYTE vprot = get_host_page_vprot( page );
+        if (!is_vprot_exec_write( vprot ) || !(get_unix_prot( vprot ) & PROT_WRITE)) goto fail;
+    }
+    if (!mprotect( start, ROUND_SIZE( start, end - start, host_page_mask ), PROT_READ | PROT_WRITE ))
+        return TRUE;
+fail:
+    mutex_unlock( &virtual_mutex );
+    return FALSE;
+}
+
+
+/***********************************************************************
+ *           virtual_wx_end_store
+ */
+void virtual_wx_end_store( void *addr, SIZE_T size )
+{
+    char *start = ROUND_ADDR( addr, host_page_mask );
+    size_t len = ROUND_SIZE( start, (char *)addr + size - start, host_page_mask );
+
+    mprotect( start, len, PROT_READ | PROT_EXEC );
+    sys_icache_invalidate( start, len );
+    mutex_unlock( &virtual_mutex );
+}
+
+#endif
+
+
 /***********************************************************************
  *           virtual_setup_exception
  */
