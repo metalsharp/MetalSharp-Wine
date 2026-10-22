@@ -452,6 +452,29 @@ static void preloader_exec( char **argv )
     execv( argv[0], argv );
     free( argv[0] );
 #endif
+#if defined(__APPLE__) && defined(__aarch64__)
+    /* Windows has 4K pages; macOS 26 can run a process with them, which avoids all 16K page
+     * emulation. It requires the cross-architecture entitlement: without it the kernel kills the
+     * process during the exec, so this is only done when the (entitled) launcher asks for it. */
+    if (__builtin_available( macOS 26.0, * ))
+    {
+        const char *use4k = getenv( "WINE_4K_PAGES" );
+        if (use4k && atoi( use4k ))
+        {
+            posix_spawnattr_t attr;
+            int err;
+
+            posix_spawnattr_init( &attr );
+            posix_spawnattr_setflags( &attr, POSIX_SPAWN_SETEXEC );
+            if (!posix_spawnattr_set_4k_page_size_np( &attr ))
+            {
+                err = posix_spawn( NULL, argv[1], NULL, &attr, argv + 1, *_NSGetEnviron() );
+                TRACE( "4K page spawn of %s failed: %s\n", argv[1], strerror( err ));
+            }
+            posix_spawnattr_destroy( &attr );
+        }
+    }
+#endif
     execv( argv[1], argv + 1 );
 }
 
