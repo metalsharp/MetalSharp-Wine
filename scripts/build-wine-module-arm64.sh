@@ -77,7 +77,7 @@ done
     -o "$OBJ/unix/unix_window.o"
 # shellcheck disable=SC2086
 "$UNIX_CC" -arch arm64 -mmacosx-version-min=15.0 -shared -o "$OUT/aarch64-unix/winemetalgl.so" $uobjs "$OBJ/unix/unix_window.o" \
-    -framework AppKit -framework Metal -framework QuartzCore -Wl,-undefined,dynamic_lookup
+    -framework AppKit -framework Metal -framework QuartzCore -Wl,-undefined,dynamic_lookup -install_name @rpath/winemetalgl.so
 if test -f "$ROOT/build/arm64-release/libwinemetalgl.dylib"; then
     cp "$ROOT/build/arm64-release/libwinemetalgl.dylib" "$OUT/aarch64-unix/"
 fi
