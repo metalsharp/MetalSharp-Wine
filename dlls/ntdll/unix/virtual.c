@@ -658,6 +658,33 @@ static void reserve_area( void *addr, void *end )
 #endif /* __APPLE__ */
 }
 
+#if defined(__APPLE__) && defined(__aarch64__)
+/***********************************************************************
+ *           release_low_pagezero
+ *
+ * A process with the cross-architecture entitlement gets PAGEZERO as an ordinary reservation
+ * (no access, no object) below the main image instead of a hard kernel limit. Unmap the part
+ * below 4G so reserve_area() can take it over; without the entitlement there is no such region.
+ */
+static void release_low_pagezero(void)
+{
+    mach_vm_address_t address = 0x10000;
+    mach_vm_size_t size;
+    vm_region_basic_info_data_64_t info;
+    mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
+    mach_port_t dummy_object_name = MACH_PORT_NULL;
+    mach_vm_address_t end;
+
+    if (mach_vm_region( mach_task_self(), &address, &size, VM_REGION_BASIC_INFO_64,
+                        (vm_region_info_t)&info, &count, &dummy_object_name ))
+        return;
+    if (address > 0x10000 || info.protection || info.max_protection) return;
+    end = min( address + size, 0x100000000 );
+    if (!munmap( (void *)0x10000, end - 0x10000 ))
+        TRACE( "released PAGEZERO reservation 0x10000-%#llx\n", end );
+}
+#endif
+
 /***********************************************************************
  *           get_wow_user_space_limit
  */
@@ -3350,6 +3377,9 @@ void virtual_init(void)
     }
     else if (is_win64)
     {
+#if defined(__APPLE__) && defined(__aarch64__)
+        release_low_pagezero();
+#endif
         reserve_area( (void *)0x00010000, (void *)0x200000000 );
     }
     else
@@ -3770,9 +3800,14 @@ struct thread_data *virtual_alloc_first_thread_data(void)
     struct file_view *view;
 
 #if defined(__APPLE__) && defined(__aarch64__)
-    /* the low 4G is only mappable for entitled processes, probe without MAP_FIXED */
-    void *probe = mmap( user_shared_data, host_page_size, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0 );
-    if (probe != MAP_FAILED) munmap( probe, host_page_size );
+    /* the low 4G is only mappable for entitled processes (see release_low_pagezero), where
+     * virtual_init() has reserved it; otherwise probe without MAP_FIXED */
+    void *probe = user_shared_data;
+    if (mem_area_state( find_mem_area( probe )) != AREA_RESERVED)
+    {
+        probe = mmap( user_shared_data, host_page_size, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0 );
+        if (probe != MAP_FAILED) munmap( probe, host_page_size );
+    }
     if (probe != (void *)user_shared_data) status = STATUS_NO_MEMORY;
     else
 #endif
