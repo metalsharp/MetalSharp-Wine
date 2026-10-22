@@ -779,6 +779,38 @@ static NTSTATUS get_unixlib_funcs( void *so_handle, BOOL wow, const void **funcs
 }
 
 
+#ifdef __APPLE__
+/***********************************************************************
+ *           load_builtin_unixlib_now
+ *
+ * WineForge internal: load a redirected (graphics runtime) unixlib right away instead of on
+ * the first unix call.
+ */
+NTSTATUS load_builtin_unixlib_now( void *module )
+{
+    sigset_t sigset;
+    NTSTATUS status = STATUS_DLL_NOT_FOUND;
+    struct builtin_module *builtin;
+
+    server_enter_uninterrupted_section( &virtual_mutex, &sigset );
+    if ((builtin = get_builtin_module( module )))
+    {
+        if (builtin->unix_path && !builtin->unix_handle)
+        {
+            TRACE_(module)( "immediately loading unixlib %s for module %p\n",
+                            debugstr_a(builtin->unix_path), module );
+            builtin->unix_handle = dlopen( builtin->unix_path, RTLD_NOW );
+            if (!builtin->unix_handle)
+                WARN_(module)( "failed to load %s: %s\n", debugstr_a(builtin->unix_path), dlerror() );
+        }
+        if (builtin->unix_handle) status = STATUS_SUCCESS;
+    }
+    server_leave_uninterrupted_section( &virtual_mutex, &sigset );
+    return status;
+}
+#endif
+
+
 /***********************************************************************
  *           load_builtin_unixlib
  */
@@ -5443,6 +5475,18 @@ NTSTATUS WINAPI NtProtectVirtualMemory( HANDLE process, PVOID *addr_ptr, SIZE_T 
         if (get_committed_size( view, base, size, &vprot, VPROT_COMMITTED ) >= size && (vprot & VPROT_COMMITTED))
         {
             old = get_win32_prot( vprot, view->protect );
+#ifdef __APPLE__
+            /* WineForge-Internal: launcher-compat/battlenet-cef-cow-protection-v1.
+             * Battle.net's CEF renderer expects image pages it made writable to report RW. */
+            if (battlenet_cef_cow_compat_enabled() && (view->protect & SEC_IMAGE) &&
+                (new_prot & 0xff) == PAGE_READONLY)
+            {
+                if ((old & 0xff) == PAGE_WRITECOPY)
+                    old = (old & ~0xff) | PAGE_READWRITE;
+                else if ((old & 0xff) == PAGE_EXECUTE_WRITECOPY)
+                    old = (old & ~0xff) | PAGE_EXECUTE_READWRITE;
+            }
+#endif
             status = set_protection( view, base, size, new_prot );
         }
         else status = STATUS_NOT_COMMITTED;

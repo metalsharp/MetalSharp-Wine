@@ -350,6 +350,33 @@ extern void virtual_enable_write_exceptions( BOOL enable );
 extern void virtual_fill_image_information( const struct pe_image_info *pe_info,
                                             SECTION_IMAGE_INFORMATION *info );
 extern void *get_builtin_so_handle( void *module );
+#ifdef __APPLE__
+/* WineForge-Internal: launcher-compat/process-classification-v1. */
+struct launcher_policy
+{
+    BOOL cef_software;
+    BOOL battlenet_cef_cow;
+    BOOL dxmt;
+    BOOL wfdx;
+};
+
+extern void get_launcher_policy( const char *image_path, struct launcher_policy *policy );
+extern BOOL steam_cef_native_vulkan_loader( const UNICODE_STRING *nt_name, const char *module );
+/* WineForge-Internal: graphics/process-backend-policy-v1. */
+extern void init_process_graphics_backend( const WCHAR *image_path );
+extern BOOL cef_software_policy_enabled(void);
+extern BOOL d3dmetal_graphics_backend_enabled(void);
+extern BOOL dxmt_graphics_backend_enabled(void);
+extern BOOL dxmt_runtime_available(void);
+extern BOOL wfdxcompat_launcher_runtime_enabled(void);
+extern BOOL wfdxcompat_launcher_runtime_available(void);
+extern BOOL battlenet_cef_cow_compat_enabled(void);
+extern BOOL is_dxmt_module_name( const char *path );
+extern BOOL is_dxmt_module_basename( const WCHAR *name );
+extern char *resolve_dxmt_pe_path( const char *module, USHORT machine );
+extern char *resolve_dxmt_unixlib_path( const char *path );
+extern NTSTATUS load_builtin_unixlib_now( void *module );
+#endif
 extern NTSTATUS set_builtin_unixlib_name( void *module, const char *name );
 extern BOOL is_emulated_code( ULONG_PTR ptr );
 

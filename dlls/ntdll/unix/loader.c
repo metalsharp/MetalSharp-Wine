@@ -298,6 +298,24 @@ static void set_dll_path(void)
     char *p, *path = getenv( "WINEDLLPATH" );
     int i, count = 0;
 
+#ifdef __APPLE__
+    /* default to the Mullion (DXMT) runtime bundled next to Wine's own modules */
+    if (!getenv( "DXMT_RUNTIME_DIR" ) && dll_dir)
+    {
+        char *runtime, *check;
+
+        if (asprintf( &runtime, "%s/../mullion", dll_dir ) != -1)
+        {
+            if (asprintf( &check, "%s/aarch64-unix/winemetal.so", runtime ) != -1)
+            {
+                if (!access( check, R_OK )) setenv( "DXMT_RUNTIME_DIR", runtime, 0 );
+                free( check );
+            }
+            free( runtime );
+        }
+    }
+#endif
+
     if (path) for (p = path, count = 1; *p; p++) if (*p == ':') count++;
 
     dll_paths = malloc( (count + 2) * sizeof(*dll_paths) );
@@ -1176,6 +1194,9 @@ static NTSTATUS find_builtin_dll( UNICODE_STRING *nt_name, ANSI_STRING *exp_name
     OBJECT_ATTRIBUTES attr;
     NTSTATUS status = STATUS_DLL_NOT_FOUND;
     BOOL found_image = FALSE;
+#ifdef __APPLE__
+    BOOL dxmt_runtime_pe = FALSE;
+#endif
 
     InitializeObjectAttributes( &attr, nt_name, 0, 0, NULL );
 
@@ -1220,6 +1241,30 @@ static NTSTATUS find_builtin_dll( UNICODE_STRING *nt_name, ANSI_STRING *exp_name
     file[--pos] = '/';
 
     TRACE( "looking for %s for file %s\n", debugstr_a(file + pos + 1), debugstr_us(nt_name) );
+
+#ifdef __APPLE__
+    /* WineForge-Internal: the selected DXMT runtime must win over Wine's own builtins. */
+    if (dxmt_graphics_backend_enabled() && is_dxmt_module_name( file + pos + 1 ))
+    {
+        char *dxmt_pe = resolve_dxmt_pe_path( file + pos + 1, search_machine );
+
+        if (dxmt_pe)
+        {
+            status = open_builtin_pe_file( dxmt_pe, &attr, module, size_ptr, image_info,
+                                           limit_low, limit_high, load_machine, prefer_native, offset );
+            if (status != STATUS_DLL_NOT_FOUND)
+            {
+                TRACE( "DXMT runtime PE %s for %s -> %#lx\n",
+                       debugstr_a(dxmt_pe), debugstr_us(nt_name), (long)status );
+                free( dxmt_pe );
+                ptr = file + pos;
+                dxmt_runtime_pe = TRUE;
+                goto done;
+            }
+            free( dxmt_pe );
+        }
+    }
+#endif
 
     if (build_dir)
     {
@@ -1280,6 +1325,22 @@ done:
     if (NT_SUCCESS(status) && ext)
     {
         strcpy( ext, ".so" );
+#ifdef __APPLE__
+        if (dxmt_runtime_pe)
+        {
+            /* DXMT modules use the runtime's winemetal.so; the others have no unix side */
+            char *dxmt_unixlib = resolve_dxmt_unixlib_path( ptr );
+
+            if (dxmt_unixlib)
+            {
+                set_builtin_unixlib_name( *module, dxmt_unixlib );
+                TRACE( "DXMT unixlib %s -> %#lx\n", debugstr_a(dxmt_unixlib),
+                       (long)load_builtin_unixlib_now( *module ));
+                free( dxmt_unixlib );
+            }
+        }
+        else
+#endif
         set_builtin_unixlib_name( *module, ptr );
     }
     free( file );
@@ -1909,6 +1970,9 @@ static void start_main_thread(void)
     dbg_init();
     *(ULONG_PTR *)&peb->CloudFileFlags = get_image_address();
     set_load_order_app_name( main_wargv[0] );
+#ifdef __APPLE__
+    init_process_graphics_backend( main_wargv[0] );
+#endif
     init_thread_stack( data->teb, 0, 0, 0 );
     NtCreateKeyedEvent( &keyed_event, GENERIC_READ | GENERIC_WRITE, NULL, 0 );
     load_ntdll();
