@@ -6082,8 +6082,70 @@ struct get_inproc_sync_fd_reply
     struct reply_header __header;
     int           type;
     unsigned int access;
+    unsigned int shm_idx;
+    char __pad_20[4];
 };
 
+
+struct get_msync_wait_slot_request
+{
+    struct request_header __header;
+    char __pad_12[4];
+};
+struct get_msync_wait_slot_reply
+{
+    struct reply_header __header;
+    unsigned int shm_idx;
+    char __pad_12[4];
+};
+
+
+struct register_msync_wait_request
+{
+    struct request_header __header;
+    unsigned int slot_idx;
+    /* VARARG(shm_idxs,uints); */
+};
+struct register_msync_wait_reply
+{
+    struct reply_header __header;
+};
+
+
+struct unregister_msync_wait_request
+{
+    struct request_header __header;
+    unsigned int slot_idx;
+};
+struct unregister_msync_wait_reply
+{
+    struct reply_header __header;
+};
+
+
+struct wake_msync_waiters_request
+{
+    struct request_header __header;
+    unsigned int shm_idx;
+};
+struct wake_msync_waiters_reply
+{
+    struct reply_header __header;
+};
+
+
+struct try_wait_all_msync_request
+{
+    struct request_header __header;
+    thread_id_t  tid;
+    unsigned int slot_idx;
+    /* VARARG(entries,uints); */
+    char __pad_20[4];
+};
+struct try_wait_all_msync_reply
+{
+    struct reply_header __header;
+};
 
 
 struct get_inproc_alert_fd_request
@@ -6559,6 +6621,11 @@ enum request
     REQ_get_next_thread,
     REQ_set_keyboard_repeat,
     REQ_get_inproc_sync_fd,
+    REQ_get_msync_wait_slot,
+    REQ_register_msync_wait,
+    REQ_unregister_msync_wait,
+    REQ_wake_msync_waiters,
+    REQ_try_wait_all_msync,
     REQ_get_inproc_alert_fd,
     REQ_d3dkmt_object_create,
     REQ_d3dkmt_object_update,
@@ -6875,6 +6942,11 @@ union generic_request
     struct get_next_thread_request get_next_thread_request;
     struct set_keyboard_repeat_request set_keyboard_repeat_request;
     struct get_inproc_sync_fd_request get_inproc_sync_fd_request;
+    struct get_msync_wait_slot_request get_msync_wait_slot_request;
+    struct register_msync_wait_request register_msync_wait_request;
+    struct unregister_msync_wait_request unregister_msync_wait_request;
+    struct wake_msync_waiters_request wake_msync_waiters_request;
+    struct try_wait_all_msync_request try_wait_all_msync_request;
     struct get_inproc_alert_fd_request get_inproc_alert_fd_request;
     struct d3dkmt_object_create_request d3dkmt_object_create_request;
     struct d3dkmt_object_update_request d3dkmt_object_update_request;
@@ -7189,6 +7261,11 @@ union generic_reply
     struct get_next_thread_reply get_next_thread_reply;
     struct set_keyboard_repeat_reply set_keyboard_repeat_reply;
     struct get_inproc_sync_fd_reply get_inproc_sync_fd_reply;
+    struct get_msync_wait_slot_reply get_msync_wait_slot_reply;
+    struct register_msync_wait_reply register_msync_wait_reply;
+    struct unregister_msync_wait_reply unregister_msync_wait_reply;
+    struct wake_msync_waiters_reply wake_msync_waiters_reply;
+    struct try_wait_all_msync_reply try_wait_all_msync_reply;
     struct get_inproc_alert_fd_reply get_inproc_alert_fd_reply;
     struct d3dkmt_object_create_reply d3dkmt_object_create_reply;
     struct d3dkmt_object_update_reply d3dkmt_object_update_reply;
@@ -7201,6 +7278,6 @@ union generic_reply
     struct alpc_create_port_reply alpc_create_port_reply;
 };
 
-#define SERVER_PROTOCOL_VERSION 964
+#define SERVER_PROTOCOL_VERSION 965
 
 #endif /* __WINE_WINE_SERVER_PROTOCOL_H */

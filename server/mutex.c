@@ -182,6 +182,8 @@ static struct object *create_mutex_sync( int owned, int inproc )
 {
     struct mutex_sync *mutex;
 
+    if (get_inproc_device_fd() >= 0) return (struct object *)create_inproc_mutex_sync( owned ? current->id : 0, owned ? 1 : 0 );
+
     if (!(mutex = alloc_object( &mutex_sync_ops ))) return NULL;
     mutex->count = 0;
     mutex->owner = NULL;
