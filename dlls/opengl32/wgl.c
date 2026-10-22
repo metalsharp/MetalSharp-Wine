@@ -2090,6 +2090,7 @@ BOOL WINAPI wglChoosePixelFormatARB( HDC hdc, const int *attribs_int, const FLOA
     UINT i, num_wgl_formats, num_wgl_onscreen_formats;
     const struct wgl_pixel_format **format_array;
     struct compare_formats_ctx ctx = { 0 };
+    BOOL wants_window = FALSE, wants_pbuffer = FALSE;
     DWORD is_memdc;
 
     TRACE( "hdc %p, attribs_int %p, attribs_float %p, max_formats %u, formats %p, num_formats %p\n",
@@ -2113,13 +2114,22 @@ BOOL WINAPI wglChoosePixelFormatARB( HDC hdc, const int *attribs_int, const FLOA
         compare_formats_ctx_set_attrib( &ctx, attribs_float[i], attribs_float[i + 1] );
     }
 
-    /* Initialize the format_array with (pointers to) all wgl formats */
+    for (i = 0; i < ctx.num_attribs; ++i)
+    {
+        if (ctx.attribs[2 * i] == WGL_DRAW_TO_WINDOW_ARB && ctx.attribs[2 * i + 1]) wants_window = TRUE;
+        if (ctx.attribs[2 * i] == WGL_DRAW_TO_PBUFFER_ARB && ctx.attribs[2 * i + 1]) wants_pbuffer = TRUE;
+    }
+
+    /* Initialize the format_array with (pointers to) all wgl formats. A window DC cannot later
+     * accept a pbuffer-only format in SetPixelFormat, so keep the result within the on-screen
+     * formats when the caller explicitly asks for a window drawable. */
     format_array = malloc( num_wgl_formats * sizeof(*format_array) );
     if (!format_array) return FALSE;
     for (i = 0; i < num_wgl_formats; ++i)
     {
         struct wgl_pixel_format *format = wgl_formats + i;
-        if (is_memdc && format->pfd.cColorBits == 16 && format->pfd.cAlphaBits != 1) format_array[i] = NULL;
+        if ((wants_window && !wants_pbuffer && i >= num_wgl_onscreen_formats) ||
+            (is_memdc && format->pfd.cColorBits == 16 && format->pfd.cAlphaBits != 1)) format_array[i] = NULL;
         else format_array[i] = &wgl_formats[i];
     }
 
