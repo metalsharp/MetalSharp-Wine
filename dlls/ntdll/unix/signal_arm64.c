@@ -1502,9 +1502,12 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
         if (ESR_ELx_ISS_DABT_WNR(esr))
         {
 #ifdef __APPLE__
-            /* a store into its own host page can't complete by flipping W^X, emulate it */
-            if (!((PC_sig( sigcontext ) ^ (ULONG_PTR)siginfo->si_addr) & ~(ULONG_PTR)(getpagesize() - 1)) &&
-                !(PSTATE_sig( sigcontext ) & 0x10) && emulate_wx_store( sigcontext ))
+            /* a store into its own host page can't complete by flipping W^X, and a host page
+             * mixing writable and write-protected pages can't be made writable: emulate it */
+            if (!(PSTATE_sig( sigcontext ) & 0x10) &&
+                (!((PC_sig( sigcontext ) ^ (ULONG_PTR)siginfo->si_addr) & ~(ULONG_PTR)(getpagesize() - 1)) ||
+                 virtual_is_write_emulated( siginfo->si_addr )) &&
+                emulate_wx_store( sigcontext ))
                 return;
 #endif
             rec.ExceptionInformation[0] = EXCEPTION_WRITE_FAULT;

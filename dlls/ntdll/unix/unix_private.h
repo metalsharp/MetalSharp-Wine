@@ -330,6 +330,7 @@ extern NTSTATUS virtual_handle_fault( struct thread_data *data, EXCEPTION_RECORD
 #if defined(__APPLE__) && defined(__aarch64__)
 extern BOOL virtual_wx_begin_store( void *addr, SIZE_T size );
 extern void virtual_wx_end_store( void *addr, SIZE_T size );
+extern BOOL virtual_is_write_emulated( void *addr );
 #endif
 extern unsigned int virtual_locked_server_call( void *req_ptr );
 extern ssize_t virtual_locked_read( int fd, void *addr, size_t size );
