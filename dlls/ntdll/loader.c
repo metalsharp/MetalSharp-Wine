@@ -33,6 +33,7 @@
 #include "wine/exception.h"
 #include "wine/debug.h"
 #include "wine/list.h"
+#include "pe_patches.h"
 #include "ntdll_misc.h"
 #include "ddk/ntddk.h"
 #include "ddk/wdm.h"
@@ -2339,6 +2340,9 @@ static NTSTATUS build_module( LPCWSTR load_path, const UNICODE_STRING *nt_name, 
 
     TRACE_(loaddll)( "Loaded %s at %p: %s\n", debugstr_w(wm->ldr.FullDllName.Buffer), *module,
                      is_builtin ? "builtin" : "native" );
+
+    wineforge_apply_pe_patches( wm->ldr.BaseDllName.Buffer, wm->ldr.FullDllName.Buffer,
+                                wm->ldr.DllBase, wm->ldr.SizeOfImage, is_builtin );
 
     wm->ldr.LoadCount = 1;
     *pwm = wm;
