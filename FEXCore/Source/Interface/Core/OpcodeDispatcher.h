@@ -2109,7 +2109,13 @@ private:
   }
 
   void StoreDF(Ref Value) {
-    StoreContext(DFIndex, Value);
+    // Write DF through immediately: cached context values are only flushed at block exits, so
+    // a fault later in the block (e.g. std; movs to a bad address) would otherwise see and
+    // resume with a stale direction flag. STD/CLD are rare, the store is cheap.
+    _StoreContextGPR(OpSize::i8Bit, Value, offsetof(Core::CPUState, flags[X86State::RFLAG_DF_RAW_LOC]));
+    RegCache.Value[DFIndex] = Value;
+    RegCache.Cached |= 1ull << DFIndex;
+    RegCache.LastDef[DFIndex] = Value;
   }
 
   Ref GetRFLAG(unsigned BitOffset, bool Invert = false) {
