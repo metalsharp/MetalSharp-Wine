@@ -396,8 +396,27 @@ void OpDispatchBuilder::PUSHSegmentOp(OpcodeArgs, uint32_t SegmentReg) {
 }
 
 void OpDispatchBuilder::POPOp(OpcodeArgs) {
-  Ref Value = Pop(OpSizeFromSrc(Op));
+  const auto& Dest = Op->Dest;
+  const bool DestUsesRSP = (Dest.IsGPRIndirect() && Dest.Data.GPRIndirect.GPR == X86State::REG_RSP) ||
+                           (Dest.IsSIB() && (Dest.Data.SIB.Base == X86State::REG_RSP || Dest.Data.SIB.Index == X86State::REG_RSP));
+
+  if (Dest.IsGPR() || DestUsesRSP) {
+    // Register destination can't fault; an RSP-relative destination address is computed with the
+    // incremented RSP, so update it first.
+    Ref Value = Pop(OpSizeFromSrc(Op));
+    StoreResultGPR(Op, Value);
+    return;
+  }
+
+  // Memory destination: if the store faults the instruction must not have completed, so only
+  // commit the new RSP once the store is done (pop (%rax) with a bad rax must preserve RSP).
+  // Not using _Pop here: its RMW stack pointer operand is the guest RSP register itself. The new
+  // RSP is computed after the store so the register allocator can't write it to RSP early.
+  const auto Size = OpSizeFromSrc(Op);
+  Ref OldSP = LoadGPRRegister(X86State::REG_RSP);
+  Ref Value = _LoadMemGPRAutoTSO(Size, OldSP, Size);
   StoreResultGPR(Op, Value);
+  StoreGPRRegister(X86State::REG_RSP, Add(GetGPROpSize(), OldSP, IR::OpSizeToSize(Size)));
 }
 
 void OpDispatchBuilder::POPAOp(OpcodeArgs) {
