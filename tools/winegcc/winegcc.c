@@ -592,7 +592,12 @@ static struct strarray get_link_args( const char *output_name )
 
         if (strip) strarray_add( &link_args, "-s" );
 
-        if (!try_link( link_args, "-Wl,-Xlink=-filealign:0x1000,-Xlink=-align:0x1000,-Xlink=-driver" ))
+        /* the link probe can't work for ARM64EC: without default libs its entry thunk misses
+         * __os_arm64x_dispatch_ret, and any lld able to link ARM64EC supports the mingw syntax */
+        if (target.cpu == CPU_ARM64EC)
+            strarray_add( &link_args, strmake( "-Wl,--file-alignment,%s,--section-alignment,%s",
+                                               file_align, section_align ));
+        else if (!try_link( link_args, "-Wl,-Xlink=-filealign:0x1000,-Xlink=-align:0x1000,-Xlink=-driver" ))
             /* lld from llvm 10 does not support mingw style --file-alignment,
              * but it's possible to use msvc syntax
              * the -driver option is needed to silence a warning about using -align */
