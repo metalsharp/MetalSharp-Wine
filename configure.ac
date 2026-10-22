@@ -988,7 +988,16 @@ case $host_os in
     AC_SUBST(SECURITY_LIBS,"-framework Security -framework CoreFoundation")
     AC_SUBST(SYSTEMCONFIGURATION_LIBS,"-framework SystemConfiguration")
 
-    WINELOADER_LDFLAGS="-Wl,-segalign,0x1000,-pagezero_size,0x1000,-sectcreate,__TEXT,__info_plist,loader/wine_info.plist"
+    case $HOST_ARCH in
+      aarch64)
+        dnl arm64 macOS enforces a PAGEZERO of at least 4G, so keep the default one.
+        dnl The kernel preserves x18 (the Windows TEB register) only for main executables
+        dnl whose LC_BUILD_VERSION sdk is 12.0 or older; minos is unaffected.
+        wine_darwin_minos=${MACOSX_DEPLOYMENT_TARGET:-11.0}
+        WINELOADER_LDFLAGS="-Wl,-sectcreate,__TEXT,__info_plist,loader/wine_info.plist -Wl,-platform_version,macos,$wine_darwin_minos,12.0" ;;
+      *)
+        WINELOADER_LDFLAGS="-Wl,-segalign,0x1000,-pagezero_size,0x1000,-sectcreate,__TEXT,__info_plist,loader/wine_info.plist" ;;
+    esac
 
     case $HOST_ARCH in
       x86_64)
@@ -1259,8 +1268,12 @@ then
     WINE_PACKAGE_FLAGS(EGL,[egl],[-lEGL],,,
         [WINE_CHECK_SONAME(EGL,eglGetProcAddress)])
 fi
-WINE_NOTICE_WITH(opengl, [test -z "$ac_cv_lib_soname_EGL"],
-    [EGL ${notice_platform}development files not found])
+dnl macOS provides OpenGL through CGL in winemac.drv; EGL is only needed by X11/Wayland.
+case $host_os in
+  darwin*) ;;
+  *) WINE_NOTICE_WITH(opengl, [test -z "$ac_cv_lib_soname_EGL"],
+         [EGL ${notice_platform}development files not found]) ;;
+esac
 
 dnl **** Check for X11 ****
 

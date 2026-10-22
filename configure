@@ -12405,7 +12405,13 @@ case $host_os in
     SYSTEMCONFIGURATION_LIBS="-framework SystemConfiguration"
 
 
-    WINELOADER_LDFLAGS="-Wl,-segalign,0x1000,-pagezero_size,0x1000,-sectcreate,__TEXT,__info_plist,loader/wine_info.plist"
+    case $HOST_ARCH in
+      aarch64)
+                                wine_darwin_minos=${MACOSX_DEPLOYMENT_TARGET:-11.0}
+        WINELOADER_LDFLAGS="-Wl,-sectcreate,__TEXT,__info_plist,loader/wine_info.plist -Wl,-platform_version,macos,$wine_darwin_minos,12.0" ;;
+      *)
+        WINELOADER_LDFLAGS="-Wl,-segalign,0x1000,-pagezero_size,0x1000,-sectcreate,__TEXT,__info_plist,loader/wine_info.plist" ;;
+    esac
 
     case $HOST_ARCH in
       x86_64)
@@ -14762,7 +14768,9 @@ LIBS=$ac_save_pkg_LIBS
 fi
 
 fi
-if test -z "$ac_cv_lib_soname_EGL"
+case $host_os in
+  darwin*) ;;
+  *) if test -z "$ac_cv_lib_soname_EGL"
 then :
   case "x$with_opengl" in
   x)   as_fn_append wine_notices "|EGL ${notice_platform}development files not found" ;;
@@ -14771,7 +14779,8 @@ then :
 This is an error since --with-opengl was requested." "$LINENO" 5 ;;
 esac
 
-fi
+fi ;;
+esac
 
 
 ac_ext=c
