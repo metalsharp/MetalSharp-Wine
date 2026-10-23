@@ -28,19 +28,44 @@ It runs ARM64, x86_64 and 32-bit x86 Windows programs, with Direct3D 9 through 1
 - `MetalSharp-Wine-2.0-arm64.zip`: the signed and notarized `MetalSharp-Wine.app`. Use this one; i386 needs it.
 - `metalsharp-wine-2.0-arm64.tar.xz`: the same Wine as a relocatable folder (`bin/wine`). It is ad-hoc signed, so x86_64 and ARM64 only.
 
-```bash
-MetalSharp-Wine.app/Contents/MacOS/wine --version
-```
+## Use It: 
 
-```bash
-WINEPREFIX=~/my-prefix MetalSharp-Wine.app/Contents/MacOS/wine winecfg
-```
+It's a lot like Sakiragur in its current state until it is included with MetalSharp where it's just a 'Play' option inside the launcher. 
 
-```bash
-WINEPREFIX=~/my-prefix MetalSharp-Wine.app/Contents/MacOS/wine some-program.exe
-```
+1) Download the .zip and move the .app from inside into /applications. 
 
-`wine --version` reports `wine-11.20-… (MetalSharp Wine 2.0)`. New prefixes use FEX automatically.
+Terminal Commands: 
+
+2) First point a shell variable at the Wine Inside the app:
+
+'export WINE=/Applications/MetalSharp-Wine.app/Contents/MacOS/wine'
+
+3) Create a prefix: 
+
+'WINEPREFIX=~/Games/my-prefix $WINE wineboot -i'
+
+(It takes a minute the first time. The prefix comes with Wine Mono (.NET), Gecko and the core fonts already set up, and x86 programs run through FEX automatically). 
+
+4) Run an installer or game by passing the .exe path: 
+
+'WINEPREFIX=~/Games/my-prefix $WINE ~/Downloads/setup.exe' 
+
+'WINEPREFIX=~/Games/my-prefix $WINE "C:\\Program Files\\MyGame\\Game.exe"' 
+
+4.1) Running from inside the game’s folder also works and helps some games find their files:
+
+ 'cd ~/Games/my-prefix/drive_c/Program\ Files/MyGame && WINEPREFIX=~/Games/my-prefix $WINE Game.exe' 
+
+5) For Steam: run SteamSetup.exe (from Valve, or share/metalsharp/steam inside the app) the same way, then start Steam with: 
+
+'WINEPREFIX=~/Games/my-prefix $WINE "C:\\Program Files (x86)\\Steam\\steam.exe"' 
+
+6) Useful switches, set before the $WINE command like WINEPREFIX: 
+
+* Direct3D: Mullion on Metal is the default. GRAPHICS_BACKEND=dxvk uses DXVK (x86_64 games only), and GRAPHICS_BACKEND=wine uses Wine’s own wined3d.
+* OpenGL: WineMetalGL 4.6 is the default. OPENGL_BACKEND=wine switches back to Wine’s own.
+* Sync: WINEMSYNC=1 turns on msync, which helps performance.
+* Settings: WINEPREFIX=~/Games/my-prefix $WINE winecfg opens Wine’s settings.
 
 ## What's included
 
