@@ -10,6 +10,7 @@
  */
 
 #include <stdarg.h>
+#include <string.h>
 
 #include "windef.h"
 #include "winbase.h"
@@ -111,6 +112,27 @@ static BOOL process_matches( const WCHAR *app_name, const WCHAR *cmd_line,
               string_contains_ci( cmd_line, policy->path_alt ))));
 }
 
+/* MetalSharp: a Chromium browser (CEF, Chrome, Edge/WebView2) has one of these next to its exe */
+static BOOL is_chromium_browser( const WCHAR *app_name )
+{
+    static const WCHAR *const markers[] = { L"libcef.dll", L"chrome_elf.dll", L"msedge_elf.dll" };
+    const WCHAR *name = app_name, *p;
+    WCHAR path[MAX_PATH];
+    unsigned int i, dir_len;
+
+    if (!app_name) return FALSE;
+    for (p = app_name; *p; p++) if (*p == '\\' || *p == '/') name = p + 1;
+    dir_len = name - app_name;
+    for (i = 0; i < ARRAY_SIZE(markers); i++)
+    {
+        if (dir_len + lstrlenW( markers[i] ) >= MAX_PATH) continue;
+        memcpy( path, app_name, dir_len * sizeof(WCHAR) );
+        lstrcpyW( path + dir_len, markers[i] );
+        if (GetFileAttributesW( path ) != INVALID_FILE_ATTRIBUTES) return TRUE;
+    }
+    return FALSE;
+}
+
 const WCHAR *get_launcher_process_args( const WCHAR *app_name, const WCHAR *cmd_line )
 {
     unsigned int i, j;
@@ -129,5 +151,11 @@ const WCHAR *get_launcher_process_args( const WCHAR *app_name, const WCHAR *cmd_
             if (string_contains_ci( cmd_line, policy->blocked_args[j] )) return NULL;
         return policy->append_args;
     }
+
+    /* MetalSharp: any other Chromium browser process. Its GPU process can't draw into the
+     * browser's windows on macOS (they stay blank), so keep the GPU thread in process. */
+    if (!string_contains_ci( cmd_line, L"--type=" ) && !string_contains_ci( cmd_line, L"--in-process-gpu" ) &&
+        is_chromium_browser( app_name ))
+        return L" --in-process-gpu";
     return NULL;
 }

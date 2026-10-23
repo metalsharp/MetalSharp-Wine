@@ -1874,6 +1874,54 @@ static void init_peb( RTL_USER_PROCESS_PARAMETERS *params, BOOL debugged )
  *
  * Build process parameters from scratch, for processes without a parent.
  */
+#ifdef __APPLE__
+static BOOL wide_starts_with_ascii( const WCHAR *str, const char *prefix )
+{
+    while (*prefix) if (*str++ != (unsigned char)*prefix++) return FALSE;
+    return TRUE;
+}
+
+/* MetalSharp: Chromium's GPU process (CEF, Chrome, Edge/WebView2) can't draw into the browser
+ * process's windows on macOS, which leaves them blank, so a Chromium browser process started
+ * directly gets --in-process-gpu. kernelbase does the same for one started by CreateProcess. */
+static WCHAR **chromium_in_process_gpu( WCHAR **wargv )
+{
+    static const char *const markers[] = { "libcef.dll", "chrome_elf.dll", "msedge_elf.dll" };
+    static const char flag[] = "--in-process-gpu";
+    const WCHAR *name = wargv[0], *p;
+    WCHAR path[MAX_PATH], **ret;
+    unsigned int argc, i, j, dir_len;
+    char *unix_name;
+    BOOL found = FALSE;
+
+    for (argc = 1; wargv[argc]; argc++)
+        if (wide_starts_with_ascii( wargv[argc], "--type=" ) || wide_starts_with_ascii( wargv[argc], flag ))
+            return wargv;
+    for (p = wargv[0]; *p; p++) if (*p == '\\' || *p == '/') name = p + 1;
+    dir_len = name - wargv[0];
+    for (i = 0; i < ARRAY_SIZE(markers) && !found; i++)
+    {
+        if (dir_len + strlen( markers[i] ) >= MAX_PATH) continue;
+        memcpy( path, wargv[0], dir_len * sizeof(WCHAR) );
+        for (j = 0; markers[i][j]; j++) path[dir_len + j] = (unsigned char)markers[i][j];
+        path[dir_len + j] = 0;
+        if (ntdll_get_unix_file_name( path, &unix_name, FILE_OPEN )) continue;
+        free( unix_name );
+        found = TRUE;
+    }
+    if (!found) return wargv;
+
+    /* the old array stays allocated: its strings are still referenced */
+    if (!(ret = malloc( (argc + 2) * sizeof(*ret) + sizeof(flag) * sizeof(WCHAR) ))) return wargv;
+    memcpy( ret, wargv, argc * sizeof(*ret) );
+    ret[argc] = (WCHAR *)(ret + argc + 2);
+    for (j = 0; j < sizeof(flag); j++) ret[argc][j] = (unsigned char)flag[j];
+    ret[argc + 1] = NULL;
+    TRACE( "Chromium browser %s: adding %s\n", debugstr_w(wargv[0]), flag );
+    return ret;
+}
+#endif
+
 static RTL_USER_PROCESS_PARAMETERS *build_initial_params(void)
 {
     static const WCHAR valueW[] = {'1',0};
@@ -1948,6 +1996,9 @@ static RTL_USER_PROCESS_PARAMETERS *build_initial_params(void)
     virtual_alloc_first_teb();
 
     main_wargv = build_wargv( get_dos_path( nt_name.Buffer ));
+#ifdef __APPLE__
+    main_wargv = chromium_in_process_gpu( main_wargv );
+#endif
     cmdline = build_command_line( main_wargv );
 
     TRACE( "image %s cmdline %s dir %s\n",
