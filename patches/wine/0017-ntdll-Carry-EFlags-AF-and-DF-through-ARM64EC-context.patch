@@ -1,0 +1,37 @@
+From d5440cb0ea94a348481fd398650ac666f2bcf61c Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Thu, 22 Oct 2026 07:10:47 -0600
+Subject: [PATCH 17/55] ntdll: Carry EFlags AF and DF through ARM64EC contexts.
+
+They have no NZCV equivalent; keep them in RES0 CPSR bits 16 and 17, which are
+never written to the hardware PSTATE.
+---
+ dlls/ntdll/unwind.h | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/dlls/ntdll/unwind.h b/dlls/ntdll/unwind.h
+index 18527088d0a..a57a081d075 100644
+--- a/dlls/ntdll/unwind.h
++++ b/dlls/ntdll/unwind.h
+@@ -62,6 +62,9 @@ static inline UINT eflags_to_cpsr( UINT eflags )
+     if (eflags & 0x0080) ret |= 0x80000000;  /* negative */
+     if (eflags & 0x0100) ret |= 0x00200000;  /* trap */
+     if (eflags & 0x0800) ret |= 0x10000000;  /* overflow */
++    /* not representable in NZCV: kept in RES0 bits, which never reach the hardware PSTATE */
++    if (eflags & 0x0010) ret |= 0x00020000;  /* auxiliary carry */
++    if (eflags & 0x0400) ret |= 0x00010000;  /* direction */
+     return ret;
+ }
+ 
+@@ -74,6 +77,8 @@ static inline UINT cpsr_to_eflags( UINT cpsr )
+     if (cpsr & 0x20000000) ret |= 0x0001;  /* carry */
+     if (cpsr & 0x40000000) ret |= 0x0040;  /* zero */
+     if (cpsr & 0x80000000) ret |= 0x0080;  /* negative */
++    if (cpsr & 0x00020000) ret |= 0x0010;  /* auxiliary carry */
++    if (cpsr & 0x00010000) ret |= 0x0400;  /* direction */
+     return ret;
+ }
+ 
+-- 
+2.54.0 (Apple Git-157)
+

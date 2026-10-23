@@ -1,0 +1,71 @@
+From b96686d0a181868c4cff1fbbc895c1dc03efe1d7 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Thu, 22 Oct 2026 04:21:42 -0600
+Subject: [PATCH 1/7] Windows: Rebase constant loads from a relocated
+ KUSER_SHARED_DATA at JIT time.
+
+Wine on macOS without the low-4GB remapping entitlement maps the shared user data
+page above PAGEZERO and exports its address as __wine_user_shared_data. Rebase
+constant-address 64-bit guest loads from 0x7ffe0000 by that delta instead of
+taking a fault per access (1.7us -> 0.3ns per read).
+---
+ FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp | 6 ++++++
+ FEXCore/include/FEXCore/Core/HostFeatures.h        | 5 +++++
+ Source/Windows/Common/CPUFeatures.cpp              | 9 +++++++++
+ 3 files changed, 20 insertions(+)
+
+diff --git a/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp b/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
+index 8dc605ca7..205b3e321 100644
+--- a/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
++++ b/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
+@@ -4435,6 +4435,12 @@ AddressMode OpDispatchBuilder::DecodeAddress(const X86Tables::DecodedOp& Op, con
+     LOGMAN_MSG_A_FMT("Unknown Src Type: {}\n", Operand.Type);
+   }
+ 
++  // Constant loads from a relocated KUSER_SHARED_DATA page go straight to its real address.
++  if (IsLoad && CTX->HostFeatures.KUSERSharedDataDelta && !A.Base && !A.Index && !A.Segment && A.AddrSize == OpSize::i64Bit &&
++      static_cast<uint64_t>(A.Offset) - 0x7ffe0000 < 0x1000) {
++    A.Offset += CTX->HostFeatures.KUSERSharedDataDelta;
++  }
++
+   return A;
+ }
+ 
+diff --git a/FEXCore/include/FEXCore/Core/HostFeatures.h b/FEXCore/include/FEXCore/Core/HostFeatures.h
+index 9708cd968..b401cfe1c 100644
+--- a/FEXCore/include/FEXCore/Core/HostFeatures.h
++++ b/FEXCore/include/FEXCore/Core/HostFeatures.h
+@@ -97,5 +97,10 @@ struct HostFeatures {
+   // The Linux PID of this process. Useful for punching through perf-top information.
+   uint32_t ProcessPID {};
+   uint32_t pad2 {};
++
++  // Wine on hosts that can't map the low 4GB (macOS without the remapping entitlement) moves
++  // KUSER_SHARED_DATA away from 0x7ffe0000. Constant-address guest loads from that page are
++  // rebased by this delta at JIT time; other accesses are emulated by Wine's fault handler.
++  uint64_t KUSERSharedDataDelta {};
+ };
+ } // namespace FEXCore
+diff --git a/Source/Windows/Common/CPUFeatures.cpp b/Source/Windows/Common/CPUFeatures.cpp
+index c033db8af..1a0001c6b 100644
+--- a/Source/Windows/Common/CPUFeatures.cpp
++++ b/Source/Windows/Common/CPUFeatures.cpp
+@@ -86,6 +86,15 @@ FEXCore::HostFeatures CPUFeatures::FetchHostFeatures(bool IsWine, FEXCore::HostF
+   HostFeatures.HostType = HostType;
+   HostFeatures.ProcessPID = ProcessPID;
+ 
++  if (IsWine) {
++    // Wine exports the actual address of the shared user data page, see HostFeatures::KUSERSharedDataDelta.
++    const auto* SharedData =
++      reinterpret_cast<void* const*>(GetProcAddress(GetModuleHandleA("ntdll.dll"), "__wine_user_shared_data"));
++    if (SharedData) {
++      HostFeatures.KUSERSharedDataDelta = reinterpret_cast<uint64_t>(*SharedData) - 0x7ffe0000;
++    }
++  }
++
+   if (HostType == FEXCore::HostFeatures::HostTypeEnum::Wow64) {
+     // AVX is unsupported for WOW64
+     HostFeatures.SupportsAVX = false;
+-- 
+2.54.0 (Apple Git-157)
+

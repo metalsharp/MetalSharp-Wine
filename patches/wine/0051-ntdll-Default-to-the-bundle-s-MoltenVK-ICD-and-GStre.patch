@@ -1,0 +1,48 @@
+From 66613516d6c64652ecfb852338ec114ef80d232f Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Thu, 22 Oct 2026 18:06:45 -0600
+Subject: [PATCH 51/55] ntdll: Default to the bundle's MoltenVK ICD and
+ GStreamer plugins.
+
+A relocatable bundle started without the launcher script (Wine.app runs the loader directly)
+found no Vulkan driver (VK_ERROR_INCOMPATIBLE_DRIVER) and no GStreamer plugins. Set
+VK_DRIVER_FILES, GST_PLUGIN_SYSTEM_PATH_1_0 and GST_PLUGIN_SCANNER_1_0 to the bundle's own
+when they are not set.
+---
+ dlls/ntdll/unix/loader.c | 20 ++++++++++++++++++++
+ 1 file changed, 20 insertions(+)
+
+diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
+index 6a2023b112d..814673e320a 100644
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -299,6 +299,26 @@ static void set_dll_path(void)
+     int i, count = 0;
+ 
+ #ifdef __APPLE__
++    /* a relocatable bundle's own MoltenVK and GStreamer plugins, unless the environment
++     * already chooses (the dist launcher script did this; Wine.app runs the loader directly) */
++    if (dll_dir)
++    {
++        static const struct { const char *var, *path; } bundled[] =
++        {
++            { "VK_DRIVER_FILES",            "../../share/vulkan/icd.d/MoltenVK_icd.json" },
++            { "GST_PLUGIN_SYSTEM_PATH_1_0", "../gstreamer-1.0" },
++            { "GST_PLUGIN_SCANNER_1_0",     "../../libexec/gstreamer-1.0/gst-plugin-scanner" },
++        };
++        char *value;
++
++        for (i = 0; i < ARRAY_SIZE(bundled); i++)
++        {
++            if (getenv( bundled[i].var ) || asprintf( &value, "%s/%s", dll_dir, bundled[i].path ) == -1) continue;
++            if (!access( value, R_OK )) setenv( bundled[i].var, value, 0 );
++            free( value );
++        }
++    }
++
+     /* default to the Mullion (DXMT) runtime bundled next to Wine's own modules */
+     if (!getenv( "DXMT_RUNTIME_DIR" ) && dll_dir)
+     {
+-- 
+2.54.0 (Apple Git-157)
+

@@ -1,0 +1,6 @@
+FEX fork base: tag FEX-2610 (e8e44d10a4eb9a394e59fe1437e7e845bc04c21c), branch metalsharp.
+Apply with: git -C src/FEX am ../../patches/fex/*.patch
+
+These patches were written with AI assistance. FEX does not accept AI-generated contributions
+(see CLAUDE.md/AGENTS.md in the FEX repository), so they must not be submitted upstream; this
+fork is maintained here only.

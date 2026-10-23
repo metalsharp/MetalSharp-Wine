@@ -1,0 +1,67 @@
+From 1186437512302425e115eca0ae1e90ad3f64fa10 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Thu, 22 Oct 2026 13:53:45 -0600
+Subject: [PATCH 25/55] win32u: Keep WM_PAINT fair for WS_EX_COMPOSITED
+ windows.
+
+From WineForge/MetalSharp.
+
+(cherry picked from commit b9216a152178cb289fd3b782509b2059e8324990)
+---
+ dlls/win32u/message.c | 33 +++++++++++++++++++++++++++++++++
+ 1 file changed, 33 insertions(+)
+
+diff --git a/dlls/win32u/message.c b/dlls/win32u/message.c
+index 6b9d44c4446..646126ec0e4 100644
+--- a/dlls/win32u/message.c
++++ b/dlls/win32u/message.c
+@@ -2955,6 +2955,9 @@ static BOOL check_queue_bits( UINT wake_mask, UINT changed_mask, UINT signal_bit
+  */
+ static int peek_message( MSG *msg, const struct peek_message_filter *filter )
+ {
++    /* MetalSharp-Internal: win32u-composited-paint-fairness-v1. */
++    static __thread HWND repeated_paint_hwnd;
++    static __thread unsigned int repeated_paint_count;
+     LRESULT result;
+     HWND hwnd = filter->hwnd;
+     UINT first = filter->first, last = filter->last, flags = filter->flags;
+@@ -3232,6 +3235,36 @@ static int peek_message( MSG *msg, const struct peek_message_filter *filter )
+             {
+                 if (!(flags & PM_NOYIELD) && idle_event) NtSetEvent( idle_event, NULL );
+             }
++            /* MetalSharp-Internal: win32u-composited-paint-fairness-v1. */
++            if (info.msg.message == WM_PAINT && (flags & PM_REMOVE) &&
++                first == 0 && last == ~0U && (flags & PM_QS_PAINT))
++            {
++                if (info.msg.hwnd == repeated_paint_hwnd) repeated_paint_count++;
++                else
++                {
++                    repeated_paint_hwnd = info.msg.hwnd;
++                    repeated_paint_count = 1;
++                }
++
++                if (repeated_paint_count >= 8)
++                {
++                    UINT exstyle = get_window_long( info.msg.hwnd, GWL_EXSTYLE );
++
++                    repeated_paint_count = 0;
++                    if (exstyle & WS_EX_COMPOSITED)
++                    {
++                        send_message( info.msg.hwnd, info.msg.message,
++                                      info.msg.wParam, info.msg.lParam );
++                        flags &= ~PM_QS_PAINT;
++                        continue;
++                    }
++                }
++            }
++            else if (info.msg.message != WM_PAINT)
++            {
++                repeated_paint_hwnd = 0;
++                repeated_paint_count = 0;
++            }
+             *msg = info.msg;
+             msg->pt = point_phys_to_win_dpi( info.msg.hwnd, info.msg.pt );
+             thread_info->message_pos   = MAKELONG( msg->pt.x, msg->pt.y );
+-- 
+2.54.0 (Apple Git-157)
+

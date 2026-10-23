@@ -1,8 +1,0 @@
-{
-  "ICD": {
-    "api_version": "1.4.0",
-    "is_portability_driver": true,
-    "library_path": "/Volumes/AverySSD/VKMT/third_party/MoltenVK/Package/Release/MoltenVK/dynamic/dylib/macOS/libMoltenVK.dylib"
-  },
-  "file_format_version": "1.0.0"
-}

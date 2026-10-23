@@ -1,0 +1,25 @@
+From 9b428ad3531a63bcaacffe09aef48a4b80fbe1bd Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Thu, 22 Oct 2026 14:27:28 -0600
+Subject: [PATCH 44/55] steam.exe: Drop another dead jsoncpp amalgamation
+ include.
+
+---
+ programs/steam.exe/jsoncpp.cpp | 1 -
+ 1 file changed, 1 deletion(-)
+
+diff --git a/programs/steam.exe/jsoncpp.cpp b/programs/steam.exe/jsoncpp.cpp
+index 637b9731969..28c6f296874 100644
+--- a/programs/steam.exe/jsoncpp.cpp
++++ b/programs/steam.exe/jsoncpp.cpp
+@@ -2584,7 +2584,6 @@ static inline void releaseStringValue(char* value) { free(value); }
+ // //////////////////////////////////////////////////////////////////
+ #if !defined(JSON_IS_AMALGAMATION)
+ 
+-#include "json_valueiterator.inl"
+ #endif // if !defined(JSON_IS_AMALGAMATION)
+ 
+ namespace Json {
+-- 
+2.54.0 (Apple Git-157)
+

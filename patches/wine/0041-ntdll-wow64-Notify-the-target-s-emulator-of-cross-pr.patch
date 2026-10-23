@@ -1,0 +1,72 @@
+From 1f4921b5a8decd090fbe1ae4e1cb78fea743a6a1 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Thu, 22 Oct 2026 14:01:21 -0600
+Subject: [PATCH 41/55] ntdll, wow64: Notify the target's emulator of
+ cross-process NtWriteVirtualMemory.
+
+Injectors (overlays, launchers, debuggers) that patch code with NtWriteVirtualMemory
+instead of WriteProcessMemory left stale translations in the target's FEX. Send
+CrossProcessMemoryWrite so the emulator drops them, as Windows does.
+---
+ dlls/ntdll/signal_arm64ec.c | 17 ++++++++++++++++-
+ dlls/wow64/virtual.c        |  3 +++
+ 2 files changed, 19 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/ntdll/signal_arm64ec.c b/dlls/ntdll/signal_arm64ec.c
+index 1a8174e7d71..c942dc374d2 100644
+--- a/dlls/ntdll/signal_arm64ec.c
++++ b/dlls/ntdll/signal_arm64ec.c
+@@ -433,6 +433,7 @@ DEFINE_SYSCALL(NtFindAtom, (const WCHAR *name, ULONG length, RTL_ATOM *atom))
+ DEFINE_SYSCALL(NtFlushBuffersFile, (HANDLE handle, IO_STATUS_BLOCK *io))
+ DEFINE_SYSCALL(NtFlushBuffersFileEx, (HANDLE handle, ULONG flags, void *params, ULONG size, IO_STATUS_BLOCK *io))
+ DEFINE_WRAPPED_SYSCALL(NtFlushInstructionCache, (HANDLE handle, const void *addr, SIZE_T size))
++DEFINE_WRAPPED_SYSCALL(NtWriteVirtualMemory, (HANDLE process, void *addr, const void *buffer, SIZE_T size, SIZE_T *bytes_written))
+ DEFINE_SYSCALL(NtFlushKey, (HANDLE key))
+ DEFINE_SYSCALL(NtFlushProcessWriteBuffers, (void))
+ DEFINE_SYSCALL(NtFlushVirtualMemory, (HANDLE process, LPCVOID *addr_ptr, SIZE_T *size_ptr, IO_STATUS_BLOCK *io))
+@@ -611,7 +612,6 @@ DEFINE_SYSCALL(NtWorkerFactoryWorkerReady, (HANDLE handle))
+ DEFINE_SYSCALL(NtWriteFile, (HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc_user, IO_STATUS_BLOCK *io, const void *buffer, ULONG length, LARGE_INTEGER *offset, ULONG *key))
+ DEFINE_SYSCALL(NtWriteFileGather, (HANDLE file, HANDLE event, PIO_APC_ROUTINE apc, void *apc_user, IO_STATUS_BLOCK *io, FILE_SEGMENT_ELEMENT *segments, ULONG length, LARGE_INTEGER *offset, ULONG *key))
+ DEFINE_SYSCALL(NtWriteRequestData, (HANDLE handle, LPC_MESSAGE *request, ULONG id, void *buffer, ULONG len, ULONG *retlen))
+-DEFINE_SYSCALL(NtWriteVirtualMemory, (HANDLE process, void *addr, const void *buffer, SIZE_T size, SIZE_T *bytes_written))
+ DEFINE_SYSCALL(NtYieldExecution, (void))
+ 
+ NTSTATUS SYSCALL_API NtAllocateVirtualMemory( HANDLE process, PVOID *ret, ULONG_PTR zero_bits,
+@@ -680,6 +680,21 @@ NTSTATUS SYSCALL_API NtContinueEx( CONTEXT *context, KCONTINUE_ARGUMENT *args )
+     return syscall_NtContinueEx( &arm_ctx, args );
+ }
+ 
++NTSTATUS SYSCALL_API NtWriteVirtualMemory( HANDLE process, void *addr, const void *buffer, SIZE_T size,
++                                           SIZE_T *bytes_written )
++{
++    NTSTATUS status = syscall_NtWriteVirtualMemory( process, addr, buffer, size, bytes_written );
++
++    /* Let the target's emulator drop translations of code an injector (overlay, launcher,
++     * debugger) wrote with plain NtWriteVirtualMemory instead of WriteProcessMemory. */
++    if (!status && size && !RtlIsCurrentProcess( process ) && enter_syscall_callback())
++    {
++        send_cross_process_notification( process, CrossProcessMemoryWrite, addr, size, 0 );
++        leave_syscall_callback();
++    }
++    return status;
++}
++
+ NTSTATUS SYSCALL_API NtFlushInstructionCache( HANDLE process, const void *addr, SIZE_T size )
+ {
+     NTSTATUS status = syscall_NtFlushInstructionCache( process, addr, size );
+diff --git a/dlls/wow64/virtual.c b/dlls/wow64/virtual.c
+index 605abe1804c..6f692f3a12c 100644
+--- a/dlls/wow64/virtual.c
++++ b/dlls/wow64/virtual.c
+@@ -939,5 +939,8 @@ NTSTATUS WINAPI wow64_NtWriteVirtualMemory( UINT *args )
+ 
+     status = NtWriteVirtualMemory( process, addr, buffer, size, &ret_size );
+     put_size( retlen, ret_size );
++    /* let the target's emulator drop translations of code written into it */
++    if (!status && size && !RtlIsCurrentProcess( process ))
++        send_cross_process_notification( process, CrossProcessMemoryWrite, addr, size, 0 );
+     return status;
+ }
+-- 
+2.54.0 (Apple Git-157)
+

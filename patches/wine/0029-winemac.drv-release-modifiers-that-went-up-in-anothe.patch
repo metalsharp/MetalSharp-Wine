@@ -1,0 +1,160 @@
+From fdbf814e136b828cbfc63405d241e6046c5f6d48 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Sun, 18 Oct 2026 12:29:30 -0600
+Subject: [PATCH 29/55] winemac.drv: release modifiers that went up in another
+ application
+
+Wine maps Command to Alt. If Command went down while a Wine window had the
+keyboard and came up in another application (Command-Tab, Command-Space,
+or a process quit with Command-Q), the desktop's key state kept Alt down.
+Every later letter then became an Alt shortcut (WM_SYSKEYDOWN/WM_SYSCHAR),
+and DefWindowProc beeped for each one: WASD beeped in SpaceEngine.
+
+- A window becoming key syncs from the modifiers down now
+  (CGEventSourceFlagsState), not from the last flags-changed event the
+  application saw, which is stale after another application had the
+  keyboard.
+- A window getting focus releases the modifiers Windows holds down that
+  are up on the Mac, which also clears a key state left behind by a
+  process that is gone.
+
+(cherry picked from commit ba8c0b611ac0d7115c994245bd3dfb81e10f8197)
+---
+ dlls/winemac.drv/cocoa_window.m | 24 +++++++++++++++++++++
+ dlls/winemac.drv/keyboard.c     | 38 +++++++++++++++++++++++++++++++++
+ dlls/winemac.drv/macdrv.h       |  1 +
+ dlls/winemac.drv/macdrv_cocoa.h |  1 +
+ dlls/winemac.drv/window.c       |  2 ++
+ 5 files changed, 66 insertions(+)
+
+diff --git a/dlls/winemac.drv/cocoa_window.m b/dlls/winemac.drv/cocoa_window.m
+index e15f7083a4b..754fdf33f9b 100644
+--- a/dlls/winemac.drv/cocoa_window.m
++++ b/dlls/winemac.drv/cocoa_window.m
+@@ -173,6 +173,17 @@ static inline NSUInteger adjusted_modifiers_for_settings(NSUInteger modifiers)
+     return new_modifiers;
+ }
+ 
++/***********************************************************************
++ *              macdrv_get_modifier_flags
++ *
++ * The modifier keys down now, with the device-dependent flags, as the
++ * keyboard driver sees them (after the Option and Command settings).
++ */
++uint64_t macdrv_get_modifier_flags(void)
++{
++    return adjusted_modifiers_for_settings(CGEventSourceFlagsState(kCGEventSourceStateCombinedSessionState));
++}
++
+ static inline BOOL stage_manager_enabled(void)
+ {
+     /* There is no documented way to determine if Stage Manager is enabled,
+@@ -2676,6 +2687,19 @@ - (void)windowDidBecomeKey:(NSNotification *)notification
+     {
+         WineApplicationController* controller = [WineApplicationController sharedController];
+         NSEvent* event = [controller lastFlagsChanged];
++        CGEventRef current;
++
++        /* The last flags-changed event this application saw is stale when
++           modifiers changed while another application was active: Command
++           held to switch away (Command-Tab) stays down, as Alt, and letters
++           become Alt shortcuts that beep. Use the modifiers down now. */
++        if ((current = CGEventCreate(NULL)))
++        {
++            CGEventSetType(current, kCGEventFlagsChanged);
++            CGEventSetFlags(current, CGEventSourceFlagsState(kCGEventSourceStateCombinedSessionState));
++            event = [NSEvent eventWithCGEvent:current] ?: event;
++            CFRelease(current);
++        }
+         if (event)
+             [self flagsChanged:event];
+ 
+diff --git a/dlls/winemac.drv/keyboard.c b/dlls/winemac.drv/keyboard.c
+index 77b75aa0c6e..7f23d82a07e 100644
+--- a/dlls/winemac.drv/keyboard.c
++++ b/dlls/winemac.drv/keyboard.c
+@@ -1048,6 +1048,44 @@ void macdrv_keyboard_changed(const macdrv_event *event)
+ }
+ 
+ 
++/***********************************************************************
++ *              macdrv_release_stale_modifiers
++ *
++ * Releases the modifier keys that Windows holds down but that are up now:
++ * their key-up went to another application (Command held to switch away
++ * with Command-Tab, or a process that quit with Command-Q, leaves Alt down
++ * in the desktop's key state, and letters become Alt shortcuts that beep).
++ */
++void macdrv_release_stale_modifiers(void)
++{
++    static const struct
++    {
++        uint64_t mask;
++        WORD vkey, scan;
++    } keys[] = {
++        { NX_DEVICELCMDKEYMASK,   VK_LMENU,    0x38 },
++        { NX_DEVICERCMDKEYMASK,   VK_RMENU,    0x138 },
++        { NX_DEVICELCTLKEYMASK,   VK_LCONTROL, 0x1D },
++        { NX_DEVICERCTLKEYMASK,   VK_RCONTROL, 0x11D },
++        { NX_DEVICELSHIFTKEYMASK, VK_LSHIFT,   0x2A },
++        { NX_DEVICERSHIFTKEYMASK, VK_RSHIFT,   0x36 },
++    };
++    uint64_t modifiers = macdrv_get_modifier_flags();
++    BYTE keystate[256];
++    unsigned int i;
++
++    if (!NtUserGetAsyncKeyboardState(keystate)) return;
++    for (i = 0; i < ARRAY_SIZE(keys); i++)
++    {
++        if (!(keystate[keys[i].vkey] & 0x80) || (modifiers & keys[i].mask)) continue;
++        TRACE_(key)("releasing vkey 0x%04x, up since another application had the keyboard\n", keys[i].vkey);
++        macdrv_send_keyboard_input(NULL, keys[i].vkey, keys[i].scan & 0xff,
++                                   KEYEVENTF_KEYUP | ((keys[i].scan & 0x100) ? KEYEVENTF_EXTENDEDKEY : 0),
++                                   NtGetTickCount());
++    }
++}
++
++
+ /***********************************************************************
+  *              macdrv_hotkey_press
+  *
+diff --git a/dlls/winemac.drv/macdrv.h b/dlls/winemac.drv/macdrv.h
+index 89c498fee85..c81c577add1 100644
+--- a/dlls/winemac.drv/macdrv.h
++++ b/dlls/winemac.drv/macdrv.h
+@@ -293,6 +293,7 @@ extern void macdrv_ime_set_text(HWND hwnd, CFStringRef text, bool complete,
+ extern void macdrv_keyboard_changed(const macdrv_event *event);
+ extern void macdrv_key_event(HWND hwnd, const macdrv_event *event);
+ extern void macdrv_hotkey_press(const macdrv_event *event);
++extern void macdrv_release_stale_modifiers(void);
+ extern HKL macdrv_get_hkl_from_source(TISInputSourceRef input_source);
+ 
+ extern void macdrv_displays_changed(const macdrv_event *event);
+diff --git a/dlls/winemac.drv/macdrv_cocoa.h b/dlls/winemac.drv/macdrv_cocoa.h
+index 5157b38c2e9..e84b6473fa3 100644
+--- a/dlls/winemac.drv/macdrv_cocoa.h
++++ b/dlls/winemac.drv/macdrv_cocoa.h
+@@ -529,6 +529,7 @@ extern void macdrv_get_input_source_info(CFDataRef* uchr,CGEventSourceKeyboardTy
+ extern const CFStringRef macdrv_input_source_type_key;
+ extern const CFStringRef macdrv_input_source_lang_key;
+ extern int macdrv_layout_list_needs_update;
++extern uint64_t macdrv_get_modifier_flags(void);
+ 
+ 
+ /* clipboard */
+diff --git a/dlls/winemac.drv/window.c b/dlls/winemac.drv/window.c
+index 552971f55d0..5300a4cbac7 100644
+--- a/dlls/winemac.drv/window.c
++++ b/dlls/winemac.drv/window.c
+@@ -1802,6 +1802,8 @@ void macdrv_window_got_focus(HWND hwnd, const macdrv_event *event)
+           hwnd, event->window, event->window_got_focus.serial, NtUserIsWindowEnabled(hwnd),
+           NtUserIsWindowVisible(hwnd), style, get_focus(), get_active_window(), NtUserGetForegroundWindow());
+ 
++    macdrv_release_stale_modifiers();
++
+     if (can_window_become_foreground(hwnd) && !(style & WS_MINIMIZE))
+     {
+         TRACE("setting foreground window to %p\n", hwnd);
+-- 
+2.54.0 (Apple Git-157)
+

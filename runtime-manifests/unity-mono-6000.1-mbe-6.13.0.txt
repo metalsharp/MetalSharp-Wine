@@ -1,7 +1,0 @@
-Runtime: Unity Technologies Mono BleedingEdge 6.13.0
-Upstream: https://github.com/Unity-Technologies/mono/tree/unity-6000.1-mbe
-Revision: e350143e2a9d66fad73c5d575a874b9901978395
-Host artifacts: ARM64 macOS Mono SGen/Boehm native engine
-Installed path: dependencies/unity-mono/unity-6000.1-mbe-6.13.0
-Build: Unity build scripts with current Apple SDK compatibility fixes
-License: upstream Unity Technologies Mono and included third-party notices

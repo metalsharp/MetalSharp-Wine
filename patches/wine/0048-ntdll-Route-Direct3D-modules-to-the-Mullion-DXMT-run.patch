@@ -1,0 +1,795 @@
+From 55dcec0c2f353ae5211d123587ea229f75253a63 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Thu, 22 Oct 2026 16:07:42 -0600
+Subject: [PATCH 48/55] ntdll: Route Direct3D modules to the Mullion (DXMT)
+ runtime per process.
+
+From WineForge (graphics_policy, launcher_policy, dxmt_loader), adapted for arm64 hosts:
+- GRAPHICS_BACKEND/ACTIVE_GRAPHICS_BACKEND=dxmt routes dxgi, d3d10core, d3d11, d3d12,
+  d3d12core and winemetal to DXMT_RUNTIME_DIR, which defaults to the bundled lib/mullion.
+- The runtime is ARM64X (aarch64-windows) for native ARM64 and x86_64 (ARM64EC) processes,
+  i386-windows for WoW64; winemetal.so comes from aarch64-unix and is loaded immediately.
+- D3DMetal is x86_64-only and is mapped to Wine's own backend with a warning.
+- Launcher policies (Battle.net/Ubisoft to DXMT, software CEF detection) and the
+  Battle.net CEF renderer write-copy protection quirk come along.
+---
+ dlls/ntdll/Makefile.in            |   3 +
+ dlls/ntdll/unix/dxmt_loader.c     | 155 ++++++++++++++++++++++++
+ dlls/ntdll/unix/graphics_policy.c | 184 +++++++++++++++++++++++++++++
+ dlls/ntdll/unix/launcher_policy.c | 190 ++++++++++++++++++++++++++++++
+ dlls/ntdll/unix/loader.c          |  64 ++++++++++
+ dlls/ntdll/unix/unix_private.h    |  27 +++++
+ dlls/ntdll/unix/virtual.c         |  44 +++++++
+ 7 files changed, 667 insertions(+)
+ create mode 100644 dlls/ntdll/unix/dxmt_loader.c
+ create mode 100644 dlls/ntdll/unix/graphics_policy.c
+ create mode 100644 dlls/ntdll/unix/launcher_policy.c
+
+diff --git a/dlls/ntdll/Makefile.in b/dlls/ntdll/Makefile.in
+index 2eb563cb067..ab026bc74ea 100644
+--- a/dlls/ntdll/Makefile.in
++++ b/dlls/ntdll/Makefile.in
+@@ -54,7 +54,10 @@ SOURCES = \
+ 	unix/alpc.c \
+ 	unix/debug.c \
+ 	unix/env.c \
++	unix/dxmt_loader.c \
+ 	unix/file.c \
++	unix/graphics_policy.c \
++	unix/launcher_policy.c \
+ 	unix/loader.c \
+ 	unix/loadorder.c \
+ 	unix/msync.c \
+diff --git a/dlls/ntdll/unix/dxmt_loader.c b/dlls/ntdll/unix/dxmt_loader.c
+new file mode 100644
+index 00000000000..74aafacee91
+--- /dev/null
++++ b/dlls/ntdll/unix/dxmt_loader.c
+@@ -0,0 +1,155 @@
++/*
++ * DXMT runtime loader helpers
++ *
++ * WineForge-Internal: dxmt-runtime-loader-paths-v1.
++ *
++ * Copyright (C) 2026 Radim Vesely for WineForge
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#if 0
++#pragma makedep unix
++#endif
++
++#include "config.h"
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <unistd.h>
++
++#include "windef.h"
++#include "unix_private.h"
++
++#ifdef __APPLE__
++
++static const char *get_dxmt_runtime_dir(void)
++{
++    return getenv( "DXMT_RUNTIME_DIR" );
++}
++
++static const char *const dxmt_module_names[] =
++{
++    "dxgi.dll",
++    "d3d10core.dll",
++    "d3d11.dll",
++    "d3d12.dll",
++    "d3d12core.dll",
++    "nvapi64.dll",
++    "nvngx.dll",
++    "winemetal.dll",
++};
++
++BOOL dxmt_runtime_available(void)
++{
++    static const char *const required_files[] =
++    {
++        "aarch64-windows/dxgi.dll",
++        "aarch64-windows/d3d11.dll",
++        "aarch64-unix/winemetal.so",
++    };
++    const char *runtime_dir = get_dxmt_runtime_dir();
++    unsigned int i;
++    char *path;
++
++    if (!runtime_dir || !runtime_dir[0]) return FALSE;
++    for (i = 0; i < ARRAY_SIZE(required_files); i++)
++    {
++        if (asprintf( &path, "%s/%s", runtime_dir, required_files[i] ) == -1) return FALSE;
++        if (access( path, R_OK ))
++        {
++            free( path );
++            return FALSE;
++        }
++        free( path );
++    }
++    return TRUE;
++}
++
++BOOL is_dxmt_module_name( const char *path )
++{
++    const char *name = strrchr( path, '/' );
++    unsigned int i;
++
++    name = name ? name + 1 : path;
++    for (i = 0; i < ARRAY_SIZE(dxmt_module_names); i++)
++        if (!strcasecmp( name, dxmt_module_names[i] )) return TRUE;
++    return FALSE;
++}
++
++BOOL is_dxmt_module_basename( const WCHAR *name )
++{
++    unsigned int i;
++
++    for (i = 0; i < ARRAY_SIZE(dxmt_module_names); i++)
++    {
++        const char *module = dxmt_module_names[i];
++        size_t len = strlen( module ) - 4;
++        size_t pos;
++
++        for (pos = 0; pos < len && name[pos]; pos++)
++        {
++            WCHAR left = name[pos];
++            unsigned char right = module[pos];
++
++            if (left >= 'A' && left <= 'Z') left += 'a' - 'A';
++            if (right >= 'A' && right <= 'Z') right += 'a' - 'A';
++            if (left != right) break;
++        }
++        if (pos == len && !name[pos]) return TRUE;
++    }
++    return FALSE;
++}
++
++char *resolve_dxmt_pe_path( const char *module, USHORT machine )
++{
++    const char *runtime_dir = get_dxmt_runtime_dir();
++    const char *name = strrchr( module, '/' );
++    const char *pe_dir;
++    char *resolved;
++
++    if (!dxmt_graphics_backend_enabled() || !runtime_dir || !runtime_dir[0]) return NULL;
++    if (machine == IMAGE_FILE_MACHINE_I386) pe_dir = "i386-windows";
++    /* The runtime (Mullion) is built as ARM64X: one aarch64-windows DLL serves native ARM64
++     * processes and x86_64 ones, which are ARM64EC here and search builtins as ARM64. */
++    else if (machine == IMAGE_FILE_MACHINE_AMD64 || machine == IMAGE_FILE_MACHINE_ARM64)
++        pe_dir = "aarch64-windows";
++    else return NULL;
++
++    name = name ? name + 1 : module;
++    if (asprintf( &resolved, "%s/%s/%s", runtime_dir, pe_dir, name ) == -1) return NULL;
++    if (!access( resolved, R_OK )) return resolved;
++    free( resolved );
++    return NULL;
++}
++
++char *resolve_dxmt_unixlib_path( const char *path )
++{
++    const char *runtime_dir = get_dxmt_runtime_dir();
++    const char *name = strrchr( path, '/' );
++    char *resolved;
++
++    if (!dxmt_graphics_backend_enabled() || !runtime_dir || !runtime_dir[0]) return NULL;
++    name = name ? name + 1 : path;
++    if (strcasecmp( name, "winemetal.so" )) return NULL;
++
++    if (asprintf( &resolved, "%s/aarch64-unix/winemetal.so", runtime_dir ) == -1) return NULL;
++    if (!access( resolved, R_OK )) return resolved;
++    free( resolved );
++    return NULL;
++}
++
++#endif
+diff --git a/dlls/ntdll/unix/graphics_policy.c b/dlls/ntdll/unix/graphics_policy.c
+new file mode 100644
+index 00000000000..4df84644722
+--- /dev/null
++++ b/dlls/ntdll/unix/graphics_policy.c
+@@ -0,0 +1,184 @@
++/*
++ * Process-local graphics backend selection
++ *
++ * WineForge-Internal: graphics/process-backend-policy-v1.
++ *
++ * Copyright (C) 2026 Radim Vesely for WineForge
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#if 0
++#pragma makedep unix
++#endif
++
++#include "config.h"
++
++#include <limits.h>
++#include <stdlib.h>
++#include <string.h>
++
++#include "ntstatus.h"
++#include "windef.h"
++#include "winternl.h"
++#include "unix_private.h"
++
++#ifdef __APPLE__
++
++WINE_DEFAULT_DEBUG_CHANNEL(module);
++
++/* WineForge-Internal: graphics/process-backend-policy-v1. */
++enum process_graphics_backend
++{
++    PROCESS_GRAPHICS_BACKEND_UNINITIALIZED,
++    PROCESS_GRAPHICS_BACKEND_WINE,
++    PROCESS_GRAPHICS_BACKEND_D3DMETAL,
++    PROCESS_GRAPHICS_BACKEND_DXMT,
++};
++
++/* WineForge-Internal: graphics/process-backend-policy-v1. */
++static enum process_graphics_backend process_graphics_backend;
++static BOOL process_uses_cef_software;
++static BOOL process_uses_wfdx_launchers;
++static BOOL process_uses_launcher_dxmt;
++static BOOL process_uses_battlenet_cef_cow;
++
++/* WineForge-Internal: graphics/process-backend-policy-v1. */
++static BOOL parse_graphics_backend( const char *name, enum process_graphics_backend *backend )
++{
++    if (name && !strcmp( name, "d3dmetal" ))
++    {
++        /* D3DMetal (GPTK) ships only x86_64 Mach-O and cannot load into an arm64 Wine. */
++        WARN( "D3DMetal is not available on arm64 hosts, using Wine's own backend\n" );
++        *backend = PROCESS_GRAPHICS_BACKEND_WINE;
++        return TRUE;
++    }
++    if (name && !strcmp( name, "dxmt" ))
++    {
++        *backend = PROCESS_GRAPHICS_BACKEND_DXMT;
++        return TRUE;
++    }
++    if (name && !strcmp( name, "wine" ))
++    {
++        *backend = PROCESS_GRAPHICS_BACKEND_WINE;
++        return TRUE;
++    }
++    return FALSE;
++}
++
++/* WineForge-Internal: graphics/process-backend-policy-v1. */
++static const char *process_graphics_backend_name( enum process_graphics_backend backend )
++{
++    switch (backend)
++    {
++    case PROCESS_GRAPHICS_BACKEND_D3DMETAL: return "d3dmetal";
++    case PROCESS_GRAPHICS_BACKEND_DXMT: return "dxmt";
++    default: return "wine";
++    }
++}
++
++/* WineForge-Internal: graphics/process-backend-policy-v1. */
++void init_process_graphics_backend( const WCHAR *image_path )
++{
++    const char *backend = getenv( "GRAPHICS_BACKEND" );
++    const WCHAR *image_name = image_path;
++    const WCHAR *p;
++    char image_pathA[PATH_MAX];
++    char image_nameA[MAX_PATH];
++    enum process_graphics_backend configured_backend;
++    struct launcher_policy launcher;
++    int path_len, name_len;
++
++    if (!backend || !backend[0]) backend = getenv( "ACTIVE_GRAPHICS_BACKEND" );
++    if (image_path)
++    {
++        for (p = image_path; *p; p++)
++            if (*p == '\\' || *p == '/') image_name = p + 1;
++    }
++    path_len = image_path ? ntdll_wcstoumbs( image_path, wcslen( image_path ), image_pathA,
++                                             sizeof(image_pathA) - 1, FALSE ) : 0;
++    if (path_len < 0) path_len = 0;
++    image_pathA[path_len] = 0;
++    name_len = image_name ? ntdll_wcstoumbs( image_name, wcslen( image_name ), image_nameA,
++                                             sizeof(image_nameA) - 1, FALSE ) : 0;
++    if (name_len < 0) name_len = 0;
++    image_nameA[name_len] = 0;
++
++    if (!parse_graphics_backend( backend, &configured_backend ))
++        configured_backend = PROCESS_GRAPHICS_BACKEND_WINE;
++    process_graphics_backend = configured_backend;
++    get_launcher_policy( image_pathA, &launcher );
++
++    /* WineForge-Internal: launcher-compat/cef-software-policy-v1. */
++    process_uses_cef_software = configured_backend == PROCESS_GRAPHICS_BACKEND_DXMT &&
++                                launcher.cef_software;
++
++    /* WineForge-Internal: launcher-compat/battlenet-cef-cow-protection-v1. */
++    process_uses_battlenet_cef_cow = launcher.battlenet_cef_cow;
++
++    /* WineForge-Internal: launcher-compat/dxmt-cef-launcher-policy-v1. */
++    process_uses_launcher_dxmt = launcher.dxmt && dxmt_runtime_available();
++    if (process_uses_launcher_dxmt)
++        process_graphics_backend = PROCESS_GRAPHICS_BACKEND_DXMT;
++
++    /* WineForge-Internal: wfdxcompat/rockstar-launcher-policy-v1. The Rockstar launcher route
++     * runs WFDXCompat on D3DMetal, which does not exist on arm64 hosts. */
++    process_uses_wfdx_launchers = FALSE;
++
++    TRACE( "graphics backend for %s: global %s, selected %s, policy %s%s%s\n", image_nameA,
++           backend && backend[0] ? backend : "wine",
++           process_graphics_backend_name( process_graphics_backend ),
++           process_uses_cef_software ? "cef-software" : "default",
++           process_uses_launcher_dxmt ? ",launcher-dxmt" : "",
++           process_uses_wfdx_launchers ? ",wfdx-launchers" : "" );
++}
++
++/* WineForge-Internal: graphics/process-backend-policy-v1. */
++BOOL d3dmetal_graphics_backend_enabled(void)
++{
++    return FALSE;  /* x86_64-only, see parse_graphics_backend() */
++}
++
++/* WineForge-Internal: graphics/process-backend-policy-v1. */
++BOOL dxmt_graphics_backend_enabled(void)
++{
++    const char *backend = getenv( "GRAPHICS_BACKEND" );
++
++    if (process_uses_cef_software) return FALSE;
++    if (process_graphics_backend != PROCESS_GRAPHICS_BACKEND_UNINITIALIZED)
++        return process_graphics_backend == PROCESS_GRAPHICS_BACKEND_DXMT;
++    if (!backend || !backend[0]) backend = getenv( "ACTIVE_GRAPHICS_BACKEND" );
++    return backend && !strcmp( backend, "dxmt" );
++}
++
++/* WineForge-Internal: graphics/process-backend-policy-v1. */
++BOOL wfdxcompat_launcher_runtime_enabled(void)
++{
++    return process_uses_wfdx_launchers;
++}
++
++/* WineForge-Internal: graphics/process-backend-policy-v1. */
++BOOL battlenet_cef_cow_compat_enabled(void)
++{
++    return process_uses_battlenet_cef_cow;
++}
++
++/* WineForge-Internal: graphics/process-backend-policy-v1. */
++BOOL cef_software_policy_enabled(void)
++{
++    return process_uses_cef_software;
++}
++
++#endif
+diff --git a/dlls/ntdll/unix/launcher_policy.c b/dlls/ntdll/unix/launcher_policy.c
+new file mode 100644
+index 00000000000..bc973133a29
+--- /dev/null
++++ b/dlls/ntdll/unix/launcher_policy.c
+@@ -0,0 +1,190 @@
++/*
++ * Launcher process classification and module policy
++ *
++ * WineForge-Internal: launcher-compat/process-classification-v1.
++ *
++ * Copyright (C) 2026 Radim Vesely for WineForge
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#if 0
++#pragma makedep unix
++#endif
++
++#include "config.h"
++
++#include <string.h>
++
++#include "ntstatus.h"
++#include "windef.h"
++#include "winternl.h"
++#include "unix_private.h"
++
++#ifdef __APPLE__
++
++/* WineForge-Internal: launcher-compat/process-classification-v1. */
++static BOOL ascii_path_ends_with_ci( const char *path, const char *suffix )
++{
++    size_t path_len = strlen( path );
++    size_t suffix_len = strlen( suffix );
++    size_t i;
++
++    if (suffix_len > path_len) return FALSE;
++    path += path_len - suffix_len;
++    for (i = 0; i < suffix_len; i++)
++    {
++        unsigned char left = path[i], right = suffix[i];
++
++        if ((left == '/' || left == '\\') && (right == '/' || right == '\\')) continue;
++        if (left >= 'A' && left <= 'Z') left += 'a' - 'A';
++        if (right >= 'A' && right <= 'Z') right += 'a' - 'A';
++        if (left != right) return FALSE;
++    }
++    return TRUE;
++}
++
++/* WineForge-Internal: wfdxcompat/rockstar-launcher-policy-v1. */
++static const char *const rockstar_launcher_app_paths[] =
++{
++    "\\rockstar games\\launcher\\launcher.exe",
++    "\\rockstar games\\social club\\socialclubhelper.exe",
++};
++
++/* WineForge-Internal: launcher-compat/process-classification-v1. */
++struct dxmt_launcher_policy
++{
++    const char *path;
++    const char *required_argument;
++};
++
++/* WineForge-Internal: launcher-compat/process-classification-v1. */
++static const struct dxmt_launcher_policy dxmt_launcher_policies[] =
++{
++    { "\\program files (x86)\\battle.net\\battle.net.exe", NULL },
++    { "\\program files (x86)\\ubisoft\\ubisoft game launcher\\upc.exe", "--in-process-gpu" },
++};
++
++/* WineForge-Internal: launcher-compat/process-classification-v1. */
++static BOOL is_launcher_app( const char *image_path, const char *const *paths, unsigned int count )
++{
++    unsigned int i;
++
++    for (i = 0; i < count; i++)
++        if (ascii_path_ends_with_ci( image_path, paths[i] )) return TRUE;
++    return FALSE;
++}
++
++/* WineForge-Internal: launcher-compat/process-classification-v1. */
++static BOOL wargv_has_ascii_argument_ci( const char *argument )
++{
++    unsigned int i;
++
++    if (!main_wargv) return FALSE;
++    for (i = 1; main_wargv[i]; i++)
++    {
++        const WCHAR *wide = main_wargv[i];
++        const char *ascii = argument;
++
++        while (*wide && *ascii)
++        {
++            WCHAR left = *wide++;
++            unsigned char right = *ascii++;
++
++            if (left >= 'A' && left <= 'Z') left += 'a' - 'A';
++            if (right >= 'A' && right <= 'Z') right += 'a' - 'A';
++            if (left != right) break;
++        }
++        if (!*wide && !*ascii) return TRUE;
++    }
++    return FALSE;
++}
++
++/* WineForge-Internal: launcher-compat/process-classification-v1. */
++static BOOL is_dxmt_launcher_app( const char *image_path )
++{
++    unsigned int i;
++
++    for (i = 0; i < ARRAY_SIZE(dxmt_launcher_policies); i++)
++    {
++        const struct dxmt_launcher_policy *policy = &dxmt_launcher_policies[i];
++
++        if (!ascii_path_ends_with_ci( image_path, policy->path )) continue;
++        if (!policy->required_argument || wargv_has_ascii_argument_ci( policy->required_argument ))
++            return TRUE;
++    }
++    return FALSE;
++}
++
++/* WineForge-Internal: launcher-compat/process-classification-v1. */
++static BOOL is_software_cef_process(void)
++{
++    return wargv_has_ascii_argument_ci( "--disable-gpu" ) &&
++           wargv_has_ascii_argument_ci( "--disable-d3d11" ) &&
++           wargv_has_ascii_argument_ci( "--use-angle=swiftshader" );
++}
++
++/* WineForge-Internal: launcher-compat/process-classification-v1. */
++void get_launcher_policy( const char *image_path, struct launcher_policy *policy )
++{
++    policy->cef_software = is_software_cef_process();
++    policy->battlenet_cef_cow =
++        ascii_path_ends_with_ci( image_path, "\\program files (x86)\\battle.net\\battle.net.exe" ) &&
++        wargv_has_ascii_argument_ci( "--type=renderer" );
++    policy->dxmt = is_dxmt_launcher_app( image_path );
++    policy->wfdx = is_launcher_app( image_path, rockstar_launcher_app_paths,
++                                   ARRAY_SIZE(rockstar_launcher_app_paths) );
++}
++
++/*
++ * WineForge launcher-compat: Steam CEF/native Vulkan gate.
++ * WineForge-Internal: launcher-compat/steam-cef-native-vulkan-v1.
++ */
++static BOOL unicode_string_contains_ascii_ci( const UNICODE_STRING *str, const char *needle )
++{
++    unsigned int i, j, len, needle_len;
++
++    if (!str || !str->Buffer || !needle) return FALSE;
++    len = str->Length / sizeof(WCHAR);
++    needle_len = strlen( needle );
++    if (!needle_len || needle_len > len) return FALSE;
++
++    for (i = 0; i <= len - needle_len; ++i)
++    {
++        for (j = 0; j < needle_len; ++j)
++        {
++            WCHAR wc = str->Buffer[i + j];
++            unsigned char ch = needle[j];
++
++            if (wc > 127) break;
++            if (wc >= 'A' && wc <= 'Z') wc += 'a' - 'A';
++            if (ch >= 'A' && ch <= 'Z') ch += 'a' - 'A';
++            if (wc != ch) break;
++        }
++        if (j == needle_len) return TRUE;
++    }
++    return FALSE;
++}
++
++/* WineForge-Internal: launcher-compat/steam-cef-native-vulkan-v1. */
++BOOL steam_cef_native_vulkan_loader( const UNICODE_STRING *nt_name, const char *module )
++{
++    if (!module || strcasecmp( module, "vulkan-1.dll" )) return FALSE;
++
++    return unicode_string_contains_ascii_ci( nt_name, "\\steam\\bin\\cef\\" ) ||
++           unicode_string_contains_ascii_ci( nt_name, "/steam/bin/cef/" );
++}
++
++#endif
+diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
+index e6ea91c0fa9..c8683647453 100644
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -298,6 +298,24 @@ static void set_dll_path(void)
+     char *p, *path = getenv( "WINEDLLPATH" );
+     int i, count = 0;
+ 
++#ifdef __APPLE__
++    /* default to the Mullion (DXMT) runtime bundled next to Wine's own modules */
++    if (!getenv( "DXMT_RUNTIME_DIR" ) && dll_dir)
++    {
++        char *runtime, *check;
++
++        if (asprintf( &runtime, "%s/../mullion", dll_dir ) != -1)
++        {
++            if (asprintf( &check, "%s/aarch64-unix/winemetal.so", runtime ) != -1)
++            {
++                if (!access( check, R_OK )) setenv( "DXMT_RUNTIME_DIR", runtime, 0 );
++                free( check );
++            }
++            free( runtime );
++        }
++    }
++#endif
++
+     if (path) for (p = path, count = 1; *p; p++) if (*p == ':') count++;
+ 
+     dll_paths = malloc( (count + 2) * sizeof(*dll_paths) );
+@@ -1176,6 +1194,9 @@ static NTSTATUS find_builtin_dll( UNICODE_STRING *nt_name, ANSI_STRING *exp_name
+     OBJECT_ATTRIBUTES attr;
+     NTSTATUS status = STATUS_DLL_NOT_FOUND;
+     BOOL found_image = FALSE;
++#ifdef __APPLE__
++    BOOL dxmt_runtime_pe = FALSE;
++#endif
+ 
+     InitializeObjectAttributes( &attr, nt_name, 0, 0, NULL );
+ 
+@@ -1221,6 +1242,30 @@ static NTSTATUS find_builtin_dll( UNICODE_STRING *nt_name, ANSI_STRING *exp_name
+ 
+     TRACE( "looking for %s for file %s\n", debugstr_a(file + pos + 1), debugstr_us(nt_name) );
+ 
++#ifdef __APPLE__
++    /* WineForge-Internal: the selected DXMT runtime must win over Wine's own builtins. */
++    if (dxmt_graphics_backend_enabled() && is_dxmt_module_name( file + pos + 1 ))
++    {
++        char *dxmt_pe = resolve_dxmt_pe_path( file + pos + 1, search_machine );
++
++        if (dxmt_pe)
++        {
++            status = open_builtin_pe_file( dxmt_pe, &attr, module, size_ptr, image_info,
++                                           limit_low, limit_high, load_machine, prefer_native, offset );
++            if (status != STATUS_DLL_NOT_FOUND)
++            {
++                TRACE( "DXMT runtime PE %s for %s -> %#lx\n",
++                       debugstr_a(dxmt_pe), debugstr_us(nt_name), (long)status );
++                free( dxmt_pe );
++                ptr = file + pos;
++                dxmt_runtime_pe = TRUE;
++                goto done;
++            }
++            free( dxmt_pe );
++        }
++    }
++#endif
++
+     if (build_dir)
+     {
+         /* try as a dll */
+@@ -1280,6 +1325,22 @@ done:
+     if (NT_SUCCESS(status) && ext)
+     {
+         strcpy( ext, ".so" );
++#ifdef __APPLE__
++        if (dxmt_runtime_pe)
++        {
++            /* DXMT modules use the runtime's winemetal.so; the others have no unix side */
++            char *dxmt_unixlib = resolve_dxmt_unixlib_path( ptr );
++
++            if (dxmt_unixlib)
++            {
++                set_builtin_unixlib_name( *module, dxmt_unixlib );
++                TRACE( "DXMT unixlib %s -> %#lx\n", debugstr_a(dxmt_unixlib),
++                       (long)load_builtin_unixlib_now( *module ));
++                free( dxmt_unixlib );
++            }
++        }
++        else
++#endif
+         set_builtin_unixlib_name( *module, ptr );
+     }
+     free( file );
+@@ -1909,6 +1970,9 @@ static void start_main_thread(void)
+     dbg_init();
+     *(ULONG_PTR *)&peb->CloudFileFlags = get_image_address();
+     set_load_order_app_name( main_wargv[0] );
++#ifdef __APPLE__
++    init_process_graphics_backend( main_wargv[0] );
++#endif
+     init_thread_stack( data->teb, 0, 0, 0 );
+     NtCreateKeyedEvent( &keyed_event, GENERIC_READ | GENERIC_WRITE, NULL, 0 );
+     load_ntdll();
+diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
+index 0fb5f3aea1d..5bf3fc37023 100644
+--- a/dlls/ntdll/unix/unix_private.h
++++ b/dlls/ntdll/unix/unix_private.h
+@@ -350,6 +350,33 @@ extern void virtual_enable_write_exceptions( BOOL enable );
+ extern void virtual_fill_image_information( const struct pe_image_info *pe_info,
+                                             SECTION_IMAGE_INFORMATION *info );
+ extern void *get_builtin_so_handle( void *module );
++#ifdef __APPLE__
++/* WineForge-Internal: launcher-compat/process-classification-v1. */
++struct launcher_policy
++{
++    BOOL cef_software;
++    BOOL battlenet_cef_cow;
++    BOOL dxmt;
++    BOOL wfdx;
++};
++
++extern void get_launcher_policy( const char *image_path, struct launcher_policy *policy );
++extern BOOL steam_cef_native_vulkan_loader( const UNICODE_STRING *nt_name, const char *module );
++/* WineForge-Internal: graphics/process-backend-policy-v1. */
++extern void init_process_graphics_backend( const WCHAR *image_path );
++extern BOOL cef_software_policy_enabled(void);
++extern BOOL d3dmetal_graphics_backend_enabled(void);
++extern BOOL dxmt_graphics_backend_enabled(void);
++extern BOOL dxmt_runtime_available(void);
++extern BOOL wfdxcompat_launcher_runtime_enabled(void);
++extern BOOL wfdxcompat_launcher_runtime_available(void);
++extern BOOL battlenet_cef_cow_compat_enabled(void);
++extern BOOL is_dxmt_module_name( const char *path );
++extern BOOL is_dxmt_module_basename( const WCHAR *name );
++extern char *resolve_dxmt_pe_path( const char *module, USHORT machine );
++extern char *resolve_dxmt_unixlib_path( const char *path );
++extern NTSTATUS load_builtin_unixlib_now( void *module );
++#endif
+ extern NTSTATUS set_builtin_unixlib_name( void *module, const char *name );
+ extern BOOL is_emulated_code( ULONG_PTR ptr );
+ 
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index 859e2e15554..97b8d33abbf 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -779,6 +779,38 @@ static NTSTATUS get_unixlib_funcs( void *so_handle, BOOL wow, const void **funcs
+ }
+ 
+ 
++#ifdef __APPLE__
++/***********************************************************************
++ *           load_builtin_unixlib_now
++ *
++ * WineForge internal: load a redirected (graphics runtime) unixlib right away instead of on
++ * the first unix call.
++ */
++NTSTATUS load_builtin_unixlib_now( void *module )
++{
++    sigset_t sigset;
++    NTSTATUS status = STATUS_DLL_NOT_FOUND;
++    struct builtin_module *builtin;
++
++    server_enter_uninterrupted_section( &virtual_mutex, &sigset );
++    if ((builtin = get_builtin_module( module )))
++    {
++        if (builtin->unix_path && !builtin->unix_handle)
++        {
++            TRACE_(module)( "immediately loading unixlib %s for module %p\n",
++                            debugstr_a(builtin->unix_path), module );
++            builtin->unix_handle = dlopen( builtin->unix_path, RTLD_NOW );
++            if (!builtin->unix_handle)
++                WARN_(module)( "failed to load %s: %s\n", debugstr_a(builtin->unix_path), dlerror() );
++        }
++        if (builtin->unix_handle) status = STATUS_SUCCESS;
++    }
++    server_leave_uninterrupted_section( &virtual_mutex, &sigset );
++    return status;
++}
++#endif
++
++
+ /***********************************************************************
+  *           load_builtin_unixlib
+  */
+@@ -5443,6 +5475,18 @@ NTSTATUS WINAPI NtProtectVirtualMemory( HANDLE process, PVOID *addr_ptr, SIZE_T
+         if (get_committed_size( view, base, size, &vprot, VPROT_COMMITTED ) >= size && (vprot & VPROT_COMMITTED))
+         {
+             old = get_win32_prot( vprot, view->protect );
++#ifdef __APPLE__
++            /* WineForge-Internal: launcher-compat/battlenet-cef-cow-protection-v1.
++             * Battle.net's CEF renderer expects image pages it made writable to report RW. */
++            if (battlenet_cef_cow_compat_enabled() && (view->protect & SEC_IMAGE) &&
++                (new_prot & 0xff) == PAGE_READONLY)
++            {
++                if ((old & 0xff) == PAGE_WRITECOPY)
++                    old = (old & ~0xff) | PAGE_READWRITE;
++                else if ((old & 0xff) == PAGE_EXECUTE_WRITECOPY)
++                    old = (old & ~0xff) | PAGE_EXECUTE_READWRITE;
++            }
++#endif
+             status = set_protection( view, base, size, new_prot );
+         }
+         else status = STATUS_NOT_COMMITTED;
+-- 
+2.54.0 (Apple Git-157)
+

@@ -1,0 +1,12 @@
+Patch 0042 is WineForge upstream commit af920e4af78 ("steam: add native macOS Steam bridge"),
+cherry-picked unchanged except for the dlls/ntdll/loader.c include-list conflict.
+
+It vendors Proton's lsteamclient, the Steamworks SDK headers and jsoncpp (about 66 MB), so it is
+not stored here. To apply it:
+
+  git -C src/wine remote add wf-up https://github.com/Alien4042x/WineForge.git
+  git -C src/wine fetch wf-up main
+  git -C src/wine cherry-pick -x af920e4af78
+
+Licenses: dlls/lsteamclient/LICENSE and programs/steam.exe/LICENSE (BSD-3-Clause / MIT,
+from Valve's Proton and NotProton), kept with the sources.

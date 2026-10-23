@@ -1,8 +1,0 @@
-Runtime: Wine Mono 11.2.0
-Upstream: https://github.com/wine-mono/wine-mono/releases/tag/wine-mono-11.2.0
-Runtime archive: wine-mono-11.2.0-x86.tar.xz
-Runtime SHA-256: c9fb2e2823acf30b000b8806177db0f40751786136dd3f8fb2be7897b1643d06
-Source archive: wine-mono-11.2.0-src.tar.xz
-Source SHA-256: aebef9b43dca80b3ebe4a0ada0f45925d833f371ba5b42f5acf9990461568ba9
-Official engines retained: x86, x86_64
-VKMT source-built engine: ARM64 with x18/x28 ABI reservation and Darwin 16-KiB W^X transition

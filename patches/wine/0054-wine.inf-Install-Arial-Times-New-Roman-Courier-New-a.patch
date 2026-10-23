@@ -1,0 +1,69 @@
+From c50022717033fb8a131fd6ef2d24a306b53a5d73 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Thu, 22 Oct 2026 19:39:42 -0600
+Subject: [PATCH 54/55] wine.inf: Install Arial, Times New Roman, Courier New
+ and Tahoma files into C:\windows\Fonts.
+
+Programs that open font files there by name (Unity's dynamic fonts) otherwise find
+none. The Arial/Times/Courier files are Liberation 2.1.5 renamed to the Windows
+families; COPYFLG_NO_OVERWRITE keeps a real Microsoft font.
+---
+ loader/wine.inf.in | 23 ++++++++++++++++++++++-
+ 1 file changed, 22 insertions(+), 1 deletion(-)
+
+diff --git a/loader/wine.inf.in b/loader/wine.inf.in
+index a78e9e815a2..5acc022f96c 100644
+--- a/loader/wine.inf.in
++++ b/loader/wine.inf.in
+@@ -54,7 +54,7 @@ AddService=MountMgr,0x800,MountMgrService
+ RegisterDlls=RegisterDllsSection
+ WineFakeDlls=FakeDlls
+ UpdateInis=SystemIni
+-CopyFiles=ColorFiles,EtcFiles,InfFiles,NlsFiles,SortFiles,WinmdFiles
++CopyFiles=ColorFiles,EtcFiles,FontFiles,InfFiles,NlsFiles,SortFiles,WinmdFiles
+ AddReg=\
+     Classes,\
+     ContentIndex,\
+@@ -1274,6 +1274,25 @@ networks,"@%11%\ws2_32.dll,-2"
+ protocol,"@%11%\ws2_32.dll,-3"
+ services,"@%11%\ws2_32.dll,-4"
+ 
++; MetalSharp: real files in C:\windows\Fonts for programs that open fonts there by file name
++; (Unity's dynamic fonts). Liberation is metric-compatible with Arial, Times New Roman and Courier New;
++; the flag (COPYFLG_NO_OVERWRITE) keeps a real Microsoft font already in the prefix.
++[FontFiles]
++arial.ttf,,,0x10
++arialbd.ttf,,,0x10
++ariali.ttf,,,0x10
++arialbi.ttf,,,0x10
++times.ttf,,,0x10
++timesbd.ttf,,,0x10
++timesi.ttf,,,0x10
++timesbi.ttf,,,0x10
++cour.ttf,,,0x10
++courbd.ttf,,,0x10
++couri.ttf,,,0x10
++courbi.ttf,,,0x10
++tahoma.ttf,,,0x10
++tahomabd.ttf,,,0x10
++
+ [InfFiles]
+ input.inf,"@%12%\hidclass.sys,-1"
+ mouhid.inf,"@%12%\mouhid.sys,-1"
+@@ -1376,11 +1395,13 @@ windows.ui.winmd
+ windows.ui.xaml.winmd
+ 
+ [WineSourceDirs]
++FontFiles = fonts
+ NlsFiles  = nls
+ SortFiles = nls
+ WinmdFiles = winmd,include
+ 
+ [DestinationDirs]
++FontFiles = 20
+ ColorFiles = 23
+ EtcFiles  = 12,etc
+ InfFiles  = 17
+-- 
+2.54.0 (Apple Git-157)
+

@@ -1,7 +1,0 @@
-Runtime: Unity Technologies Mono BleedingEdge 6.13.0
-Upstream: https://github.com/Unity-Technologies/mono/tree/unity-2022.3-mbe
-Revision: b8eb56fab45dd52845fabba7b7ddc9a80b2b0498
-Host artifacts: ARM64 macOS Mono SGen/Boehm native engine
-Installed path: dependencies/unity-mono/unity-2022.3-mbe-6.13.0
-Build: Unity build scripts with current Apple SDK compatibility fixes
-License: upstream Unity Technologies Mono and included third-party notices

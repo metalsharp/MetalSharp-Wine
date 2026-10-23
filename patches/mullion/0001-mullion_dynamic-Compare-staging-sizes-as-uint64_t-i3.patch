@@ -1,0 +1,26 @@
+From 5e67192f330e31abc914a100c7bc105a85909918 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@Averys-MacBook-Air.local>
+Date: Thu, 22 Oct 2026 16:07:42 -0600
+Subject: [PATCH] mullion_dynamic: Compare staging sizes as uint64_t (i386
+ build).
+
+---
+ src/mullion/mullion_dynamic.cpp | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/mullion/mullion_dynamic.cpp b/src/mullion/mullion_dynamic.cpp
+index ecac85e..5745424 100644
+--- a/src/mullion/mullion_dynamic.cpp
++++ b/src/mullion/mullion_dynamic.cpp
+@@ -30,7 +30,7 @@ DynamicBuffer::allocate(uint64_t coherent_seq_id, std::optional<uint32_t> filled
+   // a command list's filled allocation, or an immediate one with an older name pending, doubles within a staging block
+   // round its stride as BufferAllocation does (D3D11.3 5.6.1: Map pointers are 16-byte aligned)
+   auto names = 2ull * filled.value_or(fifo.empty() ? 0 : name_suballocation_ + 1);
+-  return buffer->allocate(flags_, std::min(names, kStagingBlockSize / align(name_->suballocation_size_, 16)));
++  return buffer->allocate(flags_, std::min<uint64_t>(names, kStagingBlockSize / align(name_->suballocation_size_, 16)));
+ }
+ 
+ void
+-- 
+2.54.0 (Apple Git-157)
+

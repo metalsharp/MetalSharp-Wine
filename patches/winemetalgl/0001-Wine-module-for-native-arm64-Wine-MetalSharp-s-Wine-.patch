@@ -1,0 +1,164 @@
+From 16eeca721d408d69bbe5fbd6e44b2c08f31ef31f Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Thu, 22 Oct 2026 16:34:50 -0600
+Subject: [PATCH 1/2] Wine module for native arm64 Wine (MetalSharp's Wine with
+ FEX).
+
+- scripts/build-wine-module-arm64.sh: ARM64X winemetalgl.dll/opengl32.dll (native ARM64 and
+  x86_64-as-ARM64EC programs), i386 for WoW64, arm64 winemetalgl.so with the arm64 core.
+- The exception reporter reads an x64 CONTEXT: build it for x86_64 and ARM64EC only, not for
+  the native ARM64 half of the ARM64X module.
+- x87: an arm64 Wine runs x86 code through FEX, which has its own fast x87 mode; the Rosetta
+  sidecar hook is x86_64-host only.
+---
+ scripts/build-wine-module-arm64.sh | 84 ++++++++++++++++++++++++++++++
+ src/wine/pe/winemetalgl.c          |  4 +-
+ src/wine/unix/unix_x87.c           | 15 ++++++
+ 3 files changed, 101 insertions(+), 2 deletions(-)
+ create mode 100644 scripts/build-wine-module-arm64.sh
+
+diff --git a/scripts/build-wine-module-arm64.sh b/scripts/build-wine-module-arm64.sh
+new file mode 100644
+index 0000000..6206a4f
+--- /dev/null
++++ b/scripts/build-wine-module-arm64.sh
+@@ -0,0 +1,84 @@
++#!/bin/sh
++# Builds the WineMetalGL Wine module (src/wine) for a native arm64 Wine, such as MetalSharp's
++# Wine with FEX: winemetalgl.dll and opengl32.dll as ARM64X (aarch64-windows: native ARM64
++# programs and x86_64 ones, which run as ARM64EC) and as i386 (WoW64), and winemetalgl.so for
++# the arm64 unix side, which runs all of them (32-bit calls through Wine's WoW64 thunks). The
++# core is the arm64 one (scripts/stage-arm64-core.sh, build/arm64-release).
++#
++#   scripts/build-wine-module-arm64.sh WINE_INSTALL_OR_SOURCE [OUTDIR]
++#
++# Needs llvm-mingw (arm64ec-w64-mingw32-clang, i686-w64-mingw32-clang) on PATH.
++set -eu
++
++ROOT=$(cd "$(dirname "$0")/.." && pwd)
++WINE=${1:?usage: build-wine-module-arm64.sh WINE_INSTALL_OR_SOURCE [OUTDIR]}
++OUT=${2:-$ROOT/build/wine-module-arm64}
++GEN=$OUT/gen
++OBJ=$OUT/obj
++mkdir -p "$GEN" "$OBJ/aarch64" "$OBJ/i386" "$OBJ/unix" "$OUT/aarch64-windows" "$OUT/i386-windows" "$OUT/aarch64-unix"
++
++python3 "$ROOT/tools/gen/wine_gen.py" --registry "$ROOT/third_party/khronos/gl.xml" \
++    --extensions "$ROOT/tools/gen/extensions.txt" --out "$GEN" >/dev/null
++
++# ---------------------------------------------------------------- PE side
++for arch in aarch64 i386; do
++    case $arch in
++    aarch64) cc="arm64ec-w64-mingw32-clang -marm64x" ;;  # ARM64X: native ARM64 + ARM64EC halves
++    i386)    cc=i686-w64-mingw32-clang ;;
++    esac
++    objs=
++    for src in "$ROOT"/src/wine/pe/*.c "$GEN/wine_gl_pe.gen.c"; do
++        obj="$OBJ/$arch/$(basename "${src%.c}").o"
++        $cc -c -O2 -Wall -Werror -I"$ROOT/src/wine/include" -I"$ROOT/src/wine/pe" -I"$GEN" "$src" -o "$obj"
++        objs="$objs $obj"
++    done
++    # shellcheck disable=SC2086
++    $cc -shared -o "$OUT/$arch-windows/winemetalgl.dll" $objs "$GEN/winemetalgl.def" \
++        -lgdi32 -luser32 -lkernel32 -lntdll $( [ $arch = i386 ] && echo -Wl,--kill-at )
++    printf 'int __stdcall DllMain(void *i, unsigned int r, void *p) { return 1; }\n' > "$OBJ/$arch/forwarder.c"
++    $cc -c -O2 "$OBJ/$arch/forwarder.c" -o "$OBJ/$arch/forwarder.o"
++    if [ $arch = i386 ]; then
++        $cc -shared -nostdlib -o "$OUT/$arch-windows/opengl32.dll" "$OBJ/$arch/forwarder.o" "$GEN/opengl32.def" \
++            -Wl,--entry,DllMain@12 -lkernel32
++    else
++        # ARM64EC code needs the toolchain's EC runtime helpers, so no -nostdlib here
++        $cc -shared -o "$OUT/$arch-windows/opengl32.dll" "$OBJ/$arch/forwarder.o" "$GEN/opengl32.def" \
++            -Wl,--entry,DllMain -lkernel32
++    fi
++    # Wine loads winemetalgl.so for a builtin winemetalgl.dll only (winebuild --builtin).
++    python3 - "$OUT/$arch-windows/winemetalgl.dll" <<'PY'
++import struct, sys
++path = sys.argv[1]
++with open(path, "r+b") as f:
++    header = f.read(64)
++    assert header[:2] == b"MZ"
++    e_lfanew = struct.unpack_from("<I", header, 60)[0]
++    assert e_lfanew >= 64 + 32, "no room for the Wine builtin signature"
++    f.seek(64)
++    f.write(b"Wine builtin DLL".ljust(32, b"\0"))
++PY
++done
++
++# -------------------------------------------------------------- unix side
++UNIX_CC=${UNIX_CC:-/usr/bin/clang}
++CFLAGS="-arch arm64 -mmacosx-version-min=15.0 -O2 -fPIC -Wall -DWINE_UNIX_LIB -D__WINESRC__ -D_WIN64"
++if test -d "$WINE/include/wine/windows"; then WINEINC="-I$WINE/include/wine/windows -I$WINE/include"
++elif test -f "$WINE/include/windef.h"; then WINEINC="-I$WINE/include"
++else echo "no Wine headers in $WINE" >&2; exit 1; fi
++INCS="-I$ROOT/src/wine/include -I$ROOT/src/wine/unix -I$GEN $WINEINC"
++uobjs=
++for src in "$ROOT"/src/wine/unix/*.c "$GEN/wine_gl_unix.gen.c"; do
++    obj="$OBJ/unix/$(basename "${src%.c}").o"
++    # shellcheck disable=SC2086
++    "$UNIX_CC" $CFLAGS $INCS -c "$src" -o "$obj"
++    uobjs="$uobjs $obj"
++done
++"$UNIX_CC" -arch arm64 -mmacosx-version-min=15.0 -O2 -fPIC -fobjc-arc -Wall -c "$ROOT/src/wine/unix/unix_window.m" \
++    -o "$OBJ/unix/unix_window.o"
++# shellcheck disable=SC2086
++"$UNIX_CC" -arch arm64 -mmacosx-version-min=15.0 -shared -o "$OUT/aarch64-unix/winemetalgl.so" $uobjs "$OBJ/unix/unix_window.o" \
++    -framework AppKit -framework Metal -framework QuartzCore -Wl,-undefined,dynamic_lookup
++if test -f "$ROOT/build/arm64-release/libwinemetalgl.dylib"; then
++    cp "$ROOT/build/arm64-release/libwinemetalgl.dylib" "$OUT/aarch64-unix/"
++fi
++echo "Built: $OUT/{aarch64,i386}-windows/{winemetalgl,opengl32}.dll, $OUT/aarch64-unix/winemetalgl.so"
+diff --git a/src/wine/pe/winemetalgl.c b/src/wine/pe/winemetalgl.c
+index 8a06535..654643b 100644
+--- a/src/wine/pe/winemetalgl.c
++++ b/src/wine/pe/winemetalgl.c
+@@ -195,7 +195,7 @@ static BOOL init_unix_calls( HINSTANCE instance )
+     return TRUE;
+ }
+ 
+-#ifdef _WIN64
++#ifdef __x86_64__  /* x64 CONTEXT: x86_64 and ARM64EC; not the native ARM64 half of ARM64X */
+ /* The application's exceptions that end programs are logged with a backtrace
+  * as they are raised, before its own handlers, which often catch them and
+  * exit without a word (id Tech 5's "CrashHandler: Aborting"). Invalid handles,
+@@ -332,7 +332,7 @@ static BOOL init_pixel_formats(void)
+     memcpy( upscale_setting, init.upscale, sizeof(upscale_setting) );
+     upscale_setting[sizeof(upscale_setting) - 1] = 0;
+     WMGL_INFO( "winemetalgl.dll (%d-bit) in %s\n", (int)sizeof(void *) * 8, program );
+-#ifdef _WIN64
++#ifdef __x86_64__
+     log_all_exceptions = getenv( "WINEMETALGL_EXCEPTIONS" ) && !strcmp( getenv( "WINEMETALGL_EXCEPTIONS" ), "1" );
+     AddVectoredExceptionHandler( 1, log_exception );
+ #endif
+diff --git a/src/wine/unix/unix_x87.c b/src/wine/unix/unix_x87.c
+index 56fc041..83b9447 100644
+--- a/src/wine/unix/unix_x87.c
++++ b/src/wine/unix/unix_x87.c
+@@ -13,6 +13,19 @@
+  * them too. The sidecar is x87sidecar next to winemetalgl.so, or
+  * WINEMETALGL_X87_SIDECAR. */
+ 
++#ifdef __aarch64__
++
++/* An arm64 Wine runs x86 code through FEX, not Rosetta: there is nothing to hook. FEX's
++ * equivalent of x87sidecar is its reduced-precision x87 mode, chosen when the process starts
++ * (FEX_X87REDUCEDPRECISION=1, or ROSETTA_X87_PATH, which MetalSharp's Wine maps to it). */
++#include "wmgl_unix.h"
++
++void wmgl_x87_attach(void)
++{
++}
++
++#else /* __aarch64__ */
++
+ #include <dlfcn.h>
+ #include <libgen.h>
+ #include <libkern/OSCacheControl.h>
+@@ -220,3 +233,5 @@ void wmgl_x87_attach(void)
+ {
+     pthread_once( &x87_once, attach );
+ }
++
++#endif /* __aarch64__ */
+-- 
+2.54.0 (Apple Git-157)
+

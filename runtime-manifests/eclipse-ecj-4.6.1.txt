@@ -1,4 +1,0 @@
-Build-only dependency: Eclipse Compiler for Java 4.6.1 (compiler 3.12.1)
-Source: https://repo1.maven.org/maven2/org/eclipse/jdt/core/compiler/ecj/4.6.1/ecj-4.6.1.jar
-SHA-256: 9cddda75f4a1b4469e73f44e7b61a3e897d0f657df4797f9106ffe88c4eeade0
-Usage: compile Java 8 acceptance fixtures; not part of the shipped Oracle JRE

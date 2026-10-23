@@ -1,0 +1,63 @@
+From fea21cadf24329b8ec309ab54cede20777bb8d2b Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Thu, 22 Oct 2026 15:05:43 -0600
+Subject: [PATCH 47/55] server: Don't walk the msync mutex list while waking
+ waiters.
+
+abandon_mutexes() called wake_up() while iterating msync_mutexes. Waking a waiter can
+release mutexes and unlink them, so the walk continued into freed memory and crashed the
+wineserver when a thread owning msync mutexes was killed (kernel32:sync). Collect the
+abandoned mutexes with a reference first, then wake. The upstream WineForge code has the
+same bug.
+---
+ server/mutex.c | 29 +++++++++++++++++++++++++----
+ 1 file changed, 25 insertions(+), 4 deletions(-)
+
+diff --git a/server/mutex.c b/server/mutex.c
+index b3231074af6..6d6ba1de49b 100644
+--- a/server/mutex.c
++++ b/server/mutex.c
+@@ -245,15 +245,36 @@ void abandon_mutexes( struct thread *thread )
+         do_release( mutex, thread, mutex->count );
+     }
+ 
+-    LIST_FOR_EACH( ptr, &msync_mutexes )
++    /* Waking waiters can release mutexes and unlink them from msync_mutexes, so collect the
++     * abandoned ones (holding a reference) before waking anybody. */
+     {
+-        struct mutex_sync *mutex = LIST_ENTRY( ptr, struct mutex_sync, msync_entry );
++        struct mutex_sync **abandoned = NULL;
++        unsigned int count = 0, size = 0, i;
+ 
+-        if (msync_abandon_mutex( mutex->msync, thread->id ))
++        LIST_FOR_EACH( ptr, &msync_mutexes )
+         {
++            struct mutex_sync *mutex = LIST_ENTRY( ptr, struct mutex_sync, msync_entry );
++
++            if (!msync_abandon_mutex( mutex->msync, thread->id )) continue;
++            if (count == size)
++            {
++                struct mutex_sync **new_abandoned;
++                size = size ? size * 2 : 8;
++                if (!(new_abandoned = realloc( abandoned, size * sizeof(*abandoned) ))) break;
++                abandoned = new_abandoned;
++            }
++            abandoned[count++] = (struct mutex_sync *)grab_object( &mutex->obj );
++        }
++        for (i = 0; i < count; i++)
++        {
++            struct mutex_sync *mutex = abandoned[i];
++            unsigned int shm_idx = msync_get_index( mutex->msync );
++
+             wake_up( &mutex->obj, 0 );
+-            msync_wake_waiters( msync_get_index( mutex->msync ) );
++            if (shm_idx) msync_wake_waiters( shm_idx );
++            release_object( &mutex->obj );
+         }
++        free( abandoned );
+     }
+ 
+     abandon_inproc_mutexes( thread->id );
+-- 
+2.54.0 (Apple Git-157)
+

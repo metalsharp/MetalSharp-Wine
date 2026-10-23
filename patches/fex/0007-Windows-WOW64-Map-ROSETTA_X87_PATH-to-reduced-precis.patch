@@ -1,0 +1,34 @@
+From bfb6ef17d77dfeb751a9e60775b61b7a5200627b Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Thu, 22 Oct 2026 14:00:16 -0600
+Subject: [PATCH 7/7] Windows/WOW64: Map ROSETTA_X87_PATH to reduced-precision
+ x87.
+
+MetalSharp hosts set ROSETTA_X87_PATH for 32-bit titles that should use the Rosetta x87
+sidecar (fast double-precision x87). FEX's equivalent is X87ReducedPrecision; enable it for
+WoW64 processes when that variable is set, unless FEX_X87REDUCEDPRECISION is given.
+---
+ Source/Windows/WOW64/Module.cpp | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/Source/Windows/WOW64/Module.cpp b/Source/Windows/WOW64/Module.cpp
+index a4344ada8..a79d23c68 100644
+--- a/Source/Windows/WOW64/Module.cpp
++++ b/Source/Windows/WOW64/Module.cpp
+@@ -514,6 +514,13 @@ void BTCpuProcessInit() {
+   FEXCore::Config::Set(FEXCore::Config::CONFIG_APP_FILENAME, ExecutablePath);
+   FEXCore::Config::Set(FEXCore::Config::CONFIG_APP_CONFIG_NAME, ExecutableName);
+ 
++  // MetalSharp hosts set ROSETTA_X87_PATH for 32-bit titles that want the fast x87 path (the
++  // Rosetta x87 sidecar on x86_64 hosts). FEX's equivalent is reduced (double) precision x87;
++  // an explicit FEX_X87REDUCEDPRECISION still wins.
++  if (getenv("ROSETTA_X87_PATH") && *getenv("ROSETTA_X87_PATH") && !getenv("FEX_X87REDUCEDPRECISION")) {
++    FEXCore::Config::Set(FEXCore::Config::CONFIG_X87REDUCEDPRECISION, "1");
++  }
++
+   FEXCore::Profiler::Init("", "");
+ 
+   SignalDelegator = fextl::make_unique<FEX::DummyHandlers::DummySignalDelegator>();
+-- 
+2.54.0 (Apple Git-157)
+

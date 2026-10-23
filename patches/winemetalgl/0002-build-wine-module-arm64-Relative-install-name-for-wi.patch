@@ -1,0 +1,26 @@
+From aaf7f4f34123a346001917ffdc5c45b2e9441b9b Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Thu, 22 Oct 2026 16:40:10 -0600
+Subject: [PATCH 2/2] build-wine-module-arm64: Relative install name for
+ winemetalgl.so.
+
+---
+ scripts/build-wine-module-arm64.sh | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/scripts/build-wine-module-arm64.sh b/scripts/build-wine-module-arm64.sh
+index 6206a4f..0ed9bae 100644
+--- a/scripts/build-wine-module-arm64.sh
++++ b/scripts/build-wine-module-arm64.sh
+@@ -77,7 +77,7 @@ done
+     -o "$OBJ/unix/unix_window.o"
+ # shellcheck disable=SC2086
+ "$UNIX_CC" -arch arm64 -mmacosx-version-min=15.0 -shared -o "$OUT/aarch64-unix/winemetalgl.so" $uobjs "$OBJ/unix/unix_window.o" \
+-    -framework AppKit -framework Metal -framework QuartzCore -Wl,-undefined,dynamic_lookup
++    -framework AppKit -framework Metal -framework QuartzCore -Wl,-undefined,dynamic_lookup -install_name @rpath/winemetalgl.so
+ if test -f "$ROOT/build/arm64-release/libwinemetalgl.dylib"; then
+     cp "$ROOT/build/arm64-release/libwinemetalgl.dylib" "$OUT/aarch64-unix/"
+ fi
+-- 
+2.54.0 (Apple Git-157)
+

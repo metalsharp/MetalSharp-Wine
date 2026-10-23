@@ -1,72 +1,150 @@
-<div align="center">
+# MetalSharp Wine 2.0
 
-# MetalSharp Wine
+[![Release](https://img.shields.io/github/v/release/metalsharp/MetalSharp-Wine?style=for-the-badge)](https://github.com/metalsharp/MetalSharp-Wine/releases/latest)
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-purple.svg?style=for-the-badge)](LICENSE)
 
-**Cross-architecture ARM64 Wine with FEX for Apple Silicon macOS.**
+MetalSharp Wine is Wine 11.20 built as a native arm64 macOS application for Apple Silicon. A FEX-Emu fork translates x86 Windows code to ARM64.
+- **No Rosetta:** none of it is x86 code run through Rosetta.
+- **No hardware TSO:** FEX emulates the x86 memory model with ordinary ARM64 instructions.
 
-Developer Note: This project is under active development. It should be noted that you can install / run steam but the current i386 / WoW64 mapping is not 100% completed so you will experience issues. This project is now in development again as of 10/22/2026 so I expect it to be finished in not too long. 
+It runs ARM64, x86_64 and 32-bit x86 Windows programs, with Direct3D 9 through 12 and OpenGL 4.6 on Metal. It needs **macOS 15 or later**; i386 needs **macOS 26.4 or later**.
 
-<a href="https://github.com/metalsharp/VKMT-Wine/releases/tag/VKMT-1.0"><img src="https://img.shields.io/github/v/release/metalsharp/VKMT-Wine?filter=VKMT-1.0&style=for-the-badge" alt="Release"></a>
-<a href="https://github.com/metalsharp/VKMT-Wine/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/metalsharp/VKMT-Wine/ci.yml?branch=main&style=for-the-badge&label=CI" alt="CI"></a>
-<a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge" alt="License: MIT for VKMT-authored material"></a>
+| Windows code | How it runs |
+|---|---|
+| ARM64 (aarch64) | natively |
+| x86_64 | FEX through ARM64EC (`libarm64ecfex.dll`); Wine's own DLLs are native ARM64X hybrids |
+| i386 | FEX through WoW64 (`libwow64fex.dll`), in the signed app (cross-architecture entitlement: low 4GB, 4K pages) |
 
-</div>
+## Download
 
----
+[Releases](https://github.com/metalsharp/MetalSharp-Wine/releases) has:
+- `MetalSharp-Wine-2.0-arm64.zip`: the signed and notarized `MetalSharp-Wine.app`. Use this one; i386 needs it.
+- `metalsharp-wine-2.0-arm64.tar.xz`: the same Wine as a relocatable folder (`bin/wine`). It is ad-hoc signed, so x86_64 and ARM64 only.
 
-MetalSharp Wine is an Apple-Silicon-native, cross-architecture Wine runtime for
-macOS. The Wine host and native Unix boundary are ARM64; FEX supplies the
-execution path for x86_64 and i386/WoW64 Windows applications.
+```bash
+MetalSharp-Wine.app/Contents/MacOS/wine --version
+```
 
-## Architecture
+```bash
+WINEPREFIX=~/my-prefix MetalSharp-Wine.app/Contents/MacOS/wine winecfg
+```
 
-~~~text
-Apple Silicon macOS
-└── ARM64 Wine host and wineserver
-    ├── ARM64/AArch64 Windows
-    ├── ARM64EC Windows
-    ├── x86_64 Windows  ── FEX xtajit64
-    └── i386/WoW64      ── FEX xtajit
-~~~
+```bash
+WINEPREFIX=~/my-prefix MetalSharp-Wine.app/Contents/MacOS/wine some-program.exe
+```
 
-xtajit64 and xtajit are required runtime providers. Both are retained in the
-runtime, along with their architecture-specific build and compatibility
-variants.
+`wine --version` reports `wine-11.20-… (MetalSharp Wine 2.0)`. New prefixes use FEX automatically.
 
-## Quick start
+## What's included
 
-See the [Quick Start](docs/quick-start.md) for verified installation and
-launch commands.
+| Area | Details |
+|---|---|
+| Direct3D 10/11/12 | **Mullion** (DXMT fork) on Metal, the default. ARM64X, so native ARM64 and x86_64 programs use one build; there's also an i386 build (D3D10/11). `GRAPHICS_BACKEND=wine` selects wined3d |
+| Direct3D 9/10/11 (opt-in) | **DXVK 1.10.3** for macOS (x86_64) on MoltenVK: `GRAPHICS_BACKEND=dxvk` |
+| OpenGL | **WineMetalGL 3.6.0** (OpenGL 4.6 on Metal), the default. `OPENGL_BACKEND=wine` selects Wine's own |
+| Vulkan | MoltenVK 1.4.3 (MetalSharp build) |
+| Media | FFmpeg 8.0 (LGPL, VideoToolbox/AudioToolbox) and GStreamer 1.26 |
+| .NET / HTML | Wine Mono 11.3.0 (arm64, x86, x86_64) and Wine Gecko 2.47.4 (x86, x86_64) |
+| Sync | msync (shared-memory synchronization; `WINEMSYNC=1`) |
+| Fonts | Metric-compatible Arial, Times New Roman and Courier New files (renamed Liberation) in every prefix's `C:\windows\Fonts`. CJK Windows families are mapped to the macOS system fonts |
+| Controllers | winebus with SDL2 and IOHID (XInput and DirectInput) |
+| Tools | `innoextract` 1.9 (Inno Setup / GOG installers) and `cabextract` 1.11 |
+| Compatibility | WineForge's launcher fixes (Steam, Epic, EA, Ubisoft, Battle.net, Rockstar), PE patches, native fullscreen, GCMouse and the native Steam bridge |
+| MetalSharp app payloads | `share/metalsharp/`: Goldberg, the Steam installer and wrapper, FNA/XNA, fnalibs, the FNA kickstart, Unity Mono runtimes, SDL3, shims, Terraria launchers, CEF hooks, `dxmt.conf`, compat rules, the host runtime, and Microsoft's unmodified VC++ 2015-2022 and core-fonts installers |
 
-## Documentation
+Results and design notes are in [`docs/STATUS.md`](docs/STATUS.md); measured performance is in [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md).
 
-- [Complete runtime inventory](docs/runtime-inventory.md)
-- [Quick Start](docs/quick-start.md)
-- [Project overview](docs/project-overview.md)
-- [Architecture](docs/architecture.md)
-- [Graphics](docs/graphics.md)
-- [D3DMetal integration audit and roadmap](https://github.com/metalsharp/VKMT-Wine/blob/main/D3DMetal.md)
-- [Performance](docs/performance.md)
-- [Packaging and validation](docs/package-and-validation.md)
-- [MetalSharp integration](docs/metalsharp-integration.md)
-- [Third-party license index](docs/third-party-licenses.md)
-- [Security policy](SECURITY.md)
+## Source
 
-The complete inventory is the component-level description of the shipped
-runtime. The release's file hashes and asset manifest remain authoritative for
-the exact bytes in a particular build.
+The modified sources are kept in this repository as branches:
 
-## Continuous integration
+| Branch | Contents |
+|---|---|
+| [`source/wine`](../../tree/source/wine) | Wine 11.20 + MetalSharp (`wine-11.20` tag plus 56 commits) |
+| [`source/fex`](../../tree/source/fex) | FEX-2610 + MetalSharp (7 commits). It is not upstreamed |
+| [`source/winemetalgl`](../../tree/source/winemetalgl) | WineMetalGL's arm64 Wine module |
+| `legacy-1.x` | The previous MetalSharp Wine (VKMT) history |
 
-GitHub Actions runs portable checks for shell syntax and ShellCheck, Python
-compilation and Ruff, Rust formatting/Clippy/tests, a CMake configure/build/test
-smoke project, and Java compilation/execution. CodeQL security analysis covers
-C/C++, Java, Rust, and Python; ShellCheck is the shell security analyzer. The
-CI-only fixtures are kept out of redistributable runtime source snapshots.
+**Mullion** is developed in [aaf2tbz/mullion](https://github.com/aaf2tbz/mullion) and sent upstream to [dttdrv/mullion](https://github.com/dttdrv/mullion) as pull requests.
 
-## License
+The same changes are in `patches/` as git patches against the upstream tags. `patches/wine/0042` is a pointer to WineForge's Steam bridge commit, because that commit vendors about 66 MB.
 
-Metalsharp-authored repository material is MIT licensed; see [LICENSE](LICENSE).
-Wine, FEX, DXMT, DXVK, VKD3D-Proton, MoltenVK, Mono, and other bundled
-components retain their own licenses. See the [third-party license index](docs/third-party-licenses.md)
-before redistributing the runtime.
+| Path | Contents |
+|---|---|
+| `scripts/` | Build, staging, test, audit, benchmark, packaging and signing scripts |
+| `patches/` | `wine/`, `fex/`, `mullion/`, `winemetalgl/` |
+| `tests/src/` | Smoke tests and benchmarks (native ARM64, x86_64 and i386) |
+| `docs/` | Status, testing, performance and the WineForge port plan |
+
+## Building
+
+You need Xcode, the Metal Toolchain, and these Homebrew tools: cmake, ninja, meson, pkgconf, autoconf, automake, libtool, bison, flex, nasm, gettext and gperf.
+
+```bash
+zsh scripts/fetch-sources.sh
+```
+
+```bash
+zsh scripts/build-all.sh
+```
+
+That builds:
+1. The dependencies.
+2. The ARM64X runtimes.
+3. Wine.
+4. FEX.
+5. The tests.
+
+It then audits the Mach-O files and packages `dist/metalsharp-wine-2.0-arm64`.
+
+The add-ons have their own scripts:
+- `build-llvm15.sh` and `build-mullion.sh`
+- `build-winemetalgl.sh`
+- `stage-moltenvk.sh` and `stage-dxvk.sh`
+- `fetch-addons.sh` (Mono and Gecko) and `fetch-fonts.sh`
+- `build-innoextract.sh` and `build-cabextract.sh`
+- `stage-metalsharp-assets.sh` and `stage-metalsharp-redist.sh`
+
+`sign-app.sh` builds `MetalSharp-Wine.app` with the hardened runtime. It needs a Developer ID certificate and a provisioning profile with the cross-architecture entitlement.
+
+## How the Mac-specific problems are solved
+
+These are patches to Wine and FEX; see `docs/STATUS.md` for details.
+
+- **x18 / TEB.** Windows ARM64 keeps the thread pointer (TEB) in x18, and macOS clears it on every syscall. Measured result: the kernel preserves x18 only when the main executable's build-version SDK is 12.0 or older. The loader is therefore linked with `-platform_version macos 15.0 12.0`.
+- **4GB PAGEZERO.** Without an entitlement, nothing below 4GB can be mapped. KUSER_SHARED_DATA moves from 0x7ffe0000 to 0x17ffe0000.
+  - Wine publishes the new address (`__wine_user_shared_data`).
+  - ARM64 loads from the old address are emulated in the fault handler.
+  - FEX rebases constant-address loads at JIT time: 0.3 ns per read instead of 1.7 µs.
+- **16K pages and W^X.**
+  - Wine's ARM64 modules are linked with 64K sections. This fixes a winegcc bug that silently dropped the alignment for ARM64EC.
+  - x86 images never get host execute permission.
+  - Pages that really need write and execute switch between RX and RW on demand.
+  - Stores from code into its own page are emulated, as are LSE atomics and exclusive stores.
+  - Wine's `NtFlushInstructionCache` and FEX's code-write notifications keep JIT overhead to one fault per compiled block.
+- **CPU features.** macOS doesn't let EL0 read the ID registers, so Wine builds them from the `hw.optional.arm.FEAT_*` sysctls. FEX uses them to pick LSE, LRCPC, AFP and other fast paths.
+- **Startup.** dnsapi used to look up the host's own `.local` name through multicast DNS at every process start (5 seconds). A cold start went from 10.5s to about 0.6s.
+
+## Limitations
+
+**i386 (32-bit x86) programs** need the low 4GB of address space. On macOS 26.4 and later Apple's `com.apple.developer.cross-architecture-support` entitlement provides it. `scripts/sign-app.sh` builds `dist/MetalSharp-Wine.app` with that entitlement, using your Developer ID certificate and a provisioning profile for the bundle's App ID. In that bundle:
+- i386 works.
+- KUSER_SHARED_DATA is at its real address.
+- Every process runs with 4K pages, so none of the 16K workarounds are active.
+
+The bundle is signed with the hardened runtime, as notarization requires. Wine maps Windows DLLs from disk as executable code, which the hardened runtime only allows through the `disable-executable-page-protection` entitlement. Without the entitlement, i386 would need a full guest address-translation layer.
+
+**Unsigned builds, or macOS 15 through 26.3:**
+- x86_64 and ARM64 programs work.
+- The page size is 16K, so 4K-granular memory tests in Wine's test suite fail, as they do on Linux with 16K pages.
+- Native ARM64 programs with 4K sections take the slower W^X emulation path.
+
+## Licenses
+
+- **MetalSharp Wine's own material** (scripts, docs, tests and build glue): [AGPL-3.0](LICENSE), like MetalSharp.
+- **Wine and the Wine changes:** LGPL-2.1-or-later.
+- **FEX and its fork:** MIT.
+- **Mullion/DXMT:** LGPL-2.1-or-later.
+- **WineMetalGL:** LGPL-3.0.
+- **Everything else:** each redistributed component keeps its own license, and the app carries them all in `share/licenses/`.
+- **Microsoft's VC++ and core-fonts installers** are included unmodified under Microsoft's redistribution terms.

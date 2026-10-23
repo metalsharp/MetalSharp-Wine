@@ -1,0 +1,471 @@
+From 5200aaa49936ad3c88ea0af145cac434c9be236b Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Thu, 22 Oct 2026 03:17:30 -0600
+Subject: [PATCH 03/55] ntdll: Run on arm64 macOS without low 4G remapping and
+ with 16K pages.
+
+- Relocate the shared user data page above PAGEZERO when 0x7ffe0000 can't be
+  mapped, publish its address to PE ntdll (__wine_user_shared_data) and unix
+  modules (ntdll_get_user_shared_data), and emulate ARM64 loads that fault on
+  the canonical address in the SIGSEGV handler.
+- Emulate W+X host pages, which the kernel refuses without MAP_JIT, by
+  flipping them between RX and RW on write and execute faults.
+---
+ dlls/kernel32/process.c        |   3 +-
+ dlls/kernel32/sync.c           |   3 +-
+ dlls/kernelbase/memory.c       |   3 +-
+ dlls/kernelbase/sync.c         |   3 +-
+ dlls/ntdll/ntdll.spec          |   1 +
+ dlls/ntdll/ntdll_misc.h        |   4 +-
+ dlls/ntdll/thread.c            |   2 +-
+ dlls/ntdll/unix/loader.c       |   3 +
+ dlls/ntdll/unix/signal_arm64.c | 151 +++++++++++++++++++++++++++++++++
+ dlls/ntdll/unix/virtual.c      |  48 ++++++++++-
+ dlls/win32u/message.c          |   2 +-
+ include/ddk/wdm.h              |   2 +
+ include/wine/unixlib.h         |   1 +
+ 13 files changed, 218 insertions(+), 8 deletions(-)
+
+diff --git a/dlls/kernel32/process.c b/dlls/kernel32/process.c
+index 9bbb18d89dc..2d3c5698cea 100644
+--- a/dlls/kernel32/process.c
++++ b/dlls/kernel32/process.c
+@@ -39,7 +39,8 @@
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(process);
+ 
+-static const struct _KUSER_SHARED_DATA *user_shared_data = (struct _KUSER_SHARED_DATA *)0x7ffe0000;
++extern struct _KUSER_SHARED_DATA * DECLSPEC_IMPORT __wine_user_shared_data;
++#define user_shared_data ((const struct _KUSER_SHARED_DATA *)__wine_user_shared_data)
+ 
+ typedef struct
+ {
+diff --git a/dlls/kernel32/sync.c b/dlls/kernel32/sync.c
+index f3ca4043bca..20ddce1f92f 100644
+--- a/dlls/kernel32/sync.c
++++ b/dlls/kernel32/sync.c
+@@ -42,7 +42,8 @@
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(sync);
+ 
+-static const struct _KUSER_SHARED_DATA *user_shared_data = (struct _KUSER_SHARED_DATA *)0x7ffe0000;
++extern struct _KUSER_SHARED_DATA * DECLSPEC_IMPORT __wine_user_shared_data;
++#define user_shared_data ((const struct _KUSER_SHARED_DATA *)__wine_user_shared_data)
+ 
+ 
+ static void get_create_object_attributes( OBJECT_ATTRIBUTES *attr, UNICODE_STRING *nameW,
+diff --git a/dlls/kernelbase/memory.c b/dlls/kernelbase/memory.c
+index 2ce2dcad30e..7e98d25ebbe 100644
+--- a/dlls/kernelbase/memory.c
++++ b/dlls/kernelbase/memory.c
+@@ -40,7 +40,8 @@ WINE_DEFAULT_DEBUG_CHANNEL(heap);
+ WINE_DECLARE_DEBUG_CHANNEL(virtual);
+ WINE_DECLARE_DEBUG_CHANNEL(globalmem);
+ 
+-static const struct _KUSER_SHARED_DATA *user_shared_data = (struct _KUSER_SHARED_DATA *)0x7ffe0000;
++extern struct _KUSER_SHARED_DATA * DECLSPEC_IMPORT __wine_user_shared_data;
++#define user_shared_data ((const struct _KUSER_SHARED_DATA *)__wine_user_shared_data)
+ 
+ static CRITICAL_SECTION memstatus_section;
+ static CRITICAL_SECTION_DEBUG critsect_debug =
+diff --git a/dlls/kernelbase/sync.c b/dlls/kernelbase/sync.c
+index 94f846eeb53..95c8deb35e8 100644
+--- a/dlls/kernelbase/sync.c
++++ b/dlls/kernelbase/sync.c
+@@ -39,7 +39,8 @@
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(sync);
+ 
+-static const struct _KUSER_SHARED_DATA *user_shared_data = (struct _KUSER_SHARED_DATA *)0x7ffe0000;
++extern struct _KUSER_SHARED_DATA * DECLSPEC_IMPORT __wine_user_shared_data;
++#define user_shared_data ((const struct _KUSER_SHARED_DATA *)__wine_user_shared_data)
+ 
+ /* check if current version is NT or Win95 */
+ static inline BOOL is_version_nt(void)
+diff --git a/dlls/ntdll/ntdll.spec b/dlls/ntdll/ntdll.spec
+index 14608fd3f4d..d2ed8b7dc5d 100644
+--- a/dlls/ntdll/ntdll.spec
++++ b/dlls/ntdll/ntdll.spec
+@@ -1777,6 +1777,7 @@
+ @ extern -private __wine_unix_call_dispatcher
+ @ extern -private -arch=arm64ec __wine_unix_call_dispatcher_arm64ec
+ @ extern -private __wine_unixlib_handle
++@ extern __wine_user_shared_data
+ 
+ # Debugging
+ @ stdcall -norelay __wine_dbg_write(ptr long)
+diff --git a/dlls/ntdll/ntdll_misc.h b/dlls/ntdll/ntdll_misc.h
+index 2bf3cfaca32..8ecba6e48ca 100644
+--- a/dlls/ntdll/ntdll_misc.h
++++ b/dlls/ntdll/ntdll_misc.h
+@@ -98,7 +98,9 @@ extern const WCHAR windows_dir[];
+ 
+ extern void (FASTCALL *pBaseThreadInitThunk)(DWORD,LPTHREAD_START_ROUTINE,void *);
+ 
+-extern struct _KUSER_SHARED_DATA *user_shared_data;
++/* set by the Unix side, the page is not always at MM_SHARED_USER_DATA_VA */
++extern struct _KUSER_SHARED_DATA *__wine_user_shared_data;
++#define user_shared_data __wine_user_shared_data
+ 
+ #ifdef _WIN64
+ static inline TEB64 *NtCurrentTeb64(void) { return NULL; }
+diff --git a/dlls/ntdll/thread.c b/dlls/ntdll/thread.c
+index 1c25c8ff1d5..68cd7b7b355 100644
+--- a/dlls/ntdll/thread.c
++++ b/dlls/ntdll/thread.c
+@@ -35,7 +35,7 @@ WINE_DECLARE_DEBUG_CHANNEL(relay);
+ WINE_DECLARE_DEBUG_CHANNEL(pid);
+ WINE_DECLARE_DEBUG_CHANNEL(timestamp);
+ 
+-struct _KUSER_SHARED_DATA *user_shared_data = (void *)0x7ffe0000;
++struct _KUSER_SHARED_DATA *__wine_user_shared_data = (void *)MM_SHARED_USER_DATA_VA;
+ 
+ struct debug_info
+ {
+diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
+index ebfb6af5387..45ebb0abe7e 100644
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -1554,6 +1554,7 @@ static void load_ntdll_functions( HMODULE module )
+     void **p__wine_unix_call_dispatcher;
+     void **p__wine_unix_call_dispatcher_arm64ec = NULL;
+     unixlib_handle_t *p__wine_unixlib_handle;
++    struct _KUSER_SHARED_DATA **p__wine_user_shared_data;
+     const IMAGE_EXPORT_DIRECTORY *exports;
+ 
+     exports = get_module_data_dir( module, IMAGE_DIRECTORY_ENTRY_EXPORT, NULL );
+@@ -1575,6 +1576,7 @@ static void load_ntdll_functions( HMODULE module )
+     GET_FUNC( __wine_syscall_dispatcher );
+     GET_FUNC( __wine_unix_call_dispatcher );
+     GET_FUNC( __wine_unixlib_handle );
++    GET_FUNC( __wine_user_shared_data );
+     if (is_arm64ec())
+     {
+         GET_FUNC( __wine_unix_call_dispatcher_arm64ec );
+@@ -1582,6 +1584,7 @@ static void load_ntdll_functions( HMODULE module )
+     }
+     *p__wine_syscall_dispatcher = __wine_syscall_dispatcher;
+     *p__wine_unixlib_handle = (UINT_PTR)unix_call_funcs;
++    *p__wine_user_shared_data = user_shared_data;
+     if (p__wine_unix_call_dispatcher_arm64ec)
+     {
+         /* redirect __wine_unix_call_dispatcher to __wine_unix_call_dispatcher_arm64ec */
+diff --git a/dlls/ntdll/unix/signal_arm64.c b/dlls/ntdll/unix/signal_arm64.c
+index aa77d8a0cc2..8487b3931c4 100644
+--- a/dlls/ntdll/unix/signal_arm64.c
++++ b/dlls/ntdll/unix/signal_arm64.c
+@@ -56,6 +56,7 @@
+ #include "winnt.h"
+ #include "winternl.h"
+ #include "wine/asm.h"
++#include "ddk/wdm.h"
+ #include "unix_private.h"
+ #include "wine/debug.h"
+ 
+@@ -1133,6 +1134,149 @@ static BOOL handle_syscall_fault( struct thread_data *data, ucontext_t *context,
+  *
+  * Handler for SIGSEGV and related errors.
+  */
++#if defined(__APPLE__)
++
++static DWORD64 get_gpr( const ucontext_t *sigcontext, unsigned int reg, BOOL sp )
++{
++    if (reg == 31) return sp ? SP_sig(sigcontext) : 0;
++    if (reg == 29) return FP_sig(sigcontext);
++    if (reg == 30) return LR_sig(sigcontext);
++    return REGn_sig( reg, sigcontext );
++}
++
++static void set_gpr( ucontext_t *sigcontext, unsigned int reg, BOOL sp, DWORD64 val )
++{
++    if (reg == 31) { if (sp) SP_sig(sigcontext) = val; }
++    else if (reg == 29) FP_sig(sigcontext) = val;
++    else if (reg == 30) LR_sig(sigcontext) = val;
++    else REGn_sig( reg, sigcontext ) = val;
++}
++
++static DWORD64 sign_extend( DWORD64 val, unsigned int bits )
++{
++    return (val ^ (1ull << (bits - 1))) - (1ull << (bits - 1));
++}
++
++/* load one register from the relocated page; size in bytes, sext = 0 (zero-extend) or target width 32/64 */
++static void load_reg( ucontext_t *sigcontext, unsigned int rt, BOOL simd, const BYTE *src,
++                      unsigned int size, unsigned int sext )
++{
++    if (simd)
++    {
++        BYTE *v = (BYTE *)&sigcontext->uc_mcontext->__ns.__v[rt];
++        memset( v, 0, 16 );
++        memcpy( v, src, size );
++    }
++    else
++    {
++        DWORD64 val = 0;
++        memcpy( &val, src, size );
++        if (sext) val = sign_extend( val, size * 8 );
++        if (sext == 32) val = (DWORD)val;
++        set_gpr( sigcontext, rt, FALSE, val );
++    }
++}
++
++/***********************************************************************
++ *           emulate_user_shared_data_load
++ *
++ * PAGEZERO covers MM_SHARED_USER_DATA_VA when the process can't remap the low 4G, so the
++ * page lives elsewhere (see virtual_alloc_first_thread_data). Code that hardcodes the
++ * canonical address faults; emulate its load from the relocated page.
++ */
++static BOOL emulate_user_shared_data_load( ucontext_t *sigcontext )
++{
++    const ULONG_PTR start = MM_SHARED_USER_DATA_VA, end = start + 0x1000;
++    DWORD insn = *(const DWORD *)PC_sig(sigcontext);
++    unsigned int rt = insn & 0x1f, rn = (insn >> 5) & 0x1f, rt2 = 0, size, sext = 0, count = 1;
++    BOOL simd = (insn >> 26) & 1, writeback = FALSE, post = FALSE;
++    DWORD64 base, addr, wb_addr;
++    INT64 offset = 0;
++    const BYTE *src;
++
++    if ((ULONG_PTR)user_shared_data == start) return FALSE;
++
++    if ((insn & 0x3a000000) == 0x28000000)  /* load/store pair */
++    {
++        unsigned int opc = insn >> 30, idx = (insn >> 23) & 3;
++        if (!((insn >> 22) & 1)) return FALSE;  /* store */
++        if (simd) { if (opc == 3) return FALSE; size = 4 << opc; }
++        else if (opc == 0) size = 4;
++        else if (opc == 1) { size = 4; sext = 64; }  /* ldpsw */
++        else if (opc == 2) size = 8;
++        else return FALSE;
++        offset = sign_extend( (insn >> 15) & 0x7f, 7 ) * size;
++        rt2 = (insn >> 10) & 0x1f;
++        count = 2;
++        if (idx == 1) { writeback = post = TRUE; }
++        else if (idx == 3) writeback = TRUE;
++    }
++    else if ((insn & 0x3ffffc00) == 0x08dffc00 || (insn & 0x3ffffc00) == 0x38bfc000)  /* ldar/ldapr */
++    {
++        size = 1 << (insn >> 30);
++        simd = FALSE;
++    }
++    else if ((insn & 0x3a000000) == 0x38000000)  /* load/store register */
++    {
++        unsigned int opc = (insn >> 22) & 3, sz = insn >> 30;
++
++        if (simd)
++        {
++            if (opc == 1) size = 1 << sz;
++            else if (opc == 3 && sz == 0) size = 16;
++            else return FALSE;
++        }
++        else
++        {
++            size = 1 << sz;
++            if (opc == 0) return FALSE;  /* store */
++            if (opc == 2) { if (sz == 3) return FALSE; sext = 64; }  /* prfm when sz == 3 */
++            else if (opc == 3) { if (sz >= 2) return FALSE; sext = 32; }
++        }
++
++        if (insn & 0x01000000)  /* unsigned immediate */
++            offset = ((insn >> 10) & 0xfff) * size;
++        else if ((insn & 0x00200c00) == 0x00200800)  /* register offset */
++        {
++            unsigned int option = (insn >> 13) & 7, shift = ((insn >> 12) & 1) ? __builtin_ctz( size ) : 0;
++            DWORD64 rm = get_gpr( sigcontext, (insn >> 16) & 0x1f, FALSE );
++            switch (option)
++            {
++            case 2: rm = (DWORD)rm; break;
++            case 3: case 7: break;
++            case 6: rm = sign_extend( (DWORD)rm, 32 ); break;
++            default: return FALSE;
++            }
++            offset = rm << shift;
++        }
++        else if (!(insn & 0x00200000))  /* unscaled, post/pre-indexed, unprivileged */
++        {
++            offset = sign_extend( (insn >> 12) & 0x1ff, 9 );
++            switch ((insn >> 10) & 3)
++            {
++            case 1: writeback = post = TRUE; break;
++            case 3: writeback = TRUE; break;
++            }
++        }
++        else return FALSE;
++    }
++    else return FALSE;
++
++    base = get_gpr( sigcontext, rn, TRUE );
++    wb_addr = base + offset;
++    addr = post ? base : wb_addr;
++    if (addr < start || addr + count * size > end || addr + count * size < addr) return FALSE;
++
++    src = (const BYTE *)user_shared_data + (addr - start);
++    load_reg( sigcontext, rt, simd, src, size, sext );
++    if (count == 2) load_reg( sigcontext, rt2, simd, src + size, size, sext );
++    if (writeback) set_gpr( sigcontext, rn, TRUE, wb_addr );
++    PC_sig(sigcontext) += 4;
++    return TRUE;
++}
++
++#endif /* __APPLE__ */
++
+ static void segv_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
+ {
+     ucontext_t *sigcontext = _sigcontext;
+@@ -1161,7 +1305,14 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
+         if (ESR_ELx_ISS_DABT_WNR(esr))
+             rec.ExceptionInformation[0] = EXCEPTION_WRITE_FAULT;
+         else
++        {
++#ifdef __APPLE__
++            if ((ULONG_PTR)siginfo->si_addr - MM_SHARED_USER_DATA_VA < 0x1000 &&
++                !(PSTATE_sig( sigcontext ) & 0x10) && emulate_user_shared_data_load( sigcontext ))
++                return;
++#endif
+             rec.ExceptionInformation[0] = EXCEPTION_READ_FAULT;
++        }
+         break;
+     default:
+         rec.ExceptionInformation[0] = EXCEPTION_READ_FAULT;
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index 9d3a0f22b12..8acc26f8f7f 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -70,6 +70,7 @@
+ # include <mach/task.h>
+ # include <mach/thread_state.h>
+ # include <mach/vm_map.h>
++# include <libkern/OSCacheControl.h>
+ #undef host_page_size
+ #endif
+ 
+@@ -190,7 +191,7 @@ static void *host_addr_space_limit;  /* top of the host virtual address space */
+ static struct file_view *arm64ec_view;
+ 
+ ULONG_PTR user_space_wow_limit = 0;
+-struct _KUSER_SHARED_DATA *user_shared_data = (void *)0x7ffe0000;
++struct _KUSER_SHARED_DATA *user_shared_data = (void *)MM_SHARED_USER_DATA_VA;
+ 
+ /* TEB allocation blocks */
+ static void *teb_block;
+@@ -1595,6 +1596,11 @@ static NTSTATUS get_vprot_flags( DWORD protect, unsigned int *vprot, BOOL image
+  */
+ static inline int mprotect_exec( void *base, size_t size, int unix_prot )
+ {
++#if defined(__APPLE__) && defined(__aarch64__)
++    /* W+X is never granted without MAP_JIT; start executable, virtual_handle_fault() flips
++     * the host page between RX and RW as needed. */
++    if ((unix_prot & (PROT_WRITE | PROT_EXEC)) == (PROT_WRITE | PROT_EXEC)) unix_prot &= ~PROT_WRITE;
++#endif
+     if (force_exec_prot && (unix_prot & PROT_READ) && !(unix_prot & PROT_EXEC))
+     {
+         TRACE( "forcing exec permission on %p-%p\n", base, (char *)base + size - 1 );
+@@ -3692,6 +3698,16 @@ struct thread_data *virtual_alloc_first_thread_data(void)
+ 
+     /* reserve space for shared user data */
+     status = map_view( &view, user_shared_data, page_size, 0, VPROT_READ | VPROT_COMMITTED, 0, 0, 0 );
++#if defined(__APPLE__) && defined(__aarch64__)
++    if (status)
++    {
++        /* arm64 macOS reserves the low 4G (PAGEZERO) unless the process is entitled to remap it.
++         * Move the page 4G up; loads from the canonical address are emulated in the SIGSEGV handler. */
++        user_shared_data = (void *)(MM_SHARED_USER_DATA_VA + 0x100000000);
++        status = map_view( &view, user_shared_data, page_size, 0, VPROT_READ | VPROT_COMMITTED, 0, 0, 0 );
++        if (!status) WARN( "shared user data relocated to %p\n", user_shared_data );
++    }
++#endif
+     if (status)
+     {
+         ERR( "wine: failed to map the shared user data: %08x\n", status );
+@@ -4113,6 +4129,18 @@ done:
+ static const WCHAR shared_data_nameW[] = {'\\','K','e','r','n','e','l','O','b','j','e','c','t','s',
+                                           '\\','_','_','w','i','n','e','_','u','s','e','r','_','s','h','a','r','e','d','_','d','a','t','a',0};
+ 
++/***********************************************************************
++ *           ntdll_get_user_shared_data
++ *
++ * Address of the shared user data page; not always MM_SHARED_USER_DATA_VA, see
++ * virtual_alloc_first_thread_data().
++ */
++const struct _KUSER_SHARED_DATA *ntdll_get_user_shared_data(void)
++{
++    return user_shared_data;
++}
++
++
+ /***********************************************************************
+  *           virtual_map_user_shared_data
+  */
+@@ -4309,6 +4337,14 @@ NTSTATUS virtual_handle_fault( struct thread_data *data, EXCEPTION_RECORD *rec,
+                 mprotect_range( page, host_page_size, 0, 0 );
+             }
+         }
++#if defined(__APPLE__) && defined(__aarch64__)
++        /* W^X: a W+X page is mapped RX (see mprotect_exec), make it RW for the write */
++        if (is_vprot_exec_write( get_host_page_vprot( page ) ) &&
++            (get_unix_prot( get_host_page_vprot( page ) ) & PROT_WRITE) &&
++            !mprotect( page, host_page_size, PROT_READ | PROT_WRITE ))
++            ret = STATUS_SUCCESS;
++        else
++#endif
+         /* ignore fault if page is writable now */
+         if (get_unix_prot( get_host_page_vprot( page )) & PROT_WRITE)
+         {
+@@ -4316,6 +4352,16 @@ NTSTATUS virtual_handle_fault( struct thread_data *data, EXCEPTION_RECORD *rec,
+                 ret = STATUS_SUCCESS;
+         }
+     }
++#if defined(__APPLE__) && defined(__aarch64__)
++    else if (err == EXCEPTION_EXECUTE_FAULT && is_vprot_exec_write( vprot ) &&
++             (get_unix_prot( vprot ) & PROT_EXEC) &&
++             !mprotect( page, host_page_size, PROT_READ | PROT_EXEC ))
++    {
++        /* W^X: page was RW, make it RX again */
++        sys_icache_invalidate( page, host_page_size );
++        ret = STATUS_SUCCESS;
++    }
++#endif
+     mutex_unlock( &virtual_mutex );
+     rec->ExceptionCode = ret;
+     return ret;
+diff --git a/dlls/win32u/message.c b/dlls/win32u/message.c
+index 8c9a2aaef7c..6b9d44c4446 100644
+--- a/dlls/win32u/message.c
++++ b/dlls/win32u/message.c
+@@ -45,7 +45,7 @@ WINE_DECLARE_DEBUG_CHANNEL(relay);
+ #define QS_HARDWARE     0x40000000
+ #define QS_INTERNAL     (QS_DRIVER | QS_HARDWARE)
+ 
+-static const struct _KUSER_SHARED_DATA *user_shared_data = (struct _KUSER_SHARED_DATA *)0x7ffe0000;
++#define user_shared_data ntdll_get_user_shared_data()
+ 
+ static const struct ratio no_dpi;
+ 
+diff --git a/include/ddk/wdm.h b/include/ddk/wdm.h
+index bce13425a23..6886c7b696d 100644
+--- a/include/ddk/wdm.h
++++ b/include/ddk/wdm.h
+@@ -1479,6 +1479,8 @@ typedef struct _KUSER_SHARED_DATA {
+ 
+ C_ASSERT( sizeof(KUSER_SHARED_DATA) == 0x738 );
+ 
++#define MM_SHARED_USER_DATA_VA 0x7ffe0000
++
+ #define SHARED_GLOBAL_FLAGS_QPC_BYPASS_ENABLED 0x01
+ #define SHARED_GLOBAL_FLAGS_QPC_BYPASS_USE_HV_PAGE 0x02
+ #define SHARED_GLOBAL_FLAGS_QPC_BYPASS_DISABLE_32BIT 0x04
+diff --git a/include/wine/unixlib.h b/include/wine/unixlib.h
+index 5c77d0ca57f..15cfa35962b 100644
+--- a/include/wine/unixlib.h
++++ b/include/wine/unixlib.h
+@@ -43,6 +43,7 @@ extern DECLSPEC_EXPORT const unixlib_entry_t __wine_unix_call_wow64_funcs[];
+ #ifdef __WINESRC__
+ 
+ NTSYSAPI const WCHAR *ntdll_get_build_dir(void);
++NTSYSAPI const struct _KUSER_SHARED_DATA *ntdll_get_user_shared_data(void);
+ NTSYSAPI const WCHAR *ntdll_get_data_dir(void);
+ NTSYSAPI NTSTATUS ntdll_get_dos_file_name( const char *unix_name, WCHAR **dos, UINT disposition );
+ NTSYSAPI NTSTATUS ntdll_get_unix_file_name( const WCHAR *dos, char **unix_name, UINT disposition );
+-- 
+2.54.0 (Apple Git-157)
+

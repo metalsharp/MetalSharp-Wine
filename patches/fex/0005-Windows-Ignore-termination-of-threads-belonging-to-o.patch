@@ -1,0 +1,51 @@
+From bc8fae7851b421317c2246bc8ae0459115a700fd Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Thu, 22 Oct 2026 08:13:41 -0600
+Subject: [PATCH 5/7] Windows: Ignore termination of threads belonging to other
+ processes.
+
+ThreadTerm/BTCpuThreadTerm looked up the CPU area/TLS through the TEB of the
+target thread, which for a thread of another process lives in that process's
+address space, and crashed (kernel32 process test, TerminateThread on a thread
+created with CreateRemoteThread).
+---
+ Source/Windows/ARM64EC/Module.cpp | 6 ++++++
+ Source/Windows/WOW64/Module.cpp   | 5 +++++
+ 2 files changed, 11 insertions(+)
+
+diff --git a/Source/Windows/ARM64EC/Module.cpp b/Source/Windows/ARM64EC/Module.cpp
+index 7fcd99de2..8a87e7d4d 100644
+--- a/Source/Windows/ARM64EC/Module.cpp
++++ b/Source/Windows/ARM64EC/Module.cpp
+@@ -1091,6 +1091,12 @@ NTSTATUS ThreadTerm(HANDLE Thread, LONG ExitCode) {
+     return Err;
+   }
+ 
++  // Only threads of this process have JIT state here; the TEB of another process's thread is in
++  // that process's address space (TerminateThread on a remote thread used to crash here).
++  if (reinterpret_cast<uint64_t>(Info.ClientId.UniqueProcess) != GetCurrentProcessId()) {
++    return STATUS_SUCCESS;
++  }
++
+   const auto ThreadTID = reinterpret_cast<uint64_t>(Info.ClientId.UniqueThread);
+   bool Self = ThreadTID == GetCurrentThreadId();
+   if (!Self) {
+diff --git a/Source/Windows/WOW64/Module.cpp b/Source/Windows/WOW64/Module.cpp
+index 8c6b7f76e..5a79a1333 100644
+--- a/Source/Windows/WOW64/Module.cpp
++++ b/Source/Windows/WOW64/Module.cpp
+@@ -629,6 +629,11 @@ void BTCpuThreadTerm(HANDLE Thread, LONG ExitCode) {
+     return;
+   }
+ 
++  // Only threads of this process have JIT state here (TerminateThread on a remote thread).
++  if (reinterpret_cast<uint64_t>(Info.ClientId.UniqueProcess) != GetCurrentProcessId()) {
++    return;
++  }
++
+   LogMan::Msg::IFmt("Terminating {}", Info.ClientId.UniqueThread);
+   const auto ThreadTID = reinterpret_cast<uint64_t>(Info.ClientId.UniqueThread);
+   bool Self = ThreadTID == GetCurrentThreadId();
+-- 
+2.54.0 (Apple Git-157)
+

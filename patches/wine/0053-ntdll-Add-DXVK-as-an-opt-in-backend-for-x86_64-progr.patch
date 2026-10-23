@@ -1,0 +1,216 @@
+From cc42b9543a87519ccdce74f74d77ccc784fb00fd Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Thu, 22 Oct 2026 18:55:24 -0600
+Subject: [PATCH 53/55] ntdll: Add DXVK as an opt-in backend for x86_64
+ programs; CJK font replacements; quiet MoltenVK.
+
+GRAPHICS_BACKEND=dxvk loads DXVK 1.10.3 (macOS) d3d9/d3d10core/d3d11/dxgi from
+lib/dxvk/x86_64-windows in ARM64EC processes; other modules and other kinds of
+process keep Mullion. wine.inf maps Chinese, Japanese and Korean Windows font
+families onto the macOS system fonts. MVK_CONFIG_LOG_LEVEL defaults to errors.
+---
+ dlls/ntdll/unix/graphics_policy.c | 20 +++++++++++-
+ dlls/ntdll/unix/loader.c          | 52 +++++++++++++++++++++++++++++++
+ dlls/ntdll/unix/unix_private.h    |  2 ++
+ loader/wine.inf.in                | 31 ++++++++++++++++++
+ 4 files changed, 104 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/ntdll/unix/graphics_policy.c b/dlls/ntdll/unix/graphics_policy.c
+index 24ac33d31d0..f36f4fbaa82 100644
+--- a/dlls/ntdll/unix/graphics_policy.c
++++ b/dlls/ntdll/unix/graphics_policy.c
+@@ -46,6 +46,7 @@ enum process_graphics_backend
+     PROCESS_GRAPHICS_BACKEND_WINE,
+     PROCESS_GRAPHICS_BACKEND_D3DMETAL,
+     PROCESS_GRAPHICS_BACKEND_DXMT,
++    PROCESS_GRAPHICS_BACKEND_DXVK,
+ };
+ 
+ /* WineForge-Internal: graphics/process-backend-policy-v1. */
+@@ -70,6 +71,11 @@ static BOOL parse_graphics_backend( const char *name, enum process_graphics_back
+         *backend = PROCESS_GRAPHICS_BACKEND_DXMT;
+         return TRUE;
+     }
++    if (name && !strcmp( name, "dxvk" ))
++    {
++        *backend = PROCESS_GRAPHICS_BACKEND_DXVK;
++        return TRUE;
++    }
+     if (name && !strcmp( name, "wine" ))
+     {
+         *backend = PROCESS_GRAPHICS_BACKEND_WINE;
+@@ -85,6 +91,7 @@ static const char *process_graphics_backend_name( enum process_graphics_backend
+     {
+     case PROCESS_GRAPHICS_BACKEND_D3DMETAL: return "d3dmetal";
+     case PROCESS_GRAPHICS_BACKEND_DXMT: return "dxmt";
++    case PROCESS_GRAPHICS_BACKEND_DXVK: return "dxvk";
+     default: return "wine";
+     }
+ }
+@@ -121,6 +128,11 @@ void init_process_graphics_backend( const WCHAR *image_path )
+     if (!parse_graphics_backend( backend, &configured_backend ))
+         configured_backend = dxmt_runtime_available() ? PROCESS_GRAPHICS_BACKEND_DXMT
+                                                       : PROCESS_GRAPHICS_BACKEND_WINE;
++    /* DXVK (opt-in) covers D3D9/10/11 and DXGI in x86_64 programs only; everything else, and
++     * every other kind of program, keeps the default backend. */
++    if (configured_backend == PROCESS_GRAPHICS_BACKEND_DXVK && !(is_arm64ec() && dxvk_runtime_available()))
++        configured_backend = dxmt_runtime_available() ? PROCESS_GRAPHICS_BACKEND_DXMT
++                                                      : PROCESS_GRAPHICS_BACKEND_WINE;
+     process_graphics_backend = configured_backend;
+     get_launcher_policy( image_pathA, &launcher );
+ 
+@@ -161,12 +173,18 @@ BOOL dxmt_graphics_backend_enabled(void)
+ 
+     if (process_uses_cef_software) return FALSE;
+     if (process_graphics_backend != PROCESS_GRAPHICS_BACKEND_UNINITIALIZED)
+-        return process_graphics_backend == PROCESS_GRAPHICS_BACKEND_DXMT;
++        return process_graphics_backend == PROCESS_GRAPHICS_BACKEND_DXMT ||
++               (process_graphics_backend == PROCESS_GRAPHICS_BACKEND_DXVK && dxmt_runtime_available());
+     if (!backend || !backend[0]) backend = getenv( "ACTIVE_GRAPHICS_BACKEND" );
+     if (!backend || !backend[0]) return dxmt_runtime_available();
+     return !strcmp( backend, "dxmt" );
+ }
+ 
++BOOL dxvk_graphics_backend_enabled(void)
++{
++    return process_graphics_backend == PROCESS_GRAPHICS_BACKEND_DXVK;
++}
++
+ /* WineForge-Internal: graphics/process-backend-policy-v1. */
+ BOOL wfdxcompat_launcher_runtime_enabled(void)
+ {
+diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
+index 814673e320a..629e496158c 100644
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -318,6 +318,8 @@ static void set_dll_path(void)
+             free( value );
+         }
+     }
++    /* MoltenVK logs its whole feature list at info level on every instance; keep errors only */
++    setenv( "MVK_CONFIG_LOG_LEVEL", "1", 0 );
+ 
+     /* default to the Mullion (DXMT) runtime bundled next to Wine's own modules */
+     if (!getenv( "DXMT_RUNTIME_DIR" ) && dll_dir)
+@@ -1225,6 +1227,38 @@ static char *winemetalgl_opengl32_path( USHORT machine )
+     free( path );
+     return NULL;
+ }
++
++/* DXVK 1.10.3 (macOS, x86_64): <dll_dir>/../dxvk/x86_64-windows, for GRAPHICS_BACKEND=dxvk */
++static char *dxvk_pe_path( const char *name )
++{
++    char *path;
++
++    if (!dll_dir || asprintf( &path, "%s/../dxvk/x86_64-windows/%s", dll_dir, name ) == -1) return NULL;
++    if (!access( path, R_OK )) return path;
++    free( path );
++    return NULL;
++}
++
++BOOL dxvk_runtime_available(void)
++{
++    char *path = dxvk_pe_path( "d3d11.dll" );
++
++    free( path );
++    return path != NULL;
++}
++
++static char *resolve_dxvk_pe_path( const char *module )
++{
++    static const char *const names[] = { "d3d9.dll", "d3d10core.dll", "d3d11.dll", "dxgi.dll" };
++    const char *name = strrchr( module, '/' );
++    unsigned int i;
++
++    if (!dxvk_graphics_backend_enabled()) return NULL;
++    name = name ? name + 1 : module;
++    for (i = 0; i < ARRAY_SIZE(names); i++)
++        if (!strcasecmp( name, names[i] )) return dxvk_pe_path( names[i] );
++    return NULL;
++}
+ #endif
+ 
+ static NTSTATUS find_builtin_dll( UNICODE_STRING *nt_name, ANSI_STRING *exp_name, void **module,
+@@ -1308,6 +1342,24 @@ static NTSTATUS find_builtin_dll( UNICODE_STRING *nt_name, ANSI_STRING *exp_name
+         }
+     }
+ 
++    /* DXVK (GRAPHICS_BACKEND=dxvk, x86_64 programs): PE only, no unix side */
++    {
++        char *dxvk_pe = resolve_dxvk_pe_path( file + pos + 1 );
++
++        if (dxvk_pe)
++        {
++            status = open_builtin_pe_file( dxvk_pe, &attr, module, size_ptr, image_info,
++                                           limit_low, limit_high, load_machine, prefer_native, offset );
++            TRACE( "DXVK %s for %s -> %#lx\n", debugstr_a(dxvk_pe), debugstr_us(nt_name), (long)status );
++            free( dxvk_pe );
++            if (status != STATUS_DLL_NOT_FOUND)
++            {
++                winemetalgl_pe = TRUE;  /* no unix side either */
++                goto done;
++            }
++        }
++    }
++
+     /* WineForge-Internal: the selected DXMT runtime must win over Wine's own builtins. */
+     if (dxmt_graphics_backend_enabled() && is_dxmt_module_name( file + pos + 1 ))
+     {
+diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
+index 5bf3fc37023..6f04d3d9d25 100644
+--- a/dlls/ntdll/unix/unix_private.h
++++ b/dlls/ntdll/unix/unix_private.h
+@@ -375,6 +375,8 @@ extern BOOL is_dxmt_module_name( const char *path );
+ extern BOOL is_dxmt_module_basename( const WCHAR *name );
+ extern char *resolve_dxmt_pe_path( const char *module, USHORT machine );
+ extern char *resolve_dxmt_unixlib_path( const char *path );
++extern BOOL dxvk_graphics_backend_enabled(void);
++extern BOOL dxvk_runtime_available(void);
+ extern NTSTATUS load_builtin_unixlib_now( void *module );
+ #endif
+ extern NTSTATUS set_builtin_unixlib_name( void *module, const char *name );
+diff --git a/loader/wine.inf.in b/loader/wine.inf.in
+index 3588806c373..a78e9e815a2 100644
+--- a/loader/wine.inf.in
++++ b/loader/wine.inf.in
+@@ -524,6 +524,37 @@ HKLM,%FontSubStr%,"Times New Roman CYR,204",,"Times New Roman,204"
+ HKLM,%FontSubStr%,"Times New Roman Greek,161",,"Times New Roman,161"
+ HKLM,%FontSubStr%,"Times New Roman TUR,162",,"Times New Roman,162"
+ HKLM,System\CurrentControlSet\Hardware Profiles\Current\Software\Fonts,"LogPixels",0x10003,0x00000060
++; MetalSharp: CJK families that Windows programs ask for, mapped onto the macOS system fonts
++; Wine loads (Hiragino, Heiti, Songti, Apple SD Gothic Neo). A real font of the same name wins.
++HKCU,Software\Wine\Fonts\Replacements,"MS Gothic",0x10002,"Hiragino Sans W3"
++HKCU,Software\Wine\Fonts\Replacements,"MS PGothic",0x10002,"Hiragino Sans W3"
++HKCU,Software\Wine\Fonts\Replacements,"MS UI Gothic",0x10002,"Hiragino Sans W3"
++HKCU,Software\Wine\Fonts\Replacements,"Meiryo",0x10002,"Hiragino Sans W3"
++HKCU,Software\Wine\Fonts\Replacements,"Meiryo UI",0x10002,"Hiragino Sans W3"
++HKCU,Software\Wine\Fonts\Replacements,"Yu Gothic",0x10002,"Hiragino Sans W3"
++HKCU,Software\Wine\Fonts\Replacements,"Yu Gothic UI",0x10002,"Hiragino Sans W3"
++HKCU,Software\Wine\Fonts\Replacements,"MS Mincho",0x10002,"Hiragino Mincho ProN W3"
++HKCU,Software\Wine\Fonts\Replacements,"MS PMincho",0x10002,"Hiragino Mincho ProN W3"
++HKCU,Software\Wine\Fonts\Replacements,"Yu Mincho",0x10002,"Hiragino Mincho ProN W3"
++HKCU,Software\Wine\Fonts\Replacements,"Microsoft YaHei",0x10002,"Hiragino Sans GB W3","Heiti SC"
++HKCU,Software\Wine\Fonts\Replacements,"Microsoft YaHei UI",0x10002,"Hiragino Sans GB W3","Heiti SC"
++HKCU,Software\Wine\Fonts\Replacements,"SimHei",0x10002,"Hiragino Sans GB W3","Heiti SC"
++HKCU,Software\Wine\Fonts\Replacements,"DengXian",0x10002,"Hiragino Sans GB W3","Heiti SC"
++HKCU,Software\Wine\Fonts\Replacements,"SimSun",0x10002,"Songti SC","STSong"
++HKCU,Software\Wine\Fonts\Replacements,"NSimSun",0x10002,"Songti SC","STSong"
++HKCU,Software\Wine\Fonts\Replacements,"Microsoft JhengHei",0x10002,"Heiti TC"
++HKCU,Software\Wine\Fonts\Replacements,"Microsoft JhengHei UI",0x10002,"Heiti TC"
++HKCU,Software\Wine\Fonts\Replacements,"PMingLiU",0x10002,"Songti TC"
++HKCU,Software\Wine\Fonts\Replacements,"MingLiU",0x10002,"Songti TC"
++HKCU,Software\Wine\Fonts\Replacements,"MingLiU_HKSCS",0x10002,"Songti TC"
++HKCU,Software\Wine\Fonts\Replacements,"Malgun Gothic",0x10002,"Apple SD Gothic Neo"
++HKCU,Software\Wine\Fonts\Replacements,"Gulim",0x10002,"Apple SD Gothic Neo"
++HKCU,Software\Wine\Fonts\Replacements,"GulimChe",0x10002,"Apple SD Gothic Neo"
++HKCU,Software\Wine\Fonts\Replacements,"Dotum",0x10002,"Apple SD Gothic Neo"
++HKCU,Software\Wine\Fonts\Replacements,"DotumChe",0x10002,"Apple SD Gothic Neo"
++HKCU,Software\Wine\Fonts\Replacements,"Batang",0x10002,"Apple SD Gothic Neo"
++HKCU,Software\Wine\Fonts\Replacements,"BatangChe",0x10002,"Apple SD Gothic Neo"
++HKCU,Software\Wine\Fonts\Replacements,"Gungsuh",0x10002,"Apple SD Gothic Neo"
+ 
+ [MCI]
+ HKLM,%Mci32Str%,"AVIVideo",,"mciavi32.dll"
+-- 
+2.54.0 (Apple Git-157)
+

@@ -1,0 +1,29 @@
+From b3e6de78c4227bdf15e5035012baa3703b67b51a Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Thu, 22 Oct 2026 13:53:45 -0600
+Subject: [PATCH 23/55] shell32: Pre-create KFDF_PRECREATE known folders.
+
+From WineForge/MetalSharp (Rockstar launcher).
+
+(cherry picked from commit b1618c83082d7ede3b26a99e4f468c36d644e5b2)
+---
+ dlls/shell32/shellpath.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/dlls/shell32/shellpath.c b/dlls/shell32/shellpath.c
+index bf13a7351f0..68c2814c414 100644
+--- a/dlls/shell32/shellpath.c
++++ b/dlls/shell32/shellpath.c
+@@ -3591,6 +3591,9 @@ HRESULT WINAPI SHGetKnownFolderPath(REFKNOWNFOLDERID rfid, DWORD flags, HANDLE t
+     }
+ 
+     folder |= flags & CSIDL_FLAG_MASK;
++    /* MetalSharp-Internal: launcher-compat/rockstar-precreate-known-folders-v1. */
++    if (CSIDL_Data[folder & CSIDL_FOLDER_MASK].flags & KFDF_PRECREATE)
++        folder |= CSIDL_FLAG_CREATE;
+     shgfp_flags = flags & KF_FLAG_DEFAULT_PATH ? SHGFP_TYPE_DEFAULT : SHGFP_TYPE_CURRENT;
+ 
+     hr = SHGetFolderPathAndSubDirW( 0, folder, token, shgfp_flags, NULL, pathW );
+-- 
+2.54.0 (Apple Git-157)
+

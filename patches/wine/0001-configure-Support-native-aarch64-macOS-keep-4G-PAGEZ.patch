@@ -1,0 +1,91 @@
+From e9f01892ec35acb0d25e12c64a7239c2816a8af4 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Thu, 22 Oct 2026 00:55:36 -0600
+Subject: [PATCH 01/55] configure: Support native aarch64 macOS (keep 4G
+ PAGEZERO, preserve x18 via SDK 12 build version, CGL OpenGL)
+
+---
+ configure    | 15 ++++++++++++---
+ configure.ac | 19 ++++++++++++++++---
+ 2 files changed, 28 insertions(+), 6 deletions(-)
+
+diff --git a/configure b/configure
+index e2065aef217..d1bc041a1e9 100755
+--- a/configure
++++ b/configure
+@@ -12405,7 +12405,13 @@ case $host_os in
+     SYSTEMCONFIGURATION_LIBS="-framework SystemConfiguration"
+ 
+ 
+-    WINELOADER_LDFLAGS="-Wl,-segalign,0x1000,-pagezero_size,0x1000,-sectcreate,__TEXT,__info_plist,loader/wine_info.plist"
++    case $HOST_ARCH in
++      aarch64)
++                                wine_darwin_minos=${MACOSX_DEPLOYMENT_TARGET:-11.0}
++        WINELOADER_LDFLAGS="-Wl,-sectcreate,__TEXT,__info_plist,loader/wine_info.plist -Wl,-platform_version,macos,$wine_darwin_minos,12.0" ;;
++      *)
++        WINELOADER_LDFLAGS="-Wl,-segalign,0x1000,-pagezero_size,0x1000,-sectcreate,__TEXT,__info_plist,loader/wine_info.plist" ;;
++    esac
+ 
+     case $HOST_ARCH in
+       x86_64)
+@@ -14762,7 +14768,9 @@ LIBS=$ac_save_pkg_LIBS
+ fi
+ 
+ fi
+-if test -z "$ac_cv_lib_soname_EGL"
++case $host_os in
++  darwin*) ;;
++  *) if test -z "$ac_cv_lib_soname_EGL"
+ then :
+   case "x$with_opengl" in
+   x)   as_fn_append wine_notices "|EGL ${notice_platform}development files not found" ;;
+@@ -14771,7 +14779,8 @@ then :
+ This is an error since --with-opengl was requested." "$LINENO" 5 ;;
+ esac
+ 
+-fi
++fi ;;
++esac
+ 
+ 
+ ac_ext=c
+diff --git a/configure.ac b/configure.ac
+index f1fccbd25d9..cae877dcbf4 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -988,7 +988,16 @@ case $host_os in
+     AC_SUBST(SECURITY_LIBS,"-framework Security -framework CoreFoundation")
+     AC_SUBST(SYSTEMCONFIGURATION_LIBS,"-framework SystemConfiguration")
+ 
+-    WINELOADER_LDFLAGS="-Wl,-segalign,0x1000,-pagezero_size,0x1000,-sectcreate,__TEXT,__info_plist,loader/wine_info.plist"
++    case $HOST_ARCH in
++      aarch64)
++        dnl arm64 macOS enforces a PAGEZERO of at least 4G, so keep the default one.
++        dnl The kernel preserves x18 (the Windows TEB register) only for main executables
++        dnl whose LC_BUILD_VERSION sdk is 12.0 or older; minos is unaffected.
++        wine_darwin_minos=${MACOSX_DEPLOYMENT_TARGET:-11.0}
++        WINELOADER_LDFLAGS="-Wl,-sectcreate,__TEXT,__info_plist,loader/wine_info.plist -Wl,-platform_version,macos,$wine_darwin_minos,12.0" ;;
++      *)
++        WINELOADER_LDFLAGS="-Wl,-segalign,0x1000,-pagezero_size,0x1000,-sectcreate,__TEXT,__info_plist,loader/wine_info.plist" ;;
++    esac
+ 
+     case $HOST_ARCH in
+       x86_64)
+@@ -1259,8 +1268,12 @@ then
+     WINE_PACKAGE_FLAGS(EGL,[egl],[-lEGL],,,
+         [WINE_CHECK_SONAME(EGL,eglGetProcAddress)])
+ fi
+-WINE_NOTICE_WITH(opengl, [test -z "$ac_cv_lib_soname_EGL"],
+-    [EGL ${notice_platform}development files not found])
++dnl macOS provides OpenGL through CGL in winemac.drv; EGL is only needed by X11/Wayland.
++case $host_os in
++  darwin*) ;;
++  *) WINE_NOTICE_WITH(opengl, [test -z "$ac_cv_lib_soname_EGL"],
++         [EGL ${notice_platform}development files not found]) ;;
++esac
+ 
+ dnl **** Check for X11 ****
+ 
+-- 
+2.54.0 (Apple Git-157)
+

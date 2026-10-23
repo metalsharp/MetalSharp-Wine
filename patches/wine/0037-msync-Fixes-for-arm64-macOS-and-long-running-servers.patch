@@ -1,0 +1,281 @@
+From 27c9f3e030614ce0735b8d55be708f2686df870f Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Thu, 22 Oct 2026 13:58:38 -0600
+Subject: [PATCH 37/55] msync: Fixes for arm64 macOS and long-running servers.
+
+- Map shared state in fixed 64K granules on both sides: the wineserver runs with 16K
+  pages while entitled clients run with 4K pages.
+- Size the shm object once (64MB, lazily backed); XNU only allows one ftruncate() on
+  POSIX shm, so growing it silently disabled msync past the first page of slots.
+- Drop the unused 16-bit slot refcount, which wrapped after 65536 handle opens and
+  tripped an assert in the wineserver.
+- Bound the server's spin on a client-held slot lock and take it over after 100ms, so a
+  client suspended or killed inside its critical section cannot hang the wineserver.
+- Reuse freed slots (clients revalidate the generation on every operation) and keep one
+  wait slot per thread, released when the thread is destroyed.
+- Accept WINEWFUSYNC, the upstream WineForge name, as well as WINEMSYNC.
+---
+ dlls/ntdll/unix/msync.c |  7 +++-
+ server/msync.c          | 91 +++++++++++++++++++++++++++++++++--------
+ server/msync.h          |  1 +
+ server/thread.c         |  5 +++
+ server/thread.h         |  1 +
+ 5 files changed, 87 insertions(+), 18 deletions(-)
+
+diff --git a/dlls/ntdll/unix/msync.c b/dlls/ntdll/unix/msync.c
+index 292a2cdfc22..040ea32905f 100644
+--- a/dlls/ntdll/unix/msync.c
++++ b/dlls/ntdll/unix/msync.c
+@@ -136,16 +136,19 @@ int do_msync(void)
+     if (do_msync_env_cached == -1)
+     {
+         const char *env = getenv( "WINEMSYNC" );
++        if (!env) env = getenv( "WINEWFUSYNC" );  /* upstream WineForge name */
+         do_msync_env_cached = (env && atoi( env )) ? 1 : 0;
+     }
+ 
+     return do_msync_env_cached;
+ }
+ 
++/* Shared state is mapped in fixed 64K granules, independent of the host page size: the
++ * wineserver may run with 16K pages while entitled clients run with 4K pages. Must match
++ * MSYNC_MAP_GRANULE in server/msync.c. */
+ static long get_page_size(void)
+ {
+-    if (!page_size) page_size = sysconf( _SC_PAGESIZE );
+-    return page_size;
++    return 0x10000;
+ }
+ 
+ static BOOL msync_handle_to_index( HANDLE handle, unsigned int *entry, unsigned int *idx )
+diff --git a/server/msync.c b/server/msync.c
+index c81e062a786..2caec0e508d 100644
+--- a/server/msync.c
++++ b/server/msync.c
+@@ -24,7 +24,13 @@ int do_msync(void)
+ {
+     static int enabled = -1;
+ 
+-    if (enabled == -1) enabled = getenv( "WINEMSYNC" ) && atoi( getenv( "WINEMSYNC" ) );
++    if (enabled == -1)
++    {
++        /* WINEWFUSYNC is the upstream WineForge name */
++        const char *env = getenv( "WINEMSYNC" );
++        if (!env) env = getenv( "WINEWFUSYNC" );
++        enabled = env && atoi( env );
++    }
+     return enabled;
+ }
+ 
+@@ -39,6 +45,7 @@ int do_msync(void)
+ #include <stdio.h>
+ #include <string.h>
+ #include <sys/mman.h>
++#include <time.h>
+ #include <unistd.h>
+ #include <AvailabilityMacros.h>
+ #ifdef MAC_OS_VERSION_14_4
+@@ -87,10 +94,37 @@ static struct msync_waiter *msync_waiters;
+ static unsigned int *msync_multi_waiter_counts;
+ static unsigned int msync_multi_waiter_counts_count;
+ 
++/* Shared state is mapped in fixed 64K granules on both sides (clients may run with 4K
++ * pages, the server with 16K). The object is sized once: XNU only allows ftruncate() on a
++ * POSIX shm object once, and the pages are only backed when touched. */
++#define MSYNC_MAP_GRANULE 0x10000
++#define MSYNC_SHM_SIZE    0x4000000  /* 64MB: 4M slots */
++#define MSYNC_LOCK_STEAL_NS (100 * 1000000ull)
++
+ static long get_page_size(void)
+ {
+-    if (!page_size) page_size = sysconf( _SC_PAGESIZE );
+-    return page_size;
++    return MSYNC_MAP_GRANULE;
++}
++
++static unsigned int *free_slots;
++static unsigned int free_slots_count, free_slots_size;
++
++static void free_state_slot( unsigned int idx )
++{
++    if (free_slots_count == free_slots_size)
++    {
++        unsigned int new_size = free_slots_size ? free_slots_size * 2 : 256;
++        unsigned int *new_slots = realloc( free_slots, new_size * sizeof(*free_slots) );
++        if (!new_slots) return;  /* leak the slot */
++        free_slots = new_slots;
++        free_slots_size = new_size;
++    }
++    free_slots[free_slots_count++] = idx;
++}
++
++static unsigned long long monotonic_ns(void)
++{
++    return clock_gettime_nsec_np( CLOCK_UPTIME_RAW );
+ }
+ 
+ static void wake_address( int *addr, int wake_all )
+@@ -123,6 +157,7 @@ static unsigned short get_state_type( struct msync_state *state )
+ static int lock_state( struct msync_state *state, unsigned short expected_type )
+ {
+     unsigned int attempts = 0;
++    unsigned long long start = 0;
+     unsigned short type;
+ 
+     for (;;)
+@@ -133,7 +168,17 @@ static int lock_state( struct msync_state *state, unsigned short expected_type )
+             __atomic_compare_exchange_n( &state->type, &type, type | MSYNC_STATE_LOCKED, FALSE,
+                                          __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST ))
+             return 1;
+-        if (!(++attempts % 64)) sched_yield();
++        if (++attempts % 64) continue;
++        sched_yield();
++        /* Client critical sections are a handful of instructions. A lock held this long
++         * belongs to a client thread that was suspended or killed inside one; spinning
++         * forever would hang the whole wineserver, so take the lock over. */
++        if (!start) start = monotonic_ns();
++        else if (monotonic_ns() - start > MSYNC_LOCK_STEAL_NS)
++        {
++            fprintf( stderr, "wineserver: msync: taking over a lock held for over 100ms\n" );
++            return 1;
++        }
+     }
+ }
+ 
+@@ -164,17 +209,19 @@ int msync_get_shared_fd(void)
+         return -1;
+     }
+ 
++    if (ftruncate( shared_fd, MSYNC_SHM_SIZE ) == -1)
++    {
++        close( shared_fd );
++        shared_fd = -1;
++        return -1;
++    }
+     fcntl( shared_fd, F_SETFD, FD_CLOEXEC );
+     return shared_fd;
+ }
+ 
+ static int ensure_shared_file_size( unsigned int pages )
+ {
+-    off_t size = (off_t)pages * get_page_size();
+-    int fd = msync_get_shared_fd();
+-
+-    if (fd == -1) return 0;
+-    return ftruncate( fd, size ) != -1;
++    return msync_get_shared_fd() != -1 && (off_t)pages * get_page_size() <= MSYNC_SHM_SIZE;
+ }
+ 
+ static struct msync_state *alloc_state_slot( unsigned int *idx )
+@@ -183,7 +230,8 @@ static struct msync_state *alloc_state_slot( unsigned int *idx )
+     unsigned int entry, offset;
+     void *page;
+ 
+-    *idx = next_shm_idx++;
++    if (free_slots_count) *idx = free_slots[--free_slots_count];
++    else *idx = next_shm_idx++;
+     entry = (*idx * sizeof(struct msync_state)) / get_page_size();
+     offset = (*idx * sizeof(struct msync_state)) % get_page_size();
+ 
+@@ -448,6 +496,17 @@ int msync_register_wait( unsigned int slot_idx, const unsigned int *shm_idxs, un
+     return 1;
+ }
+ 
++void msync_free_wait_slot( unsigned int slot_idx )
++{
++    struct msync_state *slot;
++
++    if (!slot_idx || !(slot = get_state( slot_idx ))) return;
++    remove_waiter( slot_idx );
++    __atomic_store_n( &slot->type, INPROC_SYNC_UNKNOWN, __ATOMIC_SEQ_CST );
++    __atomic_store_n( &slot->generation, next_generation++, __ATOMIC_SEQ_CST );
++    free_state_slot( slot_idx );
++}
++
+ void msync_unregister_wait( unsigned int slot_idx )
+ {
+     struct msync_state *slot;
+@@ -468,8 +527,6 @@ void msync_grab_object( struct msync *sync )
+     struct msync_state *state;
+ 
+     if (!sync || !(state = get_state( sync->shm_idx ))) return;
+-    assert( state->refcount );
+-    state->refcount++;
+ }
+ 
+ void msync_destroy( struct msync *sync )
+@@ -479,10 +536,10 @@ void msync_destroy( struct msync *sync )
+     if (!sync) return;
+     if ((state = get_state( sync->shm_idx )))
+     {
+-        assert( state->refcount );
+         __atomic_store_n( &state->type, INPROC_SYNC_UNKNOWN, __ATOMIC_SEQ_CST );
+-        state->generation = next_generation++;
+-        state->refcount--;
++        __atomic_store_n( &state->generation, next_generation++, __ATOMIC_SEQ_CST );
++        /* clients revalidate the generation on every operation, so the slot can be reused */
++        free_state_slot( sync->shm_idx );
+     }
+     free( sync );
+ }
+@@ -928,7 +985,9 @@ DECL_HANDLER(get_msync_wait_slot)
+         set_error( STATUS_NOT_IMPLEMENTED );
+         return;
+     }
+-    if (!(reply->shm_idx = msync_alloc_wait_slot())) set_error( STATUS_NO_MEMORY );
++    /* one wait slot per thread, released in msync_free_wait_slot() when the thread goes away */
++    if (!current->msync_wait_slot) current->msync_wait_slot = msync_alloc_wait_slot();
++    if (!(reply->shm_idx = current->msync_wait_slot)) set_error( STATUS_NO_MEMORY );
+ #else
+     set_error( STATUS_NOT_IMPLEMENTED );
+ #endif
+diff --git a/server/msync.h b/server/msync.h
+index 9d91b2f3372..774bcee2f26 100644
+--- a/server/msync.h
++++ b/server/msync.h
+@@ -21,6 +21,7 @@ extern unsigned int msync_get_index( struct msync *sync );
+ extern unsigned int msync_alloc_wait_slot(void);
+ extern int msync_register_wait( unsigned int slot_idx, const unsigned int *shm_idxs, unsigned int count );
+ extern void msync_unregister_wait( unsigned int slot_idx );
++extern void msync_free_wait_slot( unsigned int slot_idx );
+ extern int msync_wake_waiters( unsigned int shm_idx );
+ extern void msync_grab_object( struct msync *sync );
+ extern void msync_destroy( struct msync *sync );
+diff --git a/server/thread.c b/server/thread.c
+index bb9728f6f27..3b1a12e1d15 100644
+--- a/server/thread.c
++++ b/server/thread.c
+@@ -56,6 +56,7 @@
+ #include "handle.h"
+ #include "process.h"
+ #include "thread.h"
++#include "msync.h"
+ #include "request.h"
+ #include "user.h"
+ #include "security.h"
+@@ -561,6 +562,10 @@ static void cleanup_thread( struct thread *thread )
+     int i;
+ 
+     cleanup_thread_completion( thread );
++#ifdef __APPLE__
++    msync_free_wait_slot( thread->msync_wait_slot );
++    thread->msync_wait_slot = 0;
++#endif
+     if (thread->context)
+     {
+         thread->context->status = STATUS_ACCESS_DENIED;
+diff --git a/server/thread.h b/server/thread.h
+index 96c643c64f1..54c236b1c8d 100644
+--- a/server/thread.h
++++ b/server/thread.h
+@@ -60,6 +60,7 @@ struct thread
+     struct list            mutex_list;    /* list of currently owned mutexes */
+     struct list            d3dkmt_mutexes;/* list of currently owned d3dkmt mutexes */
+     unsigned int           system_regs;   /* which system regs have been set */
++    unsigned int           msync_wait_slot; /* msync shared wait slot (0 if none) */
+     struct msg_queue      *queue;         /* message queue */
+     struct thread_wait    *wait;          /* current wait condition if sleeping */
+     struct list            system_apc;    /* queue of system async procedure calls */
+-- 
+2.54.0 (Apple Git-157)
+

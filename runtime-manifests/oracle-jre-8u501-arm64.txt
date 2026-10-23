@@ -1,6 +1,0 @@
-Private runtime: Oracle Java SE Runtime Environment 8 Update 501 ARM64
-Source filename: jre-8u501-macosx-aarch64.dmg
-Source SHA-256: 3f488bb03113460719c4c16737c37e2ee22a85487b877b146bd33e4b4a00e7d1
-Package identifier: com.oracle.jre
-Package version: 1.8.501.08
-Usage: private VKMT runtime only; do not redistribute

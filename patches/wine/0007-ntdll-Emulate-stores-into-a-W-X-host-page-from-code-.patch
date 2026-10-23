@@ -1,0 +1,298 @@
+From 7d97c176261043133846dbccd7c91e0f4e8796dc Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Thu, 22 Oct 2026 04:03:03 -0600
+Subject: [PATCH 07/55] ntdll: Emulate stores into a W+X host page from code in
+ that page on arm64 macOS.
+
+Flipping the page between RX and RW can never complete such a store. Stores,
+pairs, release/exclusive stores and LSE atomics are emulated with the page
+temporarily writable under virtual_mutex, which serializes all its writers.
+---
+ dlls/ntdll/unix/signal_arm64.c | 191 +++++++++++++++++++++++++++++++++
+ dlls/ntdll/unix/unix_private.h |   4 +
+ dlls/ntdll/unix/virtual.c      |  44 ++++++++
+ 3 files changed, 239 insertions(+)
+
+diff --git a/dlls/ntdll/unix/signal_arm64.c b/dlls/ntdll/unix/signal_arm64.c
+index 8487b3931c4..7b9c3d343a3 100644
+--- a/dlls/ntdll/unix/signal_arm64.c
++++ b/dlls/ntdll/unix/signal_arm64.c
+@@ -1275,6 +1275,189 @@ static BOOL emulate_user_shared_data_load( ucontext_t *sigcontext )
+     return TRUE;
+ }
+ 
++static DWORD64 atomic_op( unsigned int op, DWORD64 old, DWORD64 val, unsigned int size )
++{
++    unsigned int bits = size * 8;
++    DWORD64 mask = bits == 64 ? ~0ull : (1ull << bits) - 1;
++    INT64 sold = sign_extend( old & mask, bits ), sval = sign_extend( val & mask, bits );
++
++    switch (op)
++    {
++    case 0: return old + val;                          /* ldadd */
++    case 1: return old & ~val;                         /* ldclr */
++    case 2: return old ^ val;                          /* ldeor */
++    case 3: return old | val;                          /* ldset */
++    case 4: return sold > sval ? old : val;            /* ldsmax */
++    case 5: return sold < sval ? old : val;            /* ldsmin */
++    case 6: return (old & mask) > (val & mask) ? old : val;  /* ldumax */
++    case 7: return (old & mask) < (val & mask) ? old : val;  /* ldumin */
++    default: return val;                               /* swp */
++    }
++}
++
++static void store_value( BYTE *dst, const ucontext_t *sigcontext, unsigned int rt, BOOL simd, unsigned int size )
++{
++    if (simd) memcpy( dst, &sigcontext->uc_mcontext->__ns.__v[rt], size );
++    else
++    {
++        DWORD64 val = get_gpr( sigcontext, rt, FALSE );
++        memcpy( dst, &val, size );
++    }
++}
++
++/***********************************************************************
++ *           emulate_wx_store
++ *
++ * Emulate a store into a W+X host page from code in that same page, see
++ * virtual_wx_begin_store(). Handles stores, store pairs, release and exclusive
++ * stores and LSE atomics.
++ */
++static BOOL emulate_wx_store( ucontext_t *sigcontext )
++{
++    DWORD insn = *(const DWORD *)PC_sig(sigcontext);
++    unsigned int rt = insn & 0x1f, rn = (insn >> 5) & 0x1f, rt2 = 0, rs = 0, size, count = 1, kind = 0;
++    BOOL simd = (insn >> 26) & 1, writeback = FALSE, post = FALSE;
++    DWORD64 base, addr, wb_addr;
++    INT64 offset = 0;
++    BYTE *dst;
++
++    enum { PLAIN, EXCLUSIVE, ATOMIC, CAS };
++
++    if ((insn & 0x3a000000) == 0x28000000)  /* load/store pair */
++    {
++        unsigned int opc = insn >> 30, idx = (insn >> 23) & 3;
++        if ((insn >> 22) & 1) return FALSE;  /* load */
++        if (simd) { if (opc == 3) return FALSE; size = 4 << opc; }
++        else if (opc == 0) size = 4;
++        else if (opc == 2) size = 8;
++        else return FALSE;
++        offset = sign_extend( (insn >> 15) & 0x7f, 7 ) * size;
++        rt2 = (insn >> 10) & 0x1f;
++        count = 2;
++        if (idx == 1) writeback = post = TRUE;
++        else if (idx == 3) writeback = TRUE;
++    }
++    else if ((insn & 0x3ffffc00) == 0x089ffc00 ||  /* stlr */
++             ((insn & 0x3fe00c00) == 0x19000000))  /* stlur */
++    {
++        size = 1 << (insn >> 30);
++        simd = FALSE;
++        if (insn & 0x10000000) offset = sign_extend( (insn >> 12) & 0x1ff, 9 );
++    }
++    else if ((insn & 0x3fe07c00) == 0x08007c00)  /* stxr/stlxr */
++    {
++        rs = (insn >> 16) & 0x1f;
++        size = 1 << (insn >> 30);
++        simd = FALSE;
++        kind = EXCLUSIVE;
++    }
++    else if ((insn & 0xbfe00000) == 0x88200000)  /* stxp/stlxp */
++    {
++        rs = (insn >> 16) & 0x1f;
++        rt2 = (insn >> 10) & 0x1f;
++        size = (insn & 0x40000000) ? 8 : 4;
++        count = 2;
++        simd = FALSE;
++        kind = EXCLUSIVE;
++    }
++    else if ((insn & 0x3fa07c00) == 0x08a07c00)  /* cas */
++    {
++        rs = (insn >> 16) & 0x1f;
++        size = 1 << (insn >> 30);
++        simd = FALSE;
++        kind = CAS;
++    }
++    else if ((insn & 0x3f200c00) == 0x38200000)  /* lse atomics */
++    {
++        rs = (insn >> 16) & 0x1f;
++        size = 1 << (insn >> 30);
++        kind = ATOMIC;
++    }
++    else if ((insn & 0x3a000000) == 0x38000000)  /* load/store register */
++    {
++        unsigned int opc = (insn >> 22) & 3, sz = insn >> 30;
++
++        if (simd)
++        {
++            if (opc == 0) size = 1 << sz;
++            else if (opc == 2 && sz == 0) size = 16;
++            else return FALSE;
++        }
++        else
++        {
++            if (opc != 0) return FALSE;
++            size = 1 << sz;
++        }
++
++        if (insn & 0x01000000)  /* unsigned immediate */
++            offset = ((insn >> 10) & 0xfff) * size;
++        else if ((insn & 0x00200c00) == 0x00200800)  /* register offset */
++        {
++            unsigned int option = (insn >> 13) & 7, shift = ((insn >> 12) & 1) ? __builtin_ctz( size ) : 0;
++            DWORD64 rm = get_gpr( sigcontext, (insn >> 16) & 0x1f, FALSE );
++            switch (option)
++            {
++            case 2: rm = (DWORD)rm; break;
++            case 3: case 7: break;
++            case 6: rm = sign_extend( (DWORD)rm, 32 ); break;
++            default: return FALSE;
++            }
++            offset = rm << shift;
++        }
++        else if (!(insn & 0x00200000))  /* unscaled, post/pre-indexed, unprivileged */
++        {
++            offset = sign_extend( (insn >> 12) & 0x1ff, 9 );
++            switch ((insn >> 10) & 3)
++            {
++            case 1: writeback = post = TRUE; break;
++            case 3: writeback = TRUE; break;
++            }
++        }
++        else return FALSE;
++    }
++    else return FALSE;
++
++    base = get_gpr( sigcontext, rn, TRUE );
++    wb_addr = base + offset;
++    addr = post ? base : wb_addr;
++    if (!virtual_wx_begin_store( (void *)addr, count * size )) return FALSE;
++
++    dst = (BYTE *)addr;
++    switch (kind)
++    {
++    case PLAIN:
++    case EXCLUSIVE:
++        store_value( dst, sigcontext, rt, simd, size );
++        if (count == 2) store_value( dst + size, sigcontext, rt2, simd, size );
++        /* the page is serialized by virtual_mutex, report exclusive stores as successful */
++        if (kind == EXCLUSIVE) set_gpr( sigcontext, rs, FALSE, 0 );
++        break;
++    case ATOMIC:
++    {
++        unsigned int op = (insn & 0x8000) ? 8 : (insn >> 12) & 7;
++        DWORD64 old = 0, val;
++        memcpy( &old, dst, size );
++        val = atomic_op( op, old, get_gpr( sigcontext, rs, FALSE ), size );
++        memcpy( dst, &val, size );
++        set_gpr( sigcontext, rt, FALSE, old );
++        break;
++    }
++    case CAS:
++    {
++        DWORD64 old = 0, cmp = get_gpr( sigcontext, rs, FALSE );
++        memcpy( &old, dst, size );
++        if (!memcmp( &old, &cmp, size )) store_value( dst, sigcontext, rt, FALSE, size );
++        set_gpr( sigcontext, rs, FALSE, old );
++        break;
++    }
++    }
++    virtual_wx_end_store( (void *)addr, count * size );
++
++    if (writeback) set_gpr( sigcontext, rn, TRUE, wb_addr );
++    PC_sig(sigcontext) += 4;
++    return TRUE;
++}
++
+ #endif /* __APPLE__ */
+ 
+ static void segv_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
+@@ -1303,7 +1486,15 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
+         }
+ 
+         if (ESR_ELx_ISS_DABT_WNR(esr))
++        {
++#ifdef __APPLE__
++            /* a store into its own host page can't complete by flipping W^X, emulate it */
++            if (!((PC_sig( sigcontext ) ^ (ULONG_PTR)siginfo->si_addr) & ~(ULONG_PTR)(getpagesize() - 1)) &&
++                !(PSTATE_sig( sigcontext ) & 0x10) && emulate_wx_store( sigcontext ))
++                return;
++#endif
+             rec.ExceptionInformation[0] = EXCEPTION_WRITE_FAULT;
++        }
+         else
+         {
+ #ifdef __APPLE__
+diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
+index 7346ed1f243..1a193e3757b 100644
+--- a/dlls/ntdll/unix/unix_private.h
++++ b/dlls/ntdll/unix/unix_private.h
+@@ -327,6 +327,10 @@ extern NTSTATUS virtual_alloc_thread_stack( INITIAL_TEB *stack, ULONG_PTR limit_
+ extern void virtual_map_user_shared_data(void);
+ extern void virtual_init_user_shared_data(void);
+ extern NTSTATUS virtual_handle_fault( struct thread_data *data, EXCEPTION_RECORD *rec, void *stack );
++#if defined(__APPLE__) && defined(__aarch64__)
++extern BOOL virtual_wx_begin_store( void *addr, SIZE_T size );
++extern void virtual_wx_end_store( void *addr, SIZE_T size );
++#endif
+ extern unsigned int virtual_locked_server_call( void *req_ptr );
+ extern ssize_t virtual_locked_read( int fd, void *addr, size_t size );
+ extern ssize_t virtual_locked_pread( int fd, void *addr, size_t size, off_t offset );
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index 135aaa87c50..419480e8b88 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -4386,6 +4386,50 @@ NTSTATUS virtual_handle_fault( struct thread_data *data, EXCEPTION_RECORD *rec,
+ }
+ 
+ 
++#if defined(__APPLE__) && defined(__aarch64__)
++
++/***********************************************************************
++ *           virtual_wx_begin_store
++ *
++ * W^X emulation of a store from code in a W+X host page: an instruction that writes
++ * to its own host page can never complete by flipping the page between RX and RW.
++ * On success the range is temporarily writable and virtual_mutex is held until
++ * virtual_wx_end_store(); all writers to such pages are serialized by the mutex.
++ */
++BOOL virtual_wx_begin_store( void *addr, SIZE_T size )
++{
++    char *start = ROUND_ADDR( addr, host_page_mask ), *end = (char *)addr + size, *page;
++
++    mutex_lock( &virtual_mutex );
++    for (page = start; page < end; page += host_page_size)
++    {
++        BYTE vprot = get_host_page_vprot( page );
++        if (!is_vprot_exec_write( vprot ) || !(get_unix_prot( vprot ) & PROT_WRITE)) goto fail;
++    }
++    if (!mprotect( start, ROUND_SIZE( start, end - start, host_page_mask ), PROT_READ | PROT_WRITE ))
++        return TRUE;
++fail:
++    mutex_unlock( &virtual_mutex );
++    return FALSE;
++}
++
++
++/***********************************************************************
++ *           virtual_wx_end_store
++ */
++void virtual_wx_end_store( void *addr, SIZE_T size )
++{
++    char *start = ROUND_ADDR( addr, host_page_mask );
++    size_t len = ROUND_SIZE( start, (char *)addr + size - start, host_page_mask );
++
++    mprotect( start, len, PROT_READ | PROT_EXEC );
++    sys_icache_invalidate( start, len );
++    mutex_unlock( &virtual_mutex );
++}
++
++#endif
++
++
+ /***********************************************************************
+  *           virtual_setup_exception
+  */
+-- 
+2.54.0 (Apple Git-157)
+

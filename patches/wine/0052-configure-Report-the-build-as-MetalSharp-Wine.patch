@@ -1,0 +1,70 @@
+From ae902252c66cae5cd2ebdaf2e0207145270813d9 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Thu, 22 Oct 2026 18:20:26 -0600
+Subject: [PATCH 52/55] configure: Report the build as MetalSharp Wine.
+
+The version string gets a "(MetalSharp Wine <version>)" suffix from METALSHARP_VERSION,
+as in WineForge; the loader's bundle name is MetalSharp Wine.
+---
+ METALSHARP_VERSION        | 1 +
+ configure                 | 5 ++++-
+ configure.ac              | 5 ++++-
+ loader/wine_info.plist.in | 2 +-
+ 4 files changed, 10 insertions(+), 3 deletions(-)
+ create mode 100644 METALSHARP_VERSION
+
+diff --git a/METALSHARP_VERSION b/METALSHARP_VERSION
+new file mode 100644
+index 00000000000..d3827e75a5c
+--- /dev/null
++++ b/METALSHARP_VERSION
+@@ -0,0 +1 @@
++1.0
+diff --git a/configure b/configure
+index 2cf10dc4b92..f2aed53dfa1 100755
+--- a/configure
++++ b/configure
+@@ -23187,7 +23187,10 @@ fi
+ 
+ as_fn_append wine_rules "
+ dlls/ntdll/unix/version.c: dummy
+-	@version=\`(GIT_DIR=${wine_srcdir}.git git describe HEAD 2>/dev/null || echo \"wine-\$(PACKAGE_VERSION)\") | sed -n -e '\$\$s/\(.*\)/const char wine_build[] = \"\\1\";/p'\` && (echo \$\$version | cmp -s - \$@) || echo \$\$version >\$@ || (rm -f \$@ && exit 1)
++	@base=\`GIT_DIR=${wine_srcdir}.git git describe HEAD 2>/dev/null || echo \"wine-\$(PACKAGE_VERSION)\"\`; \
++	metalsharp=\`sed -n -e '1{s/^MetalSharp version[:space:]*//;s/^[:space:]*//;s/[:space:]*\$\$//;p;q;}' ${wine_srcdir}METALSHARP_VERSION 2>/dev/null\`; \
++	test -z \"\$\$metalsharp\" || base=\"\$\$base (MetalSharp Wine \$\$metalsharp)\"; \
++	version=\`printf '%s\n' \"\$\$base\" | sed -n -e '\$\$s/\(.*\)/const char wine_build[] = \"\\1\";/p'\` && (echo \$\$version | cmp -s - \$@) || echo \$\$version >\$@ || (rm -f \$@ && exit 1)
+ programs/winetest/build.rc: dummy
+ 	@build=\"STRINGTABLE { 1 \\\"\`GIT_DIR=${wine_srcdir}.git git rev-parse HEAD 2>/dev/null\`\\\" }\" && (echo \$\$build | cmp -s - \$@) || echo \$\$build >\$@ || (rm -f \$@ && exit 1)
+ dlls/wineandroid.drv/wine-debug.apk: dlls/wineandroid.drv/build.gradle ${wine_srcdir}dlls/wineandroid.drv/AndroidManifest.xml ${wine_srcdir}dlls/wineandroid.drv/WineActivity.java ${wine_srcdir}dlls/wineandroid.drv/wine.svg
+diff --git a/configure.ac b/configure.ac
+index e393ae7b2bf..4179a283084 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -3751,7 +3751,10 @@ dnl Rules for generated source files
+ 
+ WINE_APPEND_RULE(
+ [dlls/ntdll/unix/version.c: dummy
+-	@version=\`(GIT_DIR=${wine_srcdir}.git git describe HEAD 2>/dev/null || echo \"wine-\$(PACKAGE_VERSION)\") | sed -n -e '\$\$s/\(.*\)/const char wine_build[[]] = \"\\1\";/p'\` && (echo \$\$version | cmp -s - \$[@]) || echo \$\$version >\$[@] || (rm -f \$[@] && exit 1)
++	@base=\`GIT_DIR=${wine_srcdir}.git git describe HEAD 2>/dev/null || echo \"wine-\$(PACKAGE_VERSION)\"\`; \
++	metalsharp=\`sed -n -e '1{s/^MetalSharp version[[:space:]]*//;s/^[[:space:]]*//;s/[[:space:]]*\$\$//;p;q;}' ${wine_srcdir}METALSHARP_VERSION 2>/dev/null\`; \
++	test -z \"\$\$metalsharp\" || base=\"\$\$base (MetalSharp Wine \$\$metalsharp)\"; \
++	version=\`printf '%s\n' \"\$\$base\" | sed -n -e '\$\$s/\(.*\)/const char wine_build[[]] = \"\\1\";/p'\` && (echo \$\$version | cmp -s - \$[@]) || echo \$\$version >\$[@] || (rm -f \$[@] && exit 1)
+ programs/winetest/build.rc: dummy
+ 	@build=\"STRINGTABLE { 1 \\\"\`GIT_DIR=${wine_srcdir}.git git rev-parse HEAD 2>/dev/null\`\\\" }\" && (echo \$\$build | cmp -s - \$[@]) || echo \$\$build >\$[@] || (rm -f \$[@] && exit 1)
+ dlls/wineandroid.drv/wine-debug.apk: dlls/wineandroid.drv/build.gradle ${wine_srcdir}dlls/wineandroid.drv/AndroidManifest.xml ${wine_srcdir}dlls/wineandroid.drv/WineActivity.java ${wine_srcdir}dlls/wineandroid.drv/wine.svg
+diff --git a/loader/wine_info.plist.in b/loader/wine_info.plist.in
+index 6495b8f90f0..5c01a9cdd61 100644
+--- a/loader/wine_info.plist.in
++++ b/loader/wine_info.plist.in
+@@ -13,7 +13,7 @@
+     <key>CFBundleInfoDictionaryVersion</key>
+     <string>6.0</string>
+     <key>CFBundleName</key>
+-    <string>Wine</string>
++    <string>MetalSharp Wine</string>
+     <key>CFBundlePackageType</key>
+     <string>APPL</string>
+     <key>CFBundleShortVersionString</key>
+-- 
+2.54.0 (Apple Git-157)
+

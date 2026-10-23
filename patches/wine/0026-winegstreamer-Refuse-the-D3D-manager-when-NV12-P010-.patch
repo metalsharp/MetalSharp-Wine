@@ -1,0 +1,101 @@
+From c76cfb1f5493789f6eab1ed8b0ccd9cbac186019 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Thu, 22 Oct 2026 13:53:45 -0600
+Subject: [PATCH 26/55] winegstreamer: Refuse the D3D manager when NV12/P010
+ textures are unsupported.
+
+From WineForge/MetalSharp.
+
+(cherry picked from commit d13016796a272fba3a1a1b99ecb5e8a0b7252682)
+---
+ dlls/winegstreamer/Makefile.in     |  2 +-
+ dlls/winegstreamer/video_decoder.c | 46 ++++++++++++++++++++++++++++++
+ 2 files changed, 47 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/winegstreamer/Makefile.in b/dlls/winegstreamer/Makefile.in
+index 12907f90b2f..7fde255cc64 100644
+--- a/dlls/winegstreamer/Makefile.in
++++ b/dlls/winegstreamer/Makefile.in
+@@ -1,7 +1,7 @@
+ MODULE    = winegstreamer.dll
+ UNIXLIB   = winegstreamer.so
+ IMPORTLIB = winegstreamer
+-IMPORTS   = strmbase ole32 oleaut32 msdmo user32
++IMPORTS   = strmbase dxguid ole32 oleaut32 msdmo user32
+ DELAYIMPORTS = mfplat mf
+ UNIX_CFLAGS  = $(GSTREAMER_CFLAGS)
+ UNIX_LIBS    = $(GSTREAMER_LIBS) $(PTHREAD_LIBS)
+diff --git a/dlls/winegstreamer/video_decoder.c b/dlls/winegstreamer/video_decoder.c
+index 00babc90abe..6522e3616e3 100644
+--- a/dlls/winegstreamer/video_decoder.c
++++ b/dlls/winegstreamer/video_decoder.c
+@@ -20,6 +20,7 @@
+ 
+ #include "gst_private.h"
+ 
++#include "d3d11.h"
+ #include "mfapi.h"
+ #include "mferror.h"
+ #include "mfobjects.h"
+@@ -457,6 +458,32 @@ static HRESULT init_allocator(struct video_decoder *decoder)
+     return S_OK;
+ }
+ 
++/* MetalSharp-Internal: mf-d3d11-video-output-capability-v1. */
++static BOOL d3d11_manager_supports_video_output(IMFDXGIDeviceManager *manager)
++{
++    ID3D11Device *device = NULL;
++    UINT nv12_support = 0, p010_support = 0;
++    HANDLE handle;
++    HRESULT hr;
++
++    if (FAILED(IMFDXGIDeviceManager_OpenDeviceHandle(manager, &handle)))
++        return TRUE;
++
++    hr = IMFDXGIDeviceManager_GetVideoService(manager, handle, &IID_ID3D11Device, (void **)&device);
++    IMFDXGIDeviceManager_CloseDeviceHandle(manager, handle);
++    if (FAILED(hr))
++        return TRUE;
++
++    hr = ID3D11Device_CheckFormatSupport(device, DXGI_FORMAT_NV12, &nv12_support);
++    if (FAILED(hr)) nv12_support = 0;
++    hr = ID3D11Device_CheckFormatSupport(device, DXGI_FORMAT_P010, &p010_support);
++    if (FAILED(hr)) p010_support = 0;
++    ID3D11Device_Release(device);
++
++    return (nv12_support & D3D11_FORMAT_SUPPORT_TEXTURE2D) ||
++            (p010_support & D3D11_FORMAT_SUPPORT_TEXTURE2D);
++}
++
+ static void uninit_allocator(struct video_decoder *decoder)
+ {
+     IMFVideoSampleAllocatorEx_UninitializeSampleAllocator(decoder->allocator);
+@@ -841,6 +868,25 @@ static HRESULT WINAPI transform_ProcessMessage(IMFTransform *iface, MFT_MESSAGE_
+     switch (message)
+     {
+     case MFT_MESSAGE_SET_D3D_MANAGER:
++        if (param)
++        {
++            IMFDXGIDeviceManager *manager;
++
++            if (FAILED(IUnknown_QueryInterface((IUnknown *)param, &IID_IMFDXGIDeviceManager,
++                    (void **)&manager)))
++                return E_NOINTERFACE;
++            if (!d3d11_manager_supports_video_output(manager))
++            {
++                IMFDXGIDeviceManager_Release(manager);
++                if (FAILED(hr = IMFVideoSampleAllocatorEx_SetDirectXManager(decoder->allocator, NULL)))
++                    return hr;
++                uninit_allocator(decoder);
++                decoder->output_info.dwFlags |= MFT_OUTPUT_STREAM_PROVIDES_SAMPLES;
++                return E_NOINTERFACE;
++            }
++            IMFDXGIDeviceManager_Release(manager);
++        }
++
+         if (FAILED(hr = IMFVideoSampleAllocatorEx_SetDirectXManager(decoder->allocator, (IUnknown *)param)))
+             return hr;
+ 
+-- 
+2.54.0 (Apple Git-157)
+

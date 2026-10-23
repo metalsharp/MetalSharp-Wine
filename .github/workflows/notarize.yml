@@ -1,0 +1,63 @@
+name: Notarize release
+
+# The app is built and signed (Developer ID, hardened runtime) on a Mac with the provisioning
+# profile, then uploaded to a draft release as MetalSharp-Wine-<version>-arm64.zip. This
+# notarizes that zip with Apple, staples the ticket into the app, and replaces the asset and
+# its line in SHA256SUMS.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag (e.g. v2.0)
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  notarize:
+    runs-on: macos-15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ inputs.tag }}
+    steps:
+      - name: Download the signed app
+        run: |
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p 'MetalSharp-Wine-*-arm64.zip' -p SHA256SUMS
+          ls -l
+          echo "ZIP=$(ls MetalSharp-Wine-*-arm64.zip)" >> "$GITHUB_ENV"
+
+      - name: Check the signature
+        run: |
+          ditto -x -k "$ZIP" app
+          codesign --verify --deep --strict app/MetalSharp-Wine.app
+          codesign -dv app/MetalSharp-Wine.app 2>&1 | grep -E 'Authority=Developer ID|flags'
+
+      - name: Notarize
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          xcrun notarytool submit "$ZIP" --apple-id "$APPLE_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" --wait --timeout 2h --output-format json | tee result.json
+          id=$(plutil -extract id raw result.json)
+          xcrun notarytool log "$id" --apple-id "$APPLE_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" notary-log.json || true
+          cat notary-log.json || true
+          [ "$(plutil -extract status raw result.json)" = Accepted ]
+
+      - name: Staple and repackage
+        run: |
+          xcrun stapler staple app/MetalSharp-Wine.app
+          xcrun stapler validate app/MetalSharp-Wine.app
+          spctl -a -vv app/MetalSharp-Wine.app
+          rm "$ZIP"
+          ditto -c -k --keepParent app/MetalSharp-Wine.app "$ZIP"
+          grep -v " $ZIP\$" SHA256SUMS > SHA256SUMS.new || true
+          shasum -a 256 "$ZIP" >> SHA256SUMS.new
+          mv SHA256SUMS.new SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Upload the notarized app
+        run: gh release upload "$TAG" -R "$GITHUB_REPOSITORY" --clobber "$ZIP" SHA256SUMS

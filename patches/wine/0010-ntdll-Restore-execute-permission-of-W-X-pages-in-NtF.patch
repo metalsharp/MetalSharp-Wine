@@ -1,0 +1,44 @@
+From 40ffdb1ab1135035443e284105f4203edb3ace8e Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Thu, 22 Oct 2026 04:27:11 -0600
+Subject: [PATCH 10/55] ntdll: Restore execute permission of W+X pages in
+ NtFlushInstructionCache on arm64 macOS.
+
+JITs flush the instruction cache after writing code; switching emulated W+X
+pages back to RX there avoids an execute fault per compiled block.
+---
+ dlls/ntdll/unix/virtual.c | 18 ++++++++++++++++++
+ 1 file changed, 18 insertions(+)
+
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index cc2677cc5ab..84369ec2483 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -6709,6 +6709,24 @@ NTSTATUS WINAPI NtFlushInstructionCache( HANDLE handle, const void *addr, SIZE_T
+     if (handle == GetCurrentProcess())
+     {
+         __clear_cache( (char *)addr, (char *)addr + size );
++#if defined(__APPLE__) && defined(__aarch64__)
++        /* JITs flush after writing code: make W+X pages executable again now rather than
++         * on the next execute fault (see mprotect_exec) */
++        if (size && size <= 16 * 1024 * 1024)
++        {
++            char *page = ROUND_ADDR( addr, host_page_mask ), *end = (char *)addr + size;
++            sigset_t sigset;
++
++            server_enter_uninterrupted_section( &virtual_mutex, &sigset );
++            for (; page < end; page += host_page_size)
++            {
++                BYTE vprot = get_host_page_vprot( page );
++                if (is_vprot_exec_write( vprot ) && (get_unix_prot( vprot ) & PROT_EXEC))
++                    mprotect( page, host_page_size, PROT_READ | PROT_EXEC );
++            }
++            server_leave_uninterrupted_section( &virtual_mutex, &sigset );
++        }
++#endif
+     }
+     else
+     {
+-- 
+2.54.0 (Apple Git-157)
+

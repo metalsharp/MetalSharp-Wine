@@ -1,0 +1,107 @@
+From 0dde19ba7e0b26b68f9f12c202405ec1d22419d2 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Thu, 22 Oct 2026 11:00:29 -0600
+Subject: [PATCH 19/55] ntdll: Default to 4K pages when the process has the
+ cross-architecture entitlement.
+
+Record the entitlement when virtual_init() finds the removable PAGEZERO reservation, so
+forked children (which no longer have it) still spawn their loader with 4K pages.
+WINE_4K_PAGES=0/1 overrides.
+---
+ dlls/ntdll/unix/loader.c       | 26 ++++++++++++++++++++++++--
+ dlls/ntdll/unix/unix_private.h |  3 +++
+ dlls/ntdll/unix/virtual.c      |  3 +++
+ 3 files changed, 30 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
+index bc36c4f875c..e6ea91c0fa9 100644
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -68,6 +68,7 @@
+ # include <pthread.h>
+ # include <mach/mach.h>
+ # include <mach/mach_error.h>
++# include <mach/mach_vm.h>
+ # include <mach-o/getsect.h>
+ # include <crt_externs.h>
+ # ifndef _POSIX_SPAWN_DISABLE_ASLR
+@@ -436,6 +437,26 @@ char *get_alternate_wineloader( WORD machine )
+ }
+ 
+ 
++#if defined(__APPLE__) && defined(__aarch64__)
++/* With the cross-architecture entitlement, PAGEZERO is an ordinary no-access reservation starting
++ * below 64K instead of a hard limit. virtual_init() records it before releasing that reservation
++ * (see release_low_pagezero()), which also covers children forked after it. */
++static BOOL has_cross_arch_entitlement(void)
++{
++    mach_vm_address_t address = 0x10000;
++    mach_vm_size_t size;
++    vm_region_basic_info_data_64_t info;
++    mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
++    mach_port_t dummy_object_name = MACH_PORT_NULL;
++
++    if (cross_arch_entitled) return TRUE;
++    if (mach_vm_region( mach_task_self(), &address, &size, VM_REGION_BASIC_INFO_64,
++                        (vm_region_info_t)&info, &count, &dummy_object_name ))
++        return FALSE;
++    return address <= 0x10000 && address + size > 0x100000000 && !info.protection && !info.max_protection;
++}
++#endif
++
+ static void preloader_exec( char **argv )
+ {
+ #ifdef HAVE_WINE_PRELOADER
+@@ -455,11 +476,12 @@ static void preloader_exec( char **argv )
+ #if defined(__APPLE__) && defined(__aarch64__)
+     /* Windows has 4K pages; macOS 26 can run a process with them, which avoids all 16K page
+      * emulation. It requires the cross-architecture entitlement: without it the kernel kills the
+-     * process during the exec, so this is only done when the (entitled) launcher asks for it. */
++     * process during the exec, so it is the default only when this process is entitled (the
++     * loaders are signed together). WINE_4K_PAGES=0/1 overrides. */
+     if (__builtin_available( macOS 26.0, * ))
+     {
+         const char *use4k = getenv( "WINE_4K_PAGES" );
+-        if (use4k && atoi( use4k ))
++        if (use4k ? atoi( use4k ) : has_cross_arch_entitlement())
+         {
+             posix_spawnattr_t attr;
+             int err;
+diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
+index 63704e217a7..0fb5f3aea1d 100644
+--- a/dlls/ntdll/unix/unix_private.h
++++ b/dlls/ntdll/unix/unix_private.h
+@@ -232,6 +232,9 @@ extern timeout_t server_start_time;
+ extern sigset_t server_block_set;
+ extern pthread_mutex_t fd_cache_mutex;
+ extern struct _KUSER_SHARED_DATA *user_shared_data;
++#if defined(__APPLE__) && defined(__aarch64__)
++extern BOOL cross_arch_entitled;
++#endif
+ extern ULONG process_cookie;
+ 
+ extern void init_environment(void);
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index 7047da8d511..859e2e15554 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -666,6 +666,8 @@ static void reserve_area( void *addr, void *end )
+  * (no access, no object) below the main image instead of a hard kernel limit. Unmap the part
+  * below 4G so reserve_area() can take it over; without the entitlement there is no such region.
+  */
++BOOL cross_arch_entitled = FALSE;
++
+ static void release_low_pagezero(void)
+ {
+     mach_vm_address_t address = 0x10000;
+@@ -679,6 +681,7 @@ static void release_low_pagezero(void)
+                         (vm_region_info_t)&info, &count, &dummy_object_name ))
+         return;
+     if (address > 0x10000 || info.protection || info.max_protection) return;
++    cross_arch_entitled = TRUE;
+     end = min( address + size, 0x100000000 );
+     if (!munmap( (void *)0x10000, end - 0x10000 ))
+         TRACE( "released PAGEZERO reservation 0x10000-%#llx\n", end );
+-- 
+2.54.0 (Apple Git-157)
+

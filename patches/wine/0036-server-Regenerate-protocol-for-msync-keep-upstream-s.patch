@@ -1,0 +1,315 @@
+From 3244db68153a6a96d8f63517457332612c1273c1 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Thu, 22 Oct 2026 13:56:10 -0600
+Subject: [PATCH 36/55] server: Regenerate protocol for msync; keep upstream's
+ ntsync path when the device exists.
+
+---
+ include/wine/server_protocol.h | 79 +++++++++++++++++++++++++++++++++-
+ server/event.c                 |  3 ++
+ server/mutex.c                 |  2 +
+ server/request_handlers.h      | 25 ++++++++++-
+ server/request_trace.h         | 48 +++++++++++++++++++++
+ server/semaphore.c             |  2 +
+ 6 files changed, 157 insertions(+), 2 deletions(-)
+
+diff --git a/include/wine/server_protocol.h b/include/wine/server_protocol.h
+index 6635ece4349..41e739b8404 100644
+--- a/include/wine/server_protocol.h
++++ b/include/wine/server_protocol.h
+@@ -6082,9 +6082,71 @@ struct get_inproc_sync_fd_reply
+     struct reply_header __header;
+     int           type;
+     unsigned int access;
++    unsigned int shm_idx;
++    char __pad_20[4];
++};
++
++
++struct get_msync_wait_slot_request
++{
++    struct request_header __header;
++    char __pad_12[4];
++};
++struct get_msync_wait_slot_reply
++{
++    struct reply_header __header;
++    unsigned int shm_idx;
++    char __pad_12[4];
++};
++
++
++struct register_msync_wait_request
++{
++    struct request_header __header;
++    unsigned int slot_idx;
++    /* VARARG(shm_idxs,uints); */
++};
++struct register_msync_wait_reply
++{
++    struct reply_header __header;
++};
++
++
++struct unregister_msync_wait_request
++{
++    struct request_header __header;
++    unsigned int slot_idx;
++};
++struct unregister_msync_wait_reply
++{
++    struct reply_header __header;
++};
++
++
++struct wake_msync_waiters_request
++{
++    struct request_header __header;
++    unsigned int shm_idx;
++};
++struct wake_msync_waiters_reply
++{
++    struct reply_header __header;
+ };
+ 
+ 
++struct try_wait_all_msync_request
++{
++    struct request_header __header;
++    thread_id_t  tid;
++    unsigned int slot_idx;
++    /* VARARG(entries,uints); */
++    char __pad_20[4];
++};
++struct try_wait_all_msync_reply
++{
++    struct reply_header __header;
++};
++
+ 
+ struct get_inproc_alert_fd_request
+ {
+@@ -6559,6 +6621,11 @@ enum request
+     REQ_get_next_thread,
+     REQ_set_keyboard_repeat,
+     REQ_get_inproc_sync_fd,
++    REQ_get_msync_wait_slot,
++    REQ_register_msync_wait,
++    REQ_unregister_msync_wait,
++    REQ_wake_msync_waiters,
++    REQ_try_wait_all_msync,
+     REQ_get_inproc_alert_fd,
+     REQ_d3dkmt_object_create,
+     REQ_d3dkmt_object_update,
+@@ -6875,6 +6942,11 @@ union generic_request
+     struct get_next_thread_request get_next_thread_request;
+     struct set_keyboard_repeat_request set_keyboard_repeat_request;
+     struct get_inproc_sync_fd_request get_inproc_sync_fd_request;
++    struct get_msync_wait_slot_request get_msync_wait_slot_request;
++    struct register_msync_wait_request register_msync_wait_request;
++    struct unregister_msync_wait_request unregister_msync_wait_request;
++    struct wake_msync_waiters_request wake_msync_waiters_request;
++    struct try_wait_all_msync_request try_wait_all_msync_request;
+     struct get_inproc_alert_fd_request get_inproc_alert_fd_request;
+     struct d3dkmt_object_create_request d3dkmt_object_create_request;
+     struct d3dkmt_object_update_request d3dkmt_object_update_request;
+@@ -7189,6 +7261,11 @@ union generic_reply
+     struct get_next_thread_reply get_next_thread_reply;
+     struct set_keyboard_repeat_reply set_keyboard_repeat_reply;
+     struct get_inproc_sync_fd_reply get_inproc_sync_fd_reply;
++    struct get_msync_wait_slot_reply get_msync_wait_slot_reply;
++    struct register_msync_wait_reply register_msync_wait_reply;
++    struct unregister_msync_wait_reply unregister_msync_wait_reply;
++    struct wake_msync_waiters_reply wake_msync_waiters_reply;
++    struct try_wait_all_msync_reply try_wait_all_msync_reply;
+     struct get_inproc_alert_fd_reply get_inproc_alert_fd_reply;
+     struct d3dkmt_object_create_reply d3dkmt_object_create_reply;
+     struct d3dkmt_object_update_reply d3dkmt_object_update_reply;
+@@ -7201,6 +7278,6 @@ union generic_reply
+     struct alpc_create_port_reply alpc_create_port_reply;
+ };
+ 
+-#define SERVER_PROTOCOL_VERSION 964
++#define SERVER_PROTOCOL_VERSION 965
+ 
+ #endif /* __WINE_WINE_SERVER_PROTOCOL_H */
+diff --git a/server/event.c b/server/event.c
+index 9801d02f979..d6c89f6f19c 100644
+--- a/server/event.c
++++ b/server/event.c
+@@ -83,6 +83,8 @@ static struct object *create_event_sync( int manual, int signaled, int inproc )
+ {
+     struct event_sync *event;
+ 
++    if (get_inproc_device_fd() >= 0) return (struct object *)create_inproc_event_sync( manual, signaled );
++
+     if (!(event = alloc_object( &event_sync_ops ))) return NULL;
+     event->manual   = manual;
+     event->signaled = signaled;
+@@ -109,6 +111,7 @@ struct event_sync *create_server_internal_sync( int manual, int signaled )
+ 
+ struct object *create_internal_sync( int manual, int signaled )
+ {
++    if (get_inproc_device_fd() >= 0) return (struct object *)create_inproc_internal_sync( manual, signaled );
+     return (struct object *)create_server_internal_sync( manual, signaled );
+ }
+ 
+diff --git a/server/mutex.c b/server/mutex.c
+index f4f1fad48a0..b3231074af6 100644
+--- a/server/mutex.c
++++ b/server/mutex.c
+@@ -182,6 +182,8 @@ static struct object *create_mutex_sync( int owned, int inproc )
+ {
+     struct mutex_sync *mutex;
+ 
++    if (get_inproc_device_fd() >= 0) return (struct object *)create_inproc_mutex_sync( owned ? current->id : 0, owned ? 1 : 0 );
++
+     if (!(mutex = alloc_object( &mutex_sync_ops ))) return NULL;
+     mutex->count = 0;
+     mutex->owner = NULL;
+diff --git a/server/request_handlers.h b/server/request_handlers.h
+index 90321ea75bc..7a426730235 100644
+--- a/server/request_handlers.h
++++ b/server/request_handlers.h
+@@ -306,6 +306,11 @@ DECL_HANDLER(get_next_process);
+ DECL_HANDLER(get_next_thread);
+ DECL_HANDLER(set_keyboard_repeat);
+ DECL_HANDLER(get_inproc_sync_fd);
++DECL_HANDLER(get_msync_wait_slot);
++DECL_HANDLER(register_msync_wait);
++DECL_HANDLER(unregister_msync_wait);
++DECL_HANDLER(wake_msync_waiters);
++DECL_HANDLER(try_wait_all_msync);
+ DECL_HANDLER(get_inproc_alert_fd);
+ DECL_HANDLER(d3dkmt_object_create);
+ DECL_HANDLER(d3dkmt_object_update);
+@@ -619,6 +624,11 @@ static const req_handler req_handlers[REQ_NB_REQUESTS] =
+     (req_handler)req_get_next_thread,
+     (req_handler)req_set_keyboard_repeat,
+     (req_handler)req_get_inproc_sync_fd,
++    (req_handler)req_get_msync_wait_slot,
++    (req_handler)req_register_msync_wait,
++    (req_handler)req_unregister_msync_wait,
++    (req_handler)req_wake_msync_waiters,
++    (req_handler)req_try_wait_all_msync,
+     (req_handler)req_get_inproc_alert_fd,
+     (req_handler)req_d3dkmt_object_create,
+     (req_handler)req_d3dkmt_object_update,
+@@ -2337,7 +2347,20 @@ C_ASSERT( offsetof(struct get_inproc_sync_fd_request, handle) == 12 );
+ C_ASSERT( sizeof(struct get_inproc_sync_fd_request) == 16 );
+ C_ASSERT( offsetof(struct get_inproc_sync_fd_reply, type) == 8 );
+ C_ASSERT( offsetof(struct get_inproc_sync_fd_reply, access) == 12 );
+-C_ASSERT( sizeof(struct get_inproc_sync_fd_reply) == 16 );
++C_ASSERT( offsetof(struct get_inproc_sync_fd_reply, shm_idx) == 16 );
++C_ASSERT( sizeof(struct get_inproc_sync_fd_reply) == 24 );
++C_ASSERT( sizeof(struct get_msync_wait_slot_request) == 16 );
++C_ASSERT( offsetof(struct get_msync_wait_slot_reply, shm_idx) == 8 );
++C_ASSERT( sizeof(struct get_msync_wait_slot_reply) == 16 );
++C_ASSERT( offsetof(struct register_msync_wait_request, slot_idx) == 12 );
++C_ASSERT( sizeof(struct register_msync_wait_request) == 16 );
++C_ASSERT( offsetof(struct unregister_msync_wait_request, slot_idx) == 12 );
++C_ASSERT( sizeof(struct unregister_msync_wait_request) == 16 );
++C_ASSERT( offsetof(struct wake_msync_waiters_request, shm_idx) == 12 );
++C_ASSERT( sizeof(struct wake_msync_waiters_request) == 16 );
++C_ASSERT( offsetof(struct try_wait_all_msync_request, tid) == 12 );
++C_ASSERT( offsetof(struct try_wait_all_msync_request, slot_idx) == 16 );
++C_ASSERT( sizeof(struct try_wait_all_msync_request) == 24 );
+ C_ASSERT( sizeof(struct get_inproc_alert_fd_request) == 16 );
+ C_ASSERT( offsetof(struct get_inproc_alert_fd_reply, handle) == 8 );
+ C_ASSERT( sizeof(struct get_inproc_alert_fd_reply) == 16 );
+diff --git a/server/request_trace.h b/server/request_trace.h
+index e33e09d16bc..0624b62ee65 100644
+--- a/server/request_trace.h
++++ b/server/request_trace.h
+@@ -3419,6 +3419,39 @@ static void dump_get_inproc_sync_fd_reply( const struct get_inproc_sync_fd_reply
+ {
+     fprintf( stderr, " type=%d", req->type );
+     fprintf( stderr, ", access=%08x", req->access );
++    fprintf( stderr, ", shm_idx=%08x", req->shm_idx );
++}
++
++static void dump_get_msync_wait_slot_request( const struct get_msync_wait_slot_request *req )
++{
++}
++
++static void dump_get_msync_wait_slot_reply( const struct get_msync_wait_slot_reply *req )
++{
++    fprintf( stderr, " shm_idx=%08x", req->shm_idx );
++}
++
++static void dump_register_msync_wait_request( const struct register_msync_wait_request *req )
++{
++    fprintf( stderr, " slot_idx=%08x", req->slot_idx );
++    dump_varargs_uints( ", shm_idxs=", cur_size );
++}
++
++static void dump_unregister_msync_wait_request( const struct unregister_msync_wait_request *req )
++{
++    fprintf( stderr, " slot_idx=%08x", req->slot_idx );
++}
++
++static void dump_wake_msync_waiters_request( const struct wake_msync_waiters_request *req )
++{
++    fprintf( stderr, " shm_idx=%08x", req->shm_idx );
++}
++
++static void dump_try_wait_all_msync_request( const struct try_wait_all_msync_request *req )
++{
++    fprintf( stderr, " tid=%04x", req->tid );
++    fprintf( stderr, ", slot_idx=%08x", req->slot_idx );
++    dump_varargs_uints( ", entries=", cur_size );
+ }
+ 
+ static void dump_get_inproc_alert_fd_request( const struct get_inproc_alert_fd_request *req )
+@@ -3847,6 +3880,11 @@ static const dump_func req_dumpers[REQ_NB_REQUESTS] =
+     (dump_func)dump_get_next_thread_request,
+     (dump_func)dump_set_keyboard_repeat_request,
+     (dump_func)dump_get_inproc_sync_fd_request,
++    (dump_func)dump_get_msync_wait_slot_request,
++    (dump_func)dump_register_msync_wait_request,
++    (dump_func)dump_unregister_msync_wait_request,
++    (dump_func)dump_wake_msync_waiters_request,
++    (dump_func)dump_try_wait_all_msync_request,
+     (dump_func)dump_get_inproc_alert_fd_request,
+     (dump_func)dump_d3dkmt_object_create_request,
+     (dump_func)dump_d3dkmt_object_update_request,
+@@ -4160,6 +4198,11 @@ static const dump_func reply_dumpers[REQ_NB_REQUESTS] =
+     (dump_func)dump_get_next_thread_reply,
+     (dump_func)dump_set_keyboard_repeat_reply,
+     (dump_func)dump_get_inproc_sync_fd_reply,
++    (dump_func)dump_get_msync_wait_slot_reply,
++    NULL,
++    NULL,
++    NULL,
++    NULL,
+     (dump_func)dump_get_inproc_alert_fd_reply,
+     (dump_func)dump_d3dkmt_object_create_reply,
+     NULL,
+@@ -4473,6 +4516,11 @@ static const char * const req_names[REQ_NB_REQUESTS] =
+     "get_next_thread",
+     "set_keyboard_repeat",
+     "get_inproc_sync_fd",
++    "get_msync_wait_slot",
++    "register_msync_wait",
++    "unregister_msync_wait",
++    "wake_msync_waiters",
++    "try_wait_all_msync",
+     "get_inproc_alert_fd",
+     "d3dkmt_object_create",
+     "d3dkmt_object_update",
+diff --git a/server/semaphore.c b/server/semaphore.c
+index f6c83c44c6e..61c9b0e854b 100644
+--- a/server/semaphore.c
++++ b/server/semaphore.c
+@@ -173,6 +173,8 @@ static struct object *create_semaphore_sync( unsigned int initial, unsigned int
+ {
+     struct semaphore_sync *sem;
+ 
++    if (get_inproc_device_fd() >= 0) return (struct object *)create_inproc_semaphore_sync( initial, max );
++
+     if (!(sem = alloc_object( &semaphore_sync_ops ))) return NULL;
+     sem->count = initial;
+     sem->max   = max;
+-- 
+2.54.0 (Apple Git-157)
+

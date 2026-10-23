@@ -1,0 +1,107 @@
+From 3f7b0f6321d93bf89a70b7da07de6ec966aa0c50 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Thu, 22 Oct 2026 04:24:25 -0600
+Subject: [PATCH 09/55] dnsapi: Don't resolve a .local hostname through
+ multicast DNS at process attach.
+
+The mDNS query can time out (5s) when the host doesn't answer it, e.g. macOS
+with sharing services disabled, and dnsapi is loaded at every process start.
+Use the interface addresses instead. Cold start 10.5s -> 1.2s.
+
+Also add a wx debug channel tracing W^X page flips and store emulation.
+---
+ dlls/dnsapi/libresolv.c   | 28 ++++++++++++++++++++++++++++
+ dlls/ntdll/unix/virtual.c |  8 ++++++++
+ 2 files changed, 36 insertions(+)
+
+diff --git a/dlls/dnsapi/libresolv.c b/dlls/dnsapi/libresolv.c
+index dd9b32d00db..e81e43c9584 100644
+--- a/dlls/dnsapi/libresolv.c
++++ b/dlls/dnsapi/libresolv.c
+@@ -44,6 +44,10 @@
+ #ifdef HAVE_NETDB_H
+ # include <netdb.h>
+ #endif
++#ifdef HAVE_IFADDRS_H
++# include <ifaddrs.h>
++# include <net/if.h>
++#endif
+ 
+ #include "ntstatus.h"
+ #include "windef.h"
+@@ -339,6 +343,30 @@ static NTSTATUS get_hostinfo( void *args )
+ 
+     if (gethostname( params->name, DNS_MAX_NAME_LENGTH )) return map_h_errno( h_errno );
+ 
++#ifdef HAVE_IFADDRS_H
++    {
++        /* names in .local are resolved with multicast DNS, which can time out (seconds, at every
++         * process start) when the host doesn't answer mDNS queries; use the interface addresses */
++        size_t len = strlen( params->name );
++        struct ifaddrs *ifaddrs, *ifa;
++
++        if (len > 6 && !strcasecmp( params->name + len - 6, ".local" ) && !getifaddrs( &ifaddrs ))
++        {
++            strcpy( params->cname, params->name );
++            for (ifa = ifaddrs; ifa; ifa = ifa->ifa_next)
++            {
++                if (!ifa->ifa_addr || (ifa->ifa_flags & IFF_LOOPBACK) || !(ifa->ifa_flags & IFF_UP)) continue;
++                if (ifa->ifa_addr->sa_family == AF_INET && !*params->ip4)
++                    *params->ip4 = ((struct sockaddr_in *)ifa->ifa_addr)->sin_addr.s_addr;
++                else if (ifa->ifa_addr->sa_family == AF_INET6 && !(params->ip6->IP6Dword[0] | params->ip6->IP6Dword[1] | params->ip6->IP6Dword[2] | params->ip6->IP6Dword[3]))
++                    memcpy( params->ip6, ((struct sockaddr_in6 *)ifa->ifa_addr)->sin6_addr.s6_addr, sizeof(*params->ip6) );
++            }
++            freeifaddrs( ifaddrs );
++            return ERROR_SUCCESS;
++        }
++    }
++#endif
++
+     if (!getaddrinfo( params->name, NULL, &hints, &result ))
+     {
+         if (result->ai_canonname) strcpy( params->cname, result->ai_canonname );
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index 419480e8b88..cc2677cc5ab 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -93,6 +93,7 @@
+ #include "wine/debug.h"
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(virtual);
++WINE_DECLARE_DEBUG_CHANNEL(wx);
+ WINE_DECLARE_DEBUG_CHANNEL(module);
+ WINE_DECLARE_DEBUG_CHANNEL(mem_areas);
+ 
+@@ -4360,7 +4361,10 @@ NTSTATUS virtual_handle_fault( struct thread_data *data, EXCEPTION_RECORD *rec,
+         if (is_vprot_exec_write( get_host_page_vprot( page ) ) &&
+             (get_unix_prot( get_host_page_vprot( page ) ) & PROT_WRITE) &&
+             !mprotect( page, host_page_size, PROT_READ | PROT_WRITE ))
++        {
++            TRACE_(wx)( "%p: RX -> RW for write to %p\n", page, addr );
+             ret = STATUS_SUCCESS;
++        }
+         else
+ #endif
+         /* ignore fault if page is writable now */
+@@ -4376,6 +4380,7 @@ NTSTATUS virtual_handle_fault( struct thread_data *data, EXCEPTION_RECORD *rec,
+              !mprotect( page, host_page_size, PROT_READ | PROT_EXEC ))
+     {
+         /* W^X: page was RW, make it RX again */
++        TRACE_(wx)( "%p: RW -> RX for execution\n", page );
+         sys_icache_invalidate( page, host_page_size );
+         ret = STATUS_SUCCESS;
+     }
+@@ -4407,7 +4412,10 @@ BOOL virtual_wx_begin_store( void *addr, SIZE_T size )
+         if (!is_vprot_exec_write( vprot ) || !(get_unix_prot( vprot ) & PROT_WRITE)) goto fail;
+     }
+     if (!mprotect( start, ROUND_SIZE( start, end - start, host_page_mask ), PROT_READ | PROT_WRITE ))
++    {
++        TRACE_(wx)( "%p: emulating store of %lu bytes\n", addr, size );
+         return TRUE;
++    }
+ fail:
+     mutex_unlock( &virtual_mutex );
+     return FALSE;
+-- 
+2.54.0 (Apple Git-157)
+

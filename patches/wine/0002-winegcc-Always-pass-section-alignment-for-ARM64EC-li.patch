@@ -1,0 +1,34 @@
+From ff672f7a52b718afcb757bd0a6912e2afd0fe1f9 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Thu, 22 Oct 2026 03:17:29 -0600
+Subject: [PATCH 02/55] winegcc: Always pass section alignment for ARM64EC
+ links.
+
+The alignment link probe always fails for ARM64EC because the probe's entry
+thunk needs __os_arm64x_dispatch_ret from the default libs, so ARM64X modules
+silently fell back to 4K sections instead of the intended 64K.
+---
+ tools/winegcc/winegcc.c | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/tools/winegcc/winegcc.c b/tools/winegcc/winegcc.c
+index 0d8586e6e21..7b7cfb03cfe 100644
+--- a/tools/winegcc/winegcc.c
++++ b/tools/winegcc/winegcc.c
+@@ -592,7 +592,12 @@ static struct strarray get_link_args( const char *output_name )
+ 
+         if (strip) strarray_add( &link_args, "-s" );
+ 
+-        if (!try_link( link_args, "-Wl,-Xlink=-filealign:0x1000,-Xlink=-align:0x1000,-Xlink=-driver" ))
++        /* the link probe can't work for ARM64EC: without default libs its entry thunk misses
++         * __os_arm64x_dispatch_ret, and any lld able to link ARM64EC supports the mingw syntax */
++        if (target.cpu == CPU_ARM64EC)
++            strarray_add( &link_args, strmake( "-Wl,--file-alignment,%s,--section-alignment,%s",
++                                               file_align, section_align ));
++        else if (!try_link( link_args, "-Wl,-Xlink=-filealign:0x1000,-Xlink=-align:0x1000,-Xlink=-driver" ))
+             /* lld from llvm 10 does not support mingw style --file-alignment,
+              * but it's possible to use msvc syntax
+              * the -driver option is needed to silence a warning about using -align */
+-- 
+2.54.0 (Apple Git-157)
+

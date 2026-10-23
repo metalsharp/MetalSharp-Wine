@@ -1,0 +1,398 @@
+From 4eda0ec76ae2179d5133deaa6f4c7933a00f3d5e Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Thu, 22 Oct 2026 13:53:44 -0600
+Subject: [PATCH 20/55] kernelbase: Launcher compatibility (CEF arguments, Epic
+ GPU setting, unchanged-refcount module lookup).
+
+From WineForge/MetalSharp: Steam, Rockstar Social Club, EA, Battle.net and Ubisoft CEF
+command-line additions, Epic BaseWindowsEngine.ini CEF GPU acceleration off, and
+GetModuleHandleEx unchanged-refcount lookup through LdrGetDllHandle (Diablo II: Resurrected).
+
+(cherry picked from commit d03c2d3fc8c4f6fbd8c6e5f1fecaf60f9c9a0eb7)
+---
+ dlls/kernelbase/Makefile.in |   1 +
+ dlls/kernelbase/launchers.c | 133 ++++++++++++++++++++++++++++++++++++
+ dlls/kernelbase/launchers.h |  17 +++++
+ dlls/kernelbase/loader.c    |   6 +-
+ dlls/kernelbase/main.c      | 100 +++++++++++++++++++++++++++
+ dlls/kernelbase/process.c   |  32 +++++++++
+ 6 files changed, 288 insertions(+), 1 deletion(-)
+ create mode 100644 dlls/kernelbase/launchers.c
+ create mode 100644 dlls/kernelbase/launchers.h
+
+diff --git a/dlls/kernelbase/Makefile.in b/dlls/kernelbase/Makefile.in
+index 2e33b6b5801..417d6e87a2f 100644
+--- a/dlls/kernelbase/Makefile.in
++++ b/dlls/kernelbase/Makefile.in
+@@ -13,6 +13,7 @@ SOURCES = \
+ 	file.c \
+ 	kernelbase.rc \
+ 	loader.c \
++	launchers.c \
+ 	locale.c \
+ 	main.c \
+ 	memory.c \
+diff --git a/dlls/kernelbase/launchers.c b/dlls/kernelbase/launchers.c
+new file mode 100644
+index 00000000000..f7b62e68fe8
+--- /dev/null
++++ b/dlls/kernelbase/launchers.c
+@@ -0,0 +1,133 @@
++/*
++ * MetalSharp launcher compatibility policy
++ *
++ * Copyright (C) 2026 Radim Vesely for MetalSharp
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ */
++
++#include <stdarg.h>
++
++#include "windef.h"
++#include "winbase.h"
++#include "winternl.h"
++
++#include "launchers.h"
++
++struct launcher_process_policy
++{
++    const WCHAR *exe_name;
++    const WCHAR *path;
++    const WCHAR *path_alt;
++    const WCHAR *excluded_path;
++    const WCHAR *excluded_path_alt;
++    const WCHAR *blocked_args[3];
++    const WCHAR *append_args;
++};
++
++static const struct launcher_process_policy launcher_process_policies[] =
++{
++    /* MetalSharp-Internal: launcher-compat/steam-cef-swiftshader-v1. */
++    {
++        L"steamwebhelper.exe",
++        L"\\Steam\\bin\\cef\\",
++        L"/Steam/bin/cef/",
++        NULL,
++        NULL,
++        {L"--type=crashpad-handler", L"--disable-gpu", NULL},
++        L" --no-sandbox"
++        L" --in-process-gpu"
++        L" --disable-gpu"
++        L" --disable-d3d11"
++        L" --enable-unsafe-swiftshader"
++        L" --use-gl=angle"
++        L" --use-angle=swiftshader",
++    },
++    /* MetalSharp-Internal: launcher-compat/rockstar-cef-in-process-gpu-v1. */
++    {
++        L"SocialClubHelper.exe",
++        L"\\Rockstar Games\\Social Club\\",
++        L"/Rockstar Games/Social Club/",
++        NULL,
++        NULL,
++        {L"--type=", L"--in-process-gpu", NULL},
++        L" --in-process-gpu",
++    },
++    /* MetalSharp-Internal: launcher-compat/ea-app-in-process-gpu-v1. */
++    {
++        L"EADesktop.exe",
++        L"\\Program Files\\Electronic Arts\\EA Desktop\\",
++        L"/Program Files/Electronic Arts/EA Desktop/",
++        L"\\compatibility32\\",
++        L"/compatibility32/",
++        {L"--type=", L"--in-process-gpu", NULL},
++        L" --in-process-gpu",
++    },
++    /* MetalSharp-Internal: launcher-compat/battlenet-in-process-gpu-v1. */
++    {
++        L"Battle.net.exe",
++        L"\\Program Files (x86)\\Battle.net\\",
++        L"/Program Files (x86)/Battle.net/",
++        NULL,
++        NULL,
++        {L"--type=", L"--in-process-gpu", NULL},
++        L" --in-process-gpu",
++    },
++    /* MetalSharp-Internal: launcher-compat/ubisoft-connect-in-process-gpu-v1. */
++    {
++        L"upc.exe",
++        L"\\Program Files (x86)\\Ubisoft\\Ubisoft Game Launcher\\",
++        L"/Program Files (x86)/Ubisoft/Ubisoft Game Launcher/",
++        NULL,
++        NULL,
++        {L"--type=", L"--in-process-gpu", NULL},
++        L" --in-process-gpu",
++    },
++};
++
++static BOOL string_contains_ci( const WCHAR *string, const WCHAR *needle )
++{
++    SIZE_T needle_len;
++
++    if (!string || !needle) return FALSE;
++    needle_len = lstrlenW( needle );
++    if (!needle_len) return TRUE;
++    for (; *string; string++)
++        if (!wcsnicmp( string, needle, needle_len )) return TRUE;
++    return FALSE;
++}
++
++static BOOL process_matches( const WCHAR *app_name, const WCHAR *cmd_line,
++                             const struct launcher_process_policy *policy )
++{
++    return ((string_contains_ci( app_name, policy->exe_name ) &&
++             (string_contains_ci( app_name, policy->path ) ||
++              string_contains_ci( app_name, policy->path_alt ))) ||
++            (string_contains_ci( cmd_line, policy->exe_name ) &&
++             (string_contains_ci( cmd_line, policy->path ) ||
++              string_contains_ci( cmd_line, policy->path_alt ))));
++}
++
++const WCHAR *get_launcher_process_args( const WCHAR *app_name, const WCHAR *cmd_line )
++{
++    unsigned int i, j;
++
++    for (i = 0; i < ARRAY_SIZE(launcher_process_policies); i++)
++    {
++        const struct launcher_process_policy *policy = &launcher_process_policies[i];
++
++        if (!process_matches( app_name, cmd_line, policy )) continue;
++        if (string_contains_ci( app_name, policy->excluded_path ) ||
++            string_contains_ci( app_name, policy->excluded_path_alt ) ||
++            string_contains_ci( cmd_line, policy->excluded_path ) ||
++            string_contains_ci( cmd_line, policy->excluded_path_alt ))
++            return NULL;
++        for (j = 0; j < ARRAY_SIZE(policy->blocked_args) && policy->blocked_args[j]; j++)
++            if (string_contains_ci( cmd_line, policy->blocked_args[j] )) return NULL;
++        return policy->append_args;
++    }
++    return NULL;
++}
+diff --git a/dlls/kernelbase/launchers.h b/dlls/kernelbase/launchers.h
+new file mode 100644
+index 00000000000..89a22d6be41
+--- /dev/null
++++ b/dlls/kernelbase/launchers.h
+@@ -0,0 +1,17 @@
++/*
++ * MetalSharp launcher compatibility policy
++ *
++ * Copyright (C) 2026 Radim Vesely for MetalSharp
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ */
++
++#ifndef __WINE_KERNELBASE_LAUNCHERS_H
++#define __WINE_KERNELBASE_LAUNCHERS_H
++
++const WCHAR *get_launcher_process_args( const WCHAR *app_name, const WCHAR *cmd_line );
++
++#endif
+diff --git a/dlls/kernelbase/loader.c b/dlls/kernelbase/loader.c
+index 6c6f1f31881..37d22e0e3d2 100644
+--- a/dlls/kernelbase/loader.c
++++ b/dlls/kernelbase/loader.c
+@@ -416,7 +416,11 @@ BOOL WINAPI DECLSPEC_HOTPATCH GetModuleHandleExW( DWORD flags, LPCWSTR name, HMO
+             ldr_flags |= LDR_GET_DLL_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT;
+ 
+         RtlInitUnicodeString( &wstr, name );
+-        status = LdrGetDllHandleEx( ldr_flags, NULL, NULL, &wstr, &ret );
++        /* MetalSharp-Internal: stable unchanged-refcount lookup; Diablo II Resurrected fix. */
++        if (ldr_flags == LDR_GET_DLL_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT)
++            status = LdrGetDllHandle( NULL, 0, &wstr, &ret );
++        else
++            status = LdrGetDllHandleEx( ldr_flags, NULL, NULL, &wstr, &ret );
+     }
+     else
+     {
+diff --git a/dlls/kernelbase/main.c b/dlls/kernelbase/main.c
+index 8c37e5da1ab..641af10b530 100644
+--- a/dlls/kernelbase/main.c
++++ b/dlls/kernelbase/main.c
+@@ -36,6 +36,104 @@ WINE_DEFAULT_DEBUG_CHANNEL(kernelbase);
+ 
+ BOOL is_wow64 = FALSE;
+ 
++static char *find_bytes( char *buffer, DWORD size, const char *needle )
++{
++    SIZE_T needle_len = strlen( needle );
++    DWORD i;
++
++    if (!needle_len || size < needle_len) return NULL;
++    for (i = 0; i <= size - needle_len; ++i)
++        if (!memcmp( buffer + i, needle, needle_len ))
++            return buffer + i;
++    return NULL;
++}
++
++/*
++ * MetalSharp launcher-compat: keep Epic Launcher CEF on the stable software path.
++ * MetalSharp-Internal: launcher-compat/epic-launcher-v1.
++ * MetalSharp-Feature: launcher-compat/epic-cef-software-config-v1.
++ */
++static void ensure_epic_cef_config(void)
++{
++    static const WCHAR epic_exeW[] =
++        L"\\Epic Games\\Launcher\\Portal\\Binaries\\Win64\\EpicGamesLauncher.exe";
++    static const WCHAR config_relW[] =
++        L"\\Engine\\Config\\Windows\\BaseWindowsEngine.ini";
++    static const WCHAR portalW[] = L"\\Portal\\Binaries\\Win64\\EpicGamesLauncher.exe";
++    static const char section[] = "[ConsoleVariables]";
++    static const char key[] = "r.CEFGPUAcceleration";
++    static const char line[] = "\r\nr.CEFGPUAcceleration=0\r\n";
++    const WCHAR *image = NtCurrentTeb()->Peb->ProcessParameters->ImagePathName.Buffer;
++    SIZE_T image_len, epic_len, base_len, config_len;
++    char *buffer = NULL, *new_buffer = NULL, *pos, *insert;
++    DWORD size, read, written, insert_offset;
++    WCHAR *config;
++    HANDLE file;
++
++    if (!image) return;
++
++    image_len = lstrlenW( image );
++    epic_len = ARRAY_SIZE(epic_exeW) - 1;
++    if (image_len < epic_len || wcsicmp( image + image_len - epic_len, epic_exeW )) return;
++
++    base_len = image_len - (ARRAY_SIZE(portalW) - 1);
++    config_len = base_len + ARRAY_SIZE(config_relW);
++    if (!(config = RtlAllocateHeap( GetProcessHeap(), 0, config_len * sizeof(WCHAR) ))) return;
++
++    memcpy( config, image, base_len * sizeof(WCHAR) );
++    memcpy( config + base_len, config_relW, ARRAY_SIZE(config_relW) * sizeof(WCHAR) );
++
++    file = CreateFileW( config, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
++                        NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL );
++    if (file == INVALID_HANDLE_VALUE)
++    {
++        WARN( "failed to open Epic config %s, error %lu\n", debugstr_w(config), GetLastError() );
++        goto done;
++    }
++
++    size = GetFileSize( file, NULL );
++    if (size == INVALID_FILE_SIZE || size > 1024 * 1024) goto close;
++    if (!(buffer = RtlAllocateHeap( GetProcessHeap(), 0, size + 1 ))) goto close;
++    if (!ReadFile( file, buffer, size, &read, NULL ) || read != size) goto close;
++    buffer[size] = 0;
++
++    if (find_bytes( buffer, size, key ))
++    {
++        TRACE( "Epic CEF GPU acceleration config already present in %s\n", debugstr_w(config) );
++        goto close;
++    }
++    if (!(pos = find_bytes( buffer, size, section ))) goto close;
++
++    /* Epic Launcher ignores command-line GPU-disable switches here; patch the installed CEF config instead. */
++    insert = pos + strlen( section );
++    while ((insert = find_bytes( insert, size - (insert - buffer), "\n[" )))
++    {
++        if (insert == buffer || insert[-1] != ';') break;
++        insert += 2;
++    }
++    if (!insert) insert = buffer + size;
++    insert_offset = insert - buffer;
++
++    if (!(new_buffer = RtlAllocateHeap( GetProcessHeap(), 0, size + sizeof(line) - 1 ))) goto close;
++    memcpy( new_buffer, buffer, insert_offset );
++    memcpy( new_buffer + insert_offset, line, sizeof(line) - 1 );
++    memcpy( new_buffer + insert_offset + sizeof(line) - 1, buffer + insert_offset, size - insert_offset );
++
++    SetFilePointer( file, 0, NULL, FILE_BEGIN );
++    if (WriteFile( file, new_buffer, size + sizeof(line) - 1, &written, NULL ) &&
++        written == size + sizeof(line) - 1 && SetEndOfFile( file ))
++        TRACE( "ensured Epic CEF GPU acceleration config in %s\n", debugstr_w(config) );
++    else
++        WARN( "failed to update Epic config %s, error %lu\n", debugstr_w(config), GetLastError() );
++
++close:
++    if (new_buffer) RtlFreeHeap( GetProcessHeap(), 0, new_buffer );
++    if (buffer) RtlFreeHeap( GetProcessHeap(), 0, buffer );
++    CloseHandle( file );
++done:
++    RtlFreeHeap( GetProcessHeap(), 0, config );
++}
++
+ /***********************************************************************
+  *           DllMain
+  */
+@@ -48,6 +146,8 @@ BOOL WINAPI DllMain( HINSTANCE hinst, DWORD reason, LPVOID reserved )
+         init_global_data();
+         init_locale( hinst );
+         init_startup_info( NtCurrentTeb()->Peb->ProcessParameters );
++        /* Epic Launcher CEF software-rendering gate; no-op for other process paths. */
++        ensure_epic_cef_config();
+         init_console();
+     }
+     return TRUE;
+diff --git a/dlls/kernelbase/process.c b/dlls/kernelbase/process.c
+index ae9a7d644b8..33fadfa130a 100644
+--- a/dlls/kernelbase/process.c
++++ b/dlls/kernelbase/process.c
+@@ -30,6 +30,7 @@
+ #include "processsnapshot.h"
+ 
+ #include "kernelbase.h"
++#include "launchers.h"
+ #include "wine/debug.h"
+ #include "wine/condrv.h"
+ 
+@@ -502,6 +503,23 @@ done:
+     return ret;
+ }
+ 
++static BOOL append_process_args( WCHAR **cmd_line, const WCHAR *append )
++{
++    WCHAR *new_cmdline;
++    SIZE_T len;
++
++    if (!append) return TRUE;
++
++    len = lstrlenW( *cmd_line ) + lstrlenW( append ) + 1;
++    if (!(new_cmdline = RtlAllocateHeap( GetProcessHeap(), 0, len * sizeof(WCHAR) )))
++        return FALSE;
++
++    lstrcpyW( new_cmdline, *cmd_line );
++    lstrcatW( new_cmdline, append );
++    *cmd_line = new_cmdline;
++    return TRUE;
++}
++
+ /**********************************************************************
+  *           CreateProcessInternalW   (kernelbase.@)
+  */
+@@ -518,6 +536,7 @@ BOOL WINAPI DECLSPEC_HOTPATCH CreateProcessInternalW( HANDLE token, const WCHAR
+     RTL_USER_PROCESS_PARAMETERS *params = NULL;
+     RTL_USER_PROCESS_INFORMATION rtl_info = { 0 };
+     HANDLE parent = 0, debug = 0;
++    const WCHAR *append_args;
+     ULONG nt_flags = 0;
+     USHORT machine = 0;
+     NTSTATUS status;
+@@ -543,6 +562,19 @@ BOOL WINAPI DECLSPEC_HOTPATCH CreateProcessInternalW( HANDLE token, const WCHAR
+         app_name = name;
+     }
+ 
++    if ((append_args = get_launcher_process_args( app_name, tidy_cmdline )))
++    {
++        WCHAR *old_cmdline = tidy_cmdline;
++
++        WARN( "appending launcher CEF arguments %s\n", debugstr_w(append_args) );
++        if (!append_process_args( &tidy_cmdline, append_args ))
++        {
++            status = STATUS_NO_MEMORY;
++            goto done;
++        }
++        if (old_cmdline != cmd_line) HeapFree( GetProcessHeap(), 0, old_cmdline );
++    }
++
+     /* Warn if unsupported features are used */
+ 
+     if (flags & (IDLE_PRIORITY_CLASS | HIGH_PRIORITY_CLASS | REALTIME_PRIORITY_CLASS |
+-- 
+2.54.0 (Apple Git-157)
+

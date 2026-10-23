@@ -1,0 +1,208 @@
+From 38f1e452b0cb08c95fefcac5cdd9873aac1b1027 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Thu, 22 Oct 2026 05:41:05 -0600
+Subject: [PATCH 13/55] ntdll: Keep write protection of executable pages exact
+ within a 16K host page.
+
+A host page mixing writable pages with write-protected executable pages (code an
+emulator write-protected for self-modifying code detection, or W^X JIT code) is
+kept non-writable and writes to its writable pages are emulated; previously the
+union of the protections made the protected pages silently writable and FEX
+missed code modifications (ntdll exception test ran stale translated code).
+Kernel writes to such pages are allowed through check_write_access().
+---
+ dlls/ntdll/unix/signal_arm64.c |  9 ++--
+ dlls/ntdll/unix/unix_private.h |  1 +
+ dlls/ntdll/unix/virtual.c      | 88 ++++++++++++++++++++++++++++++++--
+ 3 files changed, 90 insertions(+), 8 deletions(-)
+
+diff --git a/dlls/ntdll/unix/signal_arm64.c b/dlls/ntdll/unix/signal_arm64.c
+index 91a7fd9dea7..83c29574e0c 100644
+--- a/dlls/ntdll/unix/signal_arm64.c
++++ b/dlls/ntdll/unix/signal_arm64.c
+@@ -1502,9 +1502,12 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
+         if (ESR_ELx_ISS_DABT_WNR(esr))
+         {
+ #ifdef __APPLE__
+-            /* a store into its own host page can't complete by flipping W^X, emulate it */
+-            if (!((PC_sig( sigcontext ) ^ (ULONG_PTR)siginfo->si_addr) & ~(ULONG_PTR)(getpagesize() - 1)) &&
+-                !(PSTATE_sig( sigcontext ) & 0x10) && emulate_wx_store( sigcontext ))
++            /* a store into its own host page can't complete by flipping W^X, and a host page
++             * mixing writable and write-protected pages can't be made writable: emulate it */
++            if (!(PSTATE_sig( sigcontext ) & 0x10) &&
++                (!((PC_sig( sigcontext ) ^ (ULONG_PTR)siginfo->si_addr) & ~(ULONG_PTR)(getpagesize() - 1)) ||
++                 virtual_is_write_emulated( siginfo->si_addr )) &&
++                emulate_wx_store( sigcontext ))
+                 return;
+ #endif
+             rec.ExceptionInformation[0] = EXCEPTION_WRITE_FAULT;
+diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
+index 1a193e3757b..63704e217a7 100644
+--- a/dlls/ntdll/unix/unix_private.h
++++ b/dlls/ntdll/unix/unix_private.h
+@@ -330,6 +330,7 @@ extern NTSTATUS virtual_handle_fault( struct thread_data *data, EXCEPTION_RECORD
+ #if defined(__APPLE__) && defined(__aarch64__)
+ extern BOOL virtual_wx_begin_store( void *addr, SIZE_T size );
+ extern void virtual_wx_end_store( void *addr, SIZE_T size );
++extern BOOL virtual_is_write_emulated( void *addr );
+ #endif
+ extern unsigned int virtual_locked_server_call( void *req_ptr );
+ extern ssize_t virtual_locked_read( int fd, void *addr, size_t size );
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index 84369ec2483..e8527704f15 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -844,6 +844,40 @@ static BYTE get_host_page_vprot( const void *addr )
+ }
+ 
+ 
++#if defined(__APPLE__) && defined(__aarch64__)
++/***********************************************************************
++ *           is_host_page_write_mixed
++ *
++ * Whether the host page holds both writable anonymous pages and executable pages without write
++ * access (e.g. JIT code an emulator write-protected for SMC detection). Such a host page can't
++ * be writable without silently allowing writes to the protected pages: it's kept read-only and
++ * writes to its writable pages are emulated (emulate_wx_store()).
++ */
++static BOOL is_host_page_write_mixed( const void *addr )
++{
++    size_t i, idx = (size_t)ROUND_ADDR( addr, host_page_mask ) >> page_shift;
++    const BYTE *vprot_ptr;
++    BOOL writable = FALSE, readonly = FALSE;
++
++    if (host_page_size == page_size) return FALSE;
++    if ((idx >> pages_vprot_shift) >= pages_vprot_size) return FALSE;
++    if (!pages_vprot[idx >> pages_vprot_shift]) return FALSE;
++    vprot_ptr = pages_vprot[idx >> pages_vprot_shift] + (idx & pages_vprot_mask);
++    for (i = 0; i < host_page_size / page_size; i++)
++    {
++        if (!(vprot_ptr[i] & VPROT_COMMITTED) || (vprot_ptr[i] & VPROT_GUARD)) continue;
++        if (vprot_ptr[i] & VPROT_WRITE) writable = TRUE;
++        /* only executable pages without write access count (code write-protected for SMC
++         * detection or W^X JITs); plain read-only data stays permissive like other platforms */
++        else if ((vprot_ptr[i] & VPROT_EXEC) && !(vprot_ptr[i] & VPROT_WRITECOPY)) readonly = TRUE;
++    }
++    return writable && readonly;
++}
++#else
++static inline BOOL is_host_page_write_mixed( const void *addr ) { return FALSE; }
++#endif
++
++
+ /***********************************************************************
+  *           get_vprot_range_size
+  *
+@@ -1632,10 +1666,12 @@ static int mprotect_range( void *base, size_t size, BYTE set, BYTE clear )
+ 
+     vprot = get_host_page_vprot( addr );
+     prot = get_unix_prot( (vprot & ~clear) | set );
++    if (is_host_page_write_mixed( addr )) prot &= ~PROT_WRITE;
+     for (count = i = 1; i < size / host_page_size; i++, count++)
+     {
+         vprot = get_host_page_vprot( addr + count * host_page_size );
+         next = get_unix_prot( (vprot & ~clear) | set );
++        if (is_host_page_write_mixed( addr + count * host_page_size )) next &= ~PROT_WRITE;
+         if (next == prot) continue;
+         if (mprotect_exec( addr, count * host_page_size, prot )) return -1;
+         addr += count * host_page_size;
+@@ -4360,6 +4396,7 @@ NTSTATUS virtual_handle_fault( struct thread_data *data, EXCEPTION_RECORD *rec,
+         /* W^X: a W+X page is mapped RX (see mprotect_exec), make it RW for the write */
+         if (is_vprot_exec_write( get_host_page_vprot( page ) ) &&
+             (get_unix_prot( get_host_page_vprot( page ) ) & PROT_WRITE) &&
++            !is_host_page_write_mixed( page ) &&
+             !mprotect( page, host_page_size, PROT_READ | PROT_WRITE ))
+         {
+             TRACE_(wx)( "%p: RX -> RW for write to %p\n", page, addr );
+@@ -4406,11 +4443,16 @@ BOOL virtual_wx_begin_store( void *addr, SIZE_T size )
+     char *start = ROUND_ADDR( addr, host_page_mask ), *end = (char *)addr + size, *page;
+ 
+     mutex_lock( &virtual_mutex );
+-    for (page = start; page < end; page += host_page_size)
++    /* the target pages themselves must allow the write */
++    for (page = ROUND_ADDR( addr, page_mask ); page < end; page += page_size)
+     {
+-        BYTE vprot = get_host_page_vprot( page );
+-        if (!is_vprot_exec_write( vprot ) || !(get_unix_prot( vprot ) & PROT_WRITE)) goto fail;
++        BYTE vprot = get_page_vprot( page );
++        if (!(vprot & VPROT_COMMITTED) || (vprot & (VPROT_GUARD | VPROT_WRITEWATCH)) ||
++            !(vprot & (VPROT_WRITE | VPROT_WRITECOPY))) goto fail;
+     }
++    /* and the host page must be one that is kept non-writable: W+X or write-mixed */
++    for (page = start; page < end; page += host_page_size)
++        if (!is_vprot_exec_write( get_host_page_vprot( page ) ) && !is_host_page_write_mixed( page )) goto fail;
+     if (!mprotect( start, ROUND_SIZE( start, end - start, host_page_mask ), PROT_READ | PROT_WRITE ))
+     {
+         TRACE_(wx)( "%p: emulating store of %lu bytes\n", addr, size );
+@@ -4422,6 +4464,29 @@ fail:
+ }
+ 
+ 
++/***********************************************************************
++ *           virtual_is_write_emulated
++ *
++ * Whether writes to addr must be emulated because its host page is write-mixed.
++ */
++BOOL virtual_is_write_emulated( void *addr )
++{
++    BOOL ret;
++
++    mutex_lock( &virtual_mutex );
++    ret = is_host_page_write_mixed( addr );
++    if (ret && TRACE_ON(wx))
++    {
++        char *page = ROUND_ADDR( addr, host_page_mask );
++        TRACE_(wx)( "%p: write-mixed host page, vprots %02x %02x %02x %02x\n", page, get_page_vprot( page ),
++                    get_page_vprot( page + page_size ), get_page_vprot( page + 2 * page_size ),
++                    get_page_vprot( page + 3 * page_size ) );
++    }
++    mutex_unlock( &virtual_mutex );
++    return ret;
++}
++
++
+ /***********************************************************************
+  *           virtual_wx_end_store
+  */
+@@ -4430,7 +4495,7 @@ void virtual_wx_end_store( void *addr, SIZE_T size )
+     char *start = ROUND_ADDR( addr, host_page_mask );
+     size_t len = ROUND_SIZE( start, (char *)addr + size - start, host_page_mask );
+ 
+-    mprotect( start, len, PROT_READ | PROT_EXEC );
++    mprotect_range( start, len, 0, 0 );
+     sys_icache_invalidate( start, len );
+     mutex_unlock( &virtual_mutex );
+ }
+@@ -4499,6 +4564,9 @@ static NTSTATUS check_write_access( void *base, size_t size, BOOL *has_write_wat
+     size_t i;
+     char *addr = ROUND_ADDR( base, host_page_mask );
+ 
++    BOOL mixed = FALSE;
++    char *page, *end = (char *)base + size;
++
+     size = ROUND_SIZE( base, size, host_page_mask );
+     for (i = 0; i < size; i += host_page_size)
+     {
+@@ -4506,8 +4574,18 @@ static NTSTATUS check_write_access( void *base, size_t size, BOOL *has_write_wat
+         if (vprot & VPROT_WRITEWATCH) *has_write_watch = TRUE;
+         if (!(get_unix_prot( vprot & ~VPROT_WRITEWATCH ) & PROT_WRITE))
+             return STATUS_INVALID_USER_BUFFER;
++        if (is_host_page_write_mixed( addr + i )) mixed = TRUE;
++    }
++    if (mixed)
++    {
++        /* only the accessed pages have to be writable; open the host pages for the duration
++         * of the access, update_write_watches() restores the protections */
++        for (page = ROUND_ADDR( base, page_mask ); page < end; page += page_size)
++            if (!(get_page_vprot( page ) & (VPROT_WRITE | VPROT_WRITECOPY))) return STATUS_INVALID_USER_BUFFER;
++        *has_write_watch = TRUE;
++        mprotect( addr, size, PROT_READ | PROT_WRITE );
+     }
+-    if (*has_write_watch)
++    else if (*has_write_watch)
+         mprotect_range( addr, size, 0, VPROT_WRITEWATCH );  /* temporarily enable write access */
+     return STATUS_SUCCESS;
+ }
+-- 
+2.54.0 (Apple Git-157)
+

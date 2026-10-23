@@ -1,0 +1,40 @@
+From 6a57685e04240ae6e7625ffe222b4296aa0f97ec Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Thu, 22 Oct 2026 06:52:38 -0600
+Subject: [PATCH 15/55] ntdll: Don't apply executable memory write exceptions
+ to ARM64EC code allocations.
+
+They are the x64 emulator's JIT code; tracking them made the emulator's own
+code writes raise exceptions forever once an x64 program enabled
+ProcessManageWritesToExecutableMemory (ntdll virtual test hung under FEX).
+---
+ dlls/ntdll/unix/virtual.c | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index e8527704f15..bc31308fd87 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -1697,7 +1697,9 @@ static BOOL set_vprot( struct file_view *view, void *base, size_t size, BYTE vpr
+     }
+     else
+     {
+-        if (enable_write_exceptions && is_vprot_exec_write( vprot )) vprot |= VPROT_WRITEWATCH;
++        /* ARM64EC code views belong to the x64 emulator's JIT, not to the application */
++        if (enable_write_exceptions && is_vprot_exec_write( vprot ) && !(view->protect & VPROT_ARM64EC))
++            vprot |= VPROT_WRITEWATCH;
+         else if (use_kernel_writewatch && view->protect & VPROT_WRITEWATCH) vprot &= ~VPROT_WRITEWATCH;
+         set_page_vprot( base, size, vprot );
+     }
+@@ -4883,7 +4885,7 @@ void virtual_enable_write_exceptions( BOOL enable )
+     if (!enable_write_exceptions && enable)  /* change all existing views */
+     {
+         WINE_RB_FOR_EACH_ENTRY( view, &views_tree, struct file_view, entry )
+-            if (set_page_vprot_exec_write_protect( view->base, view->size ))
++            if (!(view->protect & VPROT_ARM64EC) && set_page_vprot_exec_write_protect( view->base, view->size ))
+                 mprotect_range( view->base, view->size, 0, 0 );
+     }
+     enable_write_exceptions = enable;
+-- 
+2.54.0 (Apple Git-157)
+

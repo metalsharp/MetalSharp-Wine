@@ -1,38 +1,28 @@
-#!/bin/bash
-# Build native arm64 Wine 11.12 (aarch64 unix side) for MetalSharp/VKMT.
-# PE archs: arm64ec + aarch64 (ARM64X), x86_64 and i386 (run via Wine's own
-# xtajit/wow64 emulation in-process — NO Rosetta anywhere).
-# Toolchain: llvm-mingw (arm64ec needs clang; gcc-mingw can't emit arm64ec).
-# Deps: brew install bison flex freetype fontconfig pkg-config
-set -euo pipefail
-VKMT="$(cd "$(dirname "$0")/.." && pwd)"
-LLVM_MINGW="${LLVM_MINGW:-$VKMT/toolchains/llvm-mingw-20260616-ucrt-macos-universal}"
-SRC="$VKMT/wine/wine-11.12"
-BLD="$VKMT/wine/build-full"
+#!/bin/zsh
+# Configure, build and install Wine 11.20 as native arm64 macOS (minos 15.0)
+# with PE archs arm64ec (x86_64 via ARM64EC), aarch64 and i386 (WoW64).
+# Usage: build-wine.sh [configure|build|install|all]   (default: all)
+set -e
+source ${0:A:h}/env.sh
+# In-tree build: --with-gettextpo (po rebuilding) is unsupported out of tree.
+B=$ROOT/src/wine; I=$ROOT/install
+step=${1:-all}
+mkdir -p $B
 
-if [ ! -d "$SRC" ]; then
-  mkdir -p "$VKMT/wine"
-  curl -L https://dl.winehq.org/wine/source/11.x/wine-11.12.tar.xz | tar xJ -C "$VKMT/wine"
+if [[ $step == configure || $step == all ]]; then
+  # Requested features are passed as explicit --with so a missing one is a hard error.
+  (cd $B && ./configure --prefix=$I \
+     --enable-archs=arm64ec,aarch64,i386 --with-mingw=llvm-mingw \
+     --with-vulkan --with-opengl --with-gnutls --with-gstreamer --with-ffmpeg --with-opencl \
+     --with-coreaudio --with-cups --with-freetype --with-gettext --with-gettextpo \
+     --with-pthread --with-sdl \
+     --without-x --without-wayland \
+     LDFLAGS="$LDFLAGS -Wl,-rpath,$PREFIX/lib") > $ROOT/logs/wine-configure.log 2>&1
+  grep -E "^configure: (WARNING|error)|won't be supported" $ROOT/logs/wine-configure.log || true
 fi
-mkdir -p "$BLD"
-
-export PATH="$LLVM_MINGW/bin:/opt/homebrew/opt/bison/bin:/opt/homebrew/opt/flex/bin:/opt/homebrew/bin:$PATH"
-export PKG_CONFIG_PATH="/opt/homebrew/opt/freetype/lib/pkgconfig:/opt/homebrew/opt/fontconfig/lib/pkgconfig:/opt/homebrew/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
-export CPPFLAGS="-I$VKMT/third_party/MoltenVK/External/Vulkan-Headers/include"
-export LDFLAGS="-L$VKMT/third_party/MoltenVK/Package/Release/MoltenVK/dynamic/dylib/macOS"
-
-cd "$BLD"
-if [ ! -f Makefile ]; then
-  # VKMT: PE TEB lives in x28 (Darwin scrubs x18); reserve x28 in all aarch64 PE code.
-  aarch64_CFLAGS="-g -O2 -ffixed-x18 -ffixed-x28" \
-  "$SRC/configure" \
-    --enable-archs=arm64ec,aarch64,x86_64,i386 \
-    --with-vulkan --with-freetype --with-fontconfig --with-opengl \
-    --with-gstreamer --with-gnutls \
-    --without-capi --without-dbus --without-gphoto \
-    --without-pcap --without-sane --without-udev --without-wayland --without-x
+if [[ $step == build || $step == all ]]; then
+  make -C $B -j$JOBS > $ROOT/logs/wine-make.log 2>&1
 fi
-make -j"$(sysctl -n hw.perflevel0.physicalcpu)"
-
-"$VKMT/scripts/stage-wine-host-libs.sh" "$BLD"
-echo "Built: $BLD/wine"
+if [[ $step == install || $step == all ]]; then
+  make -C $B -j$JOBS install > $ROOT/logs/wine-install.log 2>&1
+fi

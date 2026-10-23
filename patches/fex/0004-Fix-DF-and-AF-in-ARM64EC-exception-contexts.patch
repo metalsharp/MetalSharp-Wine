@@ -1,0 +1,62 @@
+From 9c0bc911eba338f06b6697ed033ffabab6cc3c94 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Thu, 22 Oct 2026 07:10:47 -0600
+Subject: [PATCH 4/7] Fix DF and AF in ARM64EC exception contexts.
+
+- STD/CLD write DF through to the CPU state: cached context values are only
+  flushed at block exits, so a fault later in the block saw (and resumed with)
+  a stale direction flag.
+- Report DF and AF in the ARM64EC context (Wine keeps them in RES0 CPSR bits) and
+  honor AF from contexts; DF is merged back from the JIT state.
+---
+ FEXCore/Source/Interface/Core/OpcodeDispatcher.h | 8 +++++++-
+ Source/Windows/ARM64EC/Module.cpp                | 7 ++++++-
+ 2 files changed, 13 insertions(+), 2 deletions(-)
+
+diff --git a/FEXCore/Source/Interface/Core/OpcodeDispatcher.h b/FEXCore/Source/Interface/Core/OpcodeDispatcher.h
+index 71766e010..f8581ac03 100644
+--- a/FEXCore/Source/Interface/Core/OpcodeDispatcher.h
++++ b/FEXCore/Source/Interface/Core/OpcodeDispatcher.h
+@@ -2109,7 +2109,13 @@ private:
+   }
+ 
+   void StoreDF(Ref Value) {
+-    StoreContext(DFIndex, Value);
++    // Write DF through immediately: cached context values are only flushed at block exits, so
++    // a fault later in the block (e.g. std; movs to a bad address) would otherwise see and
++    // resume with a stale direction flag. STD/CLD are rare, the store is cheap.
++    _StoreContextGPR(OpSize::i8Bit, Value, offsetof(Core::CPUState, flags[X86State::RFLAG_DF_RAW_LOC]));
++    RegCache.Value[DFIndex] = Value;
++    RegCache.Cached |= 1ull << DFIndex;
++    RegCache.LastDef[DFIndex] = Value;
+   }
+ 
+   Ref GetRFLAG(unsigned BitOffset, bool Invert = false) {
+diff --git a/Source/Windows/ARM64EC/Module.cpp b/Source/Windows/ARM64EC/Module.cpp
+index 633f252c3..7fcd99de2 100644
+--- a/Source/Windows/ARM64EC/Module.cpp
++++ b/Source/Windows/ARM64EC/Module.cpp
+@@ -535,6 +535,9 @@ static ARM64_NT_CONTEXT StoreStateToPackedECContext(FEXCore::Core::InternalThrea
+   ECContext.Cpsr |= (EFlags & (1U << FEXCore::X86State::RFLAG_CF_RAW_LOC)) ? (1U << 29) : 0;
+   ECContext.Cpsr |= (EFlags & (1U << FEXCore::X86State::RFLAG_ZF_RAW_LOC)) ? (1U << 30) : 0;
+   ECContext.Cpsr |= (EFlags & (1U << FEXCore::X86State::RFLAG_SF_RAW_LOC)) ? (1U << 31) : 0;
++  // DF and AF have no NZCV equivalent; Wine carries them in the RES0 CPSR bits 16 and 17.
++  ECContext.Cpsr |= (EFlags & (1U << FEXCore::X86State::RFLAG_DF_RAW_LOC)) ? (1U << 16) : 0;
++  ECContext.Cpsr |= (EFlags & (1U << FEXCore::X86State::RFLAG_AF_RAW_LOC)) ? (1U << 17) : 0;
+ 
+   ECContext.Fpcr = FPCR;
+   ECContext.Fpsr = FPSR;
+@@ -631,7 +634,9 @@ extern "C" void SyncThreadContext(CONTEXT* Context) {
+   // This is advisable over dropping their values as thread suspend/resume uses this function, and that can happen at any point in guest code.
+   static constexpr uint32_t ECValidEFlagsMask {(1U << FEXCore::X86State::RFLAG_OF_RAW_LOC) | (1U << FEXCore::X86State::RFLAG_CF_RAW_LOC) |
+                                                (1U << FEXCore::X86State::RFLAG_ZF_RAW_LOC) | (1U << FEXCore::X86State::RFLAG_SF_RAW_LOC) |
+-                                               (1U << FEXCore::X86State::RFLAG_TF_RAW_LOC)};
++                                               (1U << FEXCore::X86State::RFLAG_TF_RAW_LOC) | (1U << FEXCore::X86State::RFLAG_AF_RAW_LOC)};
++  // DF is reported in exception contexts but merged back from the JIT state: Wine's NtContinue path
++  // only preserves the architectural CPSR bits, so a context's DF can't be trusted on the way in.
+ 
+   uint32_t StateEFlags = CTX->ReconstructCompactedEFLAGS(Thread, false, nullptr, 0);
+   Context->EFlags = (Context->EFlags & ECValidEFlagsMask) | (StateEFlags & ~ECValidEFlagsMask);
+-- 
+2.54.0 (Apple Git-157)
+

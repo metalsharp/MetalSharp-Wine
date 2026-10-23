@@ -1,0 +1,34 @@
+From 965b6238967d2baa9b2369cf769bbab10fce6b49 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Thu, 22 Oct 2026 13:54:27 -0600
+Subject: [PATCH 31/55] winemac.drv: Don't switch the global macOS input source
+ for non-IME layouts.
+
+From WineForge/MetalSharp.
+---
+ dlls/winemac.drv/keyboard.c | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/dlls/winemac.drv/keyboard.c b/dlls/winemac.drv/keyboard.c
+index 7f23d82a07e..1f90f913ae4 100644
+--- a/dlls/winemac.drv/keyboard.c
++++ b/dlls/winemac.drv/keyboard.c
+@@ -1162,6 +1162,15 @@ BOOL macdrv_ActivateKeyboardLayout(HKL hkl, UINT flags)
+     {
+         if (HIWORD(hkl) == layout->layout_id ? layout->layout_id : layout->lang)
+         {
++            if (!is_ime_hkl(hkl))
++            {
++                /* Keep the macOS input source user-controlled: games that request a US
++                 * keyboard layout would otherwise switch the global macOS keyboard (for
++                 * example from Czech to U.S.). Only IME layouts are selected here. */
++                TRACE("not selecting macOS input source for hkl %p\n", hkl);
++                ret = TRUE;
++                break;
++            }
+             if (macdrv_select_input_source(layout->input_source))
+             {
+                 ret = TRUE;
+-- 
+2.54.0 (Apple Git-157)
+

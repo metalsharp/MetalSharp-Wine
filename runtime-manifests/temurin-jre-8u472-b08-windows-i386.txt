@@ -1,7 +1,0 @@
-Runtime: Eclipse Temurin OpenJDK JRE 8u472-b08 HotSpot Windows x86
-Architecture: i386 PE32
-VM: HotSpot Client VM (interpreter and C1)
-Archive: OpenJDK8U-jre_x86-32_windows_hotspot_8u472b08.zip
-Source: https://github.com/adoptium/temurin8-binaries/releases/download/jdk8u472-b08/OpenJDK8U-jre_x86-32_windows_hotspot_8u472b08.zip
-SHA-256: 21a2c5af684a658f1484daa85eabf4961ab9de28c0efbf31da2381d77fce3b5f
-License: GPLv2 with Classpath Exception; see the staged runtime legal files
