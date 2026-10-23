@@ -1,5 +1,4 @@
-# Working trees and build products (scripts/fetch-sources.sh and scripts/build-all.sh recreate them)
-/src/
+# Build products (scripts/build-all.sh recreates them); src/ holds the source submodules
 /downloads/
 /toolchain/
 /deps/

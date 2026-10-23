@@ -1,0 +1,17 @@
+[submodule "src/wine"]
+	path = src/wine
+	url = https://github.com/metalsharp/MetalSharp-Wine.git
+	branch = source/wine
+	shallow = true
+[submodule "src/FEX"]
+	path = src/FEX
+	url = https://github.com/metalsharp/MetalSharp-Wine.git
+	branch = source/fex
+[submodule "src/winemetalgl"]
+	path = src/winemetalgl
+	url = https://github.com/metalsharp/MetalSharp-Wine.git
+	branch = source/winemetalgl
+[submodule "src/mullion"]
+	path = src/mullion
+	url = https://github.com/aaf2tbz/mullion.git
+	branch = i386-build

@@ -56,16 +56,16 @@ Results and design notes are in [`docs/STATUS.md`](docs/STATUS.md); measured per
 
 ## Source
 
-The modified sources are kept in this repository as branches:
+The modified sources are kept in this repository as branches, and `main` links them as submodules in `src/`, pinned to the commits each release is built from:
 
-| Branch | Contents |
-|---|---|
-| [`source/wine`](../../tree/source/wine) | Wine 11.20 + MetalSharp (`wine-11.20` tag plus 56 commits) |
-| [`source/fex`](../../tree/source/fex) | FEX-2610 + MetalSharp (7 commits). It is not upstreamed |
-| [`source/winemetalgl`](../../tree/source/winemetalgl) | WineMetalGL's arm64 Wine module |
-| `legacy-1.x` | The previous MetalSharp Wine (VKMT) history |
+| Submodule | Branch | Contents |
+|---|---|---|
+| `src/wine` | [`source/wine`](../../tree/source/wine) | Wine 11.20 + MetalSharp (`wine-11.20` tag plus 56 commits) |
+| `src/FEX` | [`source/fex`](../../tree/source/fex) | FEX-2610 + MetalSharp (7 commits). It is not upstreamed |
+| `src/winemetalgl` | [`source/winemetalgl`](../../tree/source/winemetalgl) | WineMetalGL's arm64 Wine module |
+| `src/mullion` | [aaf2tbz/mullion](https://github.com/aaf2tbz/mullion) `i386-build` | Mullion (DXMT fork). Developed there and sent upstream to [dttdrv/mullion](https://github.com/dttdrv/mullion) as pull requests |
 
-**Mullion** is developed in [aaf2tbz/mullion](https://github.com/aaf2tbz/mullion) and sent upstream to [dttdrv/mullion](https://github.com/dttdrv/mullion) as pull requests.
+The branches are full source trees with their upstream history (Wine's is large), which is why they are linked rather than merged into `main`. `legacy-1.x` holds the previous MetalSharp Wine (VKMT) history.
 
 The same changes are in `patches/` as git patches against the upstream tags. `patches/wine/0042` is a pointer to WineForge's Steam bridge commit, because that commit vendors about 66 MB.
 
@@ -79,6 +79,12 @@ The same changes are in `patches/` as git patches against the upstream tags. `pa
 ## Building
 
 You need Xcode, the Metal Toolchain, and these Homebrew tools: cmake, ninja, meson, pkgconf, autoconf, automake, libtool, bison, flex, nasm, gettext and gperf.
+
+```bash
+git clone --recurse-submodules https://github.com/metalsharp/MetalSharp-Wine.git
+```
+
+Or, in an existing clone:
 
 ```bash
 zsh scripts/fetch-sources.sh
