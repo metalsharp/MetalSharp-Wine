@@ -40,27 +40,27 @@ ___
 
 2) _**First point a shell variable at the Wine Inside the app:**_
 
-export WINE=/Applications/MetalSharp-Wine.app/Contents/MacOS/wine
+`export WINE=/Applications/MetalSharp-Wine.app/Contents/MacOS/wine`
 
 3) _**Create a prefix:**_
 
-WINEPREFIX=~/Games/my-prefix $WINE wineboot -i
+`WINEPREFIX=~/Games/my-prefix $WINE wineboot -i`
 
 (It takes a minute the first time. The prefix comes with Wine Mono (.NET), Gecko and the core fonts already set up, and x86 programs run through FEX automatically). 
 
 4) _**Run an installer or game by passing the .exe path:**_ 
 
-WINEPREFIX=~/Games/my-prefix $WINE ~/Downloads/setup.exe 
+`WINEPREFIX=~/Games/my-prefix $WINE ~/Downloads/setup.exe`
 
-WINEPREFIX=~/Games/my-prefix $WINE "C:\\Program Files\\MyGame\\Game.exe" 
+`WINEPREFIX=~/Games/my-prefix $WINE "C:\\Program Files\\MyGame\\Game.exe"` 
 
 4.1) _**Running from inside the game’s folder also works and helps some games find their files:**_
 
-cd ~/Games/my-prefix/drive_c/Program\ Files/MyGame && WINEPREFIX=~/Games/my-prefix $WINE Game.exe 
+`cd ~/Games/my-prefix/drive_c/Program\ Files/MyGame && WINEPREFIX=~/Games/my-prefix $WINE Game.exe` 
 
 5) _**For Steam: run SteamSetup.exe (from Valve, or share/metalsharp/steam inside the app) the same way, then start Steam with:**_
 
-WINEPREFIX=~/Games/my-prefix $WINE "C:\\Program Files (x86)\\Steam\\steam.exe" 
+`WINEPREFIX=~/Games/my-prefix $WINE "C:\\Program Files (x86)\\Steam\\steam.exe"` 
 
 6) _**Useful switches, set before the $WINE command like WINEPREFIX:**_ 
 
