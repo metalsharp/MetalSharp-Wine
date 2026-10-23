@@ -49,7 +49,8 @@ jobs:
 
       - name: Staple and repackage
         run: |
-          xcrun stapler staple app/MetalSharp-Wine.app
+          # Apple's ticket service (CloudKit) sometimes drops the connection right after acceptance
+          for i in 1 2 3 4 5 6; do xcrun stapler staple app/MetalSharp-Wine.app && break; [ $i = 6 ] && exit 1; sleep 30; done
           xcrun stapler validate app/MetalSharp-Wine.app
           spctl -a -vv app/MetalSharp-Wine.app
           rm "$ZIP"
