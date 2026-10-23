@@ -1,7 +1,11 @@
-# MetalSharp Wine 2.0
+<div align="center">
+
+# MetalSharp Wine
 
 [![Release](https://img.shields.io/github/v/release/metalsharp/MetalSharp-Wine?style=for-the-badge)](https://github.com/metalsharp/MetalSharp-Wine/releases/latest)
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-purple.svg?style=for-the-badge)](LICENSE)
+
+</div>
 
 MetalSharp Wine is Wine 11.20 built as a native arm64 macOS application for Apple Silicon. A FEX-Emu fork translates x86 Windows code to ARM64.
 - **No Rosetta:** none of it is x86 code run through Rosetta.
