@@ -47,6 +47,7 @@ enum process_graphics_backend
     PROCESS_GRAPHICS_BACKEND_D3DMETAL,
     PROCESS_GRAPHICS_BACKEND_DXMT,
     PROCESS_GRAPHICS_BACKEND_DXVK,
+    PROCESS_GRAPHICS_BACKEND_VKD3D,
 };
 
 /* WineForge-Internal: graphics/process-backend-policy-v1. */
@@ -76,6 +77,11 @@ static BOOL parse_graphics_backend( const char *name, enum process_graphics_back
         *backend = PROCESS_GRAPHICS_BACKEND_DXVK;
         return TRUE;
     }
+    if (name && !strcmp( name, "vkd3d" ))
+    {
+        *backend = PROCESS_GRAPHICS_BACKEND_VKD3D;
+        return TRUE;
+    }
     if (name && !strcmp( name, "wine" ))
     {
         *backend = PROCESS_GRAPHICS_BACKEND_WINE;
@@ -92,6 +98,7 @@ static const char *process_graphics_backend_name( enum process_graphics_backend 
     case PROCESS_GRAPHICS_BACKEND_D3DMETAL: return "d3dmetal";
     case PROCESS_GRAPHICS_BACKEND_DXMT: return "dxmt";
     case PROCESS_GRAPHICS_BACKEND_DXVK: return "dxvk";
+    case PROCESS_GRAPHICS_BACKEND_VKD3D: return "vkd3d";
     default: return "wine";
     }
 }
@@ -131,6 +138,12 @@ void init_process_graphics_backend( const WCHAR *image_path )
     /* DXVK (opt-in) covers D3D9/10/11 and DXGI in x86_64 programs only; everything else, and
      * every other kind of program, keeps the default backend. */
     if (configured_backend == PROCESS_GRAPHICS_BACKEND_DXVK && !(is_arm64ec() && dxvk_runtime_available()))
+        configured_backend = dxmt_runtime_available() ? PROCESS_GRAPHICS_BACKEND_DXMT
+                                                      : PROCESS_GRAPHICS_BACKEND_WINE;
+    /* VKD3D-Proton (opt-in) is D3D12 and DXGI on Vulkan, with DXVK's D3D9/10/11, in x86_64
+     * programs only, like DXVK. */
+    if (configured_backend == PROCESS_GRAPHICS_BACKEND_VKD3D &&
+        !(is_arm64ec() && vkd3d_runtime_available() && dxvk_runtime_available()))
         configured_backend = dxmt_runtime_available() ? PROCESS_GRAPHICS_BACKEND_DXMT
                                                       : PROCESS_GRAPHICS_BACKEND_WINE;
     process_graphics_backend = configured_backend;
@@ -180,7 +193,8 @@ BOOL dxmt_graphics_backend_enabled(void)
     if (process_uses_cef_software) return FALSE;
     if (process_graphics_backend != PROCESS_GRAPHICS_BACKEND_UNINITIALIZED)
         return process_graphics_backend == PROCESS_GRAPHICS_BACKEND_DXMT ||
-               (process_graphics_backend == PROCESS_GRAPHICS_BACKEND_DXVK && dxmt_runtime_available());
+               ((process_graphics_backend == PROCESS_GRAPHICS_BACKEND_DXVK ||
+                 process_graphics_backend == PROCESS_GRAPHICS_BACKEND_VKD3D) && dxmt_runtime_available());
     if (!backend || !backend[0]) backend = getenv( "ACTIVE_GRAPHICS_BACKEND" );
     if (!backend || !backend[0]) return dxmt_runtime_available();
     return !strcmp( backend, "dxmt" );
@@ -188,7 +202,13 @@ BOOL dxmt_graphics_backend_enabled(void)
 
 BOOL dxvk_graphics_backend_enabled(void)
 {
-    return process_graphics_backend == PROCESS_GRAPHICS_BACKEND_DXVK;
+    return process_graphics_backend == PROCESS_GRAPHICS_BACKEND_DXVK ||
+           process_graphics_backend == PROCESS_GRAPHICS_BACKEND_VKD3D;
+}
+
+BOOL vkd3d_graphics_backend_enabled(void)
+{
+    return process_graphics_backend == PROCESS_GRAPHICS_BACKEND_VKD3D;
 }
 
 /* WineForge-Internal: graphics/process-backend-policy-v1. */

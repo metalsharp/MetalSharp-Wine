@@ -1263,6 +1263,39 @@ BOOL dxvk_runtime_available(void)
     return path != NULL;
 }
 
+/* VKD3D-Proton (x86_64): <dll_dir>/../vkd3d-proton/x86_64-windows, for GRAPHICS_BACKEND=vkd3d */
+static char *vkd3d_pe_path( const char *name )
+{
+    char *path;
+
+    if (!dll_dir || asprintf( &path, "%s/../vkd3d-proton/x86_64-windows/%s", dll_dir, name ) == -1) return NULL;
+    if (!access( path, R_OK )) return path;
+    free( path );
+    return NULL;
+}
+
+BOOL vkd3d_runtime_available(void)
+{
+    char *path = vkd3d_pe_path( "d3d12.dll" );
+
+    free( path );
+    return path != NULL;
+}
+
+/* D3D12 and DXGI from VKD3D-Proton; DXVK's D3D9/10/11 come from resolve_dxvk_pe_path() */
+static char *resolve_vkd3d_pe_path( const char *module )
+{
+    static const char *const names[] = { "d3d12.dll", "d3d12core.dll", "dxgi.dll" };
+    const char *name = strrchr( module, '/' );
+    unsigned int i;
+
+    if (!vkd3d_graphics_backend_enabled()) return NULL;
+    name = name ? name + 1 : module;
+    for (i = 0; i < ARRAY_SIZE(names); i++)
+        if (!strcasecmp( name, names[i] )) return vkd3d_pe_path( names[i] );
+    return NULL;
+}
+
 static char *resolve_dxvk_pe_path( const char *module )
 {
     static const char *const names[] = { "d3d9.dll", "d3d10core.dll", "d3d11.dll", "dxgi.dll" };
@@ -1358,9 +1391,11 @@ static NTSTATUS find_builtin_dll( UNICODE_STRING *nt_name, ANSI_STRING *exp_name
         }
     }
 
-    /* DXVK (GRAPHICS_BACKEND=dxvk, x86_64 programs): PE only, no unix side */
+    /* VKD3D-Proton and DXVK (GRAPHICS_BACKEND=vkd3d or dxvk, x86_64 programs): PE only, no unix side */
     {
-        char *dxvk_pe = resolve_dxvk_pe_path( file + pos + 1 );
+        char *dxvk_pe = resolve_vkd3d_pe_path( file + pos + 1 );
+
+        if (!dxvk_pe) dxvk_pe = resolve_dxvk_pe_path( file + pos + 1 );
 
         if (dxvk_pe)
         {
