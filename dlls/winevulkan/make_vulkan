@@ -1437,8 +1437,12 @@ class VkMember(VkVariable):
             return False
 
         if direction == Direction.INPUT:
-            # returnedonly members don't needs input conversions
-            if not self.is_pointer() and self.returnedonly:
+            # returnedonly members don't needs input conversions, except a struct with its own
+            # pNext chain (VkPhysicalDeviceLayeredApiVulkanPropertiesKHR::properties): its host
+            # copy needs the chain set up, or the output conversion follows an uninitialized pNext
+            if not self.is_pointer() and self.returnedonly and \
+               not (self.is_struct() and any(m.is_next() for m in self.struct.members) and
+                    self.struct.needs_conversion(conv, unwrap, Direction.OUTPUT, is_const)):
                 return False
             # pointer arrays always need input conversion
             if conv and self.is_dynamic_array() and self.pointer_array:
@@ -2430,8 +2434,12 @@ class Generator(object):
         f.write("    }\n")
         f.write("}\n\n")
 
+        # VkPhysicalDeviceLayeredApiVulkanPropertiesKHR contains a VkPhysicalDeviceProperties2,
+        # which converts its chain both ways
+        f.write("static void convert_VkPhysicalDeviceProperties2_win32_to_host(struct conversion_context *ctx, const VkPhysicalDeviceProperties232 *in, VkPhysicalDeviceProperties2 *out);\n")
         f.write("static void convert_VkPhysicalDeviceProperties2_host_to_win32(const VkPhysicalDeviceProperties2 *in, VkPhysicalDeviceProperties232 *out);\n")
         f.write("#ifdef _WIN64\n")
+        f.write("static void convert_VkPhysicalDeviceProperties2_win64_to_host(struct conversion_context *ctx, const VkPhysicalDeviceProperties2 *in, VkPhysicalDeviceProperties2 *out);\n")
         f.write("static void convert_VkPhysicalDeviceProperties2_host_to_win64(const VkPhysicalDeviceProperties2 *in, VkPhysicalDeviceProperties2 *out);\n")
         f.write("#endif\n")
 

@@ -11140,8 +11140,10 @@ static uint64_t wine_vk_unwrap_handle(uint32_t type, uint64_t handle)
     }
 }
 
+static void convert_VkPhysicalDeviceProperties2_win32_to_host(struct conversion_context *ctx, const VkPhysicalDeviceProperties232 *in, VkPhysicalDeviceProperties2 *out);
 static void convert_VkPhysicalDeviceProperties2_host_to_win32(const VkPhysicalDeviceProperties2 *in, VkPhysicalDeviceProperties232 *out);
 #ifdef _WIN64
+static void convert_VkPhysicalDeviceProperties2_win64_to_host(struct conversion_context *ctx, const VkPhysicalDeviceProperties2 *in, VkPhysicalDeviceProperties2 *out);
 static void convert_VkPhysicalDeviceProperties2_host_to_win64(const VkPhysicalDeviceProperties2 *in, VkPhysicalDeviceProperties2 *out);
 #endif
 static void convert_VkAcquireNextImageInfoKHR_win32_to_unwrapped_host(const VkAcquireNextImageInfoKHR32 *in, VkAcquireNextImageInfoKHR *out)
@@ -40382,8 +40384,10 @@ static void convert_VkPhysicalDeviceLayeredApiPropertiesKHR_win64_to_host(struct
         case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_LAYERED_API_VULKAN_PROPERTIES_KHR:
         {
             VkPhysicalDeviceLayeredApiVulkanPropertiesKHR *out_ext = conversion_context_alloc(ctx, sizeof(*out_ext));
+            const VkPhysicalDeviceLayeredApiVulkanPropertiesKHR *in_ext = (const VkPhysicalDeviceLayeredApiVulkanPropertiesKHR *)in_header;
             out_ext->sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_LAYERED_API_VULKAN_PROPERTIES_KHR;
             out_ext->pNext = NULL;
+            convert_VkPhysicalDeviceProperties2_win64_to_host(ctx, &in_ext->properties, &out_ext->properties);
             out_header->pNext = (void *)out_ext;
             out_header = (void *)out_ext;
             break;
@@ -43211,8 +43215,10 @@ static void convert_VkPhysicalDeviceLayeredApiPropertiesKHR_win32_to_host(struct
         case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_LAYERED_API_VULKAN_PROPERTIES_KHR:
         {
             VkPhysicalDeviceLayeredApiVulkanPropertiesKHR *out_ext = conversion_context_alloc(ctx, sizeof(*out_ext));
+            const VkPhysicalDeviceLayeredApiVulkanPropertiesKHR32 *in_ext = (const VkPhysicalDeviceLayeredApiVulkanPropertiesKHR32 *)in_header;
             out_ext->sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_LAYERED_API_VULKAN_PROPERTIES_KHR;
             out_ext->pNext = NULL;
+            convert_VkPhysicalDeviceProperties2_win32_to_host(ctx, &in_ext->properties, &out_ext->properties);
             out_header->pNext = (void *)out_ext;
             out_header = (void *)out_ext;
             break;
