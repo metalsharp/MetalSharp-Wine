@@ -34,6 +34,8 @@ It's a lot like Sakiragur in its current state until it is included with MetalSh
 
 1) _Download the .zip and move the .app from inside into /applications._
 
+___
+
 ### Terminal Commands: 
 
 2) _First point a shell variable at the Wine Inside the app:_
