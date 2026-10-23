@@ -1,5 +1,8 @@
 <div align="center">
 
+<img width="1024" height="1024" alt="MetalSharp Wine" src="https://github.com/user-attachments/assets/87d1a9ab-a9dd-46d6-ad4b-db646ef07b7a" />
+
+
 # MetalSharp Wine
 
 [![Release](https://img.shields.io/github/v/release/metalsharp/MetalSharp-Wine?style=for-the-badge)](https://github.com/metalsharp/MetalSharp-Wine/releases/latest)
