@@ -23,6 +23,7 @@ struct overlay
 
 static SRWLOCK overlay_lock = SRWLOCK_INIT;
 static struct overlay *device_overlays;
+static UINT launcher_flags;
 
 static void **find_original(void *object)
 {
@@ -48,7 +49,8 @@ static HRESULT STDMETHODCALLTYPE proxy_device_qi(ID3D11Device5 *iface, REFIID ii
     HRESULT hr;
 
     if (!original) return E_FAIL;
-    if ((IsEqualGUID(iid, &IID_ID3D10Device) ||
+    if (!(launcher_flags & WFDX_LAUNCHER_FLAG_NATIVE_D3D10) &&
+        (IsEqualGUID(iid, &IID_ID3D10Device) ||
          IsEqualGUID(iid, &IID_ID3D10Device1)) &&
         SUCCEEDED(hr = wfdx_d3d10_bridge_query((ID3D11Device *)iface, iid, out)))
         return hr;
@@ -193,7 +195,6 @@ typedef HRESULT (WINAPI *pfn_D3D11CreateDeviceAndSwapChain)(IDXGIAdapter *,
 static pfn_D3D11CreateDevice backend_create_device;
 static pfn_D3D11CreateDeviceAndSwapChain backend_create_device_and_swapchain;
 static LONG init_ready;
-static UINT launcher_flags;
 static LONG init_calls;
 static LONG wrapper_calls;
 static LONG backend_calls;
@@ -328,7 +329,11 @@ HRESULT WINAPI wfdx_launcher_DXGID3D10CreateDevice(HMODULE d3d11,
     if (SUCCEEDED(hr))
     {
         finish_create(hr, &device, &context);
-        hr = wfdx_d3d10_bridge_create(device, flags, &bridge);
+        /* A backend with its own D3D10 device (Mullion) answers ID3D10Device1 directly. */
+        if (launcher_flags & WFDX_LAUNCHER_FLAG_NATIVE_D3D10)
+            hr = ID3D11Device_QueryInterface(device, &IID_ID3D10Device1, (void **)&bridge);
+        else
+            hr = wfdx_d3d10_bridge_create(device, flags, &bridge);
     }
     if (context) ID3D11DeviceContext_Release(context);
     if (device) ID3D11Device_Release(device);

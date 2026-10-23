@@ -6,6 +6,9 @@
 #define WFDX_LAUNCHER_FLAG_INTERPOSE       0x00000001u
 #define WFDX_LAUNCHER_FLAG_CONTEXT_STATE   0x00000002u
 #define WFDX_LAUNCHER_FLAG_GDI_SURFACE     0x00000004u
+/* The backend implements D3D10 devices itself (Mullion): D3D10 interfaces and
+ * DXGID3D10CreateDevice go to it instead of the minimal bridge D3DMetal needed. */
+#define WFDX_LAUNCHER_FLAG_NATIVE_D3D10    0x00000008u
 
 struct wfdx_launcher_init
 {
