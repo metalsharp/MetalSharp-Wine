@@ -32,35 +32,35 @@ It runs ARM64, x86_64 and 32-bit x86 Windows programs, with Direct3D 9 through 1
 
 It's a lot like Sakiragur in its current state until it is included with MetalSharp where it's just a 'Play' option inside the launcher. 
 
-1) Download the .zip and move the .app from inside into /applications. 
+1) _Download the .zip and move the .app from inside into /applications._
 
 Terminal Commands: 
 
-2) First point a shell variable at the Wine Inside the app:
+2) _First point a shell variable at the Wine Inside the app:_
 
-'export WINE=/Applications/MetalSharp-Wine.app/Contents/MacOS/wine'
+export WINE=/Applications/MetalSharp-Wine.app/Contents/MacOS/wine
 
-3) Create a prefix: 
+3) _Create a prefix:_
 
-'WINEPREFIX=~/Games/my-prefix $WINE wineboot -i'
+WINEPREFIX=~/Games/my-prefix $WINE wineboot -i
 
 (It takes a minute the first time. The prefix comes with Wine Mono (.NET), Gecko and the core fonts already set up, and x86 programs run through FEX automatically). 
 
-4) Run an installer or game by passing the .exe path: 
+4) _Run an installer or game by passing the .exe path:_ 
 
-'WINEPREFIX=~/Games/my-prefix $WINE ~/Downloads/setup.exe' 
+WINEPREFIX=~/Games/my-prefix $WINE ~/Downloads/setup.exe 
 
-'WINEPREFIX=~/Games/my-prefix $WINE "C:\\Program Files\\MyGame\\Game.exe"' 
+WINEPREFIX=~/Games/my-prefix $WINE "C:\\Program Files\\MyGame\\Game.exe" 
 
-4.1) Running from inside the game’s folder also works and helps some games find their files:
+4.1) _Running from inside the game’s folder also works and helps some games find their files:_
 
- 'cd ~/Games/my-prefix/drive_c/Program\ Files/MyGame && WINEPREFIX=~/Games/my-prefix $WINE Game.exe' 
+cd ~/Games/my-prefix/drive_c/Program\ Files/MyGame && WINEPREFIX=~/Games/my-prefix $WINE Game.exe 
 
-5) For Steam: run SteamSetup.exe (from Valve, or share/metalsharp/steam inside the app) the same way, then start Steam with: 
+5) _For Steam: run SteamSetup.exe (from Valve, or share/metalsharp/steam inside the app) the same way, then start Steam with:_
 
-'WINEPREFIX=~/Games/my-prefix $WINE "C:\\Program Files (x86)\\Steam\\steam.exe"' 
+WINEPREFIX=~/Games/my-prefix $WINE "C:\\Program Files (x86)\\Steam\\steam.exe" 
 
-6) Useful switches, set before the $WINE command like WINEPREFIX: 
+6) _Useful switches, set before the $WINE command like WINEPREFIX:_ 
 
 * Direct3D: Mullion on Metal is the default. GRAPHICS_BACKEND=dxvk uses DXVK (x86_64 games only), and GRAPHICS_BACKEND=wine uses Wine’s own wined3d.
 * OpenGL: WineMetalGL 4.6 is the default. OPENGL_BACKEND=wine switches back to Wine’s own.
