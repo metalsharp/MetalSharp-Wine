@@ -375,6 +375,8 @@ extern BOOL is_dxmt_module_name( const char *path );
 extern BOOL is_dxmt_module_basename( const WCHAR *name );
 extern char *resolve_dxmt_pe_path( const char *module, USHORT machine );
 extern char *resolve_dxmt_unixlib_path( const char *path );
+extern BOOL dxvk_graphics_backend_enabled(void);
+extern BOOL dxvk_runtime_available(void);
 extern NTSTATUS load_builtin_unixlib_now( void *module );
 #endif
 extern NTSTATUS set_builtin_unixlib_name( void *module, const char *name );

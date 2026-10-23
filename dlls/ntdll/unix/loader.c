@@ -318,6 +318,8 @@ static void set_dll_path(void)
             free( value );
         }
     }
+    /* MoltenVK logs its whole feature list at info level on every instance; keep errors only */
+    setenv( "MVK_CONFIG_LOG_LEVEL", "1", 0 );
 
     /* default to the Mullion (DXMT) runtime bundled next to Wine's own modules */
     if (!getenv( "DXMT_RUNTIME_DIR" ) && dll_dir)
@@ -1225,6 +1227,38 @@ static char *winemetalgl_opengl32_path( USHORT machine )
     free( path );
     return NULL;
 }
+
+/* DXVK 1.10.3 (macOS, x86_64): <dll_dir>/../dxvk/x86_64-windows, for GRAPHICS_BACKEND=dxvk */
+static char *dxvk_pe_path( const char *name )
+{
+    char *path;
+
+    if (!dll_dir || asprintf( &path, "%s/../dxvk/x86_64-windows/%s", dll_dir, name ) == -1) return NULL;
+    if (!access( path, R_OK )) return path;
+    free( path );
+    return NULL;
+}
+
+BOOL dxvk_runtime_available(void)
+{
+    char *path = dxvk_pe_path( "d3d11.dll" );
+
+    free( path );
+    return path != NULL;
+}
+
+static char *resolve_dxvk_pe_path( const char *module )
+{
+    static const char *const names[] = { "d3d9.dll", "d3d10core.dll", "d3d11.dll", "dxgi.dll" };
+    const char *name = strrchr( module, '/' );
+    unsigned int i;
+
+    if (!dxvk_graphics_backend_enabled()) return NULL;
+    name = name ? name + 1 : module;
+    for (i = 0; i < ARRAY_SIZE(names); i++)
+        if (!strcasecmp( name, names[i] )) return dxvk_pe_path( names[i] );
+    return NULL;
+}
 #endif
 
 static NTSTATUS find_builtin_dll( UNICODE_STRING *nt_name, ANSI_STRING *exp_name, void **module,
@@ -1303,6 +1337,24 @@ static NTSTATUS find_builtin_dll( UNICODE_STRING *nt_name, ANSI_STRING *exp_name
             if (status != STATUS_DLL_NOT_FOUND)
             {
                 winemetalgl_pe = TRUE;  /* a forwarder: no unix side */
+                goto done;
+            }
+        }
+    }
+
+    /* DXVK (GRAPHICS_BACKEND=dxvk, x86_64 programs): PE only, no unix side */
+    {
+        char *dxvk_pe = resolve_dxvk_pe_path( file + pos + 1 );
+
+        if (dxvk_pe)
+        {
+            status = open_builtin_pe_file( dxvk_pe, &attr, module, size_ptr, image_info,
+                                           limit_low, limit_high, load_machine, prefer_native, offset );
+            TRACE( "DXVK %s for %s -> %#lx\n", debugstr_a(dxvk_pe), debugstr_us(nt_name), (long)status );
+            free( dxvk_pe );
+            if (status != STATUS_DLL_NOT_FOUND)
+            {
+                winemetalgl_pe = TRUE;  /* no unix side either */
                 goto done;
             }
         }
