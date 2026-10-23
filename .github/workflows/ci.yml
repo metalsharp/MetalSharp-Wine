@@ -18,7 +18,8 @@ jobs:
         uses: actions/checkout@v4
 
       - name: zsh syntax of the build scripts
-        run: for f in scripts/*.sh; do zsh -n "$f" || { echo "syntax error: $f"; exit 1; }; done
+        run: |
+          for f in scripts/*.sh; do zsh -n "$f" || { echo "syntax error in $f"; exit 1; }; done
 
       - name: Python syntax
         run: python3 -m py_compile scripts/*.py
