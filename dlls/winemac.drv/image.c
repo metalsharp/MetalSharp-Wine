@@ -249,26 +249,36 @@ CFArrayRef create_app_icon_images(void)
 {
     struct dispatch_callback_params params = {.callback = app_icon_callback};
     CFMutableArrayRef images = NULL;
-    struct app_icon_entry *entries;
+    struct app_icon_entry *result, *entries;
     ULONG ret_len;
     unsigned count;
     int i;
 
     TRACE("()\n");
 
-    if (KeUserDispatchCallback(&params, sizeof(params), (void**)&entries, &ret_len) ||
-        (ret_len % sizeof(*entries)))
+    if (KeUserDispatchCallback(&params, sizeof(params), (void**)&result, &ret_len) ||
+        (ret_len % sizeof(*result)))
     {
         WARN("incorrect callback result\n");
         return NULL;
     }
-    count = ret_len / sizeof(*entries);
-    if (!count || !entries) return NULL;
+    count = ret_len / sizeof(*result);
+    if (!count || !result) return NULL;
+
+    /* The result lives on the callback's stack, which the icon conversions below reuse when
+     * they call back into the PE side; copy it first, or only the first few icons survive. */
+    if (!(entries = malloc(ret_len)))
+    {
+        WARN("failed to copy icon entries\n");
+        return NULL;
+    }
+    memcpy(entries, result, ret_len);
 
     images = CFArrayCreateMutable(NULL, count, &kCFTypeArrayCallBacks);
     if (!images)
     {
         WARN("failed to create images array\n");
+        free(entries);
         return NULL;
     }
 
@@ -286,6 +296,8 @@ CFArrayRef create_app_icon_images(void)
             CGImageRelease(cgimage);
         }
     }
+
+    free(entries);
 
     if (images && !CFArrayGetCount(images))
     {
