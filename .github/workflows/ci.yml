@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scripts:
+    name: Script syntax
+    runs-on: macos-15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: zsh syntax of the build scripts
+        run: for f in scripts/*.sh; do zsh -n "$f" || { echo "syntax error: $f"; exit 1; }; done
+
+      - name: Python syntax
+        run: python3 -m py_compile scripts/*.py
+
+      - name: The patches are git patches
+        run: |
+          for f in patches/*/*.patch; do
+            head -1 "$f" | grep -q '^From [0-9a-f]\{40\} ' || { echo "not a git format-patch file: $f"; exit 1; }
+          done
+
+      - name: The submodule pins are commits of their repositories
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config -f .gitmodules --get-regexp '^submodule\..*\.path$' | while read -r key path; do
+            name=${key#submodule.}; name=${name%.path}
+            url=$(git config -f .gitmodules "submodule.$name.url")
+            repo=${url#https://github.com/}; repo=${repo%.git}
+            pin=$(git ls-tree HEAD "$path" | awk '{print $3}')
+            gh api "repos/$repo/commits/$pin" --jq '.sha' >/dev/null || { echo "$path: $pin is not a commit of $repo"; exit 1; }
+            echo "$path: $pin ($repo)"
+          done
