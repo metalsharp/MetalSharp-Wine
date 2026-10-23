@@ -7,7 +7,10 @@
 
 </div>
 
+___
+
 MetalSharp Wine is Wine 11.20 built as a native arm64 macOS application for Apple Silicon. A FEX-Emu fork translates x86 Windows code to ARM64.
+
 - **No Rosetta:** none of it is x86 code run through Rosetta.
 - **No hardware TSO:** FEX emulates the x86 memory model with ordinary ARM64 instructions.
 
