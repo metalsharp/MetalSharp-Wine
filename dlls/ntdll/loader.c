@@ -36,6 +36,7 @@
 #include "pe_patches.h"
 #include "ntdll_misc.h"
 #include "steam_bridge.h"
+#include "wfdxcompat_loader.h"
 #include "ddk/ntddk.h"
 #include "ddk/wdm.h"
 
@@ -1091,7 +1092,10 @@ static FARPROC find_named_export( HMODULE module, const IMAGE_EXPORT_DIRECTORY *
 {
     const WORD *ordinals = get_rva( module, exports->AddressOfNameOrdinals );
     const DWORD *names = get_rva( module, exports->AddressOfNames );
+    void *wfdx_proc;
     int ordinal;
+
+    if ((wfdx_proc = wfdx_launcher_get_import( module, name ))) return wfdx_proc;
 
     /* first check the hint */
     if (hint >= 0 && hint < exports->NumberOfNames)
@@ -1821,6 +1825,9 @@ static NTSTATUS process_attach( LDR_DDAG_NODE *node, LPVOID lpReserved )
     /* Remove recursion flag */
     wm->ldr.Flags &= ~LDR_LOAD_IN_PROGRESS;
 
+    if (status == STATUS_SUCCESS && !wcsicmp( wm->ldr.BaseDllName.Buffer, L"d3d11.dll" ))
+        wfdx_launcher_activate( wm->ldr.DllBase );
+
     TRACE("(%s,%p) - END\n", debugstr_w(wm->ldr.BaseDllName.Buffer), lpReserved );
     return status;
 }
@@ -2071,12 +2078,18 @@ NTSTATUS WINAPI LdrGetProcedureAddress(HMODULE module, const ANSI_STRING *name,
     IMAGE_EXPORT_DIRECTORY *exports;
     WINE_MODREF *wm;
     DWORD exp_size;
+    void *wfdx_proc;
     NTSTATUS ret = STATUS_PROCEDURE_NOT_FOUND;
 
     RtlEnterCriticalSection( &loader_section );
 
     /* check if the module itself is invalid to return the proper error */
     if (!(wm = get_modref( module ))) ret = STATUS_DLL_NOT_FOUND;
+    else if (name && (wfdx_proc = wfdx_launcher_get_proc( module, name )))
+    {
+        *address = wfdx_proc;
+        ret = STATUS_SUCCESS;
+    }
     else if ((exports = RtlImageDirectoryEntryToData( module, TRUE,
                                                       IMAGE_DIRECTORY_ENTRY_EXPORT, &exp_size )))
     {
@@ -3153,6 +3166,25 @@ static NTSTATUS get_env_var( const WCHAR *name, SIZE_T extra, UNICODE_STRING *re
 }
 
 
+/* WineForge-Internal: wfdxcompat-runtime-loader-v1. */
+static NTSTATUS open_wfdxcompat_launcher_alias( const WCHAR *name, UNICODE_STRING *nt_name,
+                                                WINE_MODREF **pwm, HANDLE *mapping,
+                                                SECTION_IMAGE_INFORMATION *image_info,
+                                                struct file_id *id )
+{
+    NTSTATUS status;
+
+    if ((status = wfdx_launcher_get_alias( name, nt_name ))) return status;
+    status = open_dll_file( nt_name, pwm, mapping, image_info, id );
+    if (status == STATUS_DLL_NOT_FOUND)
+    {
+        RtlFreeUnicodeString( nt_name );
+        nt_name->Buffer = NULL;
+    }
+    return status;
+}
+
+
 /***********************************************************************
  *	find_builtin_without_file
  *
@@ -3327,6 +3359,11 @@ static NTSTATUS find_dll_file( const WCHAR *load_path, const WCHAR *libname, UNI
     /* Win 7/2008R2 and up seem to re-enable WoW64 FS redirection when loading libraries */
     RtlWow64EnableFsRedirectionEx( 0, &wow64_old_value );
 
+    if (!contains_path( libname ) &&
+        (status = open_wfdxcompat_launcher_alias( libname, nt_name, pwm, mapping,
+                                                  image_info, id )) != STATUS_DLL_NOT_FOUND)
+        goto done;
+
     if (RtlDetermineDosPathNameType_U( libname ) == RtlPathTypeRelative)
     {
         status = search_dll_file( load_path, libname, nt_name, pwm, mapping, image_info, id );
@@ -3344,6 +3381,7 @@ static NTSTATUS find_dll_file( const WCHAR *load_path, const WCHAR *libname, UNI
     else if (!(status = RtlDosPathNameToNtPathName_U_WithStatus( libname, nt_name, NULL, NULL )))
         status = open_dll_file( nt_name, pwm, mapping, image_info, id );
 
+done:
     if (status == STATUS_NOT_SUPPORTED) status = STATUS_INVALID_IMAGE_FORMAT;
 
     RtlFreeHeap( GetProcessHeap(), 0, fullname );

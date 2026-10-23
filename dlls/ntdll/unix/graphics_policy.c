@@ -148,9 +148,15 @@ void init_process_graphics_backend( const WCHAR *image_path )
     if (process_uses_launcher_dxmt)
         process_graphics_backend = PROCESS_GRAPHICS_BACKEND_DXMT;
 
-    /* WineForge-Internal: wfdxcompat/rockstar-launcher-policy-v1. The Rockstar launcher route
-     * runs WFDXCompat on D3DMetal, which does not exist on arm64 hosts. */
+    /* WineForge-Internal: wfdxcompat/rockstar-launcher-policy-v1. The Rockstar Games Launcher
+     * and SocialClubHelper run on Mullion with WFDXCompat's launcher companion interposing
+     * D3D11 device creation (WineForge ran it on D3DMetal, which arm64 hosts lack). */
     process_uses_wfdx_launchers = FALSE;
+    if (launcher.wfdx && dxmt_runtime_available())
+    {
+        process_graphics_backend = PROCESS_GRAPHICS_BACKEND_DXMT;
+        process_uses_wfdx_launchers = wfdxcompat_launcher_runtime_available();
+    }
 
     TRACE( "graphics backend for %s: global %s, selected %s, policy %s%s%s\n", image_nameA,
            backend && backend[0] ? backend : "wine",

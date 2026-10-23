@@ -321,6 +321,22 @@ static void set_dll_path(void)
     /* MoltenVK logs its whole feature list at info level on every instance; keep errors only */
     setenv( "MVK_CONFIG_LOG_LEVEL", "1", 0 );
 
+    /* default to the WFDXCompat launcher runtime bundled next to Wine's own modules */
+    if (!getenv( "WFDXCOMPAT_RUNTIME_DIR" ) && dll_dir)
+    {
+        char *runtime, *check;
+
+        if (asprintf( &runtime, "%s/../wfdxcompat", dll_dir ) != -1)
+        {
+            if (asprintf( &check, "%s/aarch64-windows/wfdx-launchers-v1.dll", runtime ) != -1)
+            {
+                if (!access( check, R_OK )) setenv( "WFDXCOMPAT_RUNTIME_DIR", runtime, 0 );
+                free( check );
+            }
+            free( runtime );
+        }
+    }
+
     /* default to the Mullion (DXMT) runtime bundled next to Wine's own modules */
     if (!getenv( "DXMT_RUNTIME_DIR" ) && dll_dir)
     {
@@ -1355,6 +1371,26 @@ static NTSTATUS find_builtin_dll( UNICODE_STRING *nt_name, ANSI_STRING *exp_name
             if (status != STATUS_DLL_NOT_FOUND)
             {
                 winemetalgl_pe = TRUE;  /* no unix side either */
+                goto done;
+            }
+        }
+    }
+
+    /* WineForge-Internal: wfdxcompat-runtime-loader-v1. The launcher companion, PE only. */
+    if (is_wfdxcompat_launcher_module_name( file + pos + 1 ))
+    {
+        char *companion = resolve_wfdxcompat_launcher_pe_path( search_machine );
+
+        if (companion)
+        {
+            status = open_builtin_pe_file( companion, &attr, module, size_ptr, image_info,
+                                           limit_low, limit_high, load_machine, prefer_native, offset );
+            TRACE( "WFDXCompat launcher companion %s for %s -> %#lx\n",
+                   debugstr_a(companion), debugstr_us(nt_name), (long)status );
+            free( companion );
+            if (status != STATUS_DLL_NOT_FOUND)
+            {
+                winemetalgl_pe = TRUE;  /* no unix side */
                 goto done;
             }
         }

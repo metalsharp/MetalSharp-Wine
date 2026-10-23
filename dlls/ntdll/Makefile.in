@@ -77,9 +77,11 @@ SOURCES = \
 	unix/tape.c \
 	unix/thread.c \
 	unix/virtual.c \
+	unix/wfdxcompat_loader.c \
 	unwind.c \
 	version.c \
-	wcstring.c
+	wcstring.c \
+	wfdxcompat_loader.c
 
 EXTRA_OBJS = unix/version.o
 

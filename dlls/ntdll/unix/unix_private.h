@@ -370,6 +370,8 @@ extern BOOL dxmt_graphics_backend_enabled(void);
 extern BOOL dxmt_runtime_available(void);
 extern BOOL wfdxcompat_launcher_runtime_enabled(void);
 extern BOOL wfdxcompat_launcher_runtime_available(void);
+extern BOOL is_wfdxcompat_launcher_module_name( const char *path );
+extern char *resolve_wfdxcompat_launcher_pe_path( USHORT machine );
 extern BOOL battlenet_cef_cow_compat_enabled(void);
 extern BOOL is_dxmt_module_name( const char *path );
 extern BOOL is_dxmt_module_basename( const WCHAR *name );
