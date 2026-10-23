@@ -299,6 +299,26 @@ static void set_dll_path(void)
     int i, count = 0;
 
 #ifdef __APPLE__
+    /* a relocatable bundle's own MoltenVK and GStreamer plugins, unless the environment
+     * already chooses (the dist launcher script did this; Wine.app runs the loader directly) */
+    if (dll_dir)
+    {
+        static const struct { const char *var, *path; } bundled[] =
+        {
+            { "VK_DRIVER_FILES",            "../../share/vulkan/icd.d/MoltenVK_icd.json" },
+            { "GST_PLUGIN_SYSTEM_PATH_1_0", "../gstreamer-1.0" },
+            { "GST_PLUGIN_SCANNER_1_0",     "../../libexec/gstreamer-1.0/gst-plugin-scanner" },
+        };
+        char *value;
+
+        for (i = 0; i < ARRAY_SIZE(bundled); i++)
+        {
+            if (getenv( bundled[i].var ) || asprintf( &value, "%s/%s", dll_dir, bundled[i].path ) == -1) continue;
+            if (!access( value, R_OK )) setenv( bundled[i].var, value, 0 );
+            free( value );
+        }
+    }
+
     /* default to the Mullion (DXMT) runtime bundled next to Wine's own modules */
     if (!getenv( "DXMT_RUNTIME_DIR" ) && dll_dir)
     {
