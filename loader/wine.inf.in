@@ -54,7 +54,7 @@ AddService=MountMgr,0x800,MountMgrService
 RegisterDlls=RegisterDllsSection
 WineFakeDlls=FakeDlls
 UpdateInis=SystemIni
-CopyFiles=ColorFiles,EtcFiles,InfFiles,NlsFiles,SortFiles,WinmdFiles
+CopyFiles=ColorFiles,EtcFiles,FontFiles,InfFiles,NlsFiles,SortFiles,WinmdFiles
 AddReg=\
     Classes,\
     ContentIndex,\
@@ -1274,6 +1274,25 @@ networks,"@%11%\ws2_32.dll,-2"
 protocol,"@%11%\ws2_32.dll,-3"
 services,"@%11%\ws2_32.dll,-4"
 
+; MetalSharp: real files in C:\windows\Fonts for programs that open fonts there by file name
+; (Unity's dynamic fonts). Liberation is metric-compatible with Arial, Times New Roman and Courier New;
+; the flag (COPYFLG_NO_OVERWRITE) keeps a real Microsoft font already in the prefix.
+[FontFiles]
+arial.ttf,,,0x10
+arialbd.ttf,,,0x10
+ariali.ttf,,,0x10
+arialbi.ttf,,,0x10
+times.ttf,,,0x10
+timesbd.ttf,,,0x10
+timesi.ttf,,,0x10
+timesbi.ttf,,,0x10
+cour.ttf,,,0x10
+courbd.ttf,,,0x10
+couri.ttf,,,0x10
+courbi.ttf,,,0x10
+tahoma.ttf,,,0x10
+tahomabd.ttf,,,0x10
+
 [InfFiles]
 input.inf,"@%12%\hidclass.sys,-1"
 mouhid.inf,"@%12%\mouhid.sys,-1"
@@ -1376,11 +1395,13 @@ windows.ui.winmd
 windows.ui.xaml.winmd
 
 [WineSourceDirs]
+FontFiles = fonts
 NlsFiles  = nls
 SortFiles = nls
 WinmdFiles = winmd,include
 
 [DestinationDirs]
+FontFiles = 20
 ColorFiles = 23
 EtcFiles  = 12,etc
 InfFiles  = 17
