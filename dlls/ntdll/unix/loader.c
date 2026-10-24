@@ -2404,6 +2404,13 @@ DECLSPEC_EXPORT void __wine_main( int argc, char *argv[] )
     main_argc = argc;
     main_argv = argv;
 
+#ifdef __aarch64__
+    /* MetalSharp Wine runs x86 code through FEX without TSO emulation: macOS offers no hardware
+     * TSO, and the emulated barriers cost more than they buy. FEX reads its configuration from the
+     * process environment; an explicit FEX_TSOENABLED still wins. */
+    setenv( "FEX_TSOENABLED", "0", 0 );
+#endif
+
     init_paths();
     if (!getenv( "WINELOADERNOEXEC" ) || argc <= 1) check_command_line( argc, argv );
     unsetenv( "WINELOADERNOEXEC" );
