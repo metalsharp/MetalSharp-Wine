@@ -94,6 +94,14 @@ void OpDispatchBuilder::LEAOp(OpcodeArgs) {
     DstSize = OpAddr == X86Tables::DecodeFlags::FLAG_OPERAND_SIZE_LAST ? OpSize::i16Bit : OpSize::i32Bit;
   }
 
+  if (Is64BitMode && DstSize == OpSize::i32Bit && IsOperandMem(Op->Src[0], true)) {
+    // The low 32 bits of the address only depend on the low 32 bits of its parts, so compute it with 32-bit ops,
+    // which zero the upper half for free, instead of 64-bit ops and a zero-extending move.
+    AddressMode A = DecodeAddress(Op, Op->Src[0], MemoryAccessType::DEFAULT, true /* IsLoad */);
+    StoreResultGPR_WithOpSize(Op, Op->Dest, LoadEffectiveAddress(this, A, OpSize::i32Bit, false, true), DstSize);
+    return;
+  }
+
   auto Src = LoadSourceGPR_WithOpSize(Op, Op->Src[0], SrcSize, Op->Flags, {.LoadData = false, .AllowUpperGarbage = SrcSize > DstSize});
   StoreResultGPR_WithOpSize(Op, Op->Dest, Src, DstSize);
 }
