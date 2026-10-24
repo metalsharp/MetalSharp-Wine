@@ -176,6 +176,22 @@ void Dispatcher::EmitDispatcher() {
 
   ARMEmitter::ForwardLabel NoBlock;
 
+  {
+    // Try the thread's L1 cache first. Newly compiled blocks are only added to L1, and FindBlock returns L1 hits
+    // without filling L2, so without this every entry from outside the JIT (e.g. native code calling a guest
+    // callback on ARM64EC) to such a block would go through CompileBlock.
+    ARMEmitter::ForwardLabel l_L1Miss;
+    ldp<ARMEmitter::IndexType::OFFSET>(TMP1, TMP2, STATE, offsetof(FEXCore::Core::CpuStateFrame, State.L1Pointer));
+    // L1Mask is pre-shifted.
+    and_(ARMEmitter::Size::i64Bit, TMP2, TMP2, RipReg.R(), ARMEmitter::ShiftType::LSL, FEXCore::ilog2(sizeof(LookupCache::LookupCacheEntry)));
+    add(TMP1, TMP1, TMP2);
+    ldp<ARMEmitter::IndexType::OFFSET>(TMP2, TMP1, TMP1, 0);
+    sub(TMP1, TMP1, RipReg);
+    (void)cbnz(ARMEmitter::Size::i64Bit, TMP1, &l_L1Miss);
+    br(TMP2);
+    (void)Bind(&l_L1Miss);
+  }
+
   if (DisableL2Cache()) {
     (void)b(&NoBlock);
   } else {
