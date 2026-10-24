@@ -3373,6 +3373,64 @@ done:
 /***********************************************************************
  *           virtual_init
  */
+/* Debugging aid: with WINE_DUMP_EXEC=<dir>, creating <dir>/trigger makes every process write each committed,
+ * readable, executable page outside of images (e.g. a JIT's code buffers) to <dir>/exec-<pid>-<address>.bin, so
+ * code that a sampling profiler reports as hot can be disassembled. Removing the trigger re-arms it. */
+static void *dump_exec_thread( void *arg )
+{
+    char *dir = arg, path[1024];
+    struct file_view *view;
+    struct stat st;
+
+    char trigger[1024];
+
+    snprintf( trigger, sizeof(trigger), "%s/trigger", dir );
+    for (;;)
+    {
+    while (stat( trigger, &st )) sleep( 1 );
+    pthread_mutex_lock( &virtual_mutex );
+    WINE_RB_FOR_EACH_ENTRY( view, &views_tree, struct file_view, entry )
+    {
+        char *addr = view->base, *end = (char *)view->base + view->size, *run = NULL;
+
+        if (view->protect & SEC_IMAGE) continue;
+        for (;; addr += page_size)
+        {
+            BYTE vprot = addr < end ? get_page_vprot( addr ) : 0;
+            BOOL dump = (vprot & (VPROT_COMMITTED | VPROT_READ | VPROT_EXEC)) == (VPROT_COMMITTED | VPROT_READ | VPROT_EXEC);
+
+            if (dump && !run) run = addr;
+            if (!dump && run)
+            {
+                int fd;
+                snprintf( path, sizeof(path), "%s/exec-%d-%p.bin", dir, (int)getpid(), run );
+                if ((fd = open( path, O_WRONLY | O_CREAT | O_TRUNC, 0644 )) != -1)
+                {
+                    write( fd, run, addr - run );
+                    close( fd );
+                }
+                run = NULL;
+            }
+            if (addr >= end) break;
+        }
+    }
+    pthread_mutex_unlock( &virtual_mutex );
+    fprintf( stderr, "wine: %d dumped executable memory to %s\n", (int)getpid(), dir );
+    /* Re-arm once the trigger is removed. */
+    while (!stat( trigger, &st )) sleep( 1 );
+    }
+    return NULL;
+}
+
+static void start_exec_dump(void)
+{
+    const char *spec = getenv( "WINE_DUMP_EXEC" );
+    pthread_t thread;
+
+    if (!spec) return;
+    if (!pthread_create( &thread, NULL, dump_exec_thread, strdup( spec ) )) pthread_detach( thread );
+}
+
 void virtual_init(void)
 {
     void * const low_64k = (void *)0x10000;
@@ -3448,6 +3506,7 @@ void virtual_init(void)
     assert( view_block_start != MAP_FAILED );
     wine_rb_init( &views_tree, compare_view );
     kernel_writewatch_init();
+    start_exec_dump();
 }
 
 
