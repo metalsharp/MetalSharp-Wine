@@ -65,6 +65,7 @@
 #ifdef __APPLE__
 #include <CoreFoundation/CoreFoundation.h>
 #include <mach/mach.h>
+#include <pthread/qos.h>
 #endif
 #ifdef __FreeBSD__
 #include <sys/thr.h>
@@ -1302,6 +1303,45 @@ static NTSTATUS create_server_thread( HANDLE *handle, struct thread_data **data_
 }
 
 
+#ifdef __APPLE__
+/* macOS runs threads without a QoS class (every thread Wine creates) largely on the efficiency
+ * cores. WINE_THREAD_QOS=1 starts Windows threads at QoS user-initiated (2: user-interactive), and
+ * a thread changing its own priority gets the matching class. Off by default: on a fanless Mac that
+ * is already thermally limited it moves PEAK's main thread to the performance cores without
+ * raising its frame rate. */
+static int use_thread_qos(void)
+{
+    static int mode = -1;
+    if (mode == -1)
+    {
+        const char *str = getenv( "WINE_THREAD_QOS" );
+        mode = str ? atoi( str ) : 0;
+    }
+    return mode;
+}
+
+void set_thread_qos_attr( pthread_attr_t *attr )
+{
+    if (use_thread_qos())
+        pthread_attr_set_qos_class_np( attr, use_thread_qos() == 2 ? QOS_CLASS_USER_INTERACTIVE : QOS_CLASS_USER_INITIATED, 0 );
+}
+
+static void set_self_thread_qos( int base_priority )
+{
+    qos_class_t qos;
+
+    if (!use_thread_qos()) return;
+    if (base_priority >= THREAD_PRIORITY_ABOVE_NORMAL) qos = QOS_CLASS_USER_INTERACTIVE;
+    else if (base_priority == THREAD_PRIORITY_NORMAL)
+        qos = use_thread_qos() == 2 ? QOS_CLASS_USER_INTERACTIVE : QOS_CLASS_USER_INITIATED;
+    else if (base_priority == THREAD_PRIORITY_BELOW_NORMAL) qos = QOS_CLASS_DEFAULT;
+    else if (base_priority > THREAD_PRIORITY_IDLE) qos = QOS_CLASS_UTILITY;
+    else qos = QOS_CLASS_BACKGROUND;
+    pthread_set_qos_class_self_np( qos, 0 );
+}
+#endif
+
+
 /***********************************************************************
  *           spawn_thread
  */
@@ -1317,6 +1357,9 @@ static NTSTATUS spawn_thread( struct thread_data *data )
     pthread_attr_setstack( &attr, get_kernel_stack( data ), kernel_stack_size );
     pthread_attr_setguardsize( &attr, 0 );
     pthread_attr_setscope( &attr, PTHREAD_SCOPE_SYSTEM ); /* force creating a kernel thread */
+#ifdef __APPLE__
+    set_thread_qos_attr( &attr );
+#endif
     InterlockedIncrement( &nb_threads );
     if (pthread_create( &pthread_id, &attr, (void * (*)(void *))server_init_thread, data ))
     {
@@ -2541,6 +2584,9 @@ NTSTATUS WINAPI NtSetInformationThread( HANDLE handle, THREADINFOCLASS class,
             status = wine_server_call( req );
         }
         SERVER_END_REQ;
+#ifdef __APPLE__
+        if (!status && handle == GetCurrentThread()) set_self_thread_qos( *base_priority );
+#endif
         return status;
     }
 

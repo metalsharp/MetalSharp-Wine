@@ -2194,6 +2194,7 @@ static void apple_create_wine_thread( void *arg )
 
     pthread_attr_init( &attr );
     pthread_attr_setdetachstate( &attr, PTHREAD_CREATE_JOINABLE );
+    set_thread_qos_attr( &attr );
     if (pthread_create( &thread, &attr, apple_wine_thread, NULL )) exit(1);
     pthread_attr_destroy( &attr );
 }
