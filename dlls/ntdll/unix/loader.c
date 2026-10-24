@@ -2413,6 +2413,11 @@ DECLSPEC_EXPORT void __wine_main( int argc, char *argv[] )
     /* Keep FEX's second-level block lookup cache: games with large code footprints (Unity,
      * Mono) otherwise take the slow lookup path on every L1 miss of an indirect branch. */
     setenv( "FEX_DISABLEL2CACHE", "0", 0 );
+    /* Keep FEX's per-thread L1 block lookup cache at its full size. The dynamic sizing only counts
+     * lookups that reach C++, which the dispatcher's inline L2 refill hides, so it stays at its minimum
+     * and indirect calls across a large code footprint keep missing it (fexprobe bigfoot -13%). Its
+     * pages are only touched in proportion to the guest code a thread runs. */
+    setenv( "FEX_DYNAMICL1CACHE", "0", 0 );
 #endif
 
     init_paths();
