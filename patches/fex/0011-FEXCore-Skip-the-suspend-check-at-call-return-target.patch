@@ -1,0 +1,76 @@
+From 4feb383fdcb9e34e8dbd9690bc11eec2e0275d19 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Sat, 24 Oct 2026 11:56:48 -0600
+Subject: [PATCH] FEXCore: Skip the suspend check at call return targets
+
+Every entry point loaded the suspend doorbell and branched on it,
+including the block a call returns to, so each guest call paid for two
+checks. The callee's entry already checks, loops check at their
+backward branches, and returns alone are bounded by the call depth, so
+the return target's check never bounds anything.
+
+fexprobe (M4): calls -13% (x86_64) / -19% (i686), recursion -8 to -13%.
+---
+ FEXCore/Source/Interface/Core/JIT/JIT.cpp    | 11 ++++++++---
+ FEXCore/Source/Interface/Core/JIT/JITClass.h |  2 +-
+ 2 files changed, 9 insertions(+), 4 deletions(-)
+
+diff --git a/FEXCore/Source/Interface/Core/JIT/JIT.cpp b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+index f9f2d194c..af03bdb59 100644
+--- a/FEXCore/Source/Interface/Core/JIT/JIT.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+@@ -899,7 +899,7 @@ void Arm64JITCore::EmitAFPEnable() {
+   (void)Bind(&l_AFPSet);
+ }
+ 
+-void Arm64JITCore::EmitEntryPoint(ARMEmitter::BackwardLabel& HeaderLabel, bool CheckTF) {
++void Arm64JITCore::EmitEntryPoint(ARMEmitter::BackwardLabel& HeaderLabel, bool CheckTF, bool CheckSuspend) {
+   // Get the address of the JITCodeHeader and store in to the core state.
+   // Two instruction cost, each 1 cycle.
+   adr_OrRestart(TMP1, &HeaderLabel);
+@@ -920,7 +920,9 @@ void Arm64JITCore::EmitEntryPoint(ARMEmitter::BackwardLabel& HeaderLabel, bool C
+     }
+   }
+ 
+-  EmitSuspendInterruptCheck();
++  if (CheckSuspend) {
++    EmitSuspendInterruptCheck();
++  }
+ }
+ 
+ 
+@@ -1078,6 +1080,9 @@ CPUBackend::CompiledCode Arm64JITCore::CompileCode(uint64_t Entry, uint64_t Size
+       if (BlockIROp->EntryPoint) {
+         uint64_t BlockStartRIP = Entry + BlockIROp->GuestEntryOffset;
+ 
++        // A call emitted earlier returns here. Its callee's entry already checked for suspend, and returns alone are
++        // bounded by the call depth, so this entry can skip the check (loops check at their backward branches).
++        const bool IsCallReturn = CallReturnTargets.contains(Node);
+         const auto IsReturnTarget = CallReturnTargets.try_emplace(Node).first;
+         if (PendingTargetLabel) {
+           // If there is a fallthrough branch to this block, skip over the entrypoint code.
+@@ -1092,7 +1097,7 @@ CPUBackend::CompiledCode Arm64JITCore::CompileCode(uint64_t Entry, uint64_t Size
+         CodeData.EntryPoints.emplace(BlockStartRIP, GetCursorAddress<uint8_t*>());
+         DebugData->GuestOpcodes.push_back({BlockIROp->GuestEntryOffset, GetCursorAddress<uint8_t*>() - CodeData.BlockBegin});
+ 
+-        EmitEntryPoint(JITCodeHeaderLabel, CheckTF);
++        EmitEntryPoint(JITCodeHeaderLabel, CheckTF, !IsCallReturn);
+       }
+ 
+       if (PendingCallReturnTargetLabel) {
+diff --git a/FEXCore/Source/Interface/Core/JIT/JITClass.h b/FEXCore/Source/Interface/Core/JIT/JITClass.h
+index ac0133486..ae5395123 100644
+--- a/FEXCore/Source/Interface/Core/JIT/JITClass.h
++++ b/FEXCore/Source/Interface/Core/JIT/JITClass.h
+@@ -636,7 +636,7 @@ private:
+ 
+   void EmitSuspendInterruptCheck();
+ 
+-  void EmitEntryPoint(ARMEmitter::BackwardLabel& HeaderLabel, bool CheckTF);
++  void EmitEntryPoint(ARMEmitter::BackwardLabel& HeaderLabel, bool CheckTF, bool CheckSuspend = true);
+   bool NeedsAFP(const IR::IROp_Header* IROp) const;
+   void EmitAFPEnable();
+ 
+-- 
+2.54.0 (Apple Git-157)
+

@@ -1,0 +1,389 @@
+From 8f423e7ba6119f8828a5b4bf5aa0025331d772cc Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Sat, 24 Oct 2026 12:38:53 -0600
+Subject: [PATCH] Restore WineForge copyright and provenance notices
+
+Code ported from WineForge (Radim Vesely) had its notices rebranded on
+the way in: "Copyright (C) 2026 Radim Vesely for WineForge" became
+"... for MetalSharp", WineForge-Internal/WineForge-Feature provenance
+markers and "WineForge launcher-compat" comments became MetalSharp ones,
+and the WFUSync headers described the code as MetalSharp's.
+
+Restore the original copyright lines, provenance markers and file
+descriptions in every affected file. Where MetalSharp Wine modified the
+code (msync is WineForge's WFUSync renamed; WFDXCompat runs on Mullion
+instead of D3DMetal), say so next to the original notice instead of in
+place of it. The LGPL notices were already intact.
+---
+ dlls/advapi32/launcher_security.c   |  6 +++---
+ dlls/kernelbase/launchers.c         | 14 +++++++-------
+ dlls/kernelbase/launchers.h         |  4 ++--
+ dlls/kernelbase/loader.c            |  2 +-
+ dlls/kernelbase/main.c              |  6 +++---
+ dlls/ntdll/unix/msync.c             |  2 ++
+ dlls/ntdll/unix/msync.h             |  2 ++
+ dlls/ntdll/unix/wfdxcompat_loader.c |  7 ++++---
+ dlls/ntdll/wfdxcompat_loader.c      |  5 +++--
+ dlls/ntdll/wfdxcompat_loader.h      |  3 ++-
+ dlls/shell32/shellpath.c            |  2 +-
+ dlls/win32u/message.c               |  4 ++--
+ dlls/winegstreamer/video_decoder.c  |  2 +-
+ dlls/ws2_32/socket.c                |  6 +++---
+ programs/services/services.c        |  8 ++++----
+ server/change.c                     |  6 +++---
+ server/file.c                       |  6 +++---
+ server/msync.c                      |  4 +++-
+ server/msync.h                      |  4 +++-
+ 19 files changed, 52 insertions(+), 41 deletions(-)
+
+diff --git a/dlls/advapi32/launcher_security.c b/dlls/advapi32/launcher_security.c
+index 1dbc23caf3c..56a9740e8b4 100644
+--- a/dlls/advapi32/launcher_security.c
++++ b/dlls/advapi32/launcher_security.c
+@@ -1,7 +1,7 @@
+ /*
+- * MetalSharp launcher security compatibility
++ * WineForge launcher security compatibility
+  *
+- * Copyright (C) 2026 Radim Vesely for MetalSharp
++ * Copyright (C) 2026 Radim Vesely for WineForge
+  *
+  * This library is free software; you can redistribute it and/or
+  * modify it under the terms of the GNU Lesser General Public
+@@ -23,7 +23,7 @@
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(advapi);
+ 
+-/* MetalSharp-Internal: launcher-compat/battlenet-install-acl-v1. */
++/* WineForge-Internal: launcher-compat/battlenet-install-acl-v1. */
+ static const WCHAR *const battlenet_security_paths[] =
+ {
+     L"\\ProgramData\\Battle.net\\Agent",
+diff --git a/dlls/kernelbase/launchers.c b/dlls/kernelbase/launchers.c
+index b0fb40dec12..feea2cd5d73 100644
+--- a/dlls/kernelbase/launchers.c
++++ b/dlls/kernelbase/launchers.c
+@@ -1,7 +1,7 @@
+ /*
+- * MetalSharp launcher compatibility policy
++ * WineForge launcher compatibility policy
+  *
+- * Copyright (C) 2026 Radim Vesely for MetalSharp
++ * Copyright (C) 2026 Radim Vesely for WineForge
+  *
+  * This library is free software; you can redistribute it and/or
+  * modify it under the terms of the GNU Lesser General Public
+@@ -31,7 +31,7 @@ struct launcher_process_policy
+ 
+ static const struct launcher_process_policy launcher_process_policies[] =
+ {
+-    /* MetalSharp-Internal: launcher-compat/steam-cef-swiftshader-v1. */
++    /* WineForge-Internal: launcher-compat/steam-cef-swiftshader-v1. */
+     {
+         L"steamwebhelper.exe",
+         L"\\Steam\\bin\\cef\\",
+@@ -47,7 +47,7 @@ static const struct launcher_process_policy launcher_process_policies[] =
+         L" --use-gl=angle"
+         L" --use-angle=swiftshader",
+     },
+-    /* MetalSharp-Internal: launcher-compat/rockstar-cef-in-process-gpu-v1. */
++    /* WineForge-Internal: launcher-compat/rockstar-cef-in-process-gpu-v1. */
+     {
+         L"SocialClubHelper.exe",
+         L"\\Rockstar Games\\Social Club\\",
+@@ -57,7 +57,7 @@ static const struct launcher_process_policy launcher_process_policies[] =
+         {L"--type=", L"--in-process-gpu", NULL},
+         L" --in-process-gpu",
+     },
+-    /* MetalSharp-Internal: launcher-compat/ea-app-in-process-gpu-v1. */
++    /* WineForge-Internal: launcher-compat/ea-app-in-process-gpu-v1. */
+     {
+         L"EADesktop.exe",
+         L"\\Program Files\\Electronic Arts\\EA Desktop\\",
+@@ -67,7 +67,7 @@ static const struct launcher_process_policy launcher_process_policies[] =
+         {L"--type=", L"--in-process-gpu", NULL},
+         L" --in-process-gpu",
+     },
+-    /* MetalSharp-Internal: launcher-compat/battlenet-in-process-gpu-v1. */
++    /* WineForge-Internal: launcher-compat/battlenet-in-process-gpu-v1. */
+     {
+         L"Battle.net.exe",
+         L"\\Program Files (x86)\\Battle.net\\",
+@@ -77,7 +77,7 @@ static const struct launcher_process_policy launcher_process_policies[] =
+         {L"--type=", L"--in-process-gpu", NULL},
+         L" --in-process-gpu",
+     },
+-    /* MetalSharp-Internal: launcher-compat/ubisoft-connect-in-process-gpu-v1. */
++    /* WineForge-Internal: launcher-compat/ubisoft-connect-in-process-gpu-v1. */
+     {
+         L"upc.exe",
+         L"\\Program Files (x86)\\Ubisoft\\Ubisoft Game Launcher\\",
+diff --git a/dlls/kernelbase/launchers.h b/dlls/kernelbase/launchers.h
+index 89a22d6be41..7bb07f3bc85 100644
+--- a/dlls/kernelbase/launchers.h
++++ b/dlls/kernelbase/launchers.h
+@@ -1,7 +1,7 @@
+ /*
+- * MetalSharp launcher compatibility policy
++ * WineForge launcher compatibility policy
+  *
+- * Copyright (C) 2026 Radim Vesely for MetalSharp
++ * Copyright (C) 2026 Radim Vesely for WineForge
+  *
+  * This library is free software; you can redistribute it and/or
+  * modify it under the terms of the GNU Lesser General Public
+diff --git a/dlls/kernelbase/loader.c b/dlls/kernelbase/loader.c
+index 37d22e0e3d2..2e3f3875760 100644
+--- a/dlls/kernelbase/loader.c
++++ b/dlls/kernelbase/loader.c
+@@ -416,7 +416,7 @@ BOOL WINAPI DECLSPEC_HOTPATCH GetModuleHandleExW( DWORD flags, LPCWSTR name, HMO
+             ldr_flags |= LDR_GET_DLL_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT;
+ 
+         RtlInitUnicodeString( &wstr, name );
+-        /* MetalSharp-Internal: stable unchanged-refcount lookup; Diablo II Resurrected fix. */
++        /* WineForge-Internal: stable unchanged-refcount lookup; Diablo II Resurrected fix. */
+         if (ldr_flags == LDR_GET_DLL_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT)
+             status = LdrGetDllHandle( NULL, 0, &wstr, &ret );
+         else
+diff --git a/dlls/kernelbase/main.c b/dlls/kernelbase/main.c
+index 641af10b530..b45221f1303 100644
+--- a/dlls/kernelbase/main.c
++++ b/dlls/kernelbase/main.c
+@@ -49,9 +49,9 @@ static char *find_bytes( char *buffer, DWORD size, const char *needle )
+ }
+ 
+ /*
+- * MetalSharp launcher-compat: keep Epic Launcher CEF on the stable software path.
+- * MetalSharp-Internal: launcher-compat/epic-launcher-v1.
+- * MetalSharp-Feature: launcher-compat/epic-cef-software-config-v1.
++ * WineForge launcher-compat: keep Epic Launcher CEF on the stable software path.
++ * WineForge-Internal: launcher-compat/epic-launcher-v1.
++ * WineForge-Feature: launcher-compat/epic-cef-software-config-v1.
+  */
+ static void ensure_epic_cef_config(void)
+ {
+diff --git a/dlls/ntdll/unix/msync.c b/dlls/ntdll/unix/msync.c
+index 45a5ee269f6..e405edcf31c 100644
+--- a/dlls/ntdll/unix/msync.c
++++ b/dlls/ntdll/unix/msync.c
+@@ -1,6 +1,8 @@
+ /*
+  * WineForge userspace synchronization client state
+  *
++ * Ported from WineForge's WFUSync (dlls/ntdll/unix/wfusync.c); MetalSharp Wine renamed it msync and modified it.
++ *
+  * Copyright (C) 2026 Radim Vesely
+  *
+  * This library is free software; you can redistribute it and/or
+diff --git a/dlls/ntdll/unix/msync.h b/dlls/ntdll/unix/msync.h
+index 4dfa00214cf..7f41cabbff0 100644
+--- a/dlls/ntdll/unix/msync.h
++++ b/dlls/ntdll/unix/msync.h
+@@ -1,6 +1,8 @@
+ /*
+  * WineForge userspace synchronization client state
+  *
++ * Ported from WineForge's WFUSync (dlls/ntdll/unix/wfusync.h); MetalSharp Wine renamed it msync and modified it.
++ *
+  * Copyright (C) 2026 Radim Vesely
+  *
+  * This library is free software; you can redistribute it and/or
+diff --git a/dlls/ntdll/unix/wfdxcompat_loader.c b/dlls/ntdll/unix/wfdxcompat_loader.c
+index 70871ae0767..aa1b32846fe 100644
+--- a/dlls/ntdll/unix/wfdxcompat_loader.c
++++ b/dlls/ntdll/unix/wfdxcompat_loader.c
+@@ -1,8 +1,9 @@
+ /*
+- * WFDXCompat launcher runtime loader helpers
++ * WineForge DXCompat runtime loader helpers
+  *
+- * WineForge-Internal: wfdxcompat-runtime-loader-v1, here backed by the Mullion (DXMT) runtime
+- * instead of D3DMetal, which does not exist on arm64 hosts.
++ * WineForge-Internal: wfdxcompat-runtime-loader-v1.
++ * Modified for MetalSharp Wine: backed by the Mullion (DXMT) runtime instead of D3DMetal, which
++ * does not exist on arm64 hosts.
+  *
+  * Copyright (C) 2026 Radim Vesely for WineForge
+  *
+diff --git a/dlls/ntdll/wfdxcompat_loader.c b/dlls/ntdll/wfdxcompat_loader.c
+index 70810c774e7..60830c608e6 100644
+--- a/dlls/ntdll/wfdxcompat_loader.c
++++ b/dlls/ntdll/wfdxcompat_loader.c
+@@ -1,8 +1,9 @@
+ /*
+- * WFDXCompat launcher integration: process-local D3D11 interposition.
++ * WineForge PE runtime aliases and process-local launcher integration.
+  *
+  * WineForge-Internal: wfdxcompat/launcher-process-interposition-v1. WineForge ran the companion
+- * on D3DMetal; here it wraps the Mullion (DXMT) runtime the Rockstar launcher processes use.
++ * on D3DMetal; MetalSharp Wine modified it to wrap the Mullion (DXMT) runtime the Rockstar
++ * launcher processes use.
+  *
+  * Copyright (C) 2026 Radim Vesely for WineForge
+  *
+diff --git a/dlls/ntdll/wfdxcompat_loader.h b/dlls/ntdll/wfdxcompat_loader.h
+index f59b091459b..8bad7c934c1 100644
+--- a/dlls/ntdll/wfdxcompat_loader.h
++++ b/dlls/ntdll/wfdxcompat_loader.h
+@@ -1,5 +1,6 @@
+ /*
+- * WFDXCompat launcher integration
++ * WineForge PE runtime aliases and process-local launcher integration.
++ * (Modified for MetalSharp Wine.)
+  *
+  * Copyright (C) 2026 Radim Vesely for WineForge
+  *
+diff --git a/dlls/shell32/shellpath.c b/dlls/shell32/shellpath.c
+index 68c2814c414..28db3691a9f 100644
+--- a/dlls/shell32/shellpath.c
++++ b/dlls/shell32/shellpath.c
+@@ -3591,7 +3591,7 @@ HRESULT WINAPI SHGetKnownFolderPath(REFKNOWNFOLDERID rfid, DWORD flags, HANDLE t
+     }
+ 
+     folder |= flags & CSIDL_FLAG_MASK;
+-    /* MetalSharp-Internal: launcher-compat/rockstar-precreate-known-folders-v1. */
++    /* WineForge-Internal: launcher-compat/rockstar-precreate-known-folders-v1. */
+     if (CSIDL_Data[folder & CSIDL_FOLDER_MASK].flags & KFDF_PRECREATE)
+         folder |= CSIDL_FLAG_CREATE;
+     shgfp_flags = flags & KF_FLAG_DEFAULT_PATH ? SHGFP_TYPE_DEFAULT : SHGFP_TYPE_CURRENT;
+diff --git a/dlls/win32u/message.c b/dlls/win32u/message.c
+index 646126ec0e4..8dd7ee3f46f 100644
+--- a/dlls/win32u/message.c
++++ b/dlls/win32u/message.c
+@@ -2955,7 +2955,7 @@ static BOOL check_queue_bits( UINT wake_mask, UINT changed_mask, UINT signal_bit
+  */
+ static int peek_message( MSG *msg, const struct peek_message_filter *filter )
+ {
+-    /* MetalSharp-Internal: win32u-composited-paint-fairness-v1. */
++    /* WineForge-Internal: win32u-composited-paint-fairness-v1. */
+     static __thread HWND repeated_paint_hwnd;
+     static __thread unsigned int repeated_paint_count;
+     LRESULT result;
+@@ -3235,7 +3235,7 @@ static int peek_message( MSG *msg, const struct peek_message_filter *filter )
+             {
+                 if (!(flags & PM_NOYIELD) && idle_event) NtSetEvent( idle_event, NULL );
+             }
+-            /* MetalSharp-Internal: win32u-composited-paint-fairness-v1. */
++            /* WineForge-Internal: win32u-composited-paint-fairness-v1. */
+             if (info.msg.message == WM_PAINT && (flags & PM_REMOVE) &&
+                 first == 0 && last == ~0U && (flags & PM_QS_PAINT))
+             {
+diff --git a/dlls/winegstreamer/video_decoder.c b/dlls/winegstreamer/video_decoder.c
+index 6522e3616e3..e95f7a0a5dd 100644
+--- a/dlls/winegstreamer/video_decoder.c
++++ b/dlls/winegstreamer/video_decoder.c
+@@ -458,7 +458,7 @@ static HRESULT init_allocator(struct video_decoder *decoder)
+     return S_OK;
+ }
+ 
+-/* MetalSharp-Internal: mf-d3d11-video-output-capability-v1. */
++/* WineForge-Internal: mf-d3d11-video-output-capability-v1. */
+ static BOOL d3d11_manager_supports_video_output(IMFDXGIDeviceManager *manager)
+ {
+     ID3D11Device *device = NULL;
+diff --git a/dlls/ws2_32/socket.c b/dlls/ws2_32/socket.c
+index 9a8cceb42b7..a118c31f053 100644
+--- a/dlls/ws2_32/socket.c
++++ b/dlls/ws2_32/socket.c
+@@ -37,9 +37,9 @@ WINE_DECLARE_DEBUG_CHANNEL(winediag);
+ 
+ #define u64_from_user_ptr(ptr) ((ULONGLONG)(uintptr_t)(ptr))
+ 
+-/* MetalSharp launcher-compat: Epic EOSH MainService install progress shim.
+- * MetalSharp-Internal: launcher-compat/epic-launcher-v1.
+- * MetalSharp-Feature: launcher-compat/epic-eosh-mainservice-progress-v1.
++/* WineForge launcher-compat: Epic EOSH MainService install progress shim.
++ * WineForge-Internal: launcher-compat/epic-launcher-v1.
++ * WineForge-Feature: launcher-compat/epic-eosh-mainservice-progress-v1.
+  *
+  * only Epic processes and localhost MainService ports are considered. */
+ #define EPIC_EOSH_MIN_PORT 35783
+diff --git a/programs/services/services.c b/programs/services/services.c
+index 96fc2e0d83c..38815810c20 100644
+--- a/programs/services/services.c
++++ b/programs/services/services.c
+@@ -41,7 +41,7 @@ WINE_DEFAULT_DEBUG_CHANNEL(service);
+ 
+ struct scmdatabase *active_database;
+ 
+-/* MetalSharp-Internal: launcher-compat/rockstar-service-pipe-timeout-v1.
++/* WineForge-Internal: launcher-compat/rockstar-service-pipe-timeout-v1.
+  * RockstarService under emulation can take longer than the default 10 seconds
+  * to connect back to the SCM pipe. */
+ DWORD service_pipe_timeout = 40000;
+@@ -131,9 +131,9 @@ static void *clone_environment_with_var( const void *base_env, const WCHAR *name
+ }
+ 
+ /*
+- * MetalSharp launcher-compat: pass Epic's EOS session GUID to the service host.
+- * MetalSharp-Internal: launcher-compat/epic-launcher-v1.
+- * MetalSharp-Feature: launcher-compat/epic-eosh-session-env-v1.
++ * WineForge launcher-compat: pass Epic's EOS session GUID to the service host.
++ * WineForge-Internal: launcher-compat/epic-launcher-v1.
++ * WineForge-Feature: launcher-compat/epic-eosh-session-env-v1.
+  */
+ static void *get_service_process_environment( const WCHAR *path, DWORD service_argc, LPCWSTR *service_argv,
+                                               void **free_env )
+diff --git a/server/change.c b/server/change.c
+index 1d5c8e35ccf..c0cbbf674b4 100644
+--- a/server/change.c
++++ b/server/change.c
+@@ -317,9 +317,9 @@ void sigio_callback(void)
+ #if defined(__APPLE__) && !defined(HAVE_SYS_INOTIFY_H)
+ 
+ /*
+- * MetalSharp launcher-compat: macOS directory-change polling fallback.
+- * MetalSharp-Internal: launcher-compat/epic-launcher-v1.
+- * MetalSharp-Feature: launcher-compat/epic-install-dir-change-poll-v1.
++ * WineForge launcher-compat: macOS directory-change polling fallback.
++ * WineForge-Internal: launcher-compat/epic-launcher-v1.
++ * WineForge-Feature: launcher-compat/epic-install-dir-change-poll-v1.
+  */
+ #define CHANGE_POLL_INTERVAL (-500000)  /* 50 ms */
+ 
+diff --git a/server/file.c b/server/file.c
+index 91712661bed..7eb6e9f70c1 100644
+--- a/server/file.c
++++ b/server/file.c
+@@ -378,9 +378,9 @@ struct security_descriptor *mode_to_sd( mode_t mode, const struct sid *user, con
+         if (!equal_sid( group, &builtin_users_sid ))
+         {
+             /*
+-             * MetalSharp launcher-compat: mirror group access through BUILTIN\Users.
+-             * MetalSharp-Internal: launcher-compat/epic-launcher-v1.
+-             * MetalSharp-Feature: launcher-compat/epic-install-builtin-users-acl-v1.
++             * WineForge launcher-compat: mirror group access through BUILTIN\Users.
++             * WineForge-Internal: launcher-compat/epic-launcher-v1.
++             * WineForge-Feature: launcher-compat/epic-install-builtin-users-acl-v1.
+              */
+             ace = set_ace( ace_next( ace ), &builtin_users_sid, ACCESS_ALLOWED_ACE_TYPE,
+                            flags, WRITE_DAC | WRITE_OWNER );
+diff --git a/server/msync.c b/server/msync.c
+index 2caec0e508d..6f538e6588d 100644
+--- a/server/msync.c
++++ b/server/msync.c
+@@ -1,5 +1,7 @@
+ /*
+- * MetalSharp userspace synchronization server state
++ * WineForge userspace synchronization server state
++ *
++ * Ported from WineForge's WFUSync (server/wfusync.c); MetalSharp Wine renamed it msync and modified it.
+  *
+  * Copyright (C) 2026 Radim Vesely
+  *
+diff --git a/server/msync.h b/server/msync.h
+index 774bcee2f26..b1a7b957c7a 100644
+--- a/server/msync.h
++++ b/server/msync.h
+@@ -1,5 +1,7 @@
+ /*
+- * MetalSharp userspace synchronization server state
++ * WineForge userspace synchronization server state
++ *
++ * Ported from WineForge's WFUSync (server/wfusync.h); MetalSharp Wine renamed it msync and modified it.
+  *
+  * Copyright (C) 2026 Radim Vesely
+  *
+-- 
+2.54.0 (Apple Git-157)
+

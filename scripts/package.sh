@@ -92,6 +92,7 @@ done
 cp $ROOT/README.md $D/README.md 2>/dev/null
 mkdir -p $D/share/doc/metalsharp && cp $ROOT/docs/*.md $D/share/doc/metalsharp/ 2>/dev/null
 
-# Release archive + checksum
+# Release archive + checksum (single-threaded xz, many minutes; NO_TARBALL=1 skips it when only the app is needed)
+[[ ${NO_TARBALL:-0} == 1 ]] && exit 0
 (cd $ROOT/dist && rm -f $NAME.tar.xz $NAME.tar.xz.sha256 && tar -cJf $NAME.tar.xz $NAME && shasum -a 256 $NAME.tar.xz > $NAME.tar.xz.sha256)
 echo "archive: $ROOT/dist/$NAME.tar.xz ($(du -h $ROOT/dist/$NAME.tar.xz | cut -f1))"

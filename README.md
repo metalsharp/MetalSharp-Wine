@@ -111,7 +111,7 @@ The same changes are in `patches/` as git patches against the upstream tags. `pa
 | `scripts/` | Build, staging, test, audit, benchmark, packaging and signing scripts |
 | `patches/` | `wine/`, `fex/`, `mullion/`, `winemetalgl/` |
 | `tests/src/` | Smoke tests and benchmarks (native ARM64, x86_64 and i386) |
-| `docs/` | Status, testing, performance and the WineForge port plan |
+| `docs/` | Status, testing, performance, the WineForge port plan, and provenance and licenses (`PROVENANCE.md`) |
 
 ## Building
 
