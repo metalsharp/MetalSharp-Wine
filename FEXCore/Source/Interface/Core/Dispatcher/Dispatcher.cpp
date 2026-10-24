@@ -564,8 +564,22 @@ void Dispatcher::EmitDispatcher() {
     // We can safely claim we are no longer in a syscall
     str(ARMEmitter::XReg::zr, STATE, offsetof(FEXCore::Core::CpuStateFrame, InSyscallInfo));
 
+#if defined(_WIN32) && !defined(ARCHITECTURE_arm64ec)
+    // WoW64 returns from the guest's syscall stub itself (RIP is the stub's return address), which leaves the
+    // call-ret entry pushed by the call into the stub on the stack. Pop it and return through it when it matches,
+    // as EnterEC does on ARM64EC, so the stack stays balanced and the host return is predicted.
+    ldr(TMP1, STATE_PTR(CpuStateFrame, State.rip));
+    ldp<ARMEmitter::IndexType::OFFSET>(TMP2, TMP4, REG_CALLRET_SP);
+    sub(ARMEmitter::Size::i64Bit, TMP2, TMP1, TMP2);
+    (void)cbnz(ARMEmitter::Size::i64Bit, TMP2, &LoopTop);
+    ldrb(TMP2, STATE_PTR(CpuStateFrame, State.flags[X86State::RFLAG_TF_RAW_LOC]));
+    (void)cbnz(ARMEmitter::Size::i32Bit, TMP2, &LoopTop);
+    add(ARMEmitter::Size::i64Bit, REG_CALLRET_SP, REG_CALLRET_SP, 0x10);
+    ret(TMP4);
+#else
     // Now go back to the regular dispatcher loop
     (void)b(&LoopTop);
+#endif
   }
 
   {
