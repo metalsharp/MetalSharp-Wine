@@ -2412,9 +2412,6 @@ DECLSPEC_EXPORT void __wine_main( int argc, char *argv[] )
     /* Keep FEX's second-level block lookup cache: games with large code footprints (Unity,
      * Mono) otherwise take the slow lookup path on every L1 miss of an indirect branch. */
     setenv( "FEX_DISABLEL2CACHE", "0", 0 );
-    /* Keep translated x86 code on disk (in the prefix's LOCALAPPDATA\fex-emu), so a relaunch
-     * doesn't translate the same game code again; FEX's unix library maps the cache files. */
-    setenv( "FEX_DISKCACHE", "1", 0 );
 #endif
 
     init_paths();
