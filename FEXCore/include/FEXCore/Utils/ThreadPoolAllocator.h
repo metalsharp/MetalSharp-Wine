@@ -49,8 +49,29 @@ public:
   using ContainerType = fextl::list<MemoryBuffer*>;
   /**
    * @brief steady_clock to ensure long running applications don't hit any timeskip problems.
+   *
+   * On Windows on arm64, steady_clock is QueryPerformanceCounter, a system call under Wine, and the allocator reads
+   * the clock several times per compiled block; read the architectural counter directly instead.
    */
+#if defined(_WIN32) && defined(ARCHITECTURE_arm64)
+  struct CounterClock {
+    using rep = int64_t;
+    using period = std::nano;
+    using duration = std::chrono::duration<rep, period>;
+    using time_point = std::chrono::time_point<CounterClock>;
+    static constexpr bool is_steady = true;
+
+    static time_point now() noexcept {
+      uint64_t Ticks, Freq;
+      __asm volatile("mrs %[Ticks], CNTVCT_EL0" : [Ticks] "=r"(Ticks));
+      __asm volatile("mrs %[Freq], CNTFRQ_EL0" : [Freq] "=r"(Freq));
+      return time_point(duration(static_cast<rep>(static_cast<unsigned __int128>(Ticks) * 1'000'000'000 / Freq)));
+    }
+  };
+  using ClockType = CounterClock;
+#else
   using ClockType = std::chrono::steady_clock;
+#endif
   /**
    * @brief Atomic flag state for letting the client know if it owns the buffer
    */
@@ -574,7 +595,7 @@ public:
     // Disowning = cheap, unclaiming = expensive
     ThreadAllocator.DisownBuffer(Info);
 
-    auto Now = std::chrono::steady_clock::now();
+    auto Now = FEXCore::Utils::IntrusivePooledAllocator::ClockType::now();
     if ((Now - Previous) >= std::chrono::duration(std::chrono::milliseconds(PeriodMS))) {
       if (CountPer < PeriodFrequency) {
         // Only unclaim the buffer if our buffer usage isn't excessive in the last period
@@ -613,6 +634,6 @@ private:
 
   // Threshold counting
   uint64_t CountPer {};
-  std::chrono::steady_clock::time_point Previous;
+  FEXCore::Utils::IntrusivePooledAllocator::ClockType::time_point Previous;
 };
 } // namespace FEXCore::Utils
