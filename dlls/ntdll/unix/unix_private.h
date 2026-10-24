@@ -333,6 +333,9 @@ extern void virtual_set_large_address_space(void);
 extern void virtual_fill_image_information( const struct pe_image_info *pe_info,
                                             SECTION_IMAGE_INFORMATION *info );
 extern void *get_builtin_so_handle( void *module );
+#ifdef __APPLE__
+extern void set_thread_qos_attr( pthread_attr_t *attr );
+#endif
 /* WineForge-Internal: launcher-compat/process-classification-v1. */
 struct launcher_policy
 {
