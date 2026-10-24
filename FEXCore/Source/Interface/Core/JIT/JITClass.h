@@ -636,7 +636,7 @@ private:
 
   void EmitSuspendInterruptCheck();
 
-  void EmitEntryPoint(ARMEmitter::BackwardLabel& HeaderLabel, bool CheckTF);
+  void EmitEntryPoint(ARMEmitter::BackwardLabel& HeaderLabel, bool CheckTF, bool CheckSuspend = true);
   bool NeedsAFP(const IR::IROp_Header* IROp) const;
   void EmitAFPEnable();
 

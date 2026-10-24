@@ -899,7 +899,7 @@ void Arm64JITCore::EmitAFPEnable() {
   (void)Bind(&l_AFPSet);
 }
 
-void Arm64JITCore::EmitEntryPoint(ARMEmitter::BackwardLabel& HeaderLabel, bool CheckTF) {
+void Arm64JITCore::EmitEntryPoint(ARMEmitter::BackwardLabel& HeaderLabel, bool CheckTF, bool CheckSuspend) {
   // Get the address of the JITCodeHeader and store in to the core state.
   // Two instruction cost, each 1 cycle.
   adr_OrRestart(TMP1, &HeaderLabel);
@@ -920,7 +920,9 @@ void Arm64JITCore::EmitEntryPoint(ARMEmitter::BackwardLabel& HeaderLabel, bool C
     }
   }
 
-  EmitSuspendInterruptCheck();
+  if (CheckSuspend) {
+    EmitSuspendInterruptCheck();
+  }
 }
 
 
@@ -1078,6 +1080,9 @@ CPUBackend::CompiledCode Arm64JITCore::CompileCode(uint64_t Entry, uint64_t Size
       if (BlockIROp->EntryPoint) {
         uint64_t BlockStartRIP = Entry + BlockIROp->GuestEntryOffset;
 
+        // A call emitted earlier returns here. Its callee's entry already checked for suspend, and returns alone are
+        // bounded by the call depth, so this entry can skip the check (loops check at their backward branches).
+        const bool IsCallReturn = CallReturnTargets.contains(Node);
         const auto IsReturnTarget = CallReturnTargets.try_emplace(Node).first;
         if (PendingTargetLabel) {
           // If there is a fallthrough branch to this block, skip over the entrypoint code.
@@ -1092,7 +1097,7 @@ CPUBackend::CompiledCode Arm64JITCore::CompileCode(uint64_t Entry, uint64_t Size
         CodeData.EntryPoints.emplace(BlockStartRIP, GetCursorAddress<uint8_t*>());
         DebugData->GuestOpcodes.push_back({BlockIROp->GuestEntryOffset, GetCursorAddress<uint8_t*>() - CodeData.BlockBegin});
 
-        EmitEntryPoint(JITCodeHeaderLabel, CheckTF);
+        EmitEntryPoint(JITCodeHeaderLabel, CheckTF, !IsCallReturn);
       }
 
       if (PendingCallReturnTargetLabel) {
