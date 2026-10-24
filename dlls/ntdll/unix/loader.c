@@ -2409,6 +2409,9 @@ DECLSPEC_EXPORT void __wine_main( int argc, char *argv[] )
      * TSO, and the emulated barriers cost more than they buy. FEX reads its configuration from the
      * process environment; an explicit FEX_TSOENABLED still wins. */
     setenv( "FEX_TSOENABLED", "0", 0 );
+    /* Keep FEX's second-level block lookup cache: games with large code footprints (Unity,
+     * Mono) otherwise take the slow lookup path on every L1 miss of an indirect branch. */
+    setenv( "FEX_DISABLEL2CACHE", "0", 0 );
 #endif
 
     init_paths();
