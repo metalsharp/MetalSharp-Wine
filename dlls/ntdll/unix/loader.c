@@ -1282,10 +1282,11 @@ BOOL vkd3d_runtime_available(void)
     return path != NULL;
 }
 
-/* D3D12 and DXGI from VKD3D-Proton; DXVK's D3D9/10/11 come from resolve_dxvk_pe_path() */
+/* D3D12 and DXGI from VKD3D-Proton, and D3D10/11 when it has them (the DXVK that its DXGI belongs to, which also
+ * makes D3D11 devices on D3D12 ones: D3D11On12CreateDevice); otherwise DXVK's, from resolve_dxvk_pe_path() */
 static char *resolve_vkd3d_pe_path( const char *module )
 {
-    static const char *const names[] = { "d3d12.dll", "d3d12core.dll", "dxgi.dll" };
+    static const char *const names[] = { "d3d12.dll", "d3d12core.dll", "dxgi.dll", "d3d11.dll", "d3d10core.dll" };
     const char *name = strrchr( module, '/' );
     unsigned int i;
 
