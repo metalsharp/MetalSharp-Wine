@@ -1074,6 +1074,13 @@ void OpDispatchBuilder::MOVSXDOp(OpcodeArgs) {
   auto Size = std::min<IR::OpSize>(OpSize::i32Bit, OpSizeFromSrc(Op));
   bool Sext = (Size != OpSize::i16Bit) && Op->Flags & FEXCore::X86Tables::DecodeFlags::FLAG_REX_WIDENING;
 
+  if (Sext) {
+    if (Ref Loaded = LoadMemSExtIfPossible(Op, Op->Src[0], OpSize::i64Bit, Size)) {
+      StoreResultGPR(Op, Loaded);
+      return;
+    }
+  }
+
   Ref Src = LoadSourceGPR_WithOpSize(Op, Op->Src[0], Size, Op->Flags, {.AllowUpperGarbage = Sext});
   if (Size == OpSize::i16Bit) {
     // This'll make sure to insert in to the lower 16bits without modifying upper bits
@@ -1089,14 +1096,22 @@ void OpDispatchBuilder::MOVSXDOp(OpcodeArgs) {
 }
 
 void OpDispatchBuilder::MOVSXOp(OpcodeArgs) {
-  // Load garbage in upper bits, since we're sign extending anyway
   const auto Size = OpSizeFromSrc(Op);
+  const auto DstSize = OpSizeFromDst(Op);
+  const auto ExtSize = DstSize == OpSize::i64Bit ? OpSize::i64Bit : OpSize::i32Bit;
+
+  // A memory source is loaded and sign-extended by one ldrsb/ldrsh.
+  if (Ref Loaded = LoadMemSExtIfPossible(Op, Op->Src[0], ExtSize, Size)) {
+    StoreResultGPR(Op, Op->Dest, Loaded);
+    return;
+  }
+
+  // Load garbage in upper bits, since we're sign extending anyway
   Ref Src = LoadSourceGPR(Op, Op->Src[0], Op->Flags, {.AllowUpperGarbage = true});
 
   // Sign-extend to DstSize and zero-extend to the register size, using a fast
   // path for 32-bit dests where the native 32-bit Sbfe zero extends the top.
-  const auto DstSize = OpSizeFromDst(Op);
-  Src = _Sbfe(DstSize == OpSize::i64Bit ? OpSize::i64Bit : OpSize::i32Bit, IR::OpSizeAsBits(Size), 0, Src);
+  Src = _Sbfe(ExtSize, IR::OpSizeAsBits(Size), 0, Src);
   StoreResultGPR(Op, Op->Dest, Src);
 }
 

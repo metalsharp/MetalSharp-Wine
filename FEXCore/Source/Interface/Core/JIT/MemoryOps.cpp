@@ -738,6 +738,37 @@ DEF_OP(LoadMem) {
   }
 }
 
+DEF_OP(LoadMemSExt) {
+  const auto Op = IROp->C<IR::IROp_LoadMemSExt>();
+  const auto Is64 = IROp->Size == IR::OpSize::i64Bit;
+
+  const auto MemReg = GetReg(Op->Addr);
+  const auto MemSrc = GenerateMemOperand(Op->SrcSize, MemReg, Op->Offset, Op->OffsetType, Op->OffsetScale);
+  const auto Dst = GetReg(Node);
+
+  switch (Op->SrcSize) {
+  case IR::OpSize::i8Bit:
+    if (Is64) {
+      ldrsb(Dst.X(), MemSrc);
+    } else {
+      ldrsb(Dst.W(), MemSrc);
+    }
+    break;
+  case IR::OpSize::i16Bit:
+    if (Is64) {
+      ldrsh(Dst.X(), MemSrc);
+    } else {
+      ldrsh(Dst.W(), MemSrc);
+    }
+    break;
+  case IR::OpSize::i32Bit:
+    LOGMAN_THROW_A_FMT(Is64, "32-bit sign extension needs a 64-bit destination");
+    ldrsw(Dst.X(), MemSrc);
+    break;
+  default: LOGMAN_MSG_A_FMT("Unhandled LoadMemSExt size: {}", Op->SrcSize); break;
+  }
+}
+
 DEF_OP(LoadMemPair) {
   const auto Op = IROp->C<IR::IROp_LoadMemPair>();
   const auto Addr = GetReg(Op->Addr);
