@@ -1061,6 +1061,77 @@ void ContextImpl::InvalidateCodeBuffersCodeRange(uint64_t Start, uint64_t Length
   }
 }
 
+#ifdef _WIN32
+extern "C" LONG WINAPI NtQueryVirtualMemory(HANDLE, LPCVOID, ULONG, PVOID, SIZE_T, SIZE_T*);
+
+// Makes every entry of a call-ret stack miss, without decommitting it: decommitting and recommitting 4MiB is an mmap
+// and an mprotect under Wine, and touched pages then fault back in, for every thread on every code invalidation.
+// Only pages that are resident were ever written, so zero the guest RIP of each entry in those; a return then
+// compares unequal and takes the slow path. Aligned 64-bit stores are atomic, so a racing thread never sees a torn
+// entry. The stack starts at Start and moves through memory a page at a time, so its resident pages are contiguous
+// around Start: query outwards in chunks until a chunk has none. Called with CodeInvalidationMutex held.
+static void InvalidateCallRetStack(uint64_t Base, uint64_t End, uint64_t Start) {
+  struct WorkingSetExInfo {
+    void* VirtualAddress;
+    uintptr_t Attributes; // Bit 0: Valid (resident)
+  };
+  constexpr ULONG MemoryWorkingSetExInformation = 4;
+  constexpr size_t ChunkPages = 16;
+  constexpr uint64_t PageSize = FEXCore::Utils::FEX_PAGE_SIZE;
+
+  // Zeroes the resident pages of [Address, Address + Pages * PageSize); returns how many there were, or -1 on failure.
+  auto ZeroChunk = [](uint64_t Address, size_t Pages) -> int {
+    WorkingSetExInfo Info[ChunkPages];
+    for (size_t i = 0; i < Pages; i++) {
+      Info[i] = {reinterpret_cast<void*>(Address + i * PageSize), 0};
+    }
+    if (NtQueryVirtualMemory(GetCurrentProcess(), nullptr, MemoryWorkingSetExInformation, Info, Pages * sizeof(Info[0]), nullptr)) {
+      return -1;
+    }
+    int Resident = 0;
+    for (size_t i = 0; i < Pages; i++) {
+      if (!(Info[i].Attributes & 1)) {
+        continue;
+      }
+      Resident++;
+      // Entries are {guest RIP, host address} pairs.
+      auto Entry = reinterpret_cast<uint64_t*>(Info[i].VirtualAddress);
+      for (size_t j = 0; j < PageSize / sizeof(uint64_t); j += 2) {
+        std::atomic_ref<uint64_t>(Entry[j]).store(0, std::memory_order_relaxed);
+      }
+    }
+    return Resident;
+  };
+
+  Start &= ~(PageSize - 1);
+  // Downwards from Start (pushes), then upwards from it (pops past the start).
+  for (uint64_t Address = Start + PageSize; Address > Base;) {
+    const auto Low = std::max(Base, Address - ChunkPages * PageSize);
+    const int Resident = ZeroChunk(Low, (Address - Low) / PageSize);
+    if (Resident < 0) {
+      Allocator::VirtualDontNeed(reinterpret_cast<void*>(Base), End - Base);
+      return;
+    }
+    if (!Resident) {
+      break;
+    }
+    Address = Low;
+  }
+  for (uint64_t Address = Start + PageSize; Address < End;) {
+    const auto High = std::min(End, Address + ChunkPages * PageSize);
+    const int Resident = ZeroChunk(Address, (High - Address) / PageSize);
+    if (Resident < 0) {
+      Allocator::VirtualDontNeed(reinterpret_cast<void*>(Base), End - Base);
+      return;
+    }
+    if (!Resident) {
+      break;
+    }
+    Address = High;
+  }
+}
+#endif
+
 void ContextImpl::InvalidateThreadCachedCodeRange(FEXCore::Core::InternalThreadState* Thread, uint64_t Start, uint64_t Length) {
   LOGMAN_THROW_A_FMT(CodeInvalidationMutex.try_lock() == false, "CodeInvalidationMutex needs to be unique_locked here");
 
@@ -1071,8 +1142,15 @@ void ContextImpl::InvalidateThreadCachedCodeRange(FEXCore::Core::InternalThreadS
   if (Thread->LookupCache->InvalidateCacheRange(Start, Length)) {
     FEXCORE_PROFILE_SCOPED("InvalidateCallRet");
 
+#ifdef _WIN32
+    // The call-ret stack starts a quarter of the way up (see FEX::Windows::CallRetStack::GetInfoThread).
+    const auto Base = reinterpret_cast<uint64_t>(Thread->CallRetStackBase);
+    InvalidateCallRetStack(Base, Base + FEXCore::Core::InternalThreadState::CALLRET_STACK_SIZE,
+                           Base + FEXCore::Core::InternalThreadState::CALLRET_STACK_SIZE / 4);
+#else
     // This may cause access violations in the thread on Windows as zeroing is not atomic, this is handled by the frontend
     Allocator::VirtualDontNeed(Thread->CallRetStackBase, FEXCore::Core::InternalThreadState::CALLRET_STACK_SIZE);
+#endif
   }
 }
 
