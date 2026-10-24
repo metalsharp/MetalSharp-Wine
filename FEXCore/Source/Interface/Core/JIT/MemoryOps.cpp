@@ -743,10 +743,10 @@ DEF_OP(LoadMemSExt) {
   const auto Is64 = IROp->Size == IR::OpSize::i64Bit;
 
   const auto MemReg = GetReg(Op->Addr);
-  const auto MemSrc = GenerateMemOperand(Op->SrcSize, MemReg, Op->Offset, Op->OffsetType, Op->OffsetScale);
+  const auto MemSrc = GenerateMemOperand(Op->Size, MemReg, Op->Offset, Op->OffsetType, Op->OffsetScale);
   const auto Dst = GetReg(Node);
 
-  switch (Op->SrcSize) {
+  switch (Op->Size) {
   case IR::OpSize::i8Bit:
     if (Is64) {
       ldrsb(Dst.X(), MemSrc);
@@ -765,7 +765,7 @@ DEF_OP(LoadMemSExt) {
     LOGMAN_THROW_A_FMT(Is64, "32-bit sign extension needs a 64-bit destination");
     ldrsw(Dst.X(), MemSrc);
     break;
-  default: LOGMAN_MSG_A_FMT("Unhandled LoadMemSExt size: {}", Op->SrcSize); break;
+  default: LOGMAN_MSG_A_FMT("Unhandled LoadMemSExt size: {}", Op->Size); break;
   }
 }
 
