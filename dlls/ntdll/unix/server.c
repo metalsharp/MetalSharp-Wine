@@ -77,6 +77,7 @@
 #include "winioctl.h"
 #include "wine/server.h"
 #include "wine/debug.h"
+#include "msync.h"
 #include "unix_private.h"
 #include "ddk/wdm.h"
 
@@ -1847,6 +1848,9 @@ NTSTATUS WINAPI NtDuplicateObject( HANDLE source_process, HANDLE source, HANDLE 
     sigset_t sigset;
     unsigned int ret;
     int fd = -1;
+#ifdef __APPLE__
+    int msync_kind = 0;
+#endif
 
     if (dest) *dest = 0;
 
@@ -1870,6 +1874,17 @@ NTSTATUS WINAPI NtDuplicateObject( HANDLE source_process, HANDLE source, HANDLE 
             *dest = wine_server_ptr_handle( result.dup_handle.handle );
         return result.dup_handle.status;
     }
+
+#ifdef __APPLE__
+    /* A copy in this process of an event, mutex or semaphore msync handles is handled the same way
+     * (e.g. the frame latency waitable a D3D12 swap chain hands out is a duplicate). */
+    if (do_msync() && source_process == NtCurrentProcess() && dest_process == NtCurrentProcess())
+    {
+        if (msync_handle_is_local_event( source )) msync_kind = 1;
+        else if (msync_handle_is_local_semaphore( source )) msync_kind = 2;
+        else if (msync_handle_is_local_mutex( source )) msync_kind = 3;
+    }
+#endif
 
     /* hold fd_cache_mutex to prevent the fd from being added again between the
      * call to remove_fd_from_cache and close_handle */
@@ -1900,6 +1915,14 @@ NTSTATUS WINAPI NtDuplicateObject( HANDLE source_process, HANDLE source, HANDLE 
 
     server_leave_uninterrupted_section( &fd_cache_mutex, &sigset );
 
+#ifdef __APPLE__
+    if (!ret && dest && *dest)
+    {
+        if (msync_kind == 1) msync_mark_local_event( *dest );
+        else if (msync_kind == 2) msync_mark_local_semaphore( *dest );
+        else if (msync_kind == 3) msync_mark_local_mutex( *dest );
+    }
+#endif
     if (fd != -1) close( fd );
     return ret;
 }
