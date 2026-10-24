@@ -53,7 +53,12 @@ WINE_DEFAULT_DEBUG_CHANNEL(msync);
 #define MSYNC_CACHE_BLOCK_SIZE  (65536 / sizeof(struct msync_cache_entry))
 #define MSYNC_CACHE_ENTRIES     128
 #define MSYNC_TICKS_PER_SEC     10000000LL
+#define MSYNC_TICKS_1601_TO_1970 ((369 * 365 + 89) * 86400 * MSYNC_TICKS_PER_SEC)
 #define MSYNC_SPIN_LIMIT        32
+/* Waits without a timeout wake up this often to re-check that the object is still theirs to wait on in
+ * process. Handing such a wait to the server instead put every wait longer than this (a game's main thread
+ * pacing its frames) and then every signal of its object on the server; only mutex waits still do, since
+ * only the server sees a mutex abandoned. */
 #define MSYNC_BLOCKING_FALLBACK_NS 10000000ULL
 
 #define MSYNC_KIND_UNKNOWN      0
@@ -1112,6 +1117,21 @@ static void get_relative_timeout_abs( const LARGE_INTEGER *timeout, struct times
     abstime->tv_nsec = nsec % 1000000000;
 }
 
+/* The waits below take relative timeouts. An absolute one (100 ns ticks since 1601) becomes the time left
+ * until then, measured on the same wall clock as their deadlines; TIMEOUT_INFINITE means no timeout. */
+static const LARGE_INTEGER *msync_relative_timeout( const LARGE_INTEGER *timeout, LARGE_INTEGER *relative )
+{
+    struct timeval now;
+    LONGLONG now_ticks;
+
+    if (!timeout || timeout->QuadPart <= 0) return timeout;
+    if (timeout->QuadPart == TIMEOUT_INFINITE) return NULL;
+    gettimeofday( &now, NULL );
+    now_ticks = now.tv_sec * MSYNC_TICKS_PER_SEC + now.tv_usec * 10 + MSYNC_TICKS_1601_TO_1970;
+    relative->QuadPart = timeout->QuadPart > now_ticks ? now_ticks - timeout->QuadPart : 0;
+    return relative;
+}
+
 static void get_now_abs( struct timespec *now )
 {
     struct timeval tv;
@@ -1138,6 +1158,7 @@ static BOOL msync_adaptive_spin( unsigned int *attempts )
 
 NTSTATUS msync_wait_event( HANDLE handle, BOOLEAN alertable, const LARGE_INTEGER *timeout )
 {
+    LARGE_INTEGER relative_timeout;
     struct msync_cache_entry *entry;
     struct msync_shared_state *state;
     struct timespec deadline;
@@ -1147,6 +1168,7 @@ NTSTATUS msync_wait_event( HANDLE handle, BOOLEAN alertable, const LARGE_INTEGER
     NTSTATUS ret;
 
     if (!do_msync()) return STATUS_NOT_IMPLEMENTED;
+    timeout = msync_relative_timeout( timeout, &relative_timeout );
 
     kind = msync_get_handle_kind( handle );
     if (kind && kind != MSYNC_KIND_EVENT) return STATUS_NOT_IMPLEMENTED;
@@ -1230,7 +1252,7 @@ NTSTATUS msync_wait_event( HANDLE handle, BOOLEAN alertable, const LARGE_INTEGER
         ret = msync_wait_address( &state->low, 0, wait_timeout_ptr );
         if (ret == STATUS_TIMEOUT)
         {
-            if (!timeout) return STATUS_NOT_IMPLEMENTED;
+            if (!timeout) continue;  /* re-validate the state, then keep waiting here */
             break;
         }
         if (ret == STATUS_NOT_IMPLEMENTED)
@@ -1243,6 +1265,7 @@ NTSTATUS msync_wait_event( HANDLE handle, BOOLEAN alertable, const LARGE_INTEGER
 
 NTSTATUS msync_wait_mutex( HANDLE handle, BOOLEAN alertable, const LARGE_INTEGER *timeout )
 {
+    LARGE_INTEGER relative_timeout;
     struct msync_cache_entry *entry;
     struct msync_shared_state *state;
     struct timespec deadline;
@@ -1253,6 +1276,7 @@ NTSTATUS msync_wait_mutex( HANDLE handle, BOOLEAN alertable, const LARGE_INTEGER
     NTSTATUS ret;
 
     if (!do_msync()) return STATUS_NOT_IMPLEMENTED;
+    timeout = msync_relative_timeout( timeout, &relative_timeout );
 
     kind = msync_get_handle_kind( handle );
     if (kind && kind != MSYNC_KIND_MUTEX) return STATUS_NOT_IMPLEMENTED;
@@ -1343,7 +1367,7 @@ NTSTATUS msync_wait_mutex( HANDLE handle, BOOLEAN alertable, const LARGE_INTEGER
         ret = msync_wait_address( &state->low, owner, wait_timeout_ptr );
         if (ret == STATUS_TIMEOUT)
         {
-            if (!timeout) return STATUS_NOT_IMPLEMENTED;
+            if (!timeout) return STATUS_NOT_IMPLEMENTED;  /* only the server sees an owner die and abandon it */
             return STATUS_TIMEOUT;
         }
         if (ret == STATUS_NOT_IMPLEMENTED)
@@ -1356,6 +1380,7 @@ NTSTATUS msync_wait_mutex( HANDLE handle, BOOLEAN alertable, const LARGE_INTEGER
 
 NTSTATUS msync_wait_semaphore( HANDLE handle, BOOLEAN alertable, const LARGE_INTEGER *timeout )
 {
+    LARGE_INTEGER relative_timeout;
     struct msync_cache_entry *entry;
     struct msync_shared_state *state;
     struct timespec deadline;
@@ -1365,6 +1390,7 @@ NTSTATUS msync_wait_semaphore( HANDLE handle, BOOLEAN alertable, const LARGE_INT
     NTSTATUS ret;
 
     if (!do_msync()) return STATUS_NOT_IMPLEMENTED;
+    timeout = msync_relative_timeout( timeout, &relative_timeout );
 
     kind = msync_get_handle_kind( handle );
     if (kind && kind != MSYNC_KIND_SEMAPHORE) return STATUS_NOT_IMPLEMENTED;
@@ -1448,7 +1474,7 @@ NTSTATUS msync_wait_semaphore( HANDLE handle, BOOLEAN alertable, const LARGE_INT
         ret = msync_wait_address( &state->low, 0, wait_timeout_ptr );
         if (ret == STATUS_TIMEOUT)
         {
-            if (!timeout) return STATUS_NOT_IMPLEMENTED;
+            if (!timeout) continue;  /* re-validate the state, then keep waiting here */
             break;
         }
         if (ret == STATUS_NOT_IMPLEMENTED)
@@ -1661,6 +1687,7 @@ static void refresh_waitall_mutex_generations( const HANDLE *handles, struct msy
 NTSTATUS msync_wait_multiple( DWORD count, const HANDLE *handles, WAIT_TYPE type,
                                 BOOLEAN alertable, const LARGE_INTEGER *timeout )
 {
+    LARGE_INTEGER relative_timeout;
     struct msync_cache_entry *entry;
     struct msync_shared_state *states[64];
     unsigned int shm_idxs[64], generations[64];
@@ -1670,6 +1697,7 @@ NTSTATUS msync_wait_multiple( DWORD count, const HANDLE *handles, WAIT_TYPE type
     NTSTATUS ret;
 
     if (!do_msync()) return STATUS_NOT_IMPLEMENTED;
+    timeout = msync_relative_timeout( timeout, &relative_timeout );
 
     if (type != WaitAny && type != WaitAll)
         return STATUS_NOT_IMPLEMENTED;
@@ -1683,7 +1711,24 @@ NTSTATUS msync_wait_multiple( DWORD count, const HANDLE *handles, WAIT_TYPE type
         TRACE( "fallback multiple wait absolute timeout %s\n", wine_dbgstr_longlong(timeout->QuadPart) );
         return STATUS_NOT_IMPLEMENTED;
     }
-    if (count < 2 || count > ARRAY_SIZE(states))
+    if (count == 1)
+    {
+        /* One handle: WaitAny and WaitAll are the same single-object wait. */
+        if ((ret = msync_wait_event( handles[0], alertable, timeout )) != STATUS_NOT_IMPLEMENTED) return ret;
+        if ((ret = msync_wait_semaphore( handles[0], alertable, timeout )) != STATUS_NOT_IMPLEMENTED) return ret;
+        if ((ret = msync_wait_mutex( handles[0], alertable, timeout )) != STATUS_NOT_IMPLEMENTED) return ret;
+        if (TRACE_ON(msync))
+        {
+            char buf[256];
+            OBJECT_TYPE_INFORMATION *info = (OBJECT_TYPE_INFORMATION *)buf;
+            if (!NtQueryObject( handles[0], ObjectTypeInformation, info, sizeof(buf), NULL ))
+                TRACE( "fallback single-handle multiple wait handle %p type %s kind %u alertable %u\n", handles[0],
+                       debugstr_wn( info->TypeName.Buffer, info->TypeName.Length / sizeof(WCHAR) ),
+                       msync_get_handle_kind( handles[0] ), alertable );
+        }
+        return STATUS_NOT_IMPLEMENTED;
+    }
+    if (count > ARRAY_SIZE(states))
     {
         TRACE( "fallback multiple wait unsupported count %lu\n", (unsigned long)count );
         return STATUS_NOT_IMPLEMENTED;
@@ -1712,6 +1757,14 @@ NTSTATUS msync_wait_multiple( DWORD count, const HANDLE *handles, WAIT_TYPE type
             ret = get_local_mutex_state_locked( handles[i], SYNCHRONIZE, &entry );
             break;
         default:
+            if (TRACE_ON(msync))
+            {
+                char buf[256];
+                OBJECT_TYPE_INFORMATION *info = (OBJECT_TYPE_INFORMATION *)buf;
+                if (!NtQueryObject( handles[i], ObjectTypeInformation, info, sizeof(buf), NULL ))
+                    TRACE( "fallback multiple wait handle %p type %s count %u\n", handles[i],
+                           debugstr_wn( info->TypeName.Buffer, info->TypeName.Length / sizeof(WCHAR) ), (unsigned int)count );
+            }
             TRACE( "fallback multiple wait handle %p unknown kind %u\n", handles[i], kind );
             ret = STATUS_NOT_IMPLEMENTED;
             break;
@@ -1720,7 +1773,11 @@ NTSTATUS msync_wait_multiple( DWORD count, const HANDLE *handles, WAIT_TYPE type
         {
             unlock_msync_cache();
             if (ret == STATUS_NOT_IMPLEMENTED)
+            {
+                TRACE( "fallback multiple wait handle %p kind %u not cached (%lu of %lu)\n", handles[i], kind,
+                       (unsigned long)i, (unsigned long)count );
                 return STATUS_NOT_IMPLEMENTED;
+            }
             return ret;
         }
         state = entry->state.ptr;
@@ -1897,7 +1954,12 @@ NTSTATUS msync_wait_multiple( DWORD count, const HANDLE *handles, WAIT_TYPE type
 
         if (ret == STATUS_TIMEOUT)
         {
-            if (!timeout) return STATUS_NOT_IMPLEMENTED;
+            if (!timeout)
+            {
+                for (i = 0; i < count; i++)
+                    if (types[i] == INPROC_SYNC_MUTEX) return STATUS_NOT_IMPLEMENTED;  /* see msync_wait_mutex */
+                continue;  /* re-validate the state, then keep waiting here */
+            }
             return STATUS_TIMEOUT;
         }
         if (ret == STATUS_NOT_IMPLEMENTED)
