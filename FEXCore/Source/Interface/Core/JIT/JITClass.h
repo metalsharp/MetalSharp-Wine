@@ -638,6 +638,8 @@ private:
 
   void EmitEntryPoint(ARMEmitter::BackwardLabel& HeaderLabel, bool CheckTF, bool CheckSuspend = true);
   bool NeedsAFP(const IR::IROp_Header* IROp) const;
+  // Set when the op just emitted called a fallback thunk, which returns with the AFP bits clear.
+  bool AFPClearedByCall {};
   void EmitAFPEnable();
 
   [[nodiscard]] CodeBuffer::CodeBufferAllocation AllocateCodeBufferInSharedCache(size_t Size);

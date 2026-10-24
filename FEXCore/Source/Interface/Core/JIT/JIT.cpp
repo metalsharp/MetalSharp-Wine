@@ -116,6 +116,9 @@ namespace FEXCore::CPU {
 
 void Arm64JITCore::Op_Unhandled(const IR::IROp_Header* IROp, IR::Ref Node) {
   FallbackInfo Info;
+  // The fallback thunks are emitted by the dispatcher, whose state fills leave the AFP bits clear (see
+  // Arm64Emitter::EmitAFPState), so FP code after this op in the block must set them again.
+  AFPClearedByCall = true;
   if (!InterpreterOps::GetFallbackHandler(IROp, &Info)) {
 #if defined(ASSERTIONS_ENABLED) && ASSERTIONS_ENABLED
     LOGMAN_MSG_A_FMT("Unhandled IR Op: {}", FEXCore::IR::GetName(IROp->Op));
@@ -1116,6 +1119,7 @@ CPUBackend::CompiledCode Arm64JITCore::CompileCode(uint64_t Entry, uint64_t Size
         EmitAFPEnable();
         AFPEnabled = true;
       }
+      AFPClearedByCall = false;
       switch (IROp->Op) {
 #define REGISTER_OP(op, x) \
   case FEXCore::IR::IROps::OP_##op: Op_##x(IROp, CodeNode); break
@@ -1125,6 +1129,9 @@ CPUBackend::CompiledCode Arm64JITCore::CompileCode(uint64_t Entry, uint64_t Size
 #undef REGISTER_OP
 
       default: Op_Unhandled(IROp, CodeNode); break;
+      }
+      if (AFPClearedByCall) {
+        AFPEnabled = !EmitAFPState;
       }
     }
 
