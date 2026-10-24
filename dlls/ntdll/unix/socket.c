@@ -1187,20 +1187,41 @@ static NTSTATUS sock_send( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, voi
                            IO_STATUS_BLOCK *io, int fd, struct async_send_ioctl *async, unsigned int server_flags )
 {
     HANDLE wait_handle;
-    BOOL nonblocking;
+    BOOL nonblocking, try_direct;
     unsigned int status;
     ULONG options;
 
-    SERVER_START_REQ( send_socket )
+    /* With no event or APC, ask for a direct send: if it can complete right away the server
+     * creates no async, and a complete send then costs one server round trip instead of two. */
+    try_direct = !event && !apc && !(server_flags & SERVER_SOCKET_IO_FORCE_ASYNC) && !is_icmp_over_dgram( fd );
+
+    for (;;)
     {
-        req->flags = server_flags;
-        req->async  = server_async( handle, &async->io, event, apc, apc_user, iosb_client_ptr(io) );
-        status = wine_server_call( req );
-        wait_handle = wine_server_ptr_handle( reply->wait );
-        options     = reply->options;
-        nonblocking = reply->nonblocking;
+        SERVER_START_REQ( send_socket )
+        {
+            req->flags = server_flags | (try_direct ? SERVER_SOCKET_IO_TRY_DIRECT : 0);
+            req->async  = server_async( handle, &async->io, event, apc, apc_user, iosb_client_ptr(io) );
+            status = wine_server_call( req );
+            wait_handle = wine_server_ptr_handle( reply->wait );
+            options     = reply->options;
+            nonblocking = reply->nonblocking;
+        }
+        SERVER_END_REQ;
+
+        if (status != STATUS_MORE_PROCESSING_REQUIRED) break;
+
+        status = try_send( fd, async );
+        if (status == STATUS_SUCCESS && async->iov_cursor == async->count)
+        {
+            set_sync_iosb( io, status, async->sent_len, options );
+            if (async->fd != -1) close( async->fd );
+            release_fileio( &async->io );
+            return status;
+        }
+        /* Partial, would block or failed: the regular path continues from the iov cursor
+         * and reports the result (and reselects events) as before. */
+        try_direct = FALSE;
     }
-    SERVER_END_REQ;
 
     /* the server currently will never succeed immediately */
     assert(status == STATUS_ALERTED || status == STATUS_PENDING || NT_ERROR(status));

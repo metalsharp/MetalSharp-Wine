@@ -2109,6 +2109,7 @@ struct send_socket_reply
 
 #define SERVER_SOCKET_IO_FORCE_ASYNC 0x01
 #define SERVER_SOCKET_IO_SYSTEM      0x02
+#define SERVER_SOCKET_IO_TRY_DIRECT  0x04  /* send_socket: no async if it can complete synchronously */
 
 
 struct socket_get_events_request

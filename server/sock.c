@@ -4080,6 +4080,27 @@ DECL_HANDLER(send_socket)
     if (status == STATUS_PENDING && !force_async && sock->nonblocking)
         status = STATUS_DEVICE_NOT_READY;
 
+    /* With no event, APC or completion port, a send that completes right away has nothing to
+     * report through an async: the client sends directly and only comes back (without this flag)
+     * if it can't complete. STATUS_MORE_PROCESSING_REQUIRED tells it no async was created. */
+    if (status == STATUS_ALERTED && (req->flags & SERVER_SOCKET_IO_TRY_DIRECT) &&
+        !req->async.event && !req->async.apc)
+    {
+        apc_param_t comp_key;
+        struct completion *completion = fd_get_completion( fd, &comp_key );
+
+        if (!completion)
+        {
+            reply->wait = 0;
+            reply->options = get_fd_options( fd );
+            reply->nonblocking = sock->nonblocking;
+            set_error( STATUS_MORE_PROCESSING_REQUIRED );
+            release_object( sock );
+            return;
+        }
+        release_object( completion );
+    }
+
     if ((async = create_request_async( fd, &req->async, req->flags & SERVER_SOCKET_IO_SYSTEM )))
     {
         struct send_req *send_req;

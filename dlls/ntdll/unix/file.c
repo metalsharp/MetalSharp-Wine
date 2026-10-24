@@ -5391,7 +5391,7 @@ static BOOL async_write_proc( void *user, ULONG_PTR *info, unsigned int *status 
     return TRUE;
 }
 
-static void set_sync_iosb( IO_STATUS_BLOCK *io, NTSTATUS status, ULONG_PTR info, unsigned int options )
+void set_sync_iosb( IO_STATUS_BLOCK *io, NTSTATUS status, ULONG_PTR info, unsigned int options )
 {
     if (in_wow64_call() && !(options & (FILE_SYNCHRONOUS_IO_ALERT | FILE_SYNCHRONOUS_IO_NONALERT)))
     {
