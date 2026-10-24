@@ -203,6 +203,16 @@ void InvalidationTracker::InvalidateAlignedInterval(uint64_t Address, uint64_t S
   const auto AlignedBase = Address & FEXCore::Utils::FEX_PAGE_MASK;
   const auto AlignedSize = std::max(Size, (Address - AlignedBase + Size + FEXCore::Utils::FEX_PAGE_SIZE - 1) & FEXCore::Utils::FEX_PAGE_MASK);
 
+  {
+    // Code is only ever translated from executable intervals, and leaving them invalidates it, so a range that
+    // doesn't overlap one has nothing to invalidate. This keeps file reads and frees of data memory from taking the
+    // code invalidation lock, which waits for every compile in progress.
+    std::shared_lock Lock(IntervalsLock);
+    if (!XIntervals.Intersect({AlignedBase, AlignedBase + AlignedSize})) {
+      return;
+    }
+  }
+
   InvalidateIntervalInternal(AlignedBase, AlignedSize);
 
   if (Free) {
