@@ -4,7 +4,15 @@
 #include <fcntl.h>
 #include <string>
 #include <sys/mman.h>
+#ifdef __APPLE__
+// macOS has no prctl: hardware TSO, kernel unaligned-atomic handling and VMA names are Linux
+// interfaces, so those requests report failure and FEX keeps its own fallbacks.
+static inline int prctl(int, ...) {
+  return -1;
+}
+#else
 #include <sys/prctl.h>
+#endif
 #include <unistd.h>
 
 #include "FEXUnixLib.h"
@@ -66,6 +74,12 @@ static NTSTATUS FEXUnixLib_SetKernelUnalignedAtomicControlHandler(void* _Args) {
 
 static NTSTATUS FEXUnixLib_MadviseHandler(void* _Args) {
   auto Args = reinterpret_cast<const FEXUnixLib_Madvise*>(_Args);
+#ifdef __APPLE__
+  // FEX passes Linux advice values (MADV_HUGEPAGE/MADV_NOHUGEPAGE); they mean something else here.
+  if (Args->Advise == 14 || Args->Advise == 15) {
+    return STATUS_NOT_SUPPORTED;
+  }
+#endif
   return madvise(const_cast<void*>(Args->Addr), Args->Size, Args->Advise) == 0 ? STATUS_SUCCESS : STATUS_INTERNAL_ERROR;
 }
 
