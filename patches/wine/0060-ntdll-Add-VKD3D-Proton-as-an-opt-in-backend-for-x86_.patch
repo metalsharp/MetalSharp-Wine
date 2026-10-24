@@ -1,0 +1,159 @@
+From 622ffb78c855bbc8b6cefba6ea5936ea5616fd93 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Fri, 23 Oct 2026 13:39:55 -0600
+Subject: [PATCH 60/62] ntdll: Add VKD3D-Proton as an opt-in backend for x86_64
+ programs.
+
+GRAPHICS_BACKEND=vkd3d serves VKD3D-Proton's d3d12, d3d12core and dxgi from
+lib/vkd3d-proton and DXVK's d3d9/10/11 from lib/dxvk in x86_64 programs; other
+programs keep Mullion.
+---
+ dlls/ntdll/unix/graphics_policy.c | 24 +++++++++++++++++--
+ dlls/ntdll/unix/loader.c          | 39 +++++++++++++++++++++++++++++--
+ dlls/ntdll/unix/unix_private.h    |  2 ++
+ 3 files changed, 61 insertions(+), 4 deletions(-)
+
+diff --git a/dlls/ntdll/unix/graphics_policy.c b/dlls/ntdll/unix/graphics_policy.c
+index b3e1ed047fa..405d833f55f 100644
+--- a/dlls/ntdll/unix/graphics_policy.c
++++ b/dlls/ntdll/unix/graphics_policy.c
+@@ -47,6 +47,7 @@ enum process_graphics_backend
+     PROCESS_GRAPHICS_BACKEND_D3DMETAL,
+     PROCESS_GRAPHICS_BACKEND_DXMT,
+     PROCESS_GRAPHICS_BACKEND_DXVK,
++    PROCESS_GRAPHICS_BACKEND_VKD3D,
+ };
+ 
+ /* WineForge-Internal: graphics/process-backend-policy-v1. */
+@@ -76,6 +77,11 @@ static BOOL parse_graphics_backend( const char *name, enum process_graphics_back
+         *backend = PROCESS_GRAPHICS_BACKEND_DXVK;
+         return TRUE;
+     }
++    if (name && !strcmp( name, "vkd3d" ))
++    {
++        *backend = PROCESS_GRAPHICS_BACKEND_VKD3D;
++        return TRUE;
++    }
+     if (name && !strcmp( name, "wine" ))
+     {
+         *backend = PROCESS_GRAPHICS_BACKEND_WINE;
+@@ -92,6 +98,7 @@ static const char *process_graphics_backend_name( enum process_graphics_backend
+     case PROCESS_GRAPHICS_BACKEND_D3DMETAL: return "d3dmetal";
+     case PROCESS_GRAPHICS_BACKEND_DXMT: return "dxmt";
+     case PROCESS_GRAPHICS_BACKEND_DXVK: return "dxvk";
++    case PROCESS_GRAPHICS_BACKEND_VKD3D: return "vkd3d";
+     default: return "wine";
+     }
+ }
+@@ -133,6 +140,12 @@ void init_process_graphics_backend( const WCHAR *image_path )
+     if (configured_backend == PROCESS_GRAPHICS_BACKEND_DXVK && !(is_arm64ec() && dxvk_runtime_available()))
+         configured_backend = dxmt_runtime_available() ? PROCESS_GRAPHICS_BACKEND_DXMT
+                                                       : PROCESS_GRAPHICS_BACKEND_WINE;
++    /* VKD3D-Proton (opt-in) is D3D12 and DXGI on Vulkan, with DXVK's D3D9/10/11, in x86_64
++     * programs only, like DXVK. */
++    if (configured_backend == PROCESS_GRAPHICS_BACKEND_VKD3D &&
++        !(is_arm64ec() && vkd3d_runtime_available() && dxvk_runtime_available()))
++        configured_backend = dxmt_runtime_available() ? PROCESS_GRAPHICS_BACKEND_DXMT
++                                                      : PROCESS_GRAPHICS_BACKEND_WINE;
+     process_graphics_backend = configured_backend;
+     get_launcher_policy( image_pathA, &launcher );
+ 
+@@ -180,7 +193,8 @@ BOOL dxmt_graphics_backend_enabled(void)
+     if (process_uses_cef_software) return FALSE;
+     if (process_graphics_backend != PROCESS_GRAPHICS_BACKEND_UNINITIALIZED)
+         return process_graphics_backend == PROCESS_GRAPHICS_BACKEND_DXMT ||
+-               (process_graphics_backend == PROCESS_GRAPHICS_BACKEND_DXVK && dxmt_runtime_available());
++               ((process_graphics_backend == PROCESS_GRAPHICS_BACKEND_DXVK ||
++                 process_graphics_backend == PROCESS_GRAPHICS_BACKEND_VKD3D) && dxmt_runtime_available());
+     if (!backend || !backend[0]) backend = getenv( "ACTIVE_GRAPHICS_BACKEND" );
+     if (!backend || !backend[0]) return dxmt_runtime_available();
+     return !strcmp( backend, "dxmt" );
+@@ -188,7 +202,13 @@ BOOL dxmt_graphics_backend_enabled(void)
+ 
+ BOOL dxvk_graphics_backend_enabled(void)
+ {
+-    return process_graphics_backend == PROCESS_GRAPHICS_BACKEND_DXVK;
++    return process_graphics_backend == PROCESS_GRAPHICS_BACKEND_DXVK ||
++           process_graphics_backend == PROCESS_GRAPHICS_BACKEND_VKD3D;
++}
++
++BOOL vkd3d_graphics_backend_enabled(void)
++{
++    return process_graphics_backend == PROCESS_GRAPHICS_BACKEND_VKD3D;
+ }
+ 
+ /* WineForge-Internal: graphics/process-backend-policy-v1. */
+diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
+index 29272a5c800..ad1ae1d14d2 100644
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -1263,6 +1263,39 @@ BOOL dxvk_runtime_available(void)
+     return path != NULL;
+ }
+ 
++/* VKD3D-Proton (x86_64): <dll_dir>/../vkd3d-proton/x86_64-windows, for GRAPHICS_BACKEND=vkd3d */
++static char *vkd3d_pe_path( const char *name )
++{
++    char *path;
++
++    if (!dll_dir || asprintf( &path, "%s/../vkd3d-proton/x86_64-windows/%s", dll_dir, name ) == -1) return NULL;
++    if (!access( path, R_OK )) return path;
++    free( path );
++    return NULL;
++}
++
++BOOL vkd3d_runtime_available(void)
++{
++    char *path = vkd3d_pe_path( "d3d12.dll" );
++
++    free( path );
++    return path != NULL;
++}
++
++/* D3D12 and DXGI from VKD3D-Proton; DXVK's D3D9/10/11 come from resolve_dxvk_pe_path() */
++static char *resolve_vkd3d_pe_path( const char *module )
++{
++    static const char *const names[] = { "d3d12.dll", "d3d12core.dll", "dxgi.dll" };
++    const char *name = strrchr( module, '/' );
++    unsigned int i;
++
++    if (!vkd3d_graphics_backend_enabled()) return NULL;
++    name = name ? name + 1 : module;
++    for (i = 0; i < ARRAY_SIZE(names); i++)
++        if (!strcasecmp( name, names[i] )) return vkd3d_pe_path( names[i] );
++    return NULL;
++}
++
+ static char *resolve_dxvk_pe_path( const char *module )
+ {
+     static const char *const names[] = { "d3d9.dll", "d3d10core.dll", "d3d11.dll", "dxgi.dll" };
+@@ -1358,9 +1391,11 @@ static NTSTATUS find_builtin_dll( UNICODE_STRING *nt_name, ANSI_STRING *exp_name
+         }
+     }
+ 
+-    /* DXVK (GRAPHICS_BACKEND=dxvk, x86_64 programs): PE only, no unix side */
++    /* VKD3D-Proton and DXVK (GRAPHICS_BACKEND=vkd3d or dxvk, x86_64 programs): PE only, no unix side */
+     {
+-        char *dxvk_pe = resolve_dxvk_pe_path( file + pos + 1 );
++        char *dxvk_pe = resolve_vkd3d_pe_path( file + pos + 1 );
++
++        if (!dxvk_pe) dxvk_pe = resolve_dxvk_pe_path( file + pos + 1 );
+ 
+         if (dxvk_pe)
+         {
+diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
+index 22c0073c9d5..b74f89d2308 100644
+--- a/dlls/ntdll/unix/unix_private.h
++++ b/dlls/ntdll/unix/unix_private.h
+@@ -379,6 +379,8 @@ extern char *resolve_dxmt_pe_path( const char *module, USHORT machine );
+ extern char *resolve_dxmt_unixlib_path( const char *path );
+ extern BOOL dxvk_graphics_backend_enabled(void);
+ extern BOOL dxvk_runtime_available(void);
++extern BOOL vkd3d_graphics_backend_enabled(void);
++extern BOOL vkd3d_runtime_available(void);
+ extern NTSTATUS load_builtin_unixlib_now( void *module );
+ #endif
+ extern NTSTATUS set_builtin_unixlib_name( void *module, const char *name );
+-- 
+2.54.0 (Apple Git-157)
+

@@ -1,7 +1,7 @@
 From 0dde19ba7e0b26b68f9f12c202405ec1d22419d2 Mon Sep 17 00:00:00 2001
 From: Avery Felts <averyfelts@aol.com>
 Date: Thu, 22 Oct 2026 11:00:29 -0600
-Subject: [PATCH 19/55] ntdll: Default to 4K pages when the process has the
+Subject: [PATCH 19/59] ntdll: Default to 4K pages when the process has the
  cross-architecture entitlement.
 
 Record the entitlement when virtual_init() finds the removable PAGEZERO reservation, so

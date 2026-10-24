@@ -1,7 +1,7 @@
 From 66613516d6c64652ecfb852338ec114ef80d232f Mon Sep 17 00:00:00 2001
 From: Avery Felts <averyfelts@aol.com>
 Date: Thu, 22 Oct 2026 18:06:45 -0600
-Subject: [PATCH 51/55] ntdll: Default to the bundle's MoltenVK ICD and
+Subject: [PATCH 51/59] ntdll: Default to the bundle's MoltenVK ICD and
  GStreamer plugins.
 
 A relocatable bundle started without the launcher script (Wine.app runs the loader directly)

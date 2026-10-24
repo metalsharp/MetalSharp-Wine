@@ -1,0 +1,131 @@
+From 813d9aa2f748d932dc4af23e4c6d9c0dadd88f0d Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Sat, 24 Oct 2026 06:03:21 -0600
+Subject: [PATCH] ntdll: optional QoS classes for Windows threads on macOS
+ (WINE_THREAD_QOS); loader: games app category
+
+---
+ dlls/ntdll/unix/loader.c       |  1 +
+ dlls/ntdll/unix/thread.c       | 46 ++++++++++++++++++++++++++++++++++
+ dlls/ntdll/unix/unix_private.h |  1 +
+ loader/wine_info.plist.in      |  2 ++
+ 4 files changed, 50 insertions(+)
+
+diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
+index b530fdcb1f7..f61cbb1684a 100644
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -2194,6 +2194,7 @@ static void apple_create_wine_thread( void *arg )
+ 
+     pthread_attr_init( &attr );
+     pthread_attr_setdetachstate( &attr, PTHREAD_CREATE_JOINABLE );
++    set_thread_qos_attr( &attr );
+     if (pthread_create( &thread, &attr, apple_wine_thread, NULL )) exit(1);
+     pthread_attr_destroy( &attr );
+ }
+diff --git a/dlls/ntdll/unix/thread.c b/dlls/ntdll/unix/thread.c
+index 070effd90f7..aaaa4d7d3ef 100644
+--- a/dlls/ntdll/unix/thread.c
++++ b/dlls/ntdll/unix/thread.c
+@@ -65,6 +65,7 @@
+ #ifdef __APPLE__
+ #include <CoreFoundation/CoreFoundation.h>
+ #include <mach/mach.h>
++#include <pthread/qos.h>
+ #endif
+ #ifdef __FreeBSD__
+ #include <sys/thr.h>
+@@ -1302,6 +1303,45 @@ static NTSTATUS create_server_thread( HANDLE *handle, struct thread_data **data_
+ }
+ 
+ 
++#ifdef __APPLE__
++/* macOS runs threads without a QoS class (every thread Wine creates) largely on the efficiency
++ * cores. WINE_THREAD_QOS=1 starts Windows threads at QoS user-initiated (2: user-interactive), and
++ * a thread changing its own priority gets the matching class. Off by default: on a fanless Mac that
++ * is already thermally limited it moves PEAK's main thread to the performance cores without
++ * raising its frame rate. */
++static int use_thread_qos(void)
++{
++    static int mode = -1;
++    if (mode == -1)
++    {
++        const char *str = getenv( "WINE_THREAD_QOS" );
++        mode = str ? atoi( str ) : 0;
++    }
++    return mode;
++}
++
++void set_thread_qos_attr( pthread_attr_t *attr )
++{
++    if (use_thread_qos())
++        pthread_attr_set_qos_class_np( attr, use_thread_qos() == 2 ? QOS_CLASS_USER_INTERACTIVE : QOS_CLASS_USER_INITIATED, 0 );
++}
++
++static void set_self_thread_qos( int base_priority )
++{
++    qos_class_t qos;
++
++    if (!use_thread_qos()) return;
++    if (base_priority >= THREAD_PRIORITY_ABOVE_NORMAL) qos = QOS_CLASS_USER_INTERACTIVE;
++    else if (base_priority == THREAD_PRIORITY_NORMAL)
++        qos = use_thread_qos() == 2 ? QOS_CLASS_USER_INTERACTIVE : QOS_CLASS_USER_INITIATED;
++    else if (base_priority == THREAD_PRIORITY_BELOW_NORMAL) qos = QOS_CLASS_DEFAULT;
++    else if (base_priority > THREAD_PRIORITY_IDLE) qos = QOS_CLASS_UTILITY;
++    else qos = QOS_CLASS_BACKGROUND;
++    pthread_set_qos_class_self_np( qos, 0 );
++}
++#endif
++
++
+ /***********************************************************************
+  *           spawn_thread
+  */
+@@ -1317,6 +1357,9 @@ static NTSTATUS spawn_thread( struct thread_data *data )
+     pthread_attr_setstack( &attr, get_kernel_stack( data ), kernel_stack_size );
+     pthread_attr_setguardsize( &attr, 0 );
+     pthread_attr_setscope( &attr, PTHREAD_SCOPE_SYSTEM ); /* force creating a kernel thread */
++#ifdef __APPLE__
++    set_thread_qos_attr( &attr );
++#endif
+     InterlockedIncrement( &nb_threads );
+     if (pthread_create( &pthread_id, &attr, (void * (*)(void *))server_init_thread, data ))
+     {
+@@ -2541,6 +2584,9 @@ NTSTATUS WINAPI NtSetInformationThread( HANDLE handle, THREADINFOCLASS class,
+             status = wine_server_call( req );
+         }
+         SERVER_END_REQ;
++#ifdef __APPLE__
++        if (!status && handle == GetCurrentThread()) set_self_thread_qos( *base_priority );
++#endif
+         return status;
+     }
+ 
+diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
+index 829cd4459cb..e3df2815db3 100644
+--- a/dlls/ntdll/unix/unix_private.h
++++ b/dlls/ntdll/unix/unix_private.h
+@@ -351,6 +351,7 @@ extern void virtual_fill_image_information( const struct pe_image_info *pe_info,
+                                             SECTION_IMAGE_INFORMATION *info );
+ extern void *get_builtin_so_handle( void *module );
+ #ifdef __APPLE__
++extern void set_thread_qos_attr( pthread_attr_t *attr );
+ /* WineForge-Internal: launcher-compat/process-classification-v1. */
+ struct launcher_policy
+ {
+diff --git a/loader/wine_info.plist.in b/loader/wine_info.plist.in
+index 5c01a9cdd61..d1fafe04345 100644
+--- a/loader/wine_info.plist.in
++++ b/loader/wine_info.plist.in
+@@ -24,6 +24,8 @@
+     <string>@PACKAGE_VERSION@</string>
+     <key>NSPrincipalClass</key>
+     <string>WineApplication</string>
++    <key>LSApplicationCategoryType</key>
++    <string>public.app-category.games</string>
+     <key>LSUIElement</key>
+     <string>1</string>
+ </dict>
+-- 
+2.54.0 (Apple Git-157)
+

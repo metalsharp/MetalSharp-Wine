@@ -1,7 +1,7 @@
 From b193b0c56d0b76c9a598cbdc3af6fa9a704a370d Mon Sep 17 00:00:00 2001
 From: Avery Felts <averyfelts@aol.com>
 Date: Thu, 22 Oct 2026 04:31:29 -0600
-Subject: [PATCH 11/55] ntdll: Optionally exec the loader with 4K pages on
+Subject: [PATCH 11/59] ntdll: Optionally exec the loader with 4K pages on
  macOS 26+ (WINE_4K_PAGES=1).
 
 Needs the cross-architecture entitlement, without it the kernel kills the

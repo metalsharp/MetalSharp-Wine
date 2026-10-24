@@ -1,0 +1,37 @@
+From f45eae307a93e05690106ae404620235f94e97ef Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Sat, 24 Oct 2026 00:58:55 -0600
+Subject: [PATCH 65/66] winemac: coalesce pending raw (GCMouse) mouse moves
+ like relative and absolute ones
+
+---
+ dlls/winemac.drv/cocoa_event.m | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/dlls/winemac.drv/cocoa_event.m b/dlls/winemac.drv/cocoa_event.m
+index b397493467f..be5aaa547b0 100644
+--- a/dlls/winemac.drv/cocoa_event.m
++++ b/dlls/winemac.drv/cocoa_event.m
+@@ -232,6 +232,19 @@ - (void) postEventObject:(MacDrvEvent*)event
+ 
+             lastEvent->event->mouse_moved.time_ms = event->event->mouse_moved.time_ms;
+         }
++        else if (event->event->type == MOUSE_MOVED_RAW &&
++                 event->event->deliver == INT_MAX &&
++                 (lastEvent = [events lastObject]) &&
++                 lastEvent->event->type == MOUSE_MOVED_RAW &&
++                 lastEvent->event->deliver == INT_MAX &&
++                 lastEvent->event->window == event->event->window)
++        {
++            /* Raw (GCMouse) deltas arrive at the mouse's report rate; each one would cost
++             * a server round trip, so sum the ones the app hasn't picked up yet. */
++            lastEvent->event->mouse_moved.x += event->event->mouse_moved.x;
++            lastEvent->event->mouse_moved.y += event->event->mouse_moved.y;
++            lastEvent->event->mouse_moved.time_ms = event->event->mouse_moved.time_ms;
++        }
+         else
+             [events addObject:event];
+ 
+-- 
+2.54.0 (Apple Git-157)
+

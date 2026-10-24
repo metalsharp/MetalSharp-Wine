@@ -1,0 +1,27 @@
+From 7cada4e0c4348e1775b2bcdecfa1b3a96c0162c5 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Sat, 24 Oct 2026 00:59:35 -0600
+Subject: [PATCH 66/66] ntdll: keep FEX's L2 lookup cache on by default
+ (FEX_DISABLEL2CACHE=0 unless set)
+
+---
+ dlls/ntdll/unix/loader.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
+index fafc0fbc978..b530fdcb1f7 100644
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -2409,6 +2409,9 @@ DECLSPEC_EXPORT void __wine_main( int argc, char *argv[] )
+      * TSO, and the emulated barriers cost more than they buy. FEX reads its configuration from the
+      * process environment; an explicit FEX_TSOENABLED still wins. */
+     setenv( "FEX_TSOENABLED", "0", 0 );
++    /* Keep FEX's second-level block lookup cache: games with large code footprints (Unity,
++     * Mono) otherwise take the slow lookup path on every L1 miss of an indirect branch. */
++    setenv( "FEX_DISABLEL2CACHE", "0", 0 );
+ #endif
+ 
+     init_paths();
+-- 
+2.54.0 (Apple Git-157)
+

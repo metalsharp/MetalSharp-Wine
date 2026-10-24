@@ -1,7 +1,7 @@
 From 39f98389a1f1f51c5ffc652d236e53732270e928 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Radim=20Vesel=C3=BD?= <Bright4042x@yahoo.com>
 Date: Mon, 19 Oct 2026 17:45:25 +0200
-Subject: [PATCH 39/55] winemac: manage native fullscreen and refresh it on
+Subject: [PATCH 39/59] winemac: manage native fullscreen and refresh it on
  activation
 
 Enter native fullscreen for eligible Win32 fullscreen windows on macOS 27.

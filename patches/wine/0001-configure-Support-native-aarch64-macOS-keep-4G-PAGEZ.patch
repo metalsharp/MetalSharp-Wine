@@ -1,7 +1,7 @@
 From e9f01892ec35acb0d25e12c64a7239c2816a8af4 Mon Sep 17 00:00:00 2001
 From: Avery Felts <averyfelts@aol.com>
 Date: Thu, 22 Oct 2026 00:55:36 -0600
-Subject: [PATCH 01/55] configure: Support native aarch64 macOS (keep 4G
+Subject: [PATCH 01/59] configure: Support native aarch64 macOS (keep 4G
  PAGEZERO, preserve x18 via SDK 12 build version, CGL OpenGL)
 
 ---

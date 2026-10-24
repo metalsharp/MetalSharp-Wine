@@ -1,7 +1,7 @@
 From c74b82db70cc1b9fd407cde97ca61d36cd9910dd Mon Sep 17 00:00:00 2001
 From: Avery Felts <averyfelts@aol.com>
 Date: Thu, 22 Oct 2026 15:05:43 -0600
-Subject: [PATCH 46/55] server: Initialize the thread's msync wait slot.
+Subject: [PATCH 46/59] server: Initialize the thread's msync wait slot.
 
 Thread objects are not zero-filled; the uninitialized field made get_msync_wait_slot
 return garbage.

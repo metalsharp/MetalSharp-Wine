@@ -1,7 +1,7 @@
 From b3e6de78c4227bdf15e5035012baa3703b67b51a Mon Sep 17 00:00:00 2001
 From: Avery Felts <averyfelts@aol.com>
 Date: Thu, 22 Oct 2026 13:53:45 -0600
-Subject: [PATCH 23/55] shell32: Pre-create KFDF_PRECREATE known folders.
+Subject: [PATCH 23/59] shell32: Pre-create KFDF_PRECREATE known folders.
 
 From WineForge/MetalSharp (Rockstar launcher).
 

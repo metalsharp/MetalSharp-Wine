@@ -1,0 +1,33 @@
+From b3ccd3db946c787f8ebfbd08ff13643ab1fb1f7e Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Fri, 23 Oct 2026 22:06:08 -0600
+Subject: [PATCH 62/62] ntdll: Take D3D10/11 from VKD3D-Proton's directory too,
+ when it has them.
+
+The D3D11 that VKD3D-Proton's DXGI (DXVK 2) belongs to, which creates D3D11 devices on D3D12 ones
+(D3D11On12CreateDevice).
+---
+ dlls/ntdll/unix/loader.c | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
+index ad1ae1d14d2..c46045145c3 100644
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -1282,10 +1282,11 @@ BOOL vkd3d_runtime_available(void)
+     return path != NULL;
+ }
+ 
+-/* D3D12 and DXGI from VKD3D-Proton; DXVK's D3D9/10/11 come from resolve_dxvk_pe_path() */
++/* D3D12 and DXGI from VKD3D-Proton, and D3D10/11 when it has them (the DXVK that its DXGI belongs to, which also
++ * makes D3D11 devices on D3D12 ones: D3D11On12CreateDevice); otherwise DXVK's, from resolve_dxvk_pe_path() */
+ static char *resolve_vkd3d_pe_path( const char *module )
+ {
+-    static const char *const names[] = { "d3d12.dll", "d3d12core.dll", "dxgi.dll" };
++    static const char *const names[] = { "d3d12.dll", "d3d12core.dll", "dxgi.dll", "d3d11.dll", "d3d10core.dll" };
+     const char *name = strrchr( module, '/' );
+     unsigned int i;
+ 
+-- 
+2.54.0 (Apple Git-157)
+

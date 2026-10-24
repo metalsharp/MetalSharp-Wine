@@ -4,7 +4,7 @@
 set -e
 S=${0:A:h}
 source $S/env.sh
-D=$ROOT/dist/metalsharp-wine-2.0-arm64
+D=$ROOT/dist/metalsharp-wine-2.1-arm64
 NATIVE=(ntdll kernelbase kernel32 advapi32 msvcrt ucrtbase ws2_32 gdi32 d3d9 d3d11 dxgi opengl32 vulkan-1
         winmm mmdevapi dsound mfplat mf bcrypt secur32 crypt32 winspool.drv user32 ole32 comctl32 dinput oleaut32 shell32 shlwapi)
 X64=(ntdll kernelbase kernel32 msvcrt ucrtbase msvcp140 advapi32 bcrypt crypt32 ws2_32 gdi32 user32 ole32 oleaut32 shlwapi shell32)

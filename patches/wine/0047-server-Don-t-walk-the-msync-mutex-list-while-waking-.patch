@@ -1,7 +1,7 @@
 From fea21cadf24329b8ec309ab54cede20777bb8d2b Mon Sep 17 00:00:00 2001
 From: Avery Felts <averyfelts@aol.com>
 Date: Thu, 22 Oct 2026 15:05:43 -0600
-Subject: [PATCH 47/55] server: Don't walk the msync mutex list while waking
+Subject: [PATCH 47/59] server: Don't walk the msync mutex list while waking
  waiters.
 
 abandon_mutexes() called wake_up() while iterating msync_mutexes. Waking a waiter can

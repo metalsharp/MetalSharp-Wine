@@ -1,7 +1,7 @@
 From 965b6238967d2baa9b2369cf769bbab10fce6b49 Mon Sep 17 00:00:00 2001
 From: Avery Felts <averyfelts@aol.com>
 Date: Thu, 22 Oct 2026 13:54:27 -0600
-Subject: [PATCH 31/55] winemac.drv: Don't switch the global macOS input source
+Subject: [PATCH 31/59] winemac.drv: Don't switch the global macOS input source
  for non-IME layouts.
 
 From WineForge/MetalSharp.

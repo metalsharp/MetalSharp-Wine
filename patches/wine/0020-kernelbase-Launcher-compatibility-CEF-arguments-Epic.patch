@@ -1,7 +1,7 @@
 From 4eda0ec76ae2179d5133deaa6f4c7933a00f3d5e Mon Sep 17 00:00:00 2001
 From: Avery Felts <averyfelts@aol.com>
 Date: Thu, 22 Oct 2026 13:53:44 -0600
-Subject: [PATCH 20/55] kernelbase: Launcher compatibility (CEF arguments, Epic
+Subject: [PATCH 20/59] kernelbase: Launcher compatibility (CEF arguments, Epic
  GPU setting, unchanged-refcount module lookup).
 
 From WineForge/MetalSharp: Steam, Rockstar Social Club, EA, Battle.net and Ubisoft CEF

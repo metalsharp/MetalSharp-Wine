@@ -1,7 +1,7 @@
 From d04fa24be0088ec2503e7a981913a3bc406dfeb3 Mon Sep 17 00:00:00 2001
 From: Avery Felts <averyfelts@aol.com>
 Date: Thu, 22 Oct 2026 13:53:45 -0600
-Subject: [PATCH 22/55] services: Longer pipe timeout; pass Epic's EOS session
+Subject: [PATCH 22/59] services: Longer pipe timeout; pass Epic's EOS session
  GUID to EpicOnlineServicesHost.
 
 From WineForge/MetalSharp.

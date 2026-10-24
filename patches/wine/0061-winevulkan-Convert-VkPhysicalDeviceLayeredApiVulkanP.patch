@@ -1,0 +1,88 @@
+From 551bdf499473d0afc689d5e4e863e9bc5c8c4ad9 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Fri, 23 Oct 2026 14:10:43 -0600
+Subject: [PATCH 61/62] winevulkan: Convert
+ VkPhysicalDeviceLayeredApiVulkanPropertiesKHR's properties chain on input.
+
+The struct is returned only, so its members got no input conversion, but its
+properties member is a VkPhysicalDeviceProperties2 with a pNext chain of its own.
+Its host copy kept an uninitialized pNext, which the output conversion then
+followed: vkGetPhysicalDeviceProperties2 crashed for VKD3D-Proton and DXVK
+(maintenance7's layered API list) in 64-bit programs.
+---
+ dlls/winevulkan/make_vulkan     | 12 ++++++++++--
+ dlls/winevulkan/vulkan_thunks.c |  6 ++++++
+ 2 files changed, 16 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/winevulkan/make_vulkan b/dlls/winevulkan/make_vulkan
+index 71a921ae835..e6d32134b99 100755
+--- a/dlls/winevulkan/make_vulkan
++++ b/dlls/winevulkan/make_vulkan
+@@ -1437,8 +1437,12 @@ class VkMember(VkVariable):
+             return False
+ 
+         if direction == Direction.INPUT:
+-            # returnedonly members don't needs input conversions
+-            if not self.is_pointer() and self.returnedonly:
++            # returnedonly members don't needs input conversions, except a struct with its own
++            # pNext chain (VkPhysicalDeviceLayeredApiVulkanPropertiesKHR::properties): its host
++            # copy needs the chain set up, or the output conversion follows an uninitialized pNext
++            if not self.is_pointer() and self.returnedonly and \
++               not (self.is_struct() and any(m.is_next() for m in self.struct.members) and
++                    self.struct.needs_conversion(conv, unwrap, Direction.OUTPUT, is_const)):
+                 return False
+             # pointer arrays always need input conversion
+             if conv and self.is_dynamic_array() and self.pointer_array:
+@@ -2430,8 +2434,12 @@ class Generator(object):
+         f.write("    }\n")
+         f.write("}\n\n")
+ 
++        # VkPhysicalDeviceLayeredApiVulkanPropertiesKHR contains a VkPhysicalDeviceProperties2,
++        # which converts its chain both ways
++        f.write("static void convert_VkPhysicalDeviceProperties2_win32_to_host(struct conversion_context *ctx, const VkPhysicalDeviceProperties232 *in, VkPhysicalDeviceProperties2 *out);\n")
+         f.write("static void convert_VkPhysicalDeviceProperties2_host_to_win32(const VkPhysicalDeviceProperties2 *in, VkPhysicalDeviceProperties232 *out);\n")
+         f.write("#ifdef _WIN64\n")
++        f.write("static void convert_VkPhysicalDeviceProperties2_win64_to_host(struct conversion_context *ctx, const VkPhysicalDeviceProperties2 *in, VkPhysicalDeviceProperties2 *out);\n")
+         f.write("static void convert_VkPhysicalDeviceProperties2_host_to_win64(const VkPhysicalDeviceProperties2 *in, VkPhysicalDeviceProperties2 *out);\n")
+         f.write("#endif\n")
+ 
+diff --git a/dlls/winevulkan/vulkan_thunks.c b/dlls/winevulkan/vulkan_thunks.c
+index 5703953894c..650e4b273bd 100644
+--- a/dlls/winevulkan/vulkan_thunks.c
++++ b/dlls/winevulkan/vulkan_thunks.c
+@@ -11140,8 +11140,10 @@ static uint64_t wine_vk_unwrap_handle(uint32_t type, uint64_t handle)
+     }
+ }
+ 
++static void convert_VkPhysicalDeviceProperties2_win32_to_host(struct conversion_context *ctx, const VkPhysicalDeviceProperties232 *in, VkPhysicalDeviceProperties2 *out);
+ static void convert_VkPhysicalDeviceProperties2_host_to_win32(const VkPhysicalDeviceProperties2 *in, VkPhysicalDeviceProperties232 *out);
+ #ifdef _WIN64
++static void convert_VkPhysicalDeviceProperties2_win64_to_host(struct conversion_context *ctx, const VkPhysicalDeviceProperties2 *in, VkPhysicalDeviceProperties2 *out);
+ static void convert_VkPhysicalDeviceProperties2_host_to_win64(const VkPhysicalDeviceProperties2 *in, VkPhysicalDeviceProperties2 *out);
+ #endif
+ static void convert_VkAcquireNextImageInfoKHR_win32_to_unwrapped_host(const VkAcquireNextImageInfoKHR32 *in, VkAcquireNextImageInfoKHR *out)
+@@ -40382,8 +40384,10 @@ static void convert_VkPhysicalDeviceLayeredApiPropertiesKHR_win64_to_host(struct
+         case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_LAYERED_API_VULKAN_PROPERTIES_KHR:
+         {
+             VkPhysicalDeviceLayeredApiVulkanPropertiesKHR *out_ext = conversion_context_alloc(ctx, sizeof(*out_ext));
++            const VkPhysicalDeviceLayeredApiVulkanPropertiesKHR *in_ext = (const VkPhysicalDeviceLayeredApiVulkanPropertiesKHR *)in_header;
+             out_ext->sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_LAYERED_API_VULKAN_PROPERTIES_KHR;
+             out_ext->pNext = NULL;
++            convert_VkPhysicalDeviceProperties2_win64_to_host(ctx, &in_ext->properties, &out_ext->properties);
+             out_header->pNext = (void *)out_ext;
+             out_header = (void *)out_ext;
+             break;
+@@ -43211,8 +43215,10 @@ static void convert_VkPhysicalDeviceLayeredApiPropertiesKHR_win32_to_host(struct
+         case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_LAYERED_API_VULKAN_PROPERTIES_KHR:
+         {
+             VkPhysicalDeviceLayeredApiVulkanPropertiesKHR *out_ext = conversion_context_alloc(ctx, sizeof(*out_ext));
++            const VkPhysicalDeviceLayeredApiVulkanPropertiesKHR32 *in_ext = (const VkPhysicalDeviceLayeredApiVulkanPropertiesKHR32 *)in_header;
+             out_ext->sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_LAYERED_API_VULKAN_PROPERTIES_KHR;
+             out_ext->pNext = NULL;
++            convert_VkPhysicalDeviceProperties2_win32_to_host(ctx, &in_ext->properties, &out_ext->properties);
+             out_header->pNext = (void *)out_ext;
+             out_header = (void *)out_ext;
+             break;
+-- 
+2.54.0 (Apple Git-157)
+

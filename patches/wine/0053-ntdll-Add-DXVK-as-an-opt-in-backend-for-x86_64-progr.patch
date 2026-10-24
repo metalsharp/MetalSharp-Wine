@@ -1,7 +1,7 @@
 From cc42b9543a87519ccdce74f74d77ccc784fb00fd Mon Sep 17 00:00:00 2001
 From: Avery Felts <averyfelts@aol.com>
 Date: Thu, 22 Oct 2026 18:55:24 -0600
-Subject: [PATCH 53/55] ntdll: Add DXVK as an opt-in backend for x86_64
+Subject: [PATCH 53/59] ntdll: Add DXVK as an opt-in backend for x86_64
  programs; CJK font replacements; quiet MoltenVK.
 
 GRAPHICS_BACKEND=dxvk loads DXVK 1.10.3 (macOS) d3d9/d3d10core/d3d11/dxgi from

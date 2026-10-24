@@ -1,0 +1,266 @@
+From f54277076b2465dcf10baf651274d9386674cd2a Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Sat, 24 Oct 2026 07:55:54 -0600
+Subject: [PATCH] ntdll: msync: absolute timeouts, single-handle multiple
+ waits, duplicated handles, and untimed event/semaphore waits stay in process
+
+---
+ dlls/ntdll/unix/msync.c  | 72 +++++++++++++++++++++++++++++++++++++---
+ dlls/ntdll/unix/server.c | 23 +++++++++++++
+ 2 files changed, 90 insertions(+), 5 deletions(-)
+
+diff --git a/dlls/ntdll/unix/msync.c b/dlls/ntdll/unix/msync.c
+index 040ea32905f..45a5ee269f6 100644
+--- a/dlls/ntdll/unix/msync.c
++++ b/dlls/ntdll/unix/msync.c
+@@ -53,7 +53,12 @@ WINE_DEFAULT_DEBUG_CHANNEL(msync);
+ #define MSYNC_CACHE_BLOCK_SIZE  (65536 / sizeof(struct msync_cache_entry))
+ #define MSYNC_CACHE_ENTRIES     128
+ #define MSYNC_TICKS_PER_SEC     10000000LL
++#define MSYNC_TICKS_1601_TO_1970 ((369 * 365 + 89) * 86400 * MSYNC_TICKS_PER_SEC)
+ #define MSYNC_SPIN_LIMIT        32
++/* Waits without a timeout wake up this often to re-check that the object is still theirs to wait on in
++ * process. Handing such a wait to the server instead put every wait longer than this (a game's main thread
++ * pacing its frames) and then every signal of its object on the server; only mutex waits still do, since
++ * only the server sees a mutex abandoned. */
+ #define MSYNC_BLOCKING_FALLBACK_NS 10000000ULL
+ 
+ #define MSYNC_KIND_UNKNOWN      0
+@@ -1112,6 +1117,21 @@ static void get_relative_timeout_abs( const LARGE_INTEGER *timeout, struct times
+     abstime->tv_nsec = nsec % 1000000000;
+ }
+ 
++/* The waits below take relative timeouts. An absolute one (100 ns ticks since 1601) becomes the time left
++ * until then, measured on the same wall clock as their deadlines; TIMEOUT_INFINITE means no timeout. */
++static const LARGE_INTEGER *msync_relative_timeout( const LARGE_INTEGER *timeout, LARGE_INTEGER *relative )
++{
++    struct timeval now;
++    LONGLONG now_ticks;
++
++    if (!timeout || timeout->QuadPart <= 0) return timeout;
++    if (timeout->QuadPart == TIMEOUT_INFINITE) return NULL;
++    gettimeofday( &now, NULL );
++    now_ticks = now.tv_sec * MSYNC_TICKS_PER_SEC + now.tv_usec * 10 + MSYNC_TICKS_1601_TO_1970;
++    relative->QuadPart = timeout->QuadPart > now_ticks ? now_ticks - timeout->QuadPart : 0;
++    return relative;
++}
++
+ static void get_now_abs( struct timespec *now )
+ {
+     struct timeval tv;
+@@ -1138,6 +1158,7 @@ static BOOL msync_adaptive_spin( unsigned int *attempts )
+ 
+ NTSTATUS msync_wait_event( HANDLE handle, BOOLEAN alertable, const LARGE_INTEGER *timeout )
+ {
++    LARGE_INTEGER relative_timeout;
+     struct msync_cache_entry *entry;
+     struct msync_shared_state *state;
+     struct timespec deadline;
+@@ -1147,6 +1168,7 @@ NTSTATUS msync_wait_event( HANDLE handle, BOOLEAN alertable, const LARGE_INTEGER
+     NTSTATUS ret;
+ 
+     if (!do_msync()) return STATUS_NOT_IMPLEMENTED;
++    timeout = msync_relative_timeout( timeout, &relative_timeout );
+ 
+     kind = msync_get_handle_kind( handle );
+     if (kind && kind != MSYNC_KIND_EVENT) return STATUS_NOT_IMPLEMENTED;
+@@ -1230,7 +1252,7 @@ NTSTATUS msync_wait_event( HANDLE handle, BOOLEAN alertable, const LARGE_INTEGER
+         ret = msync_wait_address( &state->low, 0, wait_timeout_ptr );
+         if (ret == STATUS_TIMEOUT)
+         {
+-            if (!timeout) return STATUS_NOT_IMPLEMENTED;
++            if (!timeout) continue;  /* re-validate the state, then keep waiting here */
+             break;
+         }
+         if (ret == STATUS_NOT_IMPLEMENTED)
+@@ -1243,6 +1265,7 @@ NTSTATUS msync_wait_event( HANDLE handle, BOOLEAN alertable, const LARGE_INTEGER
+ 
+ NTSTATUS msync_wait_mutex( HANDLE handle, BOOLEAN alertable, const LARGE_INTEGER *timeout )
+ {
++    LARGE_INTEGER relative_timeout;
+     struct msync_cache_entry *entry;
+     struct msync_shared_state *state;
+     struct timespec deadline;
+@@ -1253,6 +1276,7 @@ NTSTATUS msync_wait_mutex( HANDLE handle, BOOLEAN alertable, const LARGE_INTEGER
+     NTSTATUS ret;
+ 
+     if (!do_msync()) return STATUS_NOT_IMPLEMENTED;
++    timeout = msync_relative_timeout( timeout, &relative_timeout );
+ 
+     kind = msync_get_handle_kind( handle );
+     if (kind && kind != MSYNC_KIND_MUTEX) return STATUS_NOT_IMPLEMENTED;
+@@ -1343,7 +1367,7 @@ NTSTATUS msync_wait_mutex( HANDLE handle, BOOLEAN alertable, const LARGE_INTEGER
+         ret = msync_wait_address( &state->low, owner, wait_timeout_ptr );
+         if (ret == STATUS_TIMEOUT)
+         {
+-            if (!timeout) return STATUS_NOT_IMPLEMENTED;
++            if (!timeout) return STATUS_NOT_IMPLEMENTED;  /* only the server sees an owner die and abandon it */
+             return STATUS_TIMEOUT;
+         }
+         if (ret == STATUS_NOT_IMPLEMENTED)
+@@ -1356,6 +1380,7 @@ NTSTATUS msync_wait_mutex( HANDLE handle, BOOLEAN alertable, const LARGE_INTEGER
+ 
+ NTSTATUS msync_wait_semaphore( HANDLE handle, BOOLEAN alertable, const LARGE_INTEGER *timeout )
+ {
++    LARGE_INTEGER relative_timeout;
+     struct msync_cache_entry *entry;
+     struct msync_shared_state *state;
+     struct timespec deadline;
+@@ -1365,6 +1390,7 @@ NTSTATUS msync_wait_semaphore( HANDLE handle, BOOLEAN alertable, const LARGE_INT
+     NTSTATUS ret;
+ 
+     if (!do_msync()) return STATUS_NOT_IMPLEMENTED;
++    timeout = msync_relative_timeout( timeout, &relative_timeout );
+ 
+     kind = msync_get_handle_kind( handle );
+     if (kind && kind != MSYNC_KIND_SEMAPHORE) return STATUS_NOT_IMPLEMENTED;
+@@ -1448,7 +1474,7 @@ NTSTATUS msync_wait_semaphore( HANDLE handle, BOOLEAN alertable, const LARGE_INT
+         ret = msync_wait_address( &state->low, 0, wait_timeout_ptr );
+         if (ret == STATUS_TIMEOUT)
+         {
+-            if (!timeout) return STATUS_NOT_IMPLEMENTED;
++            if (!timeout) continue;  /* re-validate the state, then keep waiting here */
+             break;
+         }
+         if (ret == STATUS_NOT_IMPLEMENTED)
+@@ -1661,6 +1687,7 @@ static void refresh_waitall_mutex_generations( const HANDLE *handles, struct msy
+ NTSTATUS msync_wait_multiple( DWORD count, const HANDLE *handles, WAIT_TYPE type,
+                                 BOOLEAN alertable, const LARGE_INTEGER *timeout )
+ {
++    LARGE_INTEGER relative_timeout;
+     struct msync_cache_entry *entry;
+     struct msync_shared_state *states[64];
+     unsigned int shm_idxs[64], generations[64];
+@@ -1670,6 +1697,7 @@ NTSTATUS msync_wait_multiple( DWORD count, const HANDLE *handles, WAIT_TYPE type
+     NTSTATUS ret;
+ 
+     if (!do_msync()) return STATUS_NOT_IMPLEMENTED;
++    timeout = msync_relative_timeout( timeout, &relative_timeout );
+ 
+     if (type != WaitAny && type != WaitAll)
+         return STATUS_NOT_IMPLEMENTED;
+@@ -1683,7 +1711,24 @@ NTSTATUS msync_wait_multiple( DWORD count, const HANDLE *handles, WAIT_TYPE type
+         TRACE( "fallback multiple wait absolute timeout %s\n", wine_dbgstr_longlong(timeout->QuadPart) );
+         return STATUS_NOT_IMPLEMENTED;
+     }
+-    if (count < 2 || count > ARRAY_SIZE(states))
++    if (count == 1)
++    {
++        /* One handle: WaitAny and WaitAll are the same single-object wait. */
++        if ((ret = msync_wait_event( handles[0], alertable, timeout )) != STATUS_NOT_IMPLEMENTED) return ret;
++        if ((ret = msync_wait_semaphore( handles[0], alertable, timeout )) != STATUS_NOT_IMPLEMENTED) return ret;
++        if ((ret = msync_wait_mutex( handles[0], alertable, timeout )) != STATUS_NOT_IMPLEMENTED) return ret;
++        if (TRACE_ON(msync))
++        {
++            char buf[256];
++            OBJECT_TYPE_INFORMATION *info = (OBJECT_TYPE_INFORMATION *)buf;
++            if (!NtQueryObject( handles[0], ObjectTypeInformation, info, sizeof(buf), NULL ))
++                TRACE( "fallback single-handle multiple wait handle %p type %s kind %u alertable %u\n", handles[0],
++                       debugstr_wn( info->TypeName.Buffer, info->TypeName.Length / sizeof(WCHAR) ),
++                       msync_get_handle_kind( handles[0] ), alertable );
++        }
++        return STATUS_NOT_IMPLEMENTED;
++    }
++    if (count > ARRAY_SIZE(states))
+     {
+         TRACE( "fallback multiple wait unsupported count %lu\n", (unsigned long)count );
+         return STATUS_NOT_IMPLEMENTED;
+@@ -1712,6 +1757,14 @@ NTSTATUS msync_wait_multiple( DWORD count, const HANDLE *handles, WAIT_TYPE type
+             ret = get_local_mutex_state_locked( handles[i], SYNCHRONIZE, &entry );
+             break;
+         default:
++            if (TRACE_ON(msync))
++            {
++                char buf[256];
++                OBJECT_TYPE_INFORMATION *info = (OBJECT_TYPE_INFORMATION *)buf;
++                if (!NtQueryObject( handles[i], ObjectTypeInformation, info, sizeof(buf), NULL ))
++                    TRACE( "fallback multiple wait handle %p type %s count %u\n", handles[i],
++                           debugstr_wn( info->TypeName.Buffer, info->TypeName.Length / sizeof(WCHAR) ), (unsigned int)count );
++            }
+             TRACE( "fallback multiple wait handle %p unknown kind %u\n", handles[i], kind );
+             ret = STATUS_NOT_IMPLEMENTED;
+             break;
+@@ -1720,7 +1773,11 @@ NTSTATUS msync_wait_multiple( DWORD count, const HANDLE *handles, WAIT_TYPE type
+         {
+             unlock_msync_cache();
+             if (ret == STATUS_NOT_IMPLEMENTED)
++            {
++                TRACE( "fallback multiple wait handle %p kind %u not cached (%lu of %lu)\n", handles[i], kind,
++                       (unsigned long)i, (unsigned long)count );
+                 return STATUS_NOT_IMPLEMENTED;
++            }
+             return ret;
+         }
+         state = entry->state.ptr;
+@@ -1897,7 +1954,12 @@ NTSTATUS msync_wait_multiple( DWORD count, const HANDLE *handles, WAIT_TYPE type
+ 
+         if (ret == STATUS_TIMEOUT)
+         {
+-            if (!timeout) return STATUS_NOT_IMPLEMENTED;
++            if (!timeout)
++            {
++                for (i = 0; i < count; i++)
++                    if (types[i] == INPROC_SYNC_MUTEX) return STATUS_NOT_IMPLEMENTED;  /* see msync_wait_mutex */
++                continue;  /* re-validate the state, then keep waiting here */
++            }
+             return STATUS_TIMEOUT;
+         }
+         if (ret == STATUS_NOT_IMPLEMENTED)
+diff --git a/dlls/ntdll/unix/server.c b/dlls/ntdll/unix/server.c
+index fa9138d2bf6..d7c4696123f 100644
+--- a/dlls/ntdll/unix/server.c
++++ b/dlls/ntdll/unix/server.c
+@@ -77,6 +77,7 @@
+ #include "winioctl.h"
+ #include "wine/server.h"
+ #include "wine/debug.h"
++#include "msync.h"
+ #include "unix_private.h"
+ #include "ddk/wdm.h"
+ 
+@@ -1847,6 +1848,9 @@ NTSTATUS WINAPI NtDuplicateObject( HANDLE source_process, HANDLE source, HANDLE
+     sigset_t sigset;
+     unsigned int ret;
+     int fd = -1;
++#ifdef __APPLE__
++    int msync_kind = 0;
++#endif
+ 
+     if (dest) *dest = 0;
+ 
+@@ -1871,6 +1875,17 @@ NTSTATUS WINAPI NtDuplicateObject( HANDLE source_process, HANDLE source, HANDLE
+         return result.dup_handle.status;
+     }
+ 
++#ifdef __APPLE__
++    /* A copy in this process of an event, mutex or semaphore msync handles is handled the same way
++     * (e.g. the frame latency waitable a D3D12 swap chain hands out is a duplicate). */
++    if (do_msync() && source_process == NtCurrentProcess() && dest_process == NtCurrentProcess())
++    {
++        if (msync_handle_is_local_event( source )) msync_kind = 1;
++        else if (msync_handle_is_local_semaphore( source )) msync_kind = 2;
++        else if (msync_handle_is_local_mutex( source )) msync_kind = 3;
++    }
++#endif
++
+     /* hold fd_cache_mutex to prevent the fd from being added again between the
+      * call to remove_fd_from_cache and close_handle */
+     server_enter_uninterrupted_section( &fd_cache_mutex, &sigset );
+@@ -1900,6 +1915,14 @@ NTSTATUS WINAPI NtDuplicateObject( HANDLE source_process, HANDLE source, HANDLE
+ 
+     server_leave_uninterrupted_section( &fd_cache_mutex, &sigset );
+ 
++#ifdef __APPLE__
++    if (!ret && dest && *dest)
++    {
++        if (msync_kind == 1) msync_mark_local_event( *dest );
++        else if (msync_kind == 2) msync_mark_local_semaphore( *dest );
++        else if (msync_kind == 3) msync_mark_local_mutex( *dest );
++    }
++#endif
+     if (fd != -1) close( fd );
+     return ret;
+ }
+-- 
+2.54.0 (Apple Git-157)
+

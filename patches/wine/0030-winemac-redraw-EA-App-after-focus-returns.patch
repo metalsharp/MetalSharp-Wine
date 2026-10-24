@@ -1,7 +1,7 @@
 From f5d53ec753d28d4ebccd12190d525df0fe36dfd2 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Radim=20Vesel=C3=BD?= <Bright4042x@yahoo.com>
 Date: Thu, 27 Aug 2026 19:42:51 +0200
-Subject: [PATCH 30/55] winemac: redraw EA App after focus returns
+Subject: [PATCH 30/59] winemac: redraw EA App after focus returns
 
 (cherry picked from commit b8b82808c2949f2ba2feb312fbb94f9d71a9d4de)
 ---

@@ -1,7 +1,7 @@
 From 99662cf266dcffcd6b43bdd28658d244a1e043db Mon Sep 17 00:00:00 2001
 From: Avery Felts <averyfelts@aol.com>
 Date: Thu, 22 Oct 2026 03:30:06 -0600
-Subject: [PATCH 04/55] ntdll: Synthesize ARM64 ID registers on macOS; use FEX
+Subject: [PATCH 04/59] ntdll: Synthesize ARM64 ID registers on macOS; use FEX
  as the x86 emulators.
 
 macOS doesn't let EL0 read the ID registers, so build them from the

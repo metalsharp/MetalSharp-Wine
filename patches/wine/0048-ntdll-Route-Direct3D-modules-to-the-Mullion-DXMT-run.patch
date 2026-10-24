@@ -1,7 +1,7 @@
 From 55dcec0c2f353ae5211d123587ea229f75253a63 Mon Sep 17 00:00:00 2001
 From: Avery Felts <averyfelts@aol.com>
 Date: Thu, 22 Oct 2026 16:07:42 -0600
-Subject: [PATCH 48/55] ntdll: Route Direct3D modules to the Mullion (DXMT)
+Subject: [PATCH 48/59] ntdll: Route Direct3D modules to the Mullion (DXMT)
  runtime per process.
 
 From WineForge (graphics_policy, launcher_policy, dxmt_loader), adapted for arm64 hosts:

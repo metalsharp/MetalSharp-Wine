@@ -1,7 +1,7 @@
 From d1ee92458b160f5567dac9a54ca3ca8029536562 Mon Sep 17 00:00:00 2001
 From: Avery Felts <averyfelts@aol.com>
 Date: Thu, 22 Oct 2026 14:28:23 -0600
-Subject: [PATCH 45/55] configure: Restore WINE_EXTERNAL for steam.exe; revert
+Subject: [PATCH 45/59] configure: Restore WINE_EXTERNAL for steam.exe; revert
  the jsoncpp edits.
 
 tools/make_makefiles had dropped the WINE_EXTERNAL line, which is what lets makedep

@@ -1,7 +1,7 @@
 From 04889228ad6679bb2f44c5b75b914167efe6acd8 Mon Sep 17 00:00:00 2001
 From: Avery Felts <averyfelts@aol.com>
 Date: Thu, 22 Oct 2026 13:53:45 -0600
-Subject: [PATCH 27/55] faudio: Fix heap corruption when voices are rerouted.
+Subject: [PATCH 27/59] faudio: Fix heap corruption when voices are rerouted.
 
 From WineForge/MetalSharp (Wolfenstein: The New Order).
 

@@ -1,7 +1,7 @@
 From 7d97c176261043133846dbccd7c91e0f4e8796dc Mon Sep 17 00:00:00 2001
 From: Avery Felts <averyfelts@aol.com>
 Date: Thu, 22 Oct 2026 04:03:03 -0600
-Subject: [PATCH 07/55] ntdll: Emulate stores into a W+X host page from code in
+Subject: [PATCH 07/59] ntdll: Emulate stores into a W+X host page from code in
  that page on arm64 macOS.
 
 Flipping the page between RX and RW can never complete such a store. Stores,

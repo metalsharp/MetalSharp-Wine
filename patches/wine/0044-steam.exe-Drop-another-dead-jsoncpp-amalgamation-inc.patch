@@ -1,7 +1,7 @@
 From 9b428ad3531a63bcaacffe09aef48a4b80fbe1bd Mon Sep 17 00:00:00 2001
 From: Avery Felts <averyfelts@aol.com>
 Date: Thu, 22 Oct 2026 14:27:28 -0600
-Subject: [PATCH 44/55] steam.exe: Drop another dead jsoncpp amalgamation
+Subject: [PATCH 44/59] steam.exe: Drop another dead jsoncpp amalgamation
  include.
 
 ---

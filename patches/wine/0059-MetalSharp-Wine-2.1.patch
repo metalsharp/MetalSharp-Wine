@@ -1,0 +1,19 @@
+From 8796df695f8978307e5ad74b91d13accf5667ae7 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Fri, 23 Oct 2026 12:04:04 -0600
+Subject: [PATCH 59/59] MetalSharp Wine 2.1.
+
+---
+ METALSHARP_VERSION | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/METALSHARP_VERSION b/METALSHARP_VERSION
+index cd5ac039d67..879b416e609 100644
+--- a/METALSHARP_VERSION
++++ b/METALSHARP_VERSION
+@@ -1 +1 @@
+-2.0
++2.1
+-- 
+2.54.0 (Apple Git-157)
+

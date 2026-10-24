@@ -1,7 +1,7 @@
 From c76cfb1f5493789f6eab1ed8b0ccd9cbac186019 Mon Sep 17 00:00:00 2001
 From: Avery Felts <averyfelts@aol.com>
 Date: Thu, 22 Oct 2026 13:53:45 -0600
-Subject: [PATCH 26/55] winegstreamer: Refuse the D3D manager when NV12/P010
+Subject: [PATCH 26/59] winegstreamer: Refuse the D3D manager when NV12/P010
  textures are unsupported.
 
 From WineForge/MetalSharp.

@@ -1,7 +1,7 @@
 From 295ff9f2fd085e53d15c43b576e8a668cb5795a6 Mon Sep 17 00:00:00 2001
 From: Avery Felts <averyfelts@aol.com>
 Date: Thu, 22 Oct 2026 04:01:21 -0600
-Subject: [PATCH 06/55] ntdll: Don't request host execute permission for
+Subject: [PATCH 06/59] ntdll: Don't request host execute permission for
  emulated x86 images on aarch64.
 
 ---

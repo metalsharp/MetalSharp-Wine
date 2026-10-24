@@ -1,7 +1,7 @@
 From 74ba6f7c67feda60b54f11c3e5f48c0a6d5e8c58 Mon Sep 17 00:00:00 2001
 From: Avery Felts <averyfelts@aol.com>
 Date: Thu, 22 Oct 2026 14:26:48 -0600
-Subject: [PATCH 43/55] steam.exe: Drop a dead jsoncpp include that makedep
+Subject: [PATCH 43/59] steam.exe: Drop a dead jsoncpp include that makedep
  cannot resolve.
 
 The include sits in a !JSON_IS_AMALGAMATION block of the amalgamated source; makedep

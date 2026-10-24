@@ -1,7 +1,7 @@
 From 6a57685e04240ae6e7625ffe222b4296aa0f97ec Mon Sep 17 00:00:00 2001
 From: Avery Felts <averyfelts@aol.com>
 Date: Thu, 22 Oct 2026 06:52:38 -0600
-Subject: [PATCH 15/55] ntdll: Don't apply executable memory write exceptions
+Subject: [PATCH 15/59] ntdll: Don't apply executable memory write exceptions
  to ARM64EC code allocations.
 
 They are the x64 emulator's JIT code; tracking them made the emulator's own

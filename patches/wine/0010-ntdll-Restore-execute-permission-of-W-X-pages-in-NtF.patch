@@ -1,7 +1,7 @@
 From 40ffdb1ab1135035443e284105f4203edb3ace8e Mon Sep 17 00:00:00 2001
 From: Avery Felts <averyfelts@aol.com>
 Date: Thu, 22 Oct 2026 04:27:11 -0600
-Subject: [PATCH 10/55] ntdll: Restore execute permission of W+X pages in
+Subject: [PATCH 10/59] ntdll: Restore execute permission of W+X pages in
  NtFlushInstructionCache on arm64 macOS.
 
 JITs flush the instruction cache after writing code; switching emulated W+X

@@ -1,7 +1,7 @@
 From cf14e410d442ad7b116547f65be5fd1710a01304 Mon Sep 17 00:00:00 2001
 From: Avery Felts <averyfelts@aol.com>
 Date: Thu, 22 Oct 2026 03:33:34 -0600
-Subject: [PATCH 05/55] ntdll: Probe for the low 4G before mapping the shared
+Subject: [PATCH 05/59] ntdll: Probe for the low 4G before mapping the shared
  user data on arm64 macOS.
 
 ---

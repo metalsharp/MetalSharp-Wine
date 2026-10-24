@@ -1,7 +1,7 @@
 From b1897a8a860440b1e6fc19e6e0c16cb2eb5077a4 Mon Sep 17 00:00:00 2001
 From: Avery Felts <averyfelts@aol.com>
 Date: Thu, 22 Oct 2026 10:08:09 -0600
-Subject: [PATCH 18/55] ntdll: Use the low 4G when the process has the
+Subject: [PATCH 18/59] ntdll: Use the low 4G when the process has the
  cross-architecture entitlement.
 
 With com.apple.developer.cross-architecture-support, arm64 macOS turns PAGEZERO into

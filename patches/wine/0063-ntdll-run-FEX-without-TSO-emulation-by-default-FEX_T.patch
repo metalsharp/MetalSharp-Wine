@@ -1,0 +1,31 @@
+From 37b8805c0dbe1f7376898f4349cd9aefd3995039 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Sat, 24 Oct 2026 00:43:01 -0600
+Subject: [PATCH 63/66] ntdll: run FEX without TSO emulation by default
+ (FEX_TSOENABLED=0 unless set)
+
+---
+ dlls/ntdll/unix/loader.c | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
+index c46045145c3..fafc0fbc978 100644
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -2404,6 +2404,13 @@ DECLSPEC_EXPORT void __wine_main( int argc, char *argv[] )
+     main_argc = argc;
+     main_argv = argv;
+ 
++#ifdef __aarch64__
++    /* MetalSharp Wine runs x86 code through FEX without TSO emulation: macOS offers no hardware
++     * TSO, and the emulated barriers cost more than they buy. FEX reads its configuration from the
++     * process environment; an explicit FEX_TSOENABLED still wins. */
++    setenv( "FEX_TSOENABLED", "0", 0 );
++#endif
++
+     init_paths();
+     if (!getenv( "WINELOADERNOEXEC" ) || argc <= 1) check_command_line( argc, argv );
+     unsetenv( "WINELOADERNOEXEC" );
+-- 
+2.54.0 (Apple Git-157)
+

@@ -1,7 +1,7 @@
 From ff672f7a52b718afcb757bd0a6912e2afd0fe1f9 Mon Sep 17 00:00:00 2001
 From: Avery Felts <averyfelts@aol.com>
 Date: Thu, 22 Oct 2026 03:17:29 -0600
-Subject: [PATCH 02/55] winegcc: Always pass section alignment for ARM64EC
+Subject: [PATCH 02/59] winegcc: Always pass section alignment for ARM64EC
  links.
 
 The alignment link probe always fails for ARM64EC because the probe's entry

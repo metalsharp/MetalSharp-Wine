@@ -1,0 +1,73 @@
+From 691fe509ecea70d79784f6d86a815def081df4bf Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Fri, 23 Oct 2026 11:54:30 -0600
+Subject: [PATCH 57/59] winemac.drv: Copy the app icon entries before
+ converting them.
+
+The app icon callback returns its entries on the PE callback's stack. Each
+icon conversion calls back into the PE side (DestroyCursor among others),
+which reuses that stack, so on an ARM64EC process only the first three
+entries (16, 24 and 32 pixels) survived and the Dock showed a scaled-up
+32-pixel icon. Copy the result before using it.
+---
+ dlls/winemac.drv/image.c | 22 +++++++++++++++++-----
+ 1 file changed, 17 insertions(+), 5 deletions(-)
+
+diff --git a/dlls/winemac.drv/image.c b/dlls/winemac.drv/image.c
+index 7fb45f357a0..9eee0152d0b 100644
+--- a/dlls/winemac.drv/image.c
++++ b/dlls/winemac.drv/image.c
+@@ -249,26 +249,36 @@ CFArrayRef create_app_icon_images(void)
+ {
+     struct dispatch_callback_params params = {.callback = app_icon_callback};
+     CFMutableArrayRef images = NULL;
+-    struct app_icon_entry *entries;
++    struct app_icon_entry *result, *entries;
+     ULONG ret_len;
+     unsigned count;
+     int i;
+ 
+     TRACE("()\n");
+ 
+-    if (KeUserDispatchCallback(&params, sizeof(params), (void**)&entries, &ret_len) ||
+-        (ret_len % sizeof(*entries)))
++    if (KeUserDispatchCallback(&params, sizeof(params), (void**)&result, &ret_len) ||
++        (ret_len % sizeof(*result)))
+     {
+         WARN("incorrect callback result\n");
+         return NULL;
+     }
+-    count = ret_len / sizeof(*entries);
+-    if (!count || !entries) return NULL;
++    count = ret_len / sizeof(*result);
++    if (!count || !result) return NULL;
++
++    /* The result lives on the callback's stack, which the icon conversions below reuse when
++     * they call back into the PE side; copy it first, or only the first few icons survive. */
++    if (!(entries = malloc(ret_len)))
++    {
++        WARN("failed to copy icon entries\n");
++        return NULL;
++    }
++    memcpy(entries, result, ret_len);
+ 
+     images = CFArrayCreateMutable(NULL, count, &kCFTypeArrayCallBacks);
+     if (!images)
+     {
+         WARN("failed to create images array\n");
++        free(entries);
+         return NULL;
+     }
+ 
+@@ -287,6 +297,8 @@ CFArrayRef create_app_icon_images(void)
+         }
+     }
+ 
++    free(entries);
++
+     if (images && !CFArrayGetCount(images))
+     {
+         CFRelease(images);
+-- 
+2.54.0 (Apple Git-157)
+

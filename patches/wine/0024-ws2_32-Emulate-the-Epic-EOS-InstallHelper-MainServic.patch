@@ -1,7 +1,7 @@
 From 67183fb20e45c55d7fb2ad6d9ed3c5a05e44cb0d Mon Sep 17 00:00:00 2001
 From: Avery Felts <averyfelts@aol.com>
 Date: Thu, 22 Oct 2026 13:53:45 -0600
-Subject: [PATCH 24/55] ws2_32: Emulate the Epic EOS InstallHelper MainService
+Subject: [PATCH 24/59] ws2_32: Emulate the Epic EOS InstallHelper MainService
  REST endpoint.
 
 From WineForge/MetalSharp: Epic's EOSH service talks HTTP on localhost ports 35783-35791;

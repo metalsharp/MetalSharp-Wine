@@ -1,7 +1,7 @@
 From d5440cb0ea94a348481fd398650ac666f2bcf61c Mon Sep 17 00:00:00 2001
 From: Avery Felts <averyfelts@aol.com>
 Date: Thu, 22 Oct 2026 07:10:47 -0600
-Subject: [PATCH 17/55] ntdll: Carry EFlags AF and DF through ARM64EC contexts.
+Subject: [PATCH 17/59] ntdll: Carry EFlags AF and DF through ARM64EC contexts.
 
 They have no NZCV equivalent; keep them in RES0 CPSR bits 16 and 17, which are
 never written to the hardware PSTATE.

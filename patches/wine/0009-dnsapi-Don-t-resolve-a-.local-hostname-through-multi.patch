@@ -1,7 +1,7 @@
 From 3f7b0f6321d93bf89a70b7da07de6ec966aa0c50 Mon Sep 17 00:00:00 2001
 From: Avery Felts <averyfelts@aol.com>
 Date: Thu, 22 Oct 2026 04:24:25 -0600
-Subject: [PATCH 09/55] dnsapi: Don't resolve a .local hostname through
+Subject: [PATCH 09/59] dnsapi: Don't resolve a .local hostname through
  multicast DNS at process attach.
 
 The mDNS query can time out (5s) when the host doesn't answer it, e.g. macOS

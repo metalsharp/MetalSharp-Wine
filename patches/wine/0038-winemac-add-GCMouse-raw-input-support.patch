@@ -1,7 +1,7 @@
 From a2adcc9c519c08488b22ebf742ca717f47647467 Mon Sep 17 00:00:00 2001
 From: Elvin Hayatov <AlvinHV@proton.me>
 Date: Sun, 4 Oct 2026 11:35:01 +0200
-Subject: [PATCH 38/55] winemac: add GCMouse raw input support
+Subject: [PATCH 38/59] winemac: add GCMouse raw input support
 
 Port Elvin Hayatov's WineHQ MR !11799 at upstream commit
 bfa3c0fdc2da180185dd0e542e85e60e120233a2 to WineForge Wine 11.19.

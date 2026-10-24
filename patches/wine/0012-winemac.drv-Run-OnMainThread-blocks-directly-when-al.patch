@@ -1,7 +1,7 @@
 From 01af17e19feac17a79be125946b4c5062f049221 Mon Sep 17 00:00:00 2001
 From: Avery Felts <averyfelts@aol.com>
 Date: Thu, 22 Oct 2026 05:13:46 -0600
-Subject: [PATCH 12/55] winemac.drv: Run OnMainThread() blocks directly when
+Subject: [PATCH 12/59] winemac.drv: Run OnMainThread() blocks directly when
  already on the main thread.
 
 -[WineContentView viewWillDraw] runs on the main thread inside a Core Animation

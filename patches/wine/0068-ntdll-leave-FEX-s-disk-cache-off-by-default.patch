@@ -1,0 +1,27 @@
+From 18727d1e790a29162dff535f43da084eec68353a Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Sat, 24 Oct 2026 03:06:31 -0600
+Subject: [PATCH] ntdll: leave FEX's disk cache off by default
+
+With it on, 32-bit Steam (WoW64 FEX) never logged on and its client exited.
+---
+ dlls/ntdll/unix/loader.c | 3 ---
+ 1 file changed, 3 deletions(-)
+
+diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
+index 31f6108b323..b530fdcb1f7 100644
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -2412,9 +2412,6 @@ DECLSPEC_EXPORT void __wine_main( int argc, char *argv[] )
+     /* Keep FEX's second-level block lookup cache: games with large code footprints (Unity,
+      * Mono) otherwise take the slow lookup path on every L1 miss of an indirect branch. */
+     setenv( "FEX_DISABLEL2CACHE", "0", 0 );
+-    /* Keep translated x86 code on disk (in the prefix's LOCALAPPDATA\fex-emu), so a relaunch
+-     * doesn't translate the same game code again; FEX's unix library maps the cache files. */
+-    setenv( "FEX_DISKCACHE", "1", 0 );
+ #endif
+ 
+     init_paths();
+-- 
+2.54.0 (Apple Git-157)
+

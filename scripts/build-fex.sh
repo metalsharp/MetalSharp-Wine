@@ -35,3 +35,12 @@ done
 # Wine finds the emulators as builtin DLLs (wine.inf points Wow64\amd64 and \x86 at them).
 mkdir -p $ROOT/install/lib/wine/aarch64-windows
 cp $ROOT/build/fex-install/lib/libarm64ecfex.dll(N) $ROOT/build/fex-install/lib/libwow64fex.dll(N) $ROOT/install/lib/wine/aarch64-windows/
+
+# FEX's unix side (file mapping for its disk cache, process id; the Linux prctl requests report
+# failure on macOS), loaded by Wine by name from aarch64-unix for each of the two DLLs.
+mkdir -p $ROOT/install/lib/wine/aarch64-unix
+for n in arm64ecfex wow64fex; do
+  clang++ -std=c++20 -O2 -shared -fPIC -arch arm64 -mmacosx-version-min=15.0 -I$S/Source/Windows/UnixLib \
+    $S/Source/Windows/UnixLib/FEXUnixLib.cpp -o $ROOT/install/lib/wine/aarch64-unix/lib$n.so
+done
+echo "== fex unixlib: ok"

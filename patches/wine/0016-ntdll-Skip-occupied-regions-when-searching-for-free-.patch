@@ -1,7 +1,7 @@
 From 9755f65c5b4a1fe15bb1c15f5c6e391e2141747d Mon Sep 17 00:00:00 2001
 From: Avery Felts <averyfelts@aol.com>
 Date: Thu, 22 Oct 2026 07:00:31 -0600
-Subject: [PATCH 16/55] ntdll: Skip occupied regions when searching for free
+Subject: [PATCH 16/59] ntdll: Skip occupied regions when searching for free
  memory on macOS.
 
 try_map_free_area() probed occupied space one allocation granule at a time with

@@ -1,7 +1,7 @@
 #!/bin/zsh
 # Switch a prefix's OpenGL to WineMetalGL (or back with --off).
 #   winemetalgl-prefix.sh WINE_ROOT PREFIX [--off]
-# WINE_ROOT is dist/metalsharp-wine-2.0-arm64 or MetalSharp-Wine.app/Contents (it has lib/winemetalgl).
+# WINE_ROOT is dist/metalsharp-wine-2.1-arm64 or MetalSharp-Wine.app/Contents (it has lib/winemetalgl).
 set -e
 W=${1:?usage: winemetalgl-prefix.sh WINE_ROOT PREFIX [--off]}
 P=${2:?usage: winemetalgl-prefix.sh WINE_ROOT PREFIX [--off]}

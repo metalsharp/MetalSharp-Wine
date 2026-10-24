@@ -1,7 +1,7 @@
 From 38f1e452b0cb08c95fefcac5cdd9873aac1b1027 Mon Sep 17 00:00:00 2001
 From: Avery Felts <averyfelts@aol.com>
 Date: Thu, 22 Oct 2026 05:41:05 -0600
-Subject: [PATCH 13/55] ntdll: Keep write protection of executable pages exact
+Subject: [PATCH 13/59] ntdll: Keep write protection of executable pages exact
  within a 16K host page.
 
 A host page mixing writable pages with write-protected executable pages (code an

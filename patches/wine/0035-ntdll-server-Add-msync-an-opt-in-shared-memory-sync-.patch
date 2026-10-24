@@ -1,7 +1,7 @@
 From a8d0de96adc6c00fd8ddae192c43eaf49d90b81a Mon Sep 17 00:00:00 2001
 From: Avery Felts <averyfelts@aol.com>
 Date: Thu, 22 Oct 2026 13:55:12 -0600
-Subject: [PATCH 35/55] ntdll, server: Add msync, an opt-in shared-memory sync
+Subject: [PATCH 35/59] ntdll, server: Add msync, an opt-in shared-memory sync
  backend (WINEMSYNC=1).
 
 From WineForge/MetalSharp (WFUSync): events, mutexes and semaphores live in a shared
