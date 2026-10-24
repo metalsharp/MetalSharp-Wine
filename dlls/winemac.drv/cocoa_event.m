@@ -232,6 +232,19 @@ static const OSType WineHotKeySignature = 'Wine';
 
             lastEvent->event->mouse_moved.time_ms = event->event->mouse_moved.time_ms;
         }
+        else if (event->event->type == MOUSE_MOVED_RAW &&
+                 event->event->deliver == INT_MAX &&
+                 (lastEvent = [events lastObject]) &&
+                 lastEvent->event->type == MOUSE_MOVED_RAW &&
+                 lastEvent->event->deliver == INT_MAX &&
+                 lastEvent->event->window == event->event->window)
+        {
+            /* Raw (GCMouse) deltas arrive at the mouse's report rate; each one would cost
+             * a server round trip, so sum the ones the app hasn't picked up yet. */
+            lastEvent->event->mouse_moved.x += event->event->mouse_moved.x;
+            lastEvent->event->mouse_moved.y += event->event->mouse_moved.y;
+            lastEvent->event->mouse_moved.time_ms = event->event->mouse_moved.time_ms;
+        }
         else
             [events addObject:event];
 
