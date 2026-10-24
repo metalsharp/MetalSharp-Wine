@@ -2955,7 +2955,7 @@ static BOOL check_queue_bits( UINT wake_mask, UINT changed_mask, UINT signal_bit
  */
 static int peek_message( MSG *msg, const struct peek_message_filter *filter )
 {
-    /* MetalSharp-Internal: win32u-composited-paint-fairness-v1. */
+    /* WineForge-Internal: win32u-composited-paint-fairness-v1. */
     static __thread HWND repeated_paint_hwnd;
     static __thread unsigned int repeated_paint_count;
     LRESULT result;
@@ -3235,7 +3235,7 @@ static int peek_message( MSG *msg, const struct peek_message_filter *filter )
             {
                 if (!(flags & PM_NOYIELD) && idle_event) NtSetEvent( idle_event, NULL );
             }
-            /* MetalSharp-Internal: win32u-composited-paint-fairness-v1. */
+            /* WineForge-Internal: win32u-composited-paint-fairness-v1. */
             if (info.msg.message == WM_PAINT && (flags & PM_REMOVE) &&
                 first == 0 && last == ~0U && (flags & PM_QS_PAINT))
             {

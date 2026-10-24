@@ -378,9 +378,9 @@ struct security_descriptor *mode_to_sd( mode_t mode, const struct sid *user, con
         if (!equal_sid( group, &builtin_users_sid ))
         {
             /*
-             * MetalSharp launcher-compat: mirror group access through BUILTIN\Users.
-             * MetalSharp-Internal: launcher-compat/epic-launcher-v1.
-             * MetalSharp-Feature: launcher-compat/epic-install-builtin-users-acl-v1.
+             * WineForge launcher-compat: mirror group access through BUILTIN\Users.
+             * WineForge-Internal: launcher-compat/epic-launcher-v1.
+             * WineForge-Feature: launcher-compat/epic-install-builtin-users-acl-v1.
              */
             ace = set_ace( ace_next( ace ), &builtin_users_sid, ACCESS_ALLOWED_ACE_TYPE,
                            flags, WRITE_DAC | WRITE_OWNER );

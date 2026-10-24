@@ -317,9 +317,9 @@ void sigio_callback(void)
 #if defined(__APPLE__) && !defined(HAVE_SYS_INOTIFY_H)
 
 /*
- * MetalSharp launcher-compat: macOS directory-change polling fallback.
- * MetalSharp-Internal: launcher-compat/epic-launcher-v1.
- * MetalSharp-Feature: launcher-compat/epic-install-dir-change-poll-v1.
+ * WineForge launcher-compat: macOS directory-change polling fallback.
+ * WineForge-Internal: launcher-compat/epic-launcher-v1.
+ * WineForge-Feature: launcher-compat/epic-install-dir-change-poll-v1.
  */
 #define CHANGE_POLL_INTERVAL (-500000)  /* 50 ms */
 

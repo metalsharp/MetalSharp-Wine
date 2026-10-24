@@ -41,7 +41,7 @@ WINE_DEFAULT_DEBUG_CHANNEL(service);
 
 struct scmdatabase *active_database;
 
-/* MetalSharp-Internal: launcher-compat/rockstar-service-pipe-timeout-v1.
+/* WineForge-Internal: launcher-compat/rockstar-service-pipe-timeout-v1.
  * RockstarService under emulation can take longer than the default 10 seconds
  * to connect back to the SCM pipe. */
 DWORD service_pipe_timeout = 40000;
@@ -131,9 +131,9 @@ static void *clone_environment_with_var( const void *base_env, const WCHAR *name
 }
 
 /*
- * MetalSharp launcher-compat: pass Epic's EOS session GUID to the service host.
- * MetalSharp-Internal: launcher-compat/epic-launcher-v1.
- * MetalSharp-Feature: launcher-compat/epic-eosh-session-env-v1.
+ * WineForge launcher-compat: pass Epic's EOS session GUID to the service host.
+ * WineForge-Internal: launcher-compat/epic-launcher-v1.
+ * WineForge-Feature: launcher-compat/epic-eosh-session-env-v1.
  */
 static void *get_service_process_environment( const WCHAR *path, DWORD service_argc, LPCWSTR *service_argv,
                                               void **free_env )

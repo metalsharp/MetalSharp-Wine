@@ -1,6 +1,8 @@
 /*
  * WineForge userspace synchronization client state
  *
+ * Ported from WineForge's WFUSync (dlls/ntdll/unix/wfusync.c); MetalSharp Wine renamed it msync and modified it.
+ *
  * Copyright (C) 2026 Radim Vesely
  *
  * This library is free software; you can redistribute it and/or

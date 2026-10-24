@@ -458,7 +458,7 @@ static HRESULT init_allocator(struct video_decoder *decoder)
     return S_OK;
 }
 
-/* MetalSharp-Internal: mf-d3d11-video-output-capability-v1. */
+/* WineForge-Internal: mf-d3d11-video-output-capability-v1. */
 static BOOL d3d11_manager_supports_video_output(IMFDXGIDeviceManager *manager)
 {
     ID3D11Device *device = NULL;

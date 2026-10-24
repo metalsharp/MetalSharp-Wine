@@ -3591,7 +3591,7 @@ HRESULT WINAPI SHGetKnownFolderPath(REFKNOWNFOLDERID rfid, DWORD flags, HANDLE t
     }
 
     folder |= flags & CSIDL_FLAG_MASK;
-    /* MetalSharp-Internal: launcher-compat/rockstar-precreate-known-folders-v1. */
+    /* WineForge-Internal: launcher-compat/rockstar-precreate-known-folders-v1. */
     if (CSIDL_Data[folder & CSIDL_FOLDER_MASK].flags & KFDF_PRECREATE)
         folder |= CSIDL_FLAG_CREATE;
     shgfp_flags = flags & KF_FLAG_DEFAULT_PATH ? SHGFP_TYPE_DEFAULT : SHGFP_TYPE_CURRENT;

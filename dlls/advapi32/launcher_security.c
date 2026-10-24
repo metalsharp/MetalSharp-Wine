@@ -1,7 +1,7 @@
 /*
- * MetalSharp launcher security compatibility
+ * WineForge launcher security compatibility
  *
- * Copyright (C) 2026 Radim Vesely for MetalSharp
+ * Copyright (C) 2026 Radim Vesely for WineForge
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -23,7 +23,7 @@
 
 WINE_DEFAULT_DEBUG_CHANNEL(advapi);
 
-/* MetalSharp-Internal: launcher-compat/battlenet-install-acl-v1. */
+/* WineForge-Internal: launcher-compat/battlenet-install-acl-v1. */
 static const WCHAR *const battlenet_security_paths[] =
 {
     L"\\ProgramData\\Battle.net\\Agent",

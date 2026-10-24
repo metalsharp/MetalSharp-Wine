@@ -49,9 +49,9 @@ static char *find_bytes( char *buffer, DWORD size, const char *needle )
 }
 
 /*
- * MetalSharp launcher-compat: keep Epic Launcher CEF on the stable software path.
- * MetalSharp-Internal: launcher-compat/epic-launcher-v1.
- * MetalSharp-Feature: launcher-compat/epic-cef-software-config-v1.
+ * WineForge launcher-compat: keep Epic Launcher CEF on the stable software path.
+ * WineForge-Internal: launcher-compat/epic-launcher-v1.
+ * WineForge-Feature: launcher-compat/epic-cef-software-config-v1.
  */
 static void ensure_epic_cef_config(void)
 {

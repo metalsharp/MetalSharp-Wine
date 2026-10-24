@@ -37,9 +37,9 @@ WINE_DECLARE_DEBUG_CHANNEL(winediag);
 
 #define u64_from_user_ptr(ptr) ((ULONGLONG)(uintptr_t)(ptr))
 
-/* MetalSharp launcher-compat: Epic EOSH MainService install progress shim.
- * MetalSharp-Internal: launcher-compat/epic-launcher-v1.
- * MetalSharp-Feature: launcher-compat/epic-eosh-mainservice-progress-v1.
+/* WineForge launcher-compat: Epic EOSH MainService install progress shim.
+ * WineForge-Internal: launcher-compat/epic-launcher-v1.
+ * WineForge-Feature: launcher-compat/epic-eosh-mainservice-progress-v1.
  *
  * only Epic processes and localhost MainService ports are considered. */
 #define EPIC_EOSH_MIN_PORT 35783

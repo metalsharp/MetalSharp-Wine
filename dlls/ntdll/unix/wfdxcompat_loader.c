@@ -1,8 +1,9 @@
 /*
- * WFDXCompat launcher runtime loader helpers
+ * WineForge DXCompat runtime loader helpers
  *
- * WineForge-Internal: wfdxcompat-runtime-loader-v1, here backed by the Mullion (DXMT) runtime
- * instead of D3DMetal, which does not exist on arm64 hosts.
+ * WineForge-Internal: wfdxcompat-runtime-loader-v1.
+ * Modified for MetalSharp Wine: backed by the Mullion (DXMT) runtime instead of D3DMetal, which
+ * does not exist on arm64 hosts.
  *
  * Copyright (C) 2026 Radim Vesely for WineForge
  *

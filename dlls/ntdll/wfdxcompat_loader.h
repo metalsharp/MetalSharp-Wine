@@ -1,5 +1,6 @@
 /*
- * WFDXCompat launcher integration
+ * WineForge PE runtime aliases and process-local launcher integration.
+ * (Modified for MetalSharp Wine.)
  *
  * Copyright (C) 2026 Radim Vesely for WineForge
  *

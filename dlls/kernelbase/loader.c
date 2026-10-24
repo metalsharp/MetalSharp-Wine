@@ -416,7 +416,7 @@ BOOL WINAPI DECLSPEC_HOTPATCH GetModuleHandleExW( DWORD flags, LPCWSTR name, HMO
             ldr_flags |= LDR_GET_DLL_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT;
 
         RtlInitUnicodeString( &wstr, name );
-        /* MetalSharp-Internal: stable unchanged-refcount lookup; Diablo II Resurrected fix. */
+        /* WineForge-Internal: stable unchanged-refcount lookup; Diablo II Resurrected fix. */
         if (ldr_flags == LDR_GET_DLL_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT)
             status = LdrGetDllHandle( NULL, 0, &wstr, &ret );
         else

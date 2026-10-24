@@ -1,5 +1,7 @@
 /*
- * MetalSharp userspace synchronization server state
+ * WineForge userspace synchronization server state
+ *
+ * Ported from WineForge's WFUSync (server/wfusync.h); MetalSharp Wine renamed it msync and modified it.
  *
  * Copyright (C) 2026 Radim Vesely
  *

@@ -1,8 +1,9 @@
 /*
- * WFDXCompat launcher integration: process-local D3D11 interposition.
+ * WineForge PE runtime aliases and process-local launcher integration.
  *
  * WineForge-Internal: wfdxcompat/launcher-process-interposition-v1. WineForge ran the companion
- * on D3DMetal; here it wraps the Mullion (DXMT) runtime the Rockstar launcher processes use.
+ * on D3DMetal; MetalSharp Wine modified it to wrap the Mullion (DXMT) runtime the Rockstar
+ * launcher processes use.
  *
  * Copyright (C) 2026 Radim Vesely for WineForge
  *
