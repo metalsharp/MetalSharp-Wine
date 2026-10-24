@@ -1,6 +1,6 @@
 # MetalSharp Wine arm64 + FEX: status
 
-Last updated: 2026-10-22.
+Last updated: 2026-10-23.
 
 ## Summary
 
@@ -11,6 +11,8 @@ Last updated: 2026-10-22.
 | x86_64 Windows code | Runs through FEX-2610 (fork, ARM64EC). Checksums are bit-identical to native ARM64 in every benchmark; CPython x64 passes its workload |
 | i386 Windows code | Runs through FEX (WoW64, `libwow64fex.dll`) in the signed `MetalSharp-Wine.app`, which has the cross-architecture entitlement (low 4GB, 4K pages). 211 conformance units, 99.996% of checks pass; every benchmark checksum matches native |
 | Direct3D | D3D10/11/12 run on Metal through Mullion (DXMT fork, ARM64X) with `GRAPHICS_BACKEND=dxmt`. Tested with smoke tests: D3D11 on ARM64, x86_64 and i386, and D3D12 on ARM64 and x86_64. Mullion is the default when bundled; `GRAPHICS_BACKEND=wine` selects wined3d |
+| Rockstar launcher (WFDXCompat) | Rockstar's `Launcher.exe` and `SocialClubHelper.exe` run on Mullion with WFDXCompat's launcher companion (`lib/wfdxcompat/aarch64-windows/wfdx-launchers-v1.dll`, ARM64EC, `scripts/build-wfdxcompat.sh`). ntdll loads it into those two processes only, after `d3d11.dll`, and it interposes D3D11 device creation. `WFDX_LAUNCHER_FLAG_NATIVE_D3D10` sends D3D10 queries to Mullion's own D3D10 device instead of the bridge D3DMetal needed. The default flags are 0x9; hex `WFDXCOMPAT_LAUNCHER_FLAGS` overrides them, and `WFDXCOMPAT_RUNTIME_DIR` defaults to `lib/wfdxcompat`. Tested 2026-10-23 with the Rockstar Games Launcher from a Steam prefix |
+| D3D12 Agility SDK | `D3D12GetInterface(CLSID_D3D12SDKConfiguration)` returns an `ID3D12SDKConfiguration` whose `SetSDKVersion` succeeds. Mullion always uses its own `d3d12core.dll`. Test: Mullion `d3d12_sdk_configuration` |
 | DXVK (opt-in) | `GRAPHICS_BACKEND=dxvk` runs DXVK 1.10.3 for macOS (`1.10.3-20230507-async`, from the metalsharp-graphics-dll bundle; `scripts/stage-dxvk.sh`) for D3D9/10/11 and DXGI on MoltenVK, in x86_64 programs only. Native ARM64 and i386 programs, and D3D12, keep Mullion. Smoke tests: D3D11 (feature level 11_0) and D3D9 (pixel readback) on x86_64 |
 | Fonts | Wine's fonts are bundled, and GDI also sees macOS's own core fonts (Arial, Times New Roman, Courier New, Verdana, Tahoma, …). New and updated prefixes get real files in `C:\windows\Fonts` (`arial*`, `times*`, `cour*`, `tahoma*`). Programs that open fonts there by file name need them: Unity's dynamic fonts left Moonscraper's input fields blank without them. The Arial, Times and Courier files are Liberation 2.1.5 built with the Windows family names, as Proton does (`scripts/fetch-fonts.sh`, `scripts/rename-font.py`; this also satisfies the OFL's reserved-name rule). A real Microsoft font in the prefix is never overwritten. `wine.inf` maps the CJK Windows families to Hiragino, Heiti, Songti and Apple SD Gothic Neo (`HKCU\Software\Wine\Fonts\Replacements`). Segoe UI is not mapped, and corefonts are an app download. Tests: `tests/src/fontinfo.c`, and Moonscraper on a fresh prefix |
 | Controllers | winebus uses its SDL bus (bundled SDL2) plus IOHID, as MetalSharp #724 does, so Wine's own XInput/DirectInput builtins see controllers. MetalSharp's `lib/metalsharp` xinput/dinput DLLs are Wine 11.12 builtins, older than ours, and are not bundled |
@@ -18,7 +20,7 @@ Last updated: 2026-10-22.
 | WineForge features | Launcher compatibility, msync, PE patches, native fullscreen, GCMouse and the native Steam bridge are ported. See `docs/WINEFORGE-PORT-PLAN.md` |
 | No Rosetta / no hardware TSO | Holds. FEX is built without its unix library, so it never enables hardware TSO. Memory ordering is software-emulated (LRCPC/LSE); the ordering test reports 0 violations |
 | Audit | Mach-O audit: arm64-only, minos ≤ 15.0, no newer libc symbols, no foreign library paths. Strict relocatable audit of `dist/` |
-| Packaging | Relocatable `dist/` bundle with FEX, all dependencies, licenses and a `.tar.xz` with SHA-256. `scripts/sign-app.sh` wraps it as `dist/MetalSharp-Wine.app` (bundle name "MetalSharp Wine"; `wine --version` reports `wine-11.20-… (MetalSharp Wine 1.0)` from `src/wine/METALSHARP_VERSION`), signed with the Developer ID and provisioning profile. It is signed with the hardened runtime, so it can be notarized (`HARDENED=0` opts out) |
+| Packaging | Relocatable `dist/` bundle with FEX, all dependencies, licenses and a `.tar.xz` with SHA-256. `scripts/sign-app.sh` wraps it as `dist/MetalSharp-Wine.app` (bundle name "MetalSharp Wine"; `wine --version` reports `wine-11.20-… (MetalSharp Wine 2.1)` from `src/wine/METALSHARP_VERSION`), signed with the Developer ID and provisioning profile. It is signed with the hardened runtime, so it can be notarized (`HARDENED=0` opts out) |
 
 ## Wine patches (`patches/wine/`, branch `metalsharp-arm64`)
 
@@ -44,6 +46,7 @@ Last updated: 2026-10-22.
 9. **NtFlushInstructionCache:** returns W+X pages to RX, so JITs don't pay an execute fault.
 10. **4K-page exec:** on macOS 26+, an entitled process re-execs its loader with 4K pages, so Windows' page size is native and none of the 16K emulation (items 3-5, 9) is used. Forked children inherit the decision through a flag. `WINE_4K_PAGES=0/1` overrides. Without the entitlement the kernel kills a 4K exec, so unsigned builds stay on 16K pages.
 11. **Low 4GB when entitled:** with `com.apple.developer.cross-architecture-support`, PAGEZERO becomes an ordinary no-access reservation from 0x4000 up to the main image. `virtual_init()` unmaps it below 4GB, then reserves the space for Windows. That gives KUSER_SHARED_DATA its real address (0x7ffe0000) and WoW64 its 32-bit address space. Unentitled processes have no such region, so nothing changes for them.
+12. **winemac.drv: dock icons:** the icon entries are copied out of the user callback's result before they are converted. That result lives on the callback's stack, which the conversions reuse, so only the first few sizes survived and the dock scaled up a small one (blurry Rockstar icon).
 
 ## FEX fork (`patches/fex/`, branch `metalsharp` on FEX-2610)
 
@@ -95,7 +98,7 @@ zsh scripts/build-all.sh
 ```
 
 ```bash
-WINE_DIST=dist/metalsharp-wine-2.0-arm64 zsh scripts/run-winetest.sh aarch64 ntdll kernel32
+WINE_DIST=dist/metalsharp-wine-2.1-arm64 zsh scripts/run-winetest.sh aarch64 ntdll kernel32
 ```
 
 ```bash
@@ -153,7 +156,7 @@ Tested:
 
 **FFmpeg:** 8.0 (LGPL; videotoolbox and audiotoolbox) is bundled in `lib/` (libavcodec, libavformat, libavutil, libswresample, libswscale, libavfilter, libavdevice). Wine's `winedmo` links it by `@rpath`. Test `tests/src/mfdecode.c`: Media Foundation decodes AAC to PCM on arm64 and x86_64.
 
-**Not usable on arm64:** D3DMetal/GPTK and WFDXCompat (x86_64 Mach-O or D3DMetal-only). vkd3d-proton is left out because Mullion covers D3D12. The newer `lib/dxvk` with d3d8 is also left out.
+**Not usable on arm64:** D3DMetal/GPTK (x86_64 Mach-O), and WFDXCompat's D3DMetal-only parts. Only its launcher companion is carried; its D3D12 frontend for GTA V Enhanced is not ported. vkd3d-proton is left out because Mullion covers D3D12. The newer `lib/dxvk` with d3d8 is also left out.
 
 ## Checked against MetalSharp Wine 1.0 (VKMT)
 

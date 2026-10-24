@@ -5,12 +5,13 @@
 #   src/FEX          FEX-2610 + MetalSharp (branch source/fex), with its own submodules
 #   src/winemetalgl  WineMetalGL, arm64 Wine module (branch source/winemetalgl)
 #   src/mullion      Mullion (DXMT fork, aaf2tbz/mullion); its work goes upstream as pull requests
+#   src/wfdxcompat   WFDXCompat + the ARM64EC launcher companion (branch source/wfdxcompat)
 # Outside a git checkout, the branches are cloned instead. patches/ has the same changes as git
 # patches against the upstream tags.
 set -e
 source ${0:A:h}/env.sh
 if [[ -f $ROOT/.gitmodules ]] && git -C $ROOT rev-parse --git-dir >/dev/null 2>&1; then
-  git -C $ROOT submodule update --init src/wine src/FEX src/winemetalgl src/mullion
+  git -C $ROOT submodule update --init src/wine src/FEX src/winemetalgl src/mullion src/wfdxcompat
 else
   REPO=${METALSHARP_WINE_REPO:-https://github.com/metalsharp/MetalSharp-Wine.git}
   clone() {  # clone <dir> <url> <branch>
@@ -21,7 +22,8 @@ else
   clone wine $REPO source/wine
   clone FEX $REPO source/fex
   clone winemetalgl $REPO source/winemetalgl
-  clone mullion https://github.com/aaf2tbz/mullion.git i386-build
+  clone wfdxcompat $REPO source/wfdxcompat
+  clone mullion https://github.com/aaf2tbz/mullion.git metalsharp-2.1
 fi
 git -C $ROOT/src/FEX submodule update --init --recursive
 echo "sources ready in $ROOT/src"
