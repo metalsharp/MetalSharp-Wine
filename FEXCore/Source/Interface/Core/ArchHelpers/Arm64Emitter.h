@@ -145,6 +145,13 @@ protected:
   };
   void FillSpecialRegs(ARMEmitter::Register TmpReg, ARMEmitter::Register TmpReg2, const FillSpecialRegsOptions& Options);
 
+  // Whether the code being emitted computes with FPRs and so needs the AFP bits (FPCR.NEP, AH and FIZ) when its
+  // state is filled. Code without any (the dispatcher, integer-only blocks) leaves them alone: a FPCR write costs
+  // several nanoseconds on Apple silicon, and every call between x86 and native code switched them twice.
+  // Code that needs them sets them at its entry points (Arm64JITCore::EmitEntryPoint()), and spills clear them
+  // only when set.
+  bool EmitAFPState = true;
+
   // Correlate an ARM register back to an x86 register index.
   // Returning REG_INVALID if there was no mapping.
   FEXCore::X86State::X86Reg GetX86RegRelationToARMReg(ARMEmitter::Register Reg);

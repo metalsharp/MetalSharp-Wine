@@ -636,7 +636,7 @@ void Arm64Emitter::PopCalleeSavedRegisters() {
 
 void Arm64Emitter::FillSpecialRegs(ARMEmitter::Register TmpReg, ARMEmitter::Register TmpReg2, const FillSpecialRegsOptions& Options) {
 #ifndef VIXL_SIMULATOR
-  if (EmitterCTX->HostFeatures.SupportsAFP) {
+  if (EmitterCTX->HostFeatures.SupportsAFP && EmitAFPState) {
     // Enable AFP features when filling JIT state.
     mrs(TmpReg, ARMEmitter::SystemRegister::FPCR);
 
@@ -690,12 +690,17 @@ void Arm64Emitter::SpillStaticRegs(ARMEmitter::Register TmpReg, SpillStaticRegOp
     //
     // Additional interesting AFP bits:
     // FIZ(0): Flush Inputs to Zero
+    // Only write FPCR when they are set: code without FPRs leaves them clear, and NEP is always set with the others.
+    // Test with tbz, which leaves NZCV (the guest flags) alone.
+    ARMEmitter::ForwardLabel l_AFPClear;
     mrs(TmpReg, ARMEmitter::SystemRegister::FPCR);
+    (void)tbz(TmpReg, 2, &l_AFPClear);
     bic(ARMEmitter::Size::i64Bit, TmpReg, TmpReg,
         (1U << 2) |   // NEP
           (1U << 1) | // AH
           (1U << 0)); // FIZ
     msr(ARMEmitter::SystemRegister::FPCR, TmpReg);
+    (void)Bind(&l_AFPClear);
   }
 #endif
 

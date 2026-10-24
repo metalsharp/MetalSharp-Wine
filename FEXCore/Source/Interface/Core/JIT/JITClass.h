@@ -637,6 +637,8 @@ private:
   void EmitSuspendInterruptCheck();
 
   void EmitEntryPoint(ARMEmitter::BackwardLabel& HeaderLabel, bool CheckTF);
+  bool NeedsAFP(const IR::IROp_Header* IROp) const;
+  void EmitAFPEnable();
 
   [[nodiscard]] CodeBuffer::CodeBufferAllocation AllocateCodeBufferInSharedCache(size_t Size);
 

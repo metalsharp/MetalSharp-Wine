@@ -829,6 +829,76 @@ void Arm64JITCore::EmitSuspendInterruptCheck() {
 #endif
 }
 
+bool Arm64JITCore::NeedsAFP(const IR::IROp_Header* IROp) const {
+  // Moving FPR data around (loads, stores, register moves, inserts and extracts) doesn't depend on the AFP bits,
+  // so a vectorized memcpy loop doesn't need them.
+  switch (IROp->Op) {
+  case IR::OP_LOADREGISTER:
+  case IR::OP_STOREREGISTER:
+  case IR::OP_LOADCONTEXT:
+  case IR::OP_LOADCONTEXTPAIR:
+  case IR::OP_STORECONTEXT:
+  case IR::OP_STORECONTEXTPAIR:
+  case IR::OP_LOADCONTEXTINDEXED:
+  case IR::OP_STORECONTEXTINDEXED:
+  case IR::OP_SPILLREGISTER:
+  case IR::OP_FILLREGISTER:
+  case IR::OP_LOADMEM:
+  case IR::OP_LOADMEMPAIR:
+  case IR::OP_STOREMEM:
+  case IR::OP_STOREMEMPAIR:
+  case IR::OP_LOADMEMTSO:
+  case IR::OP_STOREMEMTSO:
+  case IR::OP_VLOADVECTORMASKED:
+  case IR::OP_VSTOREVECTORMASKED:
+  case IR::OP_VLOADVECTORELEMENT:
+  case IR::OP_VSTOREVECTORELEMENT:
+  case IR::OP_VBROADCASTFROMMEM:
+  case IR::OP_VSTORENONTEMPORAL:
+  case IR::OP_VSTORENONTEMPORALPAIR:
+  case IR::OP_VLOADNONTEMPORAL:
+  case IR::OP_VMOV:
+  case IR::OP_LOADNAMEDVECTORCONSTANT:
+  case IR::OP_LOADNAMEDVECTORINDEXEDCONSTANT:
+  case IR::OP_VDUPELEMENT:
+  case IR::OP_VINSELEMENT:
+  case IR::OP_VINSGPR:
+  case IR::OP_VDUPFROMGPR:
+  case IR::OP_VLOADTWOGPRS:
+  case IR::OP_VEXTRACTTOGPR:
+    return false;
+  // FPCR is saved and restored around these, or written with FIZ: set the AFP bits first so they stay set with the rest.
+  case IR::OP_PUSHROUNDINGMODE:
+  case IR::OP_SETROUNDINGMODE: return true;
+  default: break;
+  }
+  if (IR::GetHasDest(IROp->Op) && IsFPR(IR::GetRegClass(IROp->Op))) {
+    return true;
+  }
+  for (int s = 0; s < IR::GetRAArgs(IROp->Op); s++) {
+    // After RA, register arguments are immediates holding their PhysicalRegister; the rest (inline constants)
+    // still reference nodes.
+    const auto& Arg = IROp->Args[s];
+    if (Arg.IsImmediate() && !IR::PhysicalRegister(Arg).IsInvalid() && IsFPR(Arg)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void Arm64JITCore::EmitAFPEnable() {
+  // Set the AFP bits unless the code that ran before already did (FPCR.NEP is set with the others).
+  // tbnz/orr/bfxil leave NZCV (the guest flags) alone.
+  ARMEmitter::ForwardLabel l_AFPSet;
+  mrs(TMP1, ARMEmitter::SystemRegister::FPCR);
+  (void)tbnz(TMP1, 2, &l_AFPSet);
+  orr(ARMEmitter::Size::i64Bit, TMP1, TMP1, (1U << 2) | (1U << 1)); // NEP, AH
+  ldr(TMP2.W(), STATE, offsetof(FEXCore::Core::CPUState, mxcsr));
+  bfxil(ARMEmitter::Size::i64Bit, TMP1, TMP2, 6, 1);                 // FIZ = MXCSR.DAZ
+  msr(ARMEmitter::SystemRegister::FPCR, TMP1);
+  (void)Bind(&l_AFPSet);
+}
+
 void Arm64JITCore::EmitEntryPoint(ARMEmitter::BackwardLabel& HeaderLabel, bool CheckTF) {
   // Get the address of the JITCodeHeader and store in to the core state.
   // Two instruction cost, each 1 cycle.
@@ -964,6 +1034,24 @@ CPUBackend::CompiledCode Arm64JITCore::CompileCode(uint64_t Entry, uint64_t Size
 
   SpillSlots = IR->SpillSlots();
 
+  // Code that computes with FPRs needs the AFP bits: each block sets them before its first FPR op, and the unit's
+  // state fills set them too (see Arm64Emitter::EmitAFPState). Integer-only code, such as a loop of calls into
+  // native code in a unit that does floating point elsewhere, leaves FPCR alone.
+  EmitAFPState = false;
+  if (HostSupportsAFP) {
+    for (auto [BlockNode, BlockHeader] : IR->GetBlocks()) {
+      for (auto [CodeNode, IROp] : IR->GetCode(BlockNode)) {
+        if (NeedsAFP(IROp)) {
+          EmitAFPState = true;
+          break;
+        }
+      }
+      if (EmitAFPState) {
+        break;
+      }
+    }
+  }
+
   PendingTargetLabel = nullptr;
   PendingCallReturnTargetLabel = nullptr;
 
@@ -1017,7 +1105,12 @@ CPUBackend::CompiledCode Arm64JITCore::CompileCode(uint64_t Entry, uint64_t Size
       BindOrRestart(Target);
     }
 
+    bool AFPEnabled = !EmitAFPState;
     for (auto [CodeNode, IROp] : IR->GetCode(BlockNode)) {
+      if (!AFPEnabled && NeedsAFP(IROp)) {
+        EmitAFPEnable();
+        AFPEnabled = true;
+      }
       switch (IROp->Op) {
 #define REGISTER_OP(op, x) \
   case FEXCore::IR::IROps::OP_##op: Op_##x(IROp, CodeNode); break
