@@ -71,6 +71,7 @@ ___
 * VKD3D-Proton: run it with WINEDEBUG=-all. With Wine's default debug channels, device creation can fail ("Lacking support for single texel alignment").
 * OpenGL: WineMetalGL 4.6 is the default. OPENGL_BACKEND=wine switches back to Wine’s own.
 * Sync: WINEMSYNC=1 turns on msync, which helps performance.
+* x87: 32-bit programs run x87 floating point in double precision by default, as under Rosetta; full 80-bit emulation is much slower (it made Ori's FMOD audio stutter). FEX_X87REDUCEDPRECISION=0 restores full precision for a program that needs it.
 * Mouse: setting UseGCMouse to N (in HKCU\Software\Wine\Mac Driver) goes back to the old mouse input path if GCMouse raw input misbehaves in a game.
 * Settings: WINEPREFIX=~/Games/my-prefix $WINE winecfg opens Wine’s settings.
 
@@ -104,7 +105,7 @@ The modified sources are kept in this repository as branches, and `main` links t
 | Submodule | Branch | Contents |
 |---|---|---|
 | `src/wine` | [`source/wine`](../../tree/source/wine) | Wine 11.20 + WineForge + MetalSharp (`wine-11.20` tag plus 76 commits) |
-| `src/FEX` | [`source/fex`](../../tree/source/fex) | FEX-2610 + MetalSharp (20 commits). It is not upstreamed |
+| `src/FEX` | [`source/fex`](../../tree/source/fex) | FEX-2610 + MetalSharp (21 commits). It is not upstreamed |
 | `src/winemetalgl` | [`source/winemetalgl`](../../tree/source/winemetalgl) | WineMetalGL's arm64 Wine module |
 | `src/wfdxcompat` | [`source/wfdxcompat`](../../tree/source/wfdxcompat) | WineForge DXCompat, built ARM64EC for Mullion: the Rockstar launcher companion |
 | `src/mullion` | [aaf2tbz/mullion](https://github.com/aaf2tbz/mullion) `metalsharp-2.1` | Mullion (DXMT fork). Developed there and sent upstream to [dttdrv/mullion](https://github.com/dttdrv/mullion) as pull requests |

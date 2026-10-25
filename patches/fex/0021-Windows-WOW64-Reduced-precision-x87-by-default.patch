@@ -1,0 +1,36 @@
+From 628369a32d69ffb799f9272170ecbedef1c4f9ad Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Sun, 25 Oct 2026 17:35:09 -0600
+Subject: [PATCH] Windows/WOW64: Reduced-precision x87 by default
+
+32-bit compilers emit x87 for all floating point, and FEX emulates its 80-bit format in software,
+so math-heavy threads fall far behind: Ori and the Blind Forest's FMOD mixer, whose DSP is x87,
+missed its deadlines and the audio stuttered. 32-bit programs now get double-precision x87, as
+under Rosetta; FEX_X87REDUCEDPRECISION=0 restores full precision.
+---
+ Source/Windows/WOW64/Module.cpp | 9 +++++----
+ 1 file changed, 5 insertions(+), 4 deletions(-)
+
+diff --git a/Source/Windows/WOW64/Module.cpp b/Source/Windows/WOW64/Module.cpp
+index 33de0779f..bf7718893 100644
+--- a/Source/Windows/WOW64/Module.cpp
++++ b/Source/Windows/WOW64/Module.cpp
+@@ -514,10 +514,11 @@ void BTCpuProcessInit() {
+   FEXCore::Config::Set(FEXCore::Config::CONFIG_APP_FILENAME, ExecutablePath);
+   FEXCore::Config::Set(FEXCore::Config::CONFIG_APP_CONFIG_NAME, ExecutableName);
+ 
+-  // MetalSharp hosts set ROSETTA_X87_PATH for 32-bit titles that want the fast x87 path (the
+-  // Rosetta x87 sidecar on x86_64 hosts). FEX's equivalent is reduced (double) precision x87;
+-  // an explicit FEX_X87REDUCEDPRECISION still wins.
+-  if (getenv("ROSETTA_X87_PATH") && *getenv("ROSETTA_X87_PATH") && !getenv("FEX_X87REDUCEDPRECISION")) {
++  // 32-bit programs get reduced (double) precision x87 by default, as under Rosetta: 32-bit
++  // compilers emit x87 for all floating point, and FEX emulates the 80-bit format in software, so
++  // math-heavy threads (audio mixers such as FMOD's, physics) fall far behind and stutter.
++  // FEX_X87REDUCEDPRECISION=0 restores full precision for the rare program that needs it.
++  if (!getenv("FEX_X87REDUCEDPRECISION")) {
+     FEXCore::Config::Set(FEXCore::Config::CONFIG_X87REDUCEDPRECISION, "1");
+   }
+ 
+-- 
+2.54.0 (Apple Git-157)
+
