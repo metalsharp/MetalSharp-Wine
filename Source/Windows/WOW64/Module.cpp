@@ -514,10 +514,11 @@ void BTCpuProcessInit() {
   FEXCore::Config::Set(FEXCore::Config::CONFIG_APP_FILENAME, ExecutablePath);
   FEXCore::Config::Set(FEXCore::Config::CONFIG_APP_CONFIG_NAME, ExecutableName);
 
-  // MetalSharp hosts set ROSETTA_X87_PATH for 32-bit titles that want the fast x87 path (the
-  // Rosetta x87 sidecar on x86_64 hosts). FEX's equivalent is reduced (double) precision x87;
-  // an explicit FEX_X87REDUCEDPRECISION still wins.
-  if (getenv("ROSETTA_X87_PATH") && *getenv("ROSETTA_X87_PATH") && !getenv("FEX_X87REDUCEDPRECISION")) {
+  // 32-bit programs get reduced (double) precision x87 by default, as under Rosetta: 32-bit
+  // compilers emit x87 for all floating point, and FEX emulates the 80-bit format in software, so
+  // math-heavy threads (audio mixers such as FMOD's, physics) fall far behind and stutter.
+  // FEX_X87REDUCEDPRECISION=0 restores full precision for the rare program that needs it.
+  if (!getenv("FEX_X87REDUCEDPRECISION")) {
     FEXCore::Config::Set(FEXCore::Config::CONFIG_X87REDUCEDPRECISION, "1");
   }
 
