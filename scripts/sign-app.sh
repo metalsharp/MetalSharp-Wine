@@ -47,12 +47,25 @@ ln -s wine.app/Contents/MacOS/wine $U/wine
 sed -e "s/org\.winehq\.wine/$BUNDLE_ID/" -e 's/@PACKAGE_VERSION@/11.20/' \
     $ROOT/src/wine/loader/wine_info.plist.in > $LOADER_APP/Contents/Info.plist
 
+# The app icon (Icon Composer document in resources/), compiled into an asset catalog (the macOS 26
+# icon) and an icns for older systems. The loader bundle shows it in the Dock for Windows programs.
+ICON=MetalSharp-Wine
+mkdir -p $APP/Contents/Resources $LOADER_APP/Contents/Resources
+xcrun actool $ROOT/resources/$ICON.icon --compile $APP/Contents/Resources --app-icon $ICON \
+    --platform macosx --minimum-deployment-target 15.0 \
+    --output-partial-info-plist $ROOT/dist/icon-partial.plist > /dev/null
+cp $APP/Contents/Resources/{Assets.car,$ICON.icns} $LOADER_APP/Contents/Resources/
+plutil -insert CFBundleIconFile -string $ICON $LOADER_APP/Contents/Info.plist
+plutil -insert CFBundleIconName -string $ICON $LOADER_APP/Contents/Info.plist
+
 cat > $APP/Contents/Info.plist <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>CFBundleIdentifier</key><string>$BUNDLE_ID</string>
   <key>CFBundleExecutable</key><string>wine</string>
+  <key>CFBundleIconFile</key><string>$ICON</string>
+  <key>CFBundleIconName</key><string>$ICON</string>
   <key>CFBundleName</key><string>MetalSharp Wine</string>
   <key>CFBundleDisplayName</key><string>MetalSharp Wine</string>
   <key>CFBundlePackageType</key><string>APPL</string>
