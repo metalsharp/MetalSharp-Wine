@@ -455,6 +455,16 @@ static void init_paths(void)
         bin_dir = build_relative_path( dll_dir, LIBDIR "/wine", BINDIR );
         data_dir = build_relative_path( dll_dir, LIBDIR "/wine", DATADIR "/wine" );
         wineloader = build_path( ntdll_dir, "wine" );
+#ifdef __APPLE__
+        /* A signed app ships the loader as a bundle of its own (wine.app next to ntdll.so): its
+         * restricted entitlements (4K pages) are only granted under a provisioning profile, and
+         * macOS only finds one embedded in the executable's bundle. */
+        {
+            char *bundle_loader = build_path( ntdll_dir, "wine.app/Contents/MacOS/wine" );
+            if (!access( bundle_loader, X_OK )) wineloader = bundle_loader;
+            else free( bundle_loader );
+        }
+#endif
     }
 
     set_dll_path();
