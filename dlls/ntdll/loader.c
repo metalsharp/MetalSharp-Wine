@@ -91,6 +91,7 @@ static const WCHAR system_dir[] = L"C:\\windows\\system32\\";
 static const WCHAR system_path[] = L"C:\\windows\\system32;C:\\windows\\system;C:\\windows";
 
 static BOOL is_prefix_bootstrap;  /* are we bootstrapping the prefix? */
+static BOOL hide_wine_exports;    /* GetProcAddress() doesn't find wine_get_version() and its siblings */
 static BOOL imports_fixup_done = FALSE;  /* set once the imports have been fixed up, before attaching them */
 static BOOL process_detaching = FALSE;  /* set on process detach to avoid deadlocks with thread detach */
 static int free_lib_count;   /* recursion depth of LdrUnloadDll calls */
@@ -2069,6 +2070,27 @@ NTSTATUS WINAPI LdrUnlockLoaderLock( ULONG flags, ULONG_PTR magic )
 }
 
 
+/* Some programs refuse to run when they find the exports that tell Wine apart (the PlayStation PC SDK in Sony's
+ * ports looks for wine_get_version, wine_server_call and wine_get_unix_file_name in ntdll and kernel32), so
+ * HideWineExports makes dynamic lookups miss the user-visible wine_* exports of those two. The __wine_* ones
+ * stay visible: FEX and Wine's own modules look some of them up at run time. MetalSharp's components use the
+ * metalsharp_* aliases of the wine_* functions they need. */
+/***********************************************************************
+ *           __wine_hide_wine_exports   (NTDLL.@)
+ *
+ * Whether HideWineExports is set for this process, for kernelbase to hide Wine's registry keys as well.
+ */
+BOOL CDECL __wine_hide_wine_exports(void)
+{
+    return hide_wine_exports;
+}
+
+static BOOL is_hidden_export( const WINE_MODREF *wm, const char *name )
+{
+    return hide_wine_exports && name && !strncmp( name, "wine_", 5 ) &&
+           (wm->ldr.DdagNode == node_ntdll || wm->ldr.DdagNode == node_kernel32);
+}
+
 /******************************************************************
  *		LdrGetProcedureAddress  (NTDLL.@)
  */
@@ -2085,6 +2107,8 @@ NTSTATUS WINAPI LdrGetProcedureAddress(HMODULE module, const ANSI_STRING *name,
 
     /* check if the module itself is invalid to return the proper error */
     if (!(wm = get_modref( module ))) ret = STATUS_DLL_NOT_FOUND;
+    else if (name && is_hidden_export( wm, name->Buffer ))
+        TRACE( "hiding %s\n", debugstr_a(name->Buffer) );
     else if (name && (wfdx_proc = wfdx_launcher_get_proc( module, name )))
     {
         *address = wfdx_proc;
@@ -4274,6 +4298,63 @@ static void load_global_options(void)
     }
 }
 
+/***********************************************************************
+ *           load_hide_wine_exports
+ */
+static void load_hide_wine_exports(void)
+{
+    static const WCHAR value_name[] = L"HideWineExports";
+    const WCHAR *p, *appname = NtCurrentTeb()->Peb->ProcessParameters->ImagePathName.Buffer;
+    WCHAR app_key[MAX_PATH + 20], buffer[64];
+    KEY_VALUE_PARTIAL_INFORMATION *info = (KEY_VALUE_PARTIAL_INFORMATION *)buffer;
+    OBJECT_ATTRIBUTES attr;
+    UNICODE_STRING nameW, valueW;
+    HANDLE root, config_key, hkey;
+    ULONG size;
+    int i;
+
+    RtlOpenCurrentUser( KEY_READ, &root );
+    InitializeObjectAttributes( &attr, &nameW, OBJ_CASE_INSENSITIVE, root, NULL );
+    RtlInitUnicodeString( &nameW, L"Software\\Wine" );
+    if (NtOpenKey( &config_key, KEY_READ, &attr )) config_key = 0;
+    NtClose( root );
+    if (!config_key) return;
+
+    if (appname)
+    {
+        if ((p = wcsrchr( appname, '/' ))) appname = p + 1;
+        if ((p = wcsrchr( appname, '\\' ))) appname = p + 1;
+    }
+    RtlInitUnicodeString( &valueW, value_name );
+    /* @@ Wine registry key: HKCU\Software\Wine\AppDefaults\app.exe, then HKCU\Software\Wine */
+    for (i = appname ? 0 : 1; i < 2; i++)
+    {
+        hkey = config_key;
+        if (!i)
+        {
+            if (wcslen( appname ) >= MAX_PATH) continue;
+            wcscpy( app_key, L"AppDefaults\\" );
+            wcscat( app_key, appname );
+            RtlInitUnicodeString( &nameW, app_key );
+            attr.RootDirectory = config_key;
+            if (NtOpenKey( &hkey, KEY_READ, &attr )) continue;
+        }
+        size = sizeof(buffer) - sizeof(WCHAR);
+        if (!NtQueryValueKey( hkey, &valueW, KeyValuePartialInformation, buffer, size, &size ))
+        {
+            if (info->Type == REG_DWORD && info->DataLength >= sizeof(DWORD))
+                hide_wine_exports = *(DWORD *)info->Data != 0;
+            else if (info->Type == REG_SZ && info->DataLength >= sizeof(WCHAR))
+                hide_wine_exports = wcschr( L"yYtT1", *(WCHAR *)info->Data ) != NULL;
+            if (hkey != config_key) NtClose( hkey );
+            break;
+        }
+        if (hkey != config_key) NtClose( hkey );
+    }
+    NtClose( config_key );
+    if (hide_wine_exports) TRACE( "hiding Wine's version exports from GetProcAddress\n" );
+}
+
 static BOOL needs_elevation(void)
 {
     ACTIVATION_CONTEXT_RUN_LEVEL_INFORMATION run_level;
@@ -4542,6 +4623,7 @@ void loader_init( CONTEXT *context, void **entry )
         init_user_process_params();
         load_global_options();
         version_init();
+        load_hide_wine_exports();
         open_known_dll_ntdir();
 
         default_load_path = peb->ProcessParameters->DllPath.Buffer;

@@ -1790,3 +1790,7 @@
 @ cdecl wine_get_version()
 @ cdecl wine_get_build_id()
 @ cdecl wine_get_host_version(ptr ptr)
+# Never hidden by HideWineExports (loader.c), for MetalSharp's own components (FEX)
+@ cdecl metalsharp_get_version() wine_get_version
+@ cdecl metalsharp_server_handle_to_fd(long long ptr ptr) wine_server_handle_to_fd
+@ cdecl __wine_hide_wine_exports()
