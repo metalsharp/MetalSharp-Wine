@@ -636,6 +636,32 @@ LSTATUS WINAPI DECLSPEC_HOTPATCH RegCreateKeyExA( HKEY hkey, LPCSTR name, DWORD 
 }
 
 
+extern BOOL CDECL __wine_hide_wine_exports(void);
+
+/* With HideWineExports (see LdrGetProcedureAddress()), programs don't find Wine's own registry keys either: the
+ * PlayStation PC SDK quits on HKLM\Software\Wine\Ports. Wine's components read their settings with NtOpenKey(). */
+static BOOL is_hidden_wine_key( HKEY root, const UNICODE_STRING *name )
+{
+    static const WCHAR * const prefixes[] = { L"Software\\Wine", L"Software\\Wow6432Node\\Wine" };
+    unsigned int i;
+    USHORT len;
+
+    if (HandleToUlong(root) != HandleToUlong(HKEY_CURRENT_USER) &&
+        HandleToUlong(root) != HandleToUlong(HKEY_LOCAL_MACHINE)) return FALSE;
+    if (!name->Length || !__wine_hide_wine_exports()) return FALSE;
+    for (i = 0; i < ARRAY_SIZE(prefixes); i++)
+    {
+        len = wcslen( prefixes[i] ) * sizeof(WCHAR);
+        if (name->Length < len || wcsnicmp( name->Buffer, prefixes[i], len / sizeof(WCHAR) )) continue;
+        if (name->Length == len || name->Buffer[len / sizeof(WCHAR)] == '\\')
+        {
+            TRACE( "hiding %s\n", debugstr_wn(name->Buffer, name->Length / sizeof(WCHAR)) );
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
 /******************************************************************************
  * RegOpenKeyExW   (kernelbase.@)
  *
@@ -658,9 +684,9 @@ LSTATUS WINAPI DECLSPEC_HOTPATCH RegOpenKeyExW( HKEY hkey, LPCWSTR name, DWORD o
 
     if (!retkey) return ERROR_INVALID_PARAMETER;
     *retkey = NULL;
-    if (!(hkey = get_special_root_hkey( hkey ))) return ERROR_INVALID_HANDLE;
-
     RtlInitUnicodeString( &nameW, name );
+    if (is_hidden_wine_key( hkey, &nameW )) return ERROR_FILE_NOT_FOUND;
+    if (!(hkey = get_special_root_hkey( hkey ))) return ERROR_INVALID_HANDLE;
     return RtlNtStatusToDosError( open_key( retkey, hkey, &nameW, options, access, FALSE ) );
 }
 
@@ -689,6 +715,7 @@ LSTATUS WINAPI DECLSPEC_HOTPATCH RegOpenKeyExA( HKEY hkey, LPCSTR name, DWORD op
 {
     STRING nameA;
     NTSTATUS status;
+    HKEY root;
 
     if (retkey && (!name || !name[0]) &&
         (HandleToUlong(hkey) >= HandleToUlong(HKEY_SPECIAL_ROOT_FIRST)) &&
@@ -705,6 +732,7 @@ LSTATUS WINAPI DECLSPEC_HOTPATCH RegOpenKeyExA( HKEY hkey, LPCSTR name, DWORD op
         if (HandleToUlong(hkey) == HandleToUlong(HKEY_CLASSES_ROOT) && name && *name == '\\') name++;
     }
 
+    root = hkey;
     if (!(hkey = get_special_root_hkey( hkey ))) return ERROR_INVALID_HANDLE;
 
     RtlInitAnsiString( &nameA, name );
@@ -712,6 +740,7 @@ LSTATUS WINAPI DECLSPEC_HOTPATCH RegOpenKeyExA( HKEY hkey, LPCSTR name, DWORD op
                                                  &nameA, FALSE )))
     {
         UNICODE_STRING nameW = NtCurrentTeb()->StaticUnicodeString;
+        if (is_hidden_wine_key( root, &nameW )) return ERROR_FILE_NOT_FOUND;
         status = open_key( retkey, hkey, &nameW, options, access, FALSE );
     }
     return RtlNtStatusToDosError( status );
