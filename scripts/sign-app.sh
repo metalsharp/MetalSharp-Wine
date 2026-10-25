@@ -33,6 +33,20 @@ mv $APP/Contents/MacOS/wine-launcher $APP/Contents/MacOS/wine 2>/dev/null || tru
 ln -s MacOS $APP/Contents/bin
 [[ -n $PROFILE ]] && cp $PROFILE $APP/Contents/embedded.provisionprofile
 
+# Every Windows process runs in the inner loader (ntdll execs it, with 4K pages when entitled), and
+# macOS only grants restricted entitlements to an executable under a provisioning profile embedded
+# in its own bundle: a standalone Mach-O is killed by AMFI ("no eligible provisioning profiles").
+# So the inner loader gets a bundle of its own, wine.app next to ntdll.so, which ntdll prefers.
+U=$APP/Contents/lib/wine/aarch64-unix
+LOADER_APP=$U/wine.app
+mkdir -p $LOADER_APP/Contents/MacOS
+mv $U/wine $LOADER_APP/Contents/MacOS/wine
+install_name_tool -add_rpath @executable_path/../../../../.. $LOADER_APP/Contents/MacOS/wine 2>/dev/null
+ln -s wine.app/Contents/MacOS/wine $U/wine
+[[ -n $PROFILE ]] && cp $PROFILE $LOADER_APP/Contents/embedded.provisionprofile
+sed -e "s/org\.winehq\.wine/$BUNDLE_ID/" -e 's/@PACKAGE_VERSION@/11.20/' \
+    $ROOT/src/wine/loader/wine_info.plist.in > $LOADER_APP/Contents/Info.plist
+
 cat > $APP/Contents/Info.plist <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -84,16 +98,17 @@ opts=(-f -s $IDENTITY)
 # Hardened runtime (needed for notarization) unless HARDENED=0
 [[ $IDENTITY != - && ${HARDENED:-1} != 0 ]] && opts+=(-o runtime)
 # Inside out: libraries and helpers first, the main executable (with entitlements) last.
-# Both loaders get the entitlements: new Windows processes are started through lib/wine/aarch64-unix/wine.
-LOADERS=($APP/Contents/MacOS/wine $APP/Contents/lib/wine/aarch64-unix/wine)
+# Both loaders get the entitlements: the launcher (Contents/MacOS/wine) execs the inner loader
+# bundle, which runs every Windows process.
 # share/metalsharp holds the MetalSharp app's dylibs and Mono runtimes (stage-metalsharp-assets.sh)
 for f in $(find $APP/Contents/lib $APP/Contents/MacOS $APP/Contents/share/metalsharp -type f 2>/dev/null); do
-  (( ${LOADERS[(Ie)$f]} )) && continue
+  [[ $f == $APP/Contents/MacOS/wine || $f == $LOADER_APP/* ]] && continue
   case "$(file -b $f)" in
     *Mach-O*executable*) codesign $opts --entitlements $ENT_BASE $f ;;
     *Mach-O*) codesign $opts $f ;;
   esac
 done
-for f in $LOADERS; do codesign $opts --entitlements $ENT $f; done
+codesign $opts --entitlements $ENT $LOADER_APP
+codesign $opts --entitlements $ENT $APP/Contents/MacOS/wine
 codesign $opts --entitlements $ENT $APP
 codesign --verify --strict --deep $APP && echo "signed: $APP ($IDENTITY)"
