@@ -156,7 +156,7 @@ Tested:
 
 **FFmpeg:** 8.0 (LGPL; videotoolbox and audiotoolbox) is bundled in `lib/` (libavcodec, libavformat, libavutil, libswresample, libswscale, libavfilter, libavdevice). Wine's `winedmo` links it by `@rpath`. Test `tests/src/mfdecode.c`: Media Foundation decodes AAC to PCM on arm64 and x86_64.
 
-**Not usable on arm64:** D3DMetal/GPTK (x86_64 Mach-O), and WFDXCompat's D3DMetal-only parts. Only its launcher companion is carried; its D3D12 frontend for GTA V Enhanced is not ported. vkd3d-proton is left out because Mullion covers D3D12. The newer `lib/dxvk` with d3d8 is also left out.
+**Not usable on arm64:** D3DMetal/GPTK (x86_64 Mach-O), and WFDXCompat's D3DMetal-only parts. Only its launcher companion is carried; its D3D12 frontend for GTA V Enhanced is not ported. VKD3D-Proton is an opt-in D3D12 backend for x86_64 programs (`GRAPHICS_BACKEND=vkd3d`, from `src/vkd3d-proton`), alongside Mullion. The newer `lib/dxvk` with d3d8 is also left out.
 
 ## Checked against MetalSharp Wine 1.0 (VKMT)
 

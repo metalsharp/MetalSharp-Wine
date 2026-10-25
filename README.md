@@ -100,7 +100,8 @@ The modified sources are kept in this repository as branches, and `main` links t
 | `src/wine` | [`source/wine`](../../tree/source/wine) | Wine 11.20 + MetalSharp (`wine-11.20` tag plus 56 commits) |
 | `src/FEX` | [`source/fex`](../../tree/source/fex) | FEX-2610 + MetalSharp (7 commits). It is not upstreamed |
 | `src/winemetalgl` | [`source/winemetalgl`](../../tree/source/winemetalgl) | WineMetalGL's arm64 Wine module |
-| `src/mullion` | [aaf2tbz/mullion](https://github.com/aaf2tbz/mullion) `i386-build` | Mullion (DXMT fork). Developed there and sent upstream to [dttdrv/mullion](https://github.com/dttdrv/mullion) as pull requests |
+| `src/mullion` | [aaf2tbz/mullion](https://github.com/aaf2tbz/mullion) `metalsharp-2.1` | Mullion (DXMT fork). Developed there and sent upstream to [dttdrv/mullion](https://github.com/dttdrv/mullion) as pull requests |
+| `src/vkd3d-proton` | [metalsharp/VKD3D-Proton-MacOS](https://github.com/metalsharp/VKD3D-Proton-MacOS) `main` | VKD3D-Proton macOS: the `GRAPHICS_BACKEND=vkd3d` lane (D3D12 on Vulkan, with DXVK's DXGI and D3D10/11) and MetalSharp's MoltenVK, as patches on the upstream projects |
 
 The branches are full source trees with their upstream history (Wine's is large), which is why they are linked rather than merged into `main`. `legacy-1.x` holds the previous MetalSharp Wine (VKMT) history.
 

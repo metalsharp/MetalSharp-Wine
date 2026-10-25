@@ -19,3 +19,7 @@
 	path = src/wfdxcompat
 	url = https://github.com/metalsharp/MetalSharp-Wine.git
 	branch = source/wfdxcompat
+[submodule "src/vkd3d-proton"]
+	path = src/vkd3d-proton
+	url = https://github.com/metalsharp/VKD3D-Proton-MacOS.git
+	branch = main
