@@ -1,0 +1,145 @@
+From 8c94f35ce9ee0f13a8ab5115bfa68a2fe80500ca Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Sat, 24 Oct 2026 13:17:01 -0600
+Subject: [PATCH] FEXCore: Sign-extending loads for MOVSX/MOVSXD from memory
+
+A memory source was loaded and then sign-extended with a separate sbfx.
+Add a LoadMemSExt IR op (ldrsb/ldrsh/ldrsw) and use it for MOVSX and
+MOVSXD with REX.W from memory when the access isn't TSO, saving an
+instruction and a cycle of load-to-use latency (array index widening,
+signed field loads, jump tables).
+---
+ .../Source/Interface/Core/JIT/MemoryOps.cpp   | 31 +++++++++++++++++++
+ .../Interface/Core/OpcodeDispatcher.cpp       | 21 +++++++++++--
+ .../Source/Interface/Core/OpcodeDispatcher.h  | 11 +++++++
+ FEXCore/Source/Interface/IR/IR.json           |  6 ++++
+ 4 files changed, 66 insertions(+), 3 deletions(-)
+
+diff --git a/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp b/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
+index d7b716cab..8d9371895 100644
+--- a/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
+@@ -738,6 +738,37 @@ DEF_OP(LoadMem) {
+   }
+ }
+ 
++DEF_OP(LoadMemSExt) {
++  const auto Op = IROp->C<IR::IROp_LoadMemSExt>();
++  const auto Is64 = IROp->Size == IR::OpSize::i64Bit;
++
++  const auto MemReg = GetReg(Op->Addr);
++  const auto MemSrc = GenerateMemOperand(Op->SrcSize, MemReg, Op->Offset, Op->OffsetType, Op->OffsetScale);
++  const auto Dst = GetReg(Node);
++
++  switch (Op->SrcSize) {
++  case IR::OpSize::i8Bit:
++    if (Is64) {
++      ldrsb(Dst.X(), MemSrc);
++    } else {
++      ldrsb(Dst.W(), MemSrc);
++    }
++    break;
++  case IR::OpSize::i16Bit:
++    if (Is64) {
++      ldrsh(Dst.X(), MemSrc);
++    } else {
++      ldrsh(Dst.W(), MemSrc);
++    }
++    break;
++  case IR::OpSize::i32Bit:
++    LOGMAN_THROW_A_FMT(Is64, "32-bit sign extension needs a 64-bit destination");
++    ldrsw(Dst.X(), MemSrc);
++    break;
++  default: LOGMAN_MSG_A_FMT("Unhandled LoadMemSExt size: {}", Op->SrcSize); break;
++  }
++}
++
+ DEF_OP(LoadMemPair) {
+   const auto Op = IROp->C<IR::IROp_LoadMemPair>();
+   const auto Addr = GetReg(Op->Addr);
+diff --git a/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp b/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
+index 5495bf161..25dc78cd5 100644
+--- a/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
++++ b/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
+@@ -1074,6 +1074,13 @@ void OpDispatchBuilder::MOVSXDOp(OpcodeArgs) {
+   auto Size = std::min<IR::OpSize>(OpSize::i32Bit, OpSizeFromSrc(Op));
+   bool Sext = (Size != OpSize::i16Bit) && Op->Flags & FEXCore::X86Tables::DecodeFlags::FLAG_REX_WIDENING;
+ 
++  if (Sext) {
++    if (Ref Loaded = LoadMemSExtIfPossible(Op, Op->Src[0], OpSize::i64Bit, Size)) {
++      StoreResultGPR(Op, Loaded);
++      return;
++    }
++  }
++
+   Ref Src = LoadSourceGPR_WithOpSize(Op, Op->Src[0], Size, Op->Flags, {.AllowUpperGarbage = Sext});
+   if (Size == OpSize::i16Bit) {
+     // This'll make sure to insert in to the lower 16bits without modifying upper bits
+@@ -1089,14 +1096,22 @@ void OpDispatchBuilder::MOVSXDOp(OpcodeArgs) {
+ }
+ 
+ void OpDispatchBuilder::MOVSXOp(OpcodeArgs) {
+-  // Load garbage in upper bits, since we're sign extending anyway
+   const auto Size = OpSizeFromSrc(Op);
++  const auto DstSize = OpSizeFromDst(Op);
++  const auto ExtSize = DstSize == OpSize::i64Bit ? OpSize::i64Bit : OpSize::i32Bit;
++
++  // A memory source is loaded and sign-extended by one ldrsb/ldrsh.
++  if (Ref Loaded = LoadMemSExtIfPossible(Op, Op->Src[0], ExtSize, Size)) {
++    StoreResultGPR(Op, Op->Dest, Loaded);
++    return;
++  }
++
++  // Load garbage in upper bits, since we're sign extending anyway
+   Ref Src = LoadSourceGPR(Op, Op->Src[0], Op->Flags, {.AllowUpperGarbage = true});
+ 
+   // Sign-extend to DstSize and zero-extend to the register size, using a fast
+   // path for 32-bit dests where the native 32-bit Sbfe zero extends the top.
+-  const auto DstSize = OpSizeFromDst(Op);
+-  Src = _Sbfe(DstSize == OpSize::i64Bit ? OpSize::i64Bit : OpSize::i32Bit, IR::OpSizeAsBits(Size), 0, Src);
++  Src = _Sbfe(ExtSize, IR::OpSizeAsBits(Size), 0, Src);
+   StoreResultGPR(Op, Op->Dest, Src);
+ }
+ 
+diff --git a/FEXCore/Source/Interface/Core/OpcodeDispatcher.h b/FEXCore/Source/Interface/Core/OpcodeDispatcher.h
+index f8581ac03..47c16a5eb 100644
+--- a/FEXCore/Source/Interface/Core/OpcodeDispatcher.h
++++ b/FEXCore/Source/Interface/Core/OpcodeDispatcher.h
+@@ -2540,6 +2540,17 @@ private:
+   Ref _LoadMemGPRAutoTSO(OpSize Size, const AddressMode& A, OpSize Align = OpSize::i8Bit) {
+     return _LoadMemAutoTSO(RegClass::GPR, Size, A, Align);
+   }
++
++  // A sign-extending load (ldrsb/ldrsh/ldrsw) of a memory operand, or nullptr when the access must be TSO or the
++  // operand isn't memory, in which case the caller loads and sign-extends separately.
++  Ref LoadMemSExtIfPossible(const X86Tables::DecodedOp& Op, const X86Tables::DecodedOperand& Operand, OpSize DstSize, OpSize SrcSize) {
++    if (!IsOperandMem(Operand, true) || IsTSOEnabled(RegClass::GPR)) {
++      return nullptr;
++    }
++    AddressMode A = DecodeAddress(Op, Operand, MemoryAccessType::DEFAULT, true /* IsLoad */);
++    const auto B = SelectAddressMode(this, A, GetGPROpSize(), CTX->HostFeatures.SupportsTSOImm9, false, false, SrcSize);
++    return _LoadMemSExt(DstSize, SrcSize, B.Base, B.Index, B.IndexType, B.IndexScale);
++  }
+   Ref _LoadMemFPRAutoTSO(OpSize Size, const AddressMode& A, OpSize Align = OpSize::i8Bit) {
+     return _LoadMemAutoTSO(RegClass::FPR, Size, A, Align);
+   }
+diff --git a/FEXCore/Source/Interface/IR/IR.json b/FEXCore/Source/Interface/IR/IR.json
+index 880520077..07e8d5d30 100644
+--- a/FEXCore/Source/Interface/IR/IR.json
++++ b/FEXCore/Source/Interface/IR/IR.json
+@@ -534,6 +534,12 @@
+         "DestSize": "Size"
+       },
+ 
++      "GPR = LoadMemSExt OpSize:#Size, OpSize:$SrcSize, GPR:$Addr, GPR:$Offset, MemOffsetType:$OffsetType, u8:$OffsetScale": {
++        "Desc": ["Loads SrcSize bytes (8, 16 or 32 bits) and sign-extends them to Size (32 or 64 bits)"],
++        "Inline": ["", "Mem"],
++        "DestSize": "Size"
++      },
++
+       "SSA:$Value1, SSA:$Value2 = LoadMemPair RegisterClass:$Class, OpSize:#Size, GPR:$Addr, u32:$Offset": {
+         "Desc": ["Load a pair of values from memory."],
+         "DestSize": "Size",
+-- 
+2.54.0 (Apple Git-157)
+

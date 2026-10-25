@@ -1,0 +1,39 @@
+From c75f69a9be964895e846223c17346c207310d1ef Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Sat, 24 Oct 2026 13:28:32 -0600
+Subject: [PATCH 17/18] Windows: Don't invalidate code for ranges that were
+ never executable
+
+InvalidateAlignedInterval runs after every NtReadFile, free and decommit,
+and took the code invalidation mutex exclusively, which waits for every
+compile in progress in any thread. Code is only translated from
+executable intervals, and leaving one invalidates it, so skip ranges
+that don't overlap one.
+---
+ Source/Windows/Common/InvalidationTracker.cpp | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/Source/Windows/Common/InvalidationTracker.cpp b/Source/Windows/Common/InvalidationTracker.cpp
+index 155403d35..a95fcd2db 100644
+--- a/Source/Windows/Common/InvalidationTracker.cpp
++++ b/Source/Windows/Common/InvalidationTracker.cpp
+@@ -203,6 +203,16 @@ void InvalidationTracker::InvalidateAlignedInterval(uint64_t Address, uint64_t S
+   const auto AlignedBase = Address & FEXCore::Utils::FEX_PAGE_MASK;
+   const auto AlignedSize = std::max(Size, (Address - AlignedBase + Size + FEXCore::Utils::FEX_PAGE_SIZE - 1) & FEXCore::Utils::FEX_PAGE_MASK);
+ 
++  {
++    // Code is only ever translated from executable intervals, and leaving them invalidates it, so a range that
++    // doesn't overlap one has nothing to invalidate. This keeps file reads and frees of data memory from taking the
++    // code invalidation lock, which waits for every compile in progress.
++    std::shared_lock Lock(IntervalsLock);
++    if (!XIntervals.Intersect({AlignedBase, AlignedBase + AlignedSize})) {
++      return;
++    }
++  }
++
+   InvalidateIntervalInternal(AlignedBase, AlignedSize);
+ 
+   if (Free) {
+-- 
+2.54.0 (Apple Git-157)
+

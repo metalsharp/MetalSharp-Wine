@@ -1,0 +1,48 @@
+From dd636a8824bb67e088d3bd3d3dbe0d1b197ce880 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Sat, 24 Oct 2026 13:19:15 -0600
+Subject: [PATCH] Dispatcher: Return through the call-ret stack after a WoW64
+ syscall
+
+WoW64 returns from the guest's syscall stub itself, so the call-ret entry
+pushed by the guest's call into the stub was never popped. Every return
+of a frame that was live at the syscall then compared against the wrong
+entry, took the slow lookup and mispredicted, and the stack drifted by an
+entry per syscall. After the syscall, pop the top entry and return
+through it when it matches the new RIP, as EnterEC does on ARM64EC.
+
+fexprobe (M4, i686): qpc -20%.
+---
+ .../Interface/Core/Dispatcher/Dispatcher.cpp       | 14 ++++++++++++++
+ 1 file changed, 14 insertions(+)
+
+diff --git a/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp b/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp
+index de1ce1176..7a7861ef7 100644
+--- a/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp
++++ b/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp
+@@ -564,8 +564,22 @@ void Dispatcher::EmitDispatcher() {
+     // We can safely claim we are no longer in a syscall
+     str(ARMEmitter::XReg::zr, STATE, offsetof(FEXCore::Core::CpuStateFrame, InSyscallInfo));
+ 
++#if defined(_WIN32) && !defined(ARCHITECTURE_arm64ec)
++    // WoW64 returns from the guest's syscall stub itself (RIP is the stub's return address), which leaves the
++    // call-ret entry pushed by the call into the stub on the stack. Pop it and return through it when it matches,
++    // as EnterEC does on ARM64EC, so the stack stays balanced and the host return is predicted.
++    ldr(TMP1, STATE_PTR(CpuStateFrame, State.rip));
++    ldp<ARMEmitter::IndexType::OFFSET>(TMP2, TMP4, REG_CALLRET_SP);
++    sub(ARMEmitter::Size::i64Bit, TMP2, TMP1, TMP2);
++    (void)cbnz(ARMEmitter::Size::i64Bit, TMP2, &LoopTop);
++    ldrb(TMP2, STATE_PTR(CpuStateFrame, State.flags[X86State::RFLAG_TF_RAW_LOC]));
++    (void)cbnz(ARMEmitter::Size::i32Bit, TMP2, &LoopTop);
++    add(ARMEmitter::Size::i64Bit, REG_CALLRET_SP, REG_CALLRET_SP, 0x10);
++    ret(TMP4);
++#else
+     // Now go back to the regular dispatcher loop
+     (void)b(&LoopTop);
++#endif
+   }
+ 
+   {
+-- 
+2.54.0 (Apple Git-157)
+

@@ -1,0 +1,54 @@
+From 4463816214c7fa17985a678fc6cd1936c7f4c9fa Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Sun, 25 Oct 2026 16:41:04 -0600
+Subject: [PATCH] ntdll, loader: exec the loader from its own bundle (wine.app
+ next to ntdll.so) when there is one
+
+macOS grants restricted entitlements (the cross-architecture support that gives 4K pages) only to
+an executable under a provisioning profile embedded in its bundle, and kills a standalone Mach-O
+that claims them (AMFI: no eligible provisioning profiles). A signed app ships the inner loader as
+wine.app, with the profile, so ntdll execs that, and the loader finds ntdll.so from inside it.
+---
+ dlls/ntdll/unix/loader.c | 10 ++++++++++
+ loader/main.c            |  4 ++++
+ 2 files changed, 14 insertions(+)
+
+diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
+index 830040f8df9..e16fd085952 100644
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -455,6 +455,16 @@ static void init_paths(void)
+         bin_dir = build_relative_path( dll_dir, LIBDIR "/wine", BINDIR );
+         data_dir = build_relative_path( dll_dir, LIBDIR "/wine", DATADIR "/wine" );
+         wineloader = build_path( ntdll_dir, "wine" );
++#ifdef __APPLE__
++        /* A signed app ships the loader as a bundle of its own (wine.app next to ntdll.so): its
++         * restricted entitlements (4K pages) are only granted under a provisioning profile, and
++         * macOS only finds one embedded in the executable's bundle. */
++        {
++            char *bundle_loader = build_path( ntdll_dir, "wine.app/Contents/MacOS/wine" );
++            if (!access( bundle_loader, X_OK )) wineloader = bundle_loader;
++            else free( bundle_loader );
++        }
++#endif
+     }
+ 
+     set_dll_path();
+diff --git a/loader/main.c b/loader/main.c
+index 71ba308ca86..3402247d02c 100644
+--- a/loader/main.c
++++ b/loader/main.c
+@@ -153,6 +153,10 @@ static void *try_dlopen( const char *argv0 )
+ 
+     if ((p = remove_tail( dir, "/loader" )))
+         path = build_path( p, "dlls/ntdll/ntdll.so" );
++#ifdef __APPLE__
++    else if ((p = remove_tail( dir, "/wine.app/Contents/MacOS" )))  /* the loader bundle, see ntdll */
++        path = build_path( p, "ntdll.so" );
++#endif
+     else
+         path = build_path( dir, "ntdll.so" );
+ 
+-- 
+2.54.0 (Apple Git-157)
+

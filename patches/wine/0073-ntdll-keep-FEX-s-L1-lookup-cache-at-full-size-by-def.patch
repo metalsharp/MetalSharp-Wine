@@ -1,0 +1,29 @@
+From 443b5f5c5e7546c8994b439d8abf5d1cd46599e8 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Sat, 24 Oct 2026 13:03:37 -0600
+Subject: [PATCH 73/74] ntdll: keep FEX's L1 lookup cache at full size by
+ default (FEX_DYNAMICL1CACHE=0 unless set)
+
+---
+ dlls/ntdll/unix/loader.c | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
+index f61cbb1684a..830040f8df9 100644
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -2413,6 +2413,11 @@ DECLSPEC_EXPORT void __wine_main( int argc, char *argv[] )
+     /* Keep FEX's second-level block lookup cache: games with large code footprints (Unity,
+      * Mono) otherwise take the slow lookup path on every L1 miss of an indirect branch. */
+     setenv( "FEX_DISABLEL2CACHE", "0", 0 );
++    /* Keep FEX's per-thread L1 block lookup cache at its full size. The dynamic sizing only counts
++     * lookups that reach C++, which the dispatcher's inline L2 refill hides, so it stays at its minimum
++     * and indirect calls across a large code footprint keep missing it (fexprobe bigfoot -13%). Its
++     * pages are only touched in proportion to the guest code a thread runs. */
++    setenv( "FEX_DYNAMICL1CACHE", "0", 0 );
+ #endif
+ 
+     init_paths();
+-- 
+2.54.0 (Apple Git-157)
+

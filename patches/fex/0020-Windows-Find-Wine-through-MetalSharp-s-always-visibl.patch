@@ -1,0 +1,66 @@
+From c84f7bc2a3c7a0e34fbbcdc912b81f3148b4bb6e Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Sat, 24 Oct 2026 23:16:20 -0600
+Subject: [PATCH] Windows: Find Wine through MetalSharp's always-visible
+ aliases
+
+MetalSharp Wine's ntdll can hide wine_get_version and wine_server_handle_to_fd from programs that
+refuse to run under Wine (HideWineExports). Look up metalsharp_get_version and
+metalsharp_server_handle_to_fd first, and fall back to the wine_* names on other Wine builds.
+---
+ Source/Windows/ARM64EC/Module.cpp    | 4 +++-
+ Source/Windows/Common/FEXUnixLib.cpp | 7 ++++++-
+ Source/Windows/WOW64/Module.cpp      | 4 +++-
+ 3 files changed, 12 insertions(+), 3 deletions(-)
+
+diff --git a/Source/Windows/ARM64EC/Module.cpp b/Source/Windows/ARM64EC/Module.cpp
+index 8a87e7d4d..2bf3b5fb6 100644
+--- a/Source/Windows/ARM64EC/Module.cpp
++++ b/Source/Windows/ARM64EC/Module.cpp
+@@ -666,7 +666,9 @@ NTSTATUS ProcessInit() {
+   SyscallHandler = fextl::make_unique<Exception::ECSyscallHandler>();
+ 
+   const auto NtDll = GetModuleHandleW(L"ntdll.dll");
+-  const bool IsWine = !!GetProcAddress(NtDll, "wine_get_version");
++  // MetalSharp Wine's ntdll can hide wine_get_version from programs that refuse to run under Wine
++  // (HideWineExports); metalsharp_get_version is the same function and always visible.
++  const bool IsWine = GetProcAddress(NtDll, "metalsharp_get_version") || GetProcAddress(NtDll, "wine_get_version");
+   OvercommitTracker.emplace(IsWine);
+ 
+   FEX::Windows::SetupEnvironmentVariableValues(NtDll);
+diff --git a/Source/Windows/Common/FEXUnixLib.cpp b/Source/Windows/Common/FEXUnixLib.cpp
+index e37807fda..f6b9738a4 100644
+--- a/Source/Windows/Common/FEXUnixLib.cpp
++++ b/Source/Windows/Common/FEXUnixLib.cpp
+@@ -45,7 +45,12 @@ static NTSTATUS __attribute__((naked)) TrampolineCall(unixlib_handle_t, unsigned
+ #endif
+ bool Init(HMODULE NtDll) {
+   const auto Sym = GetProcAddress(NtDll, "__wine_unix_call_dispatcher");
+-  WineServerHandleToFd = reinterpret_cast<wine_server_handle_to_fd_t>(GetProcAddress(NtDll, "wine_server_handle_to_fd"));
++  // MetalSharp Wine's ntdll can hide wine_* exports (HideWineExports); the metalsharp_* alias always resolves.
++  auto HandleToFd = GetProcAddress(NtDll, "metalsharp_server_handle_to_fd");
++  if (!HandleToFd) {
++    HandleToFd = GetProcAddress(NtDll, "wine_server_handle_to_fd");
++  }
++  WineServerHandleToFd = reinterpret_cast<wine_server_handle_to_fd_t>(HandleToFd);
+ 
+   if (!Sym) {
+     return false;
+diff --git a/Source/Windows/WOW64/Module.cpp b/Source/Windows/WOW64/Module.cpp
+index a79d23c68..33de0779f 100644
+--- a/Source/Windows/WOW64/Module.cpp
++++ b/Source/Windows/WOW64/Module.cpp
+@@ -526,7 +526,9 @@ void BTCpuProcessInit() {
+   SignalDelegator = fextl::make_unique<FEX::DummyHandlers::DummySignalDelegator>();
+   SyscallHandler = fextl::make_unique<WowSyscallHandler>();
+   const auto NtDll = GetModuleHandleW(L"ntdll.dll");
+-  const bool IsWine = !!GetProcAddress(NtDll, "wine_get_version");
++  // MetalSharp Wine's ntdll can hide wine_get_version from programs that refuse to run under Wine
++  // (HideWineExports); metalsharp_get_version is the same function and always visible.
++  const bool IsWine = GetProcAddress(NtDll, "metalsharp_get_version") || GetProcAddress(NtDll, "wine_get_version");
+   OvercommitTracker.emplace(IsWine);
+ 
+   FEX::Windows::Allocator::SetupHooks(NtDll);
+-- 
+2.54.0 (Apple Git-157)
+

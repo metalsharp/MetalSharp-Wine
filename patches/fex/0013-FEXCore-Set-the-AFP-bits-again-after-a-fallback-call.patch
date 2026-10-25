@@ -1,0 +1,66 @@
+From c81d2bb62e41c13f03ce45ab1562c42db874531a Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Sat, 24 Oct 2026 13:02:43 -0600
+Subject: [PATCH] FEXCore: Set the AFP bits again after a fallback call in a
+ block
+
+The fallback thunks are emitted by the dispatcher, which doesn't track the
+AFP state, so their state fill left FPCR.NEP/AH/FIZ clear while the block
+went on as if they were set. Scalar SSE ops after an x87 (softfloat) op in
+the same block then zeroed their destination's upper lanes. Mark the AFP
+state unknown after any fallback call so the next FP op sets it again.
+
+Found by an audit; fexprobe x87_sse_mix covers it.
+---
+ FEXCore/Source/Interface/Core/JIT/JIT.cpp    | 7 +++++++
+ FEXCore/Source/Interface/Core/JIT/JITClass.h | 2 ++
+ 2 files changed, 9 insertions(+)
+
+diff --git a/FEXCore/Source/Interface/Core/JIT/JIT.cpp b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+index af03bdb59..799e0d6ea 100644
+--- a/FEXCore/Source/Interface/Core/JIT/JIT.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+@@ -116,6 +116,9 @@ namespace FEXCore::CPU {
+ 
+ void Arm64JITCore::Op_Unhandled(const IR::IROp_Header* IROp, IR::Ref Node) {
+   FallbackInfo Info;
++  // The fallback thunks are emitted by the dispatcher, whose state fills leave the AFP bits clear (see
++  // Arm64Emitter::EmitAFPState), so FP code after this op in the block must set them again.
++  AFPClearedByCall = true;
+   if (!InterpreterOps::GetFallbackHandler(IROp, &Info)) {
+ #if defined(ASSERTIONS_ENABLED) && ASSERTIONS_ENABLED
+     LOGMAN_MSG_A_FMT("Unhandled IR Op: {}", FEXCore::IR::GetName(IROp->Op));
+@@ -1116,6 +1119,7 @@ CPUBackend::CompiledCode Arm64JITCore::CompileCode(uint64_t Entry, uint64_t Size
+         EmitAFPEnable();
+         AFPEnabled = true;
+       }
++      AFPClearedByCall = false;
+       switch (IROp->Op) {
+ #define REGISTER_OP(op, x) \
+   case FEXCore::IR::IROps::OP_##op: Op_##x(IROp, CodeNode); break
+@@ -1126,6 +1130,9 @@ CPUBackend::CompiledCode Arm64JITCore::CompileCode(uint64_t Entry, uint64_t Size
+ 
+       default: Op_Unhandled(IROp, CodeNode); break;
+       }
++      if (AFPClearedByCall) {
++        AFPEnabled = !EmitAFPState;
++      }
+     }
+ 
+     DebugData->Subblocks.push_back({static_cast<uint32_t>(BlockStartHostCode - CodeData.BlockBegin),
+diff --git a/FEXCore/Source/Interface/Core/JIT/JITClass.h b/FEXCore/Source/Interface/Core/JIT/JITClass.h
+index ae5395123..3fc468978 100644
+--- a/FEXCore/Source/Interface/Core/JIT/JITClass.h
++++ b/FEXCore/Source/Interface/Core/JIT/JITClass.h
+@@ -638,6 +638,8 @@ private:
+ 
+   void EmitEntryPoint(ARMEmitter::BackwardLabel& HeaderLabel, bool CheckTF, bool CheckSuspend = true);
+   bool NeedsAFP(const IR::IROp_Header* IROp) const;
++  // Set when the op just emitted called a fallback thunk, which returns with the AFP bits clear.
++  bool AFPClearedByCall {};
+   void EmitAFPEnable();
+ 
+   [[nodiscard]] CodeBuffer::CodeBufferAllocation AllocateCodeBufferInSharedCache(size_t Size);
+-- 
+2.54.0 (Apple Git-157)
+

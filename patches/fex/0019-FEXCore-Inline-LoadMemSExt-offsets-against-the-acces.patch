@@ -1,0 +1,65 @@
+From 2cb3f42ccf6730e010e660136f9e8086a5114542 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Sat, 24 Oct 2026 13:55:29 -0600
+Subject: [PATCH] FEXCore: Inline LoadMemSExt offsets against the access size
+
+LoadMemSExt's Size was its destination size, so offsets were inlined
+when they fit a 32- or 64-bit load's scaled immediate. A MOVSX/MOVSXD
+with a displacement between the access size's range and that one (e.g.
+movsx eax, byte [rcx+0x1008]) was then encoded with the wrong offset and
+read the wrong memory; Steam stopped logging on. Make the access size
+the op's Size, which the offset inlining checks, and give the
+destination size as DstSize.
+---
+ FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp | 6 +++---
+ FEXCore/Source/Interface/IR/IR.json             | 7 ++++---
+ 2 files changed, 7 insertions(+), 6 deletions(-)
+
+diff --git a/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp b/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
+index 8d9371895..20b700629 100644
+--- a/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
+@@ -743,10 +743,10 @@ DEF_OP(LoadMemSExt) {
+   const auto Is64 = IROp->Size == IR::OpSize::i64Bit;
+ 
+   const auto MemReg = GetReg(Op->Addr);
+-  const auto MemSrc = GenerateMemOperand(Op->SrcSize, MemReg, Op->Offset, Op->OffsetType, Op->OffsetScale);
++  const auto MemSrc = GenerateMemOperand(Op->Size, MemReg, Op->Offset, Op->OffsetType, Op->OffsetScale);
+   const auto Dst = GetReg(Node);
+ 
+-  switch (Op->SrcSize) {
++  switch (Op->Size) {
+   case IR::OpSize::i8Bit:
+     if (Is64) {
+       ldrsb(Dst.X(), MemSrc);
+@@ -765,7 +765,7 @@ DEF_OP(LoadMemSExt) {
+     LOGMAN_THROW_A_FMT(Is64, "32-bit sign extension needs a 64-bit destination");
+     ldrsw(Dst.X(), MemSrc);
+     break;
+-  default: LOGMAN_MSG_A_FMT("Unhandled LoadMemSExt size: {}", Op->SrcSize); break;
++  default: LOGMAN_MSG_A_FMT("Unhandled LoadMemSExt size: {}", Op->Size); break;
+   }
+ }
+ 
+diff --git a/FEXCore/Source/Interface/IR/IR.json b/FEXCore/Source/Interface/IR/IR.json
+index 07e8d5d30..1fd9130bc 100644
+--- a/FEXCore/Source/Interface/IR/IR.json
++++ b/FEXCore/Source/Interface/IR/IR.json
+@@ -534,10 +534,11 @@
+         "DestSize": "Size"
+       },
+ 
+-      "GPR = LoadMemSExt OpSize:#Size, OpSize:$SrcSize, GPR:$Addr, GPR:$Offset, MemOffsetType:$OffsetType, u8:$OffsetScale": {
+-        "Desc": ["Loads SrcSize bytes (8, 16 or 32 bits) and sign-extends them to Size (32 or 64 bits)"],
++      "GPR = LoadMemSExt OpSize:#DstSize, OpSize:$Size, GPR:$Addr, GPR:$Offset, MemOffsetType:$OffsetType, u8:$OffsetScale": {
++        "Desc": ["Loads Size bytes (8, 16 or 32 bits) and sign-extends them to DstSize (32 or 64 bits).",
++                 "The access size must be the one named Size: offsets are inlined against it."],
+         "Inline": ["", "Mem"],
+-        "DestSize": "Size"
++        "DestSize": "DstSize"
+       },
+ 
+       "SSA:$Value1, SSA:$Value2 = LoadMemPair RegisterClass:$Class, OpSize:#Size, GPR:$Addr, u32:$Offset": {
+-- 
+2.54.0 (Apple Git-157)
+
