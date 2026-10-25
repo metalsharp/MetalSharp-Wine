@@ -45,7 +45,12 @@ static NTSTATUS __attribute__((naked)) TrampolineCall(unixlib_handle_t, unsigned
 #endif
 bool Init(HMODULE NtDll) {
   const auto Sym = GetProcAddress(NtDll, "__wine_unix_call_dispatcher");
-  WineServerHandleToFd = reinterpret_cast<wine_server_handle_to_fd_t>(GetProcAddress(NtDll, "wine_server_handle_to_fd"));
+  // MetalSharp Wine's ntdll can hide wine_* exports (HideWineExports); the metalsharp_* alias always resolves.
+  auto HandleToFd = GetProcAddress(NtDll, "metalsharp_server_handle_to_fd");
+  if (!HandleToFd) {
+    HandleToFd = GetProcAddress(NtDll, "wine_server_handle_to_fd");
+  }
+  WineServerHandleToFd = reinterpret_cast<wine_server_handle_to_fd_t>(HandleToFd);
 
   if (!Sym) {
     return false;

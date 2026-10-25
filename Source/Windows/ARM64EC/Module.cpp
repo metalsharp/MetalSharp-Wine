@@ -666,7 +666,9 @@ NTSTATUS ProcessInit() {
   SyscallHandler = fextl::make_unique<Exception::ECSyscallHandler>();
 
   const auto NtDll = GetModuleHandleW(L"ntdll.dll");
-  const bool IsWine = !!GetProcAddress(NtDll, "wine_get_version");
+  // MetalSharp Wine's ntdll can hide wine_get_version from programs that refuse to run under Wine
+  // (HideWineExports); metalsharp_get_version is the same function and always visible.
+  const bool IsWine = GetProcAddress(NtDll, "metalsharp_get_version") || GetProcAddress(NtDll, "wine_get_version");
   OvercommitTracker.emplace(IsWine);
 
   FEX::Windows::SetupEnvironmentVariableValues(NtDll);
