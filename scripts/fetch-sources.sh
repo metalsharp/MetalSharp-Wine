@@ -9,12 +9,14 @@
 #   src/vkd3d-proton VKD3D-Proton macOS (metalsharp/VKD3D-Proton-MacOS): the GRAPHICS_BACKEND=vkd3d lane and
 #                    MoltenVK. Its own scripts/fetch-sources.sh fetches the VKD3D-Proton, MoltenVK and DXVK
 #                    sources it patches, for stage-vkd3d-proton.sh and stage-moltenvk.sh
+#   src/dxvk-macos   DXVK-macOS 1.10.x (metalsharp/DXVK-macOS-1.10, branch metalsharp): the GRAPHICS_BACKEND=dxvk
+#                    lane, built as ARM64X by build-dxvk-macos.sh
 # Outside a git checkout, the branches are cloned instead. patches/ has the same changes as git
 # patches against the upstream tags.
 set -e
 source ${0:A:h}/env.sh
 if [[ -f $ROOT/.gitmodules ]] && git -C $ROOT rev-parse --git-dir >/dev/null 2>&1; then
-  git -C $ROOT submodule update --init src/wine src/FEX src/winemetalgl src/mullion src/wfdxcompat src/vkd3d-proton
+  git -C $ROOT submodule update --init src/wine src/FEX src/winemetalgl src/mullion src/wfdxcompat src/vkd3d-proton src/dxvk-macos
 else
   REPO=${METALSHARP_WINE_REPO:-https://github.com/metalsharp/MetalSharp-Wine.git}
   clone() {  # clone <dir> <url> <branch>
@@ -28,6 +30,7 @@ else
   clone wfdxcompat $REPO source/wfdxcompat
   clone mullion https://github.com/aaf2tbz/mullion.git metalsharp-2.1
   clone vkd3d-proton https://github.com/metalsharp/VKD3D-Proton-MacOS.git main
+  clone dxvk-macos https://github.com/metalsharp/DXVK-macOS-1.10.git metalsharp
 fi
 git -C $ROOT/src/FEX submodule update --init --recursive
 echo "sources ready in $ROOT/src"

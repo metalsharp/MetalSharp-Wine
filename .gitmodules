@@ -23,3 +23,7 @@
 	path = src/vkd3d-proton
 	url = https://github.com/metalsharp/VKD3D-Proton-MacOS.git
 	branch = main
+[submodule "src/dxvk-macos"]
+	path = src/dxvk-macos
+	url = https://github.com/metalsharp/DXVK-macOS-1.10.git
+	branch = metalsharp
