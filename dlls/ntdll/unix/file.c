@@ -6679,7 +6679,6 @@ NTSTATUS WINAPI NtLockFile( HANDLE file, HANDLE event, PIO_APC_ROUTINE apc, void
                             IO_STATUS_BLOCK *io_status, LARGE_INTEGER *offset,
                             LARGE_INTEGER *count, ULONG *key, BOOLEAN dont_wait, BOOLEAN exclusive )
 {
-    static int warn;
     unsigned int ret;
     HANDLE handle;
     BOOLEAN async;
@@ -6689,7 +6688,6 @@ NTSTATUS WINAPI NtLockFile( HANDLE file, HANDLE event, PIO_APC_ROUTINE apc, void
         FIXME("Unimplemented yet parameter\n");
         return STATUS_NOT_IMPLEMENTED;
     }
-    if (apc_user && !warn++) FIXME("I/O completion on lock not implemented yet\n");
 
     for (;;)
     {
@@ -6708,6 +6706,9 @@ NTSTATUS WINAPI NtLockFile( HANDLE file, HANDLE event, PIO_APC_ROUTINE apc, void
         if (ret != STATUS_PENDING)
         {
             if (!ret && event) NtSetEvent( event, NULL );
+            /* a lock taken at once completes through the file's completion port too (LockFileEx with an
+             * overlapped whose event doesn't opt out), unless the port skips completions on success */
+            if (!ret && apc_user) add_completion( file, (ULONG_PTR)apc_user, STATUS_SUCCESS, 0, FALSE );
             return ret;
         }
         if (async)
