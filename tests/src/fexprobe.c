@@ -101,6 +101,25 @@ G100(1) G100(2) G100(3) G100(4)
 #define GR100(h) GR10(h##0) GR10(h##1) GR10(h##2) GR10(h##3) GR10(h##4) GR10(h##5) GR10(h##6) GR10(h##7) GR10(h##8) GR10(h##9)
 static uint32_t (*const gtable[400])(uint32_t) = { GR100(1) GR100(2) GR100(3) GR100(4) };
 
+/* A code footprint far larger than the instruction cache, entered in a hard-to-predict order: what a game's main
+ * thread looks like to the CPU front end. */
+#define B(k) NOINLINE static uint32_t b##k(uint32_t x) { uint32_t y = x; for (int j = 0; j < 4; j++) y = (y ^ (k * 0x9e3779b9u)) * 31 + (y >> (k % 13)) + j; return y; }
+#define B10(d) B(d##0) B(d##1) B(d##2) B(d##3) B(d##4) B(d##5) B(d##6) B(d##7) B(d##8) B(d##9)
+#define B100(h) B10(h##0) B10(h##1) B10(h##2) B10(h##3) B10(h##4) B10(h##5) B10(h##6) B10(h##7) B10(h##8) B10(h##9)
+#define B1000(t) B100(t##0) B100(t##1) B100(t##2) B100(t##3) B100(t##4) B100(t##5) B100(t##6) B100(t##7) B100(t##8) B100(t##9)
+B1000(1) B1000(2) B1000(3) B1000(4) B1000(5) B1000(6) B1000(7) B1000(8) B1000(9)
+#define BR10(d) b##d##0, b##d##1, b##d##2, b##d##3, b##d##4, b##d##5, b##d##6, b##d##7, b##d##8, b##d##9,
+#define BR100(h) BR10(h##0) BR10(h##1) BR10(h##2) BR10(h##3) BR10(h##4) BR10(h##5) BR10(h##6) BR10(h##7) BR10(h##8) BR10(h##9)
+#define BR1000(t) BR100(t##0) BR100(t##1) BR100(t##2) BR100(t##3) BR100(t##4) BR100(t##5) BR100(t##6) BR100(t##7) BR100(t##8) BR100(t##9)
+static uint32_t (*const btable[9000])(uint32_t) = { BR1000(1) BR1000(2) BR1000(3) BR1000(4) BR1000(5) BR1000(6) BR1000(7) BR1000(8) BR1000(9) };
+
+static uint64_t t_bigfoot(unsigned n)         /* 9000 functions in a pseudo-random order */
+{
+    uint32_t a = 1, r = 7;
+    for (unsigned i = 0; i < n; i++) { r = r * 1103515245u + 12345u; a = btable[(r >> 8) % 9000](a); }
+    return a;
+}
+
 static uint64_t t_footprint(unsigned n)       /* 400 functions, each called in turn */
 {
     uint32_t a = 1;
@@ -175,6 +194,122 @@ static uint64_t t_fpmodes(unsigned n)
         for (int k = 0; k < 7; k++) h = (h ^ v[k]) * 1099511628211ull;
     }
     _mm_setcsr(csr);
+#else
+    (void)n;
+#endif
+    return h;
+}
+
+/* An x87 op (a softfloat call in FEX) and then a scalar SSE op in the same block: the SSE op must keep the upper
+ * lane of its destination. Checks that FEX sets the AFP bits again after the call. */
+static uint64_t t_x87_sse_mix(unsigned n)
+{
+    uint64_t h = 1469598103934665603ull;
+#if defined(__x86_64__) || defined(__i386__)
+    for (unsigned i = 0; i < n; i++)
+    {
+        double lanes[2] = { 1.5 + i, 12345.25 }, add = 0.25, x87 = 0;
+        __asm__ volatile(
+            "movupd (%[l]), %%xmm0\n\t"
+            "fld1\n\t"
+            "fld1\n\t"
+            "faddp\n\t"
+            "fstpl (%[x])\n\t"
+            "addsd (%[a]), %%xmm0\n\t"
+            "movupd %%xmm0, (%[l])\n\t"
+            : : [l] "r" (lanes), [a] "r" (&add), [x] "r" (&x87) : "xmm0", "memory", "st");
+        uint64_t v[3]; memcpy(v, lanes, 16); memcpy(&v[2], &x87, 8);
+        for (int k = 0; k < 3; k++) h = (h ^ v[k]) * 1099511628211ull;
+    }
+#else
+    (void)n;
+#endif
+    return h;
+}
+
+/* 32-bit LEA in 64-bit code with garbage in the upper halves of its inputs: the result must be the low 32 bits,
+ * zero-extended. */
+static uint64_t t_lea32(unsigned n)
+{
+    uint64_t h = 1469598103934665603ull;
+#if defined(__x86_64__)
+    for (unsigned i = 0; i < n; i++)
+    {
+        uint64_t b = 0xdeadbeef00000000ull + i * 0x9e3779b9ull, c = 0x1234567800000000ull ^ (i * 2654435761ull), r[6];
+        __asm__ volatile(
+            "leal 0x7fffffff(%[b],%[c],4), %k[r0]\n\t"
+            "leal -8(%[b]), %k[r1]\n\t"
+            "leal (%[b],%[c]), %k[r2]\n\t"
+            "leal 0(,%[c],8), %k[r3]\n\t"
+            "leal 12345(%[c]), %k[r4]\n\t"
+            "leal 16(%%rip), %k[r5]\n\t"
+            : [r0] "=&r" (r[0]), [r1] "=&r" (r[1]), [r2] "=&r" (r[2]), [r3] "=&r" (r[3]), [r4] "=&r" (r[4]), [r5] "=&r" (r[5])
+            : [b] "r" (b), [c] "r" (c));
+        r[5] &= 0xfff; /* only the page offset of a RIP-relative address is stable across runs */
+        for (int k = 0; k < 6; k++) h = (h ^ r[k]) * 1099511628211ull;
+    }
+#else
+    (void)n;
+#endif
+    return h;
+}
+
+/* MOVSX/MOVSXD from memory in every size, with negative and positive values: 32-bit destinations must zero their
+ * upper half and 16-bit ones keep the rest of the register. */
+static uint64_t t_movsx_mem(unsigned n)
+{
+    uint64_t h = 1469598103934665603ull;
+#if defined(__x86_64__)
+    static volatile uint8_t bytes[16];
+    for (unsigned i = 0; i < n; i++)
+    {
+        for (int k = 0; k < 16; k++) bytes[k] = (uint8_t)(i * 37 + k * 101);
+        uint64_t r[6], w = 0xfeedfacecafebeefull ^ i;
+        __asm__ volatile(
+            "movsbl 1(%[p]), %k[r0]\n\t"
+            "movsbq 2(%[p]), %[r1]\n\t"
+            "movswl 4(%[p]), %k[r2]\n\t"
+            "movswq 6(%[p]), %[r3]\n\t"
+            "movslq 8(%[p]), %[r4]\n\t"
+            "movsbw 3(%[p]), %w[r5]\n\t"
+            : [r0] "=&r" (r[0]), [r1] "=&r" (r[1]), [r2] "=&r" (r[2]), [r3] "=&r" (r[3]), [r4] "=&r" (r[4]), [r5] "+r" (w)
+            : [p] "r" (bytes) : "memory");
+        r[5] = w;
+        for (int k = 0; k < 6; k++) h = (h ^ r[k]) * 1099511628211ull;
+    }
+#else
+    (void)n;
+#endif
+    return h;
+}
+
+/* MOVSX/MOVSXD with displacements beyond the scaled immediate range of byte/half/word loads but inside that of a
+ * 64-bit load (struct fields deep in an object). */
+static uint64_t t_movsx_far(unsigned n)
+{
+    uint64_t h = 1469598103934665603ull;
+#if defined(__x86_64__)
+    static volatile uint8_t big[0x8000];
+    for (unsigned i = 0; i < n; i++)
+    {
+        big[0x1008] = (uint8_t)(i * 3 + 0x80);
+        big[0x2010] = (uint8_t)(i * 5);
+        big[0x2011] = (uint8_t)(0x80 | i);
+        big[0x3ff8] = (uint8_t)i;
+        big[0x3ff9] = (uint8_t)(i >> 3);
+        big[0x3ffa] = (uint8_t)(i * 7);
+        big[0x3ffb] = (uint8_t)(0xf0 | i);
+        big[0x7ff0] = (uint8_t)(0x90 + i);
+        uint64_t r[4];
+        __asm__ volatile(
+            "movsbl 0x1008(%[p]), %k[r0]\n\t"
+            "movswq 0x2010(%[p]), %[r1]\n\t"
+            "movslq 0x3ff8(%[p]), %[r2]\n\t"
+            "movsbq 0x7ff0(%[p]), %[r3]\n\t"
+            : [r0] "=&r" (r[0]), [r1] "=&r" (r[1]), [r2] "=&r" (r[2]), [r3] "=&r" (r[3])
+            : [p] "r" (big) : "memory");
+        for (int k = 0; k < 4; k++) h = (h ^ r[k]) * 1099511628211ull;
+    }
 #else
     (void)n;
 #endif
@@ -367,11 +502,16 @@ static const struct test tests[] =
     { "indirect_poly",    t_indirect_poly,    5000000 },
     { "switch",           t_switch,           5000000 },
     { "footprint",        t_footprint,        2000000 },
+    { "bigfoot",          t_bigfoot,          2000000 },
     { "flags",            t_flags,            5000000 },
     { "hash",             t_hash,             100000 },
     { "sse_math",         t_sse_math,         2000000 },
     { "double_math",      t_double_math,      5000000 },
     { "fpmodes",          t_fpmodes,          200000 },
+    { "x87_sse_mix",      t_x87_sse_mix,      200000 },
+    { "lea32",            t_lea32,            200000 },
+    { "movsx_mem",        t_movsx_mem,        200000 },
+    { "movsx_far",        t_movsx_far,        200000 },
     { "memcpy_small",     t_memcpy_small,     5000000 },
     { "memcpy_large",     t_memcpy_large,     5000 },
     { "sort",             t_sort,             2000 },

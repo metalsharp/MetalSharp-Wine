@@ -126,6 +126,23 @@ int main(int argc, char **argv)
                 CONTEXT context = { .ContextFlags = CONTEXT_FULL };
                 if (GetThreadContext(thread, &context)) { ip = context.Rip; fp = context.Rbp; }
             }
+            if (ip && !s && !wow64)
+            {
+                /* the first sample of one thread also shows its argument registers and the code addresses
+                 * on its stack (callers when there is no frame pointer chain), e.g. a waiting thread's handle */
+                CONTEXT context = { .ContextFlags = CONTEXT_FULL };
+                GetThreadContext(thread, &context);
+                printf("thread %04lx: rcx %llx rdx %llx r8 %llx r9 %llx rsp %llx\n", tids[k], context.Rcx, context.Rdx, context.R8, context.R9, context.Rsp);
+                DWORD64 stack[512];
+                SIZE_T got;
+                if (ReadProcessMemory(process, (void *)context.Rsp, stack, sizeof(stack), &got))
+                    for (int j = 0; j < 512; j++)
+                    {
+                        char one[96];
+                        place(stack[j], one, sizeof(one));
+                        if (one[0] != '?') printf("  [rsp+%#x] %s\n", j * 8, one);
+                    }
+            }
             if (ip)
             {
                 char where[96], prefixed[112];

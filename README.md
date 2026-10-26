@@ -84,7 +84,7 @@ ___
 | Direct3D 9/10/11 (opt-in) | **DXVK-macOS 1.10.x** (Gcenx's DXVK-macOS with its D3D9-on-MoltenVK fixes, [Gcenx/DXVK-macOS#21](https://github.com/Gcenx/DXVK-macOS/pull/21)), built as ARM64X and run by x86_64 programs as ARM64EC under FEX: `GRAPHICS_BACKEND=dxvk` |
 | Direct3D 12 (opt-in) | **VKD3D-Proton** for macOS ([metalsharp/VKD3D-Proton-MacOS](https://github.com/metalsharp/VKD3D-Proton-MacOS)), ARM64X, with DXVK 2.7.1's DXGI and D3D10/11 for swap chains and D3D11On12, on MetalSharp's MoltenVK: `GRAPHICS_BACKEND=vkd3d` (x86_64 programs; D3D9 there comes from DXVK-macOS) |
 | Shader compilers | Microsoft's DXC 1.9 (`dxcompiler.dll`, `dxil.dll`; ARM64 and x86) and the ARM64 `d3dcompiler_47.dll` are installed into every prefix, for programs that compile HLSL at run time |
-| OpenGL | **WineMetalGL 3.6.0** (OpenGL 4.6 on Metal), the default. `OPENGL_BACKEND=wine` selects Wine's own |
+| OpenGL | **WineMetalGL 3.7.0** (OpenGL 4.6 on Metal), the default. `OPENGL_BACKEND=wine` selects Wine's own |
 | Vulkan | MoltenVK 1.4.3 (MetalSharp build from VKD3D-Proton-MacOS: the pipeline cache is saved during long compiles and keyed on the shader sources, and compiled Metal libraries and binary archives are cached) |
 | Media | FFmpeg 8.0 (LGPL, VideoToolbox/AudioToolbox) and GStreamer 1.26 |
 | .NET / HTML | Wine Mono 11.3.0 (arm64, x86, x86_64) and Wine Gecko 2.47.4 (x86, x86_64) |

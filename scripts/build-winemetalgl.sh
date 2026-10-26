@@ -38,5 +38,5 @@ with open(sys.argv[1], "r+b") as f:
 PY
 done
 cp $G/LICENSE $F/LICENSE
-echo "WineMetalGL $(git -C $G describe --always --dirty)" > $F/VERSION
+echo "WineMetalGL $(git -C $G describe --tags --always --dirty)" > $F/VERSION
 echo "winemetalgl: $(cat $F/VERSION)"
