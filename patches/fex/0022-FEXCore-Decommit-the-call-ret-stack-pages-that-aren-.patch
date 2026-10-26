@@ -1,0 +1,127 @@
+From 58e270393f2b2364a2510d6211e082119b641163 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Sun, 25 Oct 2026 19:49:14 -0600
+Subject: [PATCH] FEXCore: Decommit the call-ret stack pages that aren't
+ resident when invalidating it
+
+Invalidation zeroed the entries of the resident pages only and stopped at
+the first chunk with none. A page that isn't resident was either never
+written or was compressed or paged out with its entries in it, and those
+came back on the next fault: a return could then take a stale entry into
+code that had been freed or replaced. Decommit every page that isn't
+resident instead, the holes among the resident ones and the rest of the
+stack past them; resident pages are still zeroed in place.
+
+fexprobe jit_patch, signed app (4K pages): 31-33 us (34 us before the
+resident-page invalidation, 17 us with it).
+---
+ FEXCore/Source/Interface/Core/Core.cpp | 45 ++++++++++++++++++--------
+ 1 file changed, 31 insertions(+), 14 deletions(-)
+
+diff --git a/FEXCore/Source/Interface/Core/Core.cpp b/FEXCore/Source/Interface/Core/Core.cpp
+index f41dffef9..340388d82 100644
+--- a/FEXCore/Source/Interface/Core/Core.cpp
++++ b/FEXCore/Source/Interface/Core/Core.cpp
+@@ -1064,12 +1064,14 @@ void ContextImpl::InvalidateCodeBuffersCodeRange(uint64_t Start, uint64_t Length
+ #ifdef _WIN32
+ extern "C" LONG WINAPI NtQueryVirtualMemory(HANDLE, LPCVOID, ULONG, PVOID, SIZE_T, SIZE_T*);
+ 
+-// Makes every entry of a call-ret stack miss, without decommitting it: decommitting and recommitting 4MiB is an mmap
+-// and an mprotect under Wine, and touched pages then fault back in, for every thread on every code invalidation.
+-// Only pages that are resident were ever written, so zero the guest RIP of each entry in those; a return then
+-// compares unequal and takes the slow path. Aligned 64-bit stores are atomic, so a racing thread never sees a torn
+-// entry. The stack starts at Start and moves through memory a page at a time, so its resident pages are contiguous
+-// around Start: query outwards in chunks until a chunk has none. Called with CodeInvalidationMutex held.
++// Makes every entry of a call-ret stack miss without decommitting all of it: decommitting and recommitting 4MiB is an
++// mmap and an mprotect under Wine, and the touched pages then fault back in, for every thread on every code
++// invalidation. Resident pages get the guest RIP of each entry zeroed, so a return compares unequal and takes the slow
++// path; aligned 64-bit stores are atomic, so a racing thread never sees a torn entry. Every other page is decommitted:
++// a page that isn't resident was either never written, which makes that free, or was compressed or paged out with its
++// entries still in it, and those must not come back. The stack starts at Start and moves through memory a page at a
++// time, so its resident pages are contiguous around Start: query outwards in chunks until a chunk has none, then
++// decommit the rest of that side at once. Called with CodeInvalidationMutex held.
+ static void InvalidateCallRetStack(uint64_t Base, uint64_t End, uint64_t Start) {
+   struct WorkingSetExInfo {
+     void* VirtualAddress;
+@@ -1079,8 +1081,15 @@ static void InvalidateCallRetStack(uint64_t Base, uint64_t End, uint64_t Start)
+   constexpr size_t ChunkPages = 16;
+   constexpr uint64_t PageSize = FEXCore::Utils::FEX_PAGE_SIZE;
+ 
+-  // Zeroes the resident pages of [Address, Address + Pages * PageSize); returns how many there were, or -1 on failure.
+-  auto ZeroChunk = [](uint64_t Address, size_t Pages) -> int {
++  auto Decommit = [](uint64_t Address, uint64_t Size) {
++    if (Size) {
++      Allocator::VirtualDontNeed(reinterpret_cast<void*>(Address), Size);
++    }
++  };
++
++  // Clears [Address, Address + Pages * PageSize): zeroes its resident pages and decommits runs of the others.
++  // Returns how many were resident, or -1 on failure.
++  auto ClearChunk = [&Decommit](uint64_t Address, size_t Pages) -> int {
+     WorkingSetExInfo Info[ChunkPages];
+     for (size_t i = 0; i < Pages; i++) {
+       Info[i] = {reinterpret_cast<void*>(Address + i * PageSize), 0};
+@@ -1089,10 +1098,13 @@ static void InvalidateCallRetStack(uint64_t Base, uint64_t End, uint64_t Start)
+       return -1;
+     }
+     int Resident = 0;
++    size_t RunStart = 0;
+     for (size_t i = 0; i < Pages; i++) {
+       if (!(Info[i].Attributes & 1)) {
+         continue;
+       }
++      Decommit(Address + RunStart * PageSize, (i - RunStart) * PageSize);
++      RunStart = i + 1;
+       Resident++;
+       // Entries are {guest RIP, host address} pairs.
+       auto Entry = reinterpret_cast<uint64_t*>(Info[i].VirtualAddress);
+@@ -1100,35 +1112,40 @@ static void InvalidateCallRetStack(uint64_t Base, uint64_t End, uint64_t Start)
+         std::atomic_ref<uint64_t>(Entry[j]).store(0, std::memory_order_relaxed);
+       }
+     }
++    Decommit(Address + RunStart * PageSize, (Pages - RunStart) * PageSize);
+     return Resident;
+   };
+ 
+   Start &= ~(PageSize - 1);
+   // Downwards from Start (pushes), then upwards from it (pops past the start).
+-  for (uint64_t Address = Start + PageSize; Address > Base;) {
++  uint64_t Address = Start + PageSize;
++  while (Address > Base) {
+     const auto Low = std::max(Base, Address - ChunkPages * PageSize);
+-    const int Resident = ZeroChunk(Low, (Address - Low) / PageSize);
++    const int Resident = ClearChunk(Low, (Address - Low) / PageSize);
+     if (Resident < 0) {
+       Allocator::VirtualDontNeed(reinterpret_cast<void*>(Base), End - Base);
+       return;
+     }
++    Address = Low;
+     if (!Resident) {
+       break;
+     }
+-    Address = Low;
+   }
+-  for (uint64_t Address = Start + PageSize; Address < End;) {
++  Decommit(Base, Address - Base);
++  Address = Start + PageSize;
++  while (Address < End) {
+     const auto High = std::min(End, Address + ChunkPages * PageSize);
+-    const int Resident = ZeroChunk(Address, (High - Address) / PageSize);
++    const int Resident = ClearChunk(Address, (High - Address) / PageSize);
+     if (Resident < 0) {
+       Allocator::VirtualDontNeed(reinterpret_cast<void*>(Base), End - Base);
+       return;
+     }
++    Address = High;
+     if (!Resident) {
+       break;
+     }
+-    Address = High;
+   }
++  Decommit(Address, End - Address);
+ }
+ #endif
+ 
+-- 
+2.54.0 (Apple Git-157)
+

@@ -105,7 +105,7 @@ The modified sources are kept in this repository as branches, and `main` links t
 | Submodule | Branch | Contents |
 |---|---|---|
 | `src/wine` | [`source/wine`](../../tree/source/wine) | Wine 11.20 + WineForge + MetalSharp (`wine-11.20` tag plus 76 commits) |
-| `src/FEX` | [`source/fex`](../../tree/source/fex) | FEX-2610 + MetalSharp (21 commits). It is not upstreamed |
+| `src/FEX` | [`source/fex`](../../tree/source/fex) | FEX-2610 + MetalSharp (22 commits). It is not upstreamed |
 | `src/winemetalgl` | [`source/winemetalgl`](../../tree/source/winemetalgl) | WineMetalGL's arm64 Wine module |
 | `src/wfdxcompat` | [`source/wfdxcompat`](../../tree/source/wfdxcompat) | WineForge DXCompat, built ARM64EC for Mullion: the Rockstar launcher companion |
 | `src/mullion` | [aaf2tbz/mullion](https://github.com/aaf2tbz/mullion) `metalsharp-2.1` | Mullion (DXMT fork). Developed there and sent upstream to [dttdrv/mullion](https://github.com/dttdrv/mullion) as pull requests |
