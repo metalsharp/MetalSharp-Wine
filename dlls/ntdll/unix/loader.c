@@ -2416,10 +2416,12 @@ DECLSPEC_EXPORT void __wine_main( int argc, char *argv[] )
     main_argv = argv;
 
 #ifdef __aarch64__
-    /* MetalSharp Wine runs x86 code through FEX without TSO emulation: macOS offers no hardware
-     * TSO, and the emulated barriers cost more than they buy. FEX reads its configuration from the
-     * process environment; an explicit FEX_TSOENABLED still wins. */
-    setenv( "FEX_TSOENABLED", "0", 0 );
+    /* MetalSharp Wine runs x86 code through FEX with its TSO emulation (ordered loads and stores, not
+     * the hardware TSO macOS keeps to Rosetta): programs whose threads hand data over with plain
+     * stores lose it without x86's ordering (Red Dead Redemption 2's job queues dropped work and the
+     * game hung). FEX reads its configuration from the process environment; an explicit
+     * FEX_TSOENABLED=0 still turns it off. */
+    setenv( "FEX_TSOENABLED", "1", 0 );
     /* Keep FEX's second-level block lookup cache: games with large code footprints (Unity,
      * Mono) otherwise take the slow lookup path on every L1 miss of an indirect branch. */
     setenv( "FEX_DISABLEL2CACHE", "0", 0 );

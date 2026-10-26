@@ -142,9 +142,10 @@ int do_msync(void)
 {
     if (do_msync_env_cached == -1)
     {
+        /* on unless WINEMSYNC=0; server/msync.c decides the same way, and both sides must agree */
         const char *env = getenv( "WINEMSYNC" );
         if (!env) env = getenv( "WINEWFUSYNC" );  /* upstream WineForge name */
-        do_msync_env_cached = (env && atoi( env )) ? 1 : 0;
+        do_msync_env_cached = (!env || atoi( env )) ? 1 : 0;
     }
 
     return do_msync_env_cached;

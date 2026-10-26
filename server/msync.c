@@ -28,10 +28,11 @@ int do_msync(void)
 
     if (enabled == -1)
     {
-        /* WINEWFUSYNC is the upstream WineForge name */
+        /* on unless WINEMSYNC=0, as dlls/ntdll/unix/msync.c decides; WINEWFUSYNC is the upstream
+         * WineForge name */
         const char *env = getenv( "WINEMSYNC" );
         if (!env) env = getenv( "WINEWFUSYNC" );
-        enabled = env && atoi( env );
+        enabled = !env || atoi( env );
     }
     return enabled;
 }
