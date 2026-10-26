@@ -59,6 +59,7 @@ docs/performance.md
 docs/release-notes/3.4.0.md
 docs/release-notes/3.5.0.md
 docs/release-notes/3.6.0.md
+docs/release-notes/3.7.0.md
 docs/release.md
 docs/testing.md
 docs/unsupported.md
@@ -66,6 +67,7 @@ include/winemetalgl/driver.h
 scripts/build-arm64-glue.sh
 scripts/build-settings-app.sh
 scripts/build-settings-dmg.sh
+scripts/build-wine-module-arm64.sh
 scripts/build-wine-module.sh
 scripts/build-x87sidecar.sh
 scripts/build.sh
@@ -81,6 +83,7 @@ scripts/install-wine-module.sh
 scripts/sign-settings-app.sh
 scripts/stage-arm64-core.sh
 scripts/stage-host-libs.sh
+scripts/stage-release-arm64.sh
 scripts/stage-release.sh
 scripts/traces/benchmark.py
 scripts/traces/replay.py

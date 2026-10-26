@@ -59,11 +59,19 @@ image of WineMetalGL Settings, which carries both archives' contents, and
 - `winemetalgl-<version>-x86_64.tar.gz`: the staged release above, with the
   evidence directory, for x86_64 Wine 11.x (under Rosetta). Its Wine evidence
   ran on stock Wine 11.0 with the module installed.
+- `winemetalgl-<version>-arm64.tar.gz`: `scripts/stage-release-arm64.sh
+  WINE_HEADERS OUTPUT`, for a native arm64 Wine 11.x (CrossOver 27's arm64
+  Wine, MetalSharp's Wine with FEX): the Wine module built by
+  `scripts/build-wine-module-arm64.sh` (`module/aarch64-windows`, ARM64X DLLs
+  for native ARM64 programs and x86_64 ones running as ARM64EC;
+  `module/i386-windows`; `module/aarch64-unix` with the arm64 core) and the
+  install scripts. The install scripts in either Wine package work out which
+  kind of Wine (or CrossOver bottle) they install into and use, or download,
+  the matching package.
 - `winemetalgl-<version>-arm64-core.tar.gz`: `scripts/stage-arm64-core.sh
   OUTPUT`, the arm64 core with the driver ABI header and the native games'
-  glue (`glue/minecraft`, `glue/openmw`). Its evidence is the
-  native runs (the core built for the build machine); the Wine module is
-  built for x86_64 Wine only, so it has not yet run inside an arm64 Wine.
+  glue (`glue/minecraft`, `glue/openmw`), for native programs outside Wine.
+  Its evidence is the native runs (the core built for the build machine).
 - `WineMetalGL-Settings-<version>.dmg`: a disk image with WineMetalGL
   Settings.app and an alias to `/Applications` to drag it onto. It is a whole
   runtime: the app carries the x86_64 release above (its install scripts,

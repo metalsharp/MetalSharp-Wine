@@ -14,6 +14,10 @@ WineMetalGL is a replacement to Apple's own OpenGL.Framework (Deprecated in 2018
 
 WineMetalGL's main method of installation is with the DMG. It will help you install it into any Wine Prefix / Crossover Bottle. If a new version is released, the application detects this and can update your app and installed runtime to the latest available version. Otherwise, use the scripts from releases in combination with your preferred download (Arm64, x86_64). The below table explains the apps capabilities; 
 
+From 3.7.0, WineMetalGL also runs in native arm64 Wine: CrossOver 27's arm64 bottles and MetalSharp's Wine with FEX, for native ARM64, x86_64 and 32-bit programs. `install-wine-module.sh` and `install-crossover.sh` work out which kind of Wine or bottle they install into, and use or download the matching package (`winemetalgl-<version>-x86_64` or `winemetalgl-<version>-arm64`).
+
+---
+
 | Feature | Use-Case | 
 |---|---|
 | Install | Install WineMetalGL Into a Wine Found on Your Mac (Its Default Prefix) & Enable / Disable It |
@@ -25,7 +29,7 @@ WineMetalGL's main method of installation is with the DMG. It will help you inst
 
 <div align="center">
 
-<img width="582" height="673" alt="WineMetalGL-Settings-app" src="https://github.com/user-attachments/assets/c4de5354-dfd4-426d-bd2d-6822a4bec8ec" />
+<img width="582" height="911" alt="WineMetalGL Settings" src="https://github.com/user-attachments/assets/9c163b25-40cf-436e-85a8-fda88008bc23" />
 
 </div>
 

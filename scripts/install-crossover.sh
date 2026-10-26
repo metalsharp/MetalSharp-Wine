@@ -1,6 +1,9 @@
 #!/bin/sh
-# Installs the WineMetalGL Wine module (scripts/build-wine-module.sh) into a
-# CrossOver bottle. For any other Wine, use install-wine-module.sh.
+# Installs the WineMetalGL Wine module into a CrossOver bottle. For any other Wine, use
+# install-wine-module.sh. A bottle of an x86_64 Wine (CrossOver up to 26, under Rosetta) gets
+# the x86_64 module (scripts/build-wine-module.sh); a bottle of CrossOver 27's arm64 Wine gets
+# the arm64 one (scripts/build-wine-module-arm64.sh): the bottle's own system32 tells which, so
+# this works without CrossOver too. WINEMETALGL_ARCH=x86_64 or arm64 overrides that.
 #
 #   scripts/install-crossover.sh BOTTLE [CROSSOVER]
 #
@@ -17,6 +20,9 @@
 #   WINEMETALGL_HOME (default ~/Library/Application Support/WineMetalGL) gets
 #     lib/wine/x86_64-windows/winemetalgl.dll, lib/wine/i386-windows/winemetalgl.dll
 #     lib/wine/x86_64-unix/winemetalgl.so, lib/wine/x86_64-unix/libwinemetalgl.dylib (the core)
+#     or, for an arm64 bottle, lib/wine/aarch64-windows/winemetalgl.dll (ARM64X),
+#     lib/wine/i386-windows/winemetalgl.dll and lib/wine/aarch64-unix/{winemetalgl.so,
+#     libwinemetalgl.dylib}
 #   the bottle's cxbottle.conf adds WINEMETALGL_HOME/lib/wine to [Wine] DllPath
 #   the bottle gets opengl32.dll, which forwards to winemetalgl.dll, and
 #     winemetalgl.dll itself, in system32 (and syswow64), and the DLL override
@@ -27,10 +33,11 @@
 # the bottle CrossOver's OpenGL back; `wine --bottle BOTTLE --dll opengl32=b`
 # does so for one run.
 #
-# From a checkout, MODULE (default build/wine-module) and CORE (default
-# build/release/libwinemetalgl.dylib) choose what is installed; from a release
-# package (this script at its top), its module directory; and otherwise (the
-# script on its own) the release downloaded from GitHub (fetch_release).
+# From a checkout, MODULE (default build/wine-module, or build/wine-module-arm64 for an arm64
+# bottle) and CORE (default build/release/libwinemetalgl.dylib, or build/arm64-release/) choose
+# what is installed; from a release package (this script at its top), its module directory
+# when it is for the bottle's kind of Wine; and otherwise the matching release downloaded from
+# GitHub (fetch_release).
 set -eu
 
 usage='usage: install-crossover.sh BOTTLE [CROSSOVER]'
@@ -49,14 +56,21 @@ fetch_release() {
         version=${latest##*/winemetalgl-}
         case "$version" in [0-9]*.[0-9]*) ;; *) echo "no WineMetalGL release found ($latest)" >&2; exit 1 ;; esac
     fi
-    name=winemetalgl-$version-x86_64
+    name=winemetalgl-$version-$ARCH
     cache=${WINEMETALGL_CACHE:-$HOME/Library/Caches/WineMetalGL/releases}/$version
-    if ! test -f "$cache/$name/module/x86_64-unix/libwinemetalgl.dylib"; then
-        echo "Downloading WineMetalGL $version"
+    if ! test -f "$cache/$name/module/$UNIX_DIR/libwinemetalgl.dylib"; then
+        echo "Downloading WineMetalGL $version ($ARCH Wine)"
         tmp=$(mktemp -d "${TMPDIR:-/tmp}/winemetalgl.XXXXXX")
         url=https://github.com/$repo/releases/download/winemetalgl-$version
-        curl -fsSL -o "$tmp/$name.tar.gz" "$url/$name.tar.gz" &&
-            curl -fsSL -o "$tmp/SHA256SUMS.txt" "$url/SHA256SUMS.txt" ||
+        if ! curl -fsSL -o "$tmp/SHA256SUMS.txt" "$url/SHA256SUMS.txt"; then
+            rm -rf "$tmp"; echo "cannot download WineMetalGL $version from $url" >&2; exit 1
+        fi
+        if ! grep -q " $name.tar.gz\$" "$tmp/SHA256SUMS.txt"; then
+            rm -rf "$tmp"
+            echo "WineMetalGL $version has no package for an $ARCH Wine (arm64 Wine packages start with 3.7.0)" >&2
+            exit 1
+        fi
+        curl -fsSL -o "$tmp/$name.tar.gz" "$url/$name.tar.gz" ||
             { rm -rf "$tmp"; echo "cannot download WineMetalGL $version from $url" >&2; exit 1; }
         expected=$(awk -v f="$name.tar.gz" '$2 == f { print $1 }' "$tmp/SHA256SUMS.txt")
         actual=$(shasum -a 256 "$tmp/$name.tar.gz" | awk '{ print $1 }')
@@ -68,27 +82,24 @@ fetch_release() {
         mkdir -p "$cache"
         tar -xzf "$tmp/$name.tar.gz" -C "$cache" || { rm -rf "$tmp"; echo "cannot extract $name.tar.gz" >&2; exit 1; }
         rm -rf "$tmp"
-        test -f "$cache/$name/module/x86_64-unix/libwinemetalgl.dylib" ||
+        test -f "$cache/$name/module/$UNIX_DIR/libwinemetalgl.dylib" ||
             { echo "$name.tar.gz has no module/ directory" >&2; exit 1; }
     fi
     echo "Using WineMetalGL $version ($cache/$name)"
-    MODULE=${MODULE:-$cache/$name/module}
-    CORE=${CORE:-$MODULE/x86_64-unix/libwinemetalgl.dylib}
+    MODULE=$cache/$name/module
+    CORE=$MODULE/$UNIX_DIR/libwinemetalgl.dylib
+}
+
+# pe_machine FILE: a PE file's COFF machine as 4 hex digits (aa64 ARM64, 8664 x86_64, 014c i386).
+pe_machine() {
+    offset=$(od -An -tu4 -j60 -N4 "$1" | tr -d ' ')
+    od -An -tx2 -j$((offset + 4)) -N2 "$1" | tr -d ' '
 }
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 BOTTLE=${1:?$usage}
 CX=${2:-}
 ROOT=$(cd "$HERE/.." && pwd)
-if test -d "$HERE/module"; then
-    MODULE=${MODULE:-$HERE/module}
-    CORE=${CORE:-$HERE/module/x86_64-unix/libwinemetalgl.dylib}
-elif test -n "${MODULE:-}" || { test -d "$ROOT/build/wine-module" && test -f "$ROOT/CMakeLists.txt"; }; then
-    MODULE=${MODULE:-$ROOT/build/wine-module}
-    CORE=${CORE:-$ROOT/build/release/libwinemetalgl.dylib}
-else
-    fetch_release
-fi
 
 if test -z "$CX"; then
     CX=$({ printf '%s\n' /Applications/CrossOver.app "$HOME/Applications/CrossOver.app"
@@ -103,15 +114,6 @@ if test -n "$CX"; then
     test -d "$CX/Contents/SharedSupport/CrossOver" && CX="$CX/Contents/SharedSupport/CrossOver"
     test -x "$CX/bin/wine" && test -x "$CX/bin/cxbottle" || { echo "not CrossOver: $CX" >&2; exit 1; }
 fi
-# An arm64 CrossOver (27) may carry the x86_64 Wine as well (issue #26); only
-# one without it cannot run the module.
-if test -n "$CX" && test -e "$CX/lib/wine/aarch64-unix/ntdll.so"; then
-    if ! test -e "$CX/lib/wine/x86_64-unix/ntdll.so"; then
-        echo "This CrossOver runs an arm64 Wine only; the module is built for x86_64 Wine (issue #13)." >&2
-        exit 1
-    fi
-    echo "This CrossOver has both an arm64 and an x86_64 Wine; arm64 bottles may experience issues."
-fi
 
 case "$BOTTLE" in
 */*) ;;
@@ -121,21 +123,65 @@ test -f "$BOTTLE/cxbottle.conf" && test -d "$BOTTLE/drive_c/windows/system32" ||
     { echo "not a CrossOver bottle: $BOTTLE" >&2; exit 1; }
 BOTTLE=$(cd "$BOTTLE" && pwd)
 
-for f in "$MODULE/x86_64-windows/winemetalgl.dll" "$MODULE/i386-windows/winemetalgl.dll" \
-         "$MODULE/x86_64-windows/opengl32.dll" "$MODULE/i386-windows/opengl32.dll" \
-         "$MODULE/x86_64-unix/winemetalgl.so" "$CORE"; do
+# Which Wine the bottle belongs to: its system32 is ARM64 in a bottle of CrossOver 27's arm64
+# Wine and x86_64 in one of an x86_64 Wine. A 32-bit bottle (i386 system32) runs on whichever
+# unix side the CrossOver has, x86_64 when it has both (issue #13).
+ARCH=${WINEMETALGL_ARCH:-}
+if test -z "$ARCH"; then
+    case "$(pe_machine "$BOTTLE/drive_c/windows/system32/ntdll.dll" 2>/dev/null)" in
+    aa64) ARCH=arm64 ;;
+    8664) ARCH=x86_64 ;;
+    *) if test -n "$CX" && test -e "$CX/lib/wine/aarch64-unix/ntdll.so" && ! test -e "$CX/lib/wine/x86_64-unix/ntdll.so"
+       then ARCH=arm64; else ARCH=x86_64; fi ;;
+    esac
+fi
+case "$ARCH" in
+x86_64) UNIX_DIR=x86_64-unix; WIN_DIR=x86_64-windows ;;
+arm64) UNIX_DIR=aarch64-unix; WIN_DIR=aarch64-windows ;;
+*) echo "WINEMETALGL_ARCH must be x86_64 or arm64, not $ARCH" >&2; exit 1 ;;
+esac
+echo "$BOTTLE is a bottle of an $ARCH Wine"
+if test -n "$CX" && ! test -e "$CX/lib/wine/$UNIX_DIR/ntdll.so"; then
+    echo "This CrossOver has no $ARCH Wine, which the bottle needs: $CX" >&2
+    exit 1
+fi
+
+if test -d "$HERE/module" && test -f "$HERE/module/$UNIX_DIR/winemetalgl.so"; then
+    MODULE=${MODULE:-$HERE/module}
+    CORE=${CORE:-$HERE/module/$UNIX_DIR/libwinemetalgl.dylib}
+elif test -n "${MODULE:-}"; then
+    if test "$ARCH" = arm64; then CORE=${CORE:-$ROOT/build/arm64-release/libwinemetalgl.dylib}
+    else CORE=${CORE:-$ROOT/build/release/libwinemetalgl.dylib}
+    fi
+elif test "$ARCH" = x86_64 && test -d "$ROOT/build/wine-module/x86_64-unix" && test -f "$ROOT/CMakeLists.txt"; then
+    MODULE=$ROOT/build/wine-module
+    CORE=${CORE:-$ROOT/build/release/libwinemetalgl.dylib}
+elif test "$ARCH" = arm64 && test -d "$ROOT/build/wine-module-arm64/aarch64-unix" && test -f "$ROOT/CMakeLists.txt"; then
+    MODULE=$ROOT/build/wine-module-arm64
+    CORE=${CORE:-$ROOT/build/arm64-release/libwinemetalgl.dylib}
+else
+    test -d "$HERE/module" && echo "This package is not for an $ARCH Wine; getting the one that is."
+    fetch_release
+fi
+
+for f in "$MODULE/$WIN_DIR/winemetalgl.dll" "$MODULE/i386-windows/winemetalgl.dll" \
+         "$MODULE/$WIN_DIR/opengl32.dll" "$MODULE/i386-windows/opengl32.dll" \
+         "$MODULE/$UNIX_DIR/winemetalgl.so" "$CORE"; do
     test -e "$f" || { echo "missing: $f" >&2; exit 1; }
 done
 
 DEST=${WINEMETALGL_HOME:-$HOME/Library/Application Support/WineMetalGL}
 LIB="$DEST/lib/wine"
-mkdir -p "$LIB/x86_64-windows" "$LIB/i386-windows" "$LIB/x86_64-unix"
-cp "$MODULE/x86_64-windows/winemetalgl.dll" "$LIB/x86_64-windows/winemetalgl.dll"
+mkdir -p "$LIB/$WIN_DIR" "$LIB/i386-windows" "$LIB/$UNIX_DIR"
+cp "$MODULE/$WIN_DIR/winemetalgl.dll" "$LIB/$WIN_DIR/winemetalgl.dll"
 cp "$MODULE/i386-windows/winemetalgl.dll" "$LIB/i386-windows/winemetalgl.dll"
-cp "$MODULE/x86_64-unix/winemetalgl.so" "$LIB/x86_64-unix/winemetalgl.so"
-cp "$CORE" "$LIB/x86_64-unix/libwinemetalgl.dylib"
-# The x87 acceleration helper (WINEMETALGL_X87), when the module has one.
-if test -e "$MODULE/x86_64-unix/x87sidecar"; then
+cp "$MODULE/$UNIX_DIR/winemetalgl.so" "$LIB/$UNIX_DIR/winemetalgl.so"
+cp "$CORE" "$LIB/$UNIX_DIR/libwinemetalgl.dylib"
+# The x87 acceleration helper (WINEMETALGL_X87), when the module has one. It hooks Rosetta's
+# x87 path, so an arm64 bottle (whose Wine emulates x86 itself) has none.
+if test "$ARCH" = arm64; then
+    :
+elif test -e "$MODULE/x86_64-unix/x87sidecar"; then
     cp "$MODULE/x86_64-unix/x87sidecar" "$LIB/x86_64-unix/x87sidecar"
 else
     rm -f "$LIB/x86_64-unix/x87sidecar"
@@ -143,7 +189,7 @@ else
 fi
 # Copies keep a valid signature (a release's Developer ID one); others are
 # signed ad hoc.
-for f in "$LIB/x86_64-unix/winemetalgl.so" "$LIB/x86_64-unix/libwinemetalgl.dylib" "$LIB/x86_64-unix/x87sidecar"; do
+for f in "$LIB/$UNIX_DIR/winemetalgl.so" "$LIB/$UNIX_DIR/libwinemetalgl.dylib" "$LIB/x86_64-unix/x87sidecar"; do
     test -e "$f" || continue
     codesign --verify "$f" 2>/dev/null && continue
     if ! out=$(codesign -f -s - "$f" 2>&1); then
@@ -159,7 +205,7 @@ echo "Installed winemetalgl into $LIB"
 # defaults below). An entry like those would not do: Wine looks for a DLL's
 # unix library next to it there, and a 32-bit program would find the x86_64
 # winemetalgl.dll first. A lib/wine entry lets Wine pick the DLL of the
-# program's architecture and find winemetalgl.so in x86_64-unix.
+# program's architecture and find winemetalgl.so in x86_64-unix (aarch64-unix in an arm64 bottle).
 conf="$BOTTLE/cxbottle.conf"
 win32=0
 grep -q '^"WineArch" *= *"win64"' "$conf" || win32=1
@@ -167,7 +213,7 @@ grep -q '^"WineArch" *= *"win64"' "$conf" || win32=1
 if test "$win32" = 1; then
     default='${CX_ROOT}/lib/wine/i386-windows:${CX_ROOT}/lib/wine'
 else
-    default='${CX_ROOT}/lib/wine/x86_64-windows:${CX_ROOT}/lib/wine/i386-windows:${CX_ROOT}/lib/wine'
+    default='${CX_ROOT}/lib/wine/'"$WIN_DIR"':${CX_ROOT}/lib/wine/i386-windows:${CX_ROOT}/lib/wine'
 fi
 awk -v entry="$LIB" -v default="$default" '
     function emit() { if (!done) { print "\"DllPath\" = \"" default ":" entry "\""; done = 1 } }
@@ -190,7 +236,7 @@ sys=$BOTTLE/drive_c/windows
 if test "$win32" = 1; then
     cp "$MODULE/i386-windows/opengl32.dll" "$MODULE/i386-windows/winemetalgl.dll" "$sys/system32/"
 else
-    cp "$MODULE/x86_64-windows/opengl32.dll" "$MODULE/x86_64-windows/winemetalgl.dll" "$sys/system32/"
+    cp "$MODULE/$WIN_DIR/opengl32.dll" "$MODULE/$WIN_DIR/winemetalgl.dll" "$sys/system32/"
     cp "$MODULE/i386-windows/opengl32.dll" "$MODULE/i386-windows/winemetalgl.dll" "$sys/syswow64/"
 fi
 # CrossOver's wine script picks the bottle with --bottle and ignores WINEPREFIX.
@@ -245,22 +291,23 @@ elif test -z "$into_app"; then
 fi
 if test "$into_app" = 1; then
     CXLIB=$CX/lib/wine
-    if cp "$LIB/x86_64-windows/winemetalgl.dll" "$CXLIB/x86_64-windows/winemetalgl.dll" &&
+    if cp "$LIB/$WIN_DIR/winemetalgl.dll" "$CXLIB/$WIN_DIR/winemetalgl.dll" &&
         cp "$LIB/i386-windows/winemetalgl.dll" "$CXLIB/i386-windows/winemetalgl.dll" &&
-        cp "$LIB/x86_64-unix/winemetalgl.so" "$CXLIB/x86_64-unix/winemetalgl.so" &&
-        cp "$LIB/x86_64-unix/libwinemetalgl.dylib" "$CXLIB/x86_64-unix/libwinemetalgl.dylib" &&
-        { ! test -e "$LIB/x86_64-unix/x87sidecar" || cp "$LIB/x86_64-unix/x87sidecar" "$CXLIB/x86_64-unix/x87sidecar"; }; then
+        cp "$LIB/$UNIX_DIR/winemetalgl.so" "$CXLIB/$UNIX_DIR/winemetalgl.so" &&
+        cp "$LIB/$UNIX_DIR/libwinemetalgl.dylib" "$CXLIB/$UNIX_DIR/libwinemetalgl.dylib" &&
+        { test "$ARCH" = arm64 || ! test -e "$LIB/x86_64-unix/x87sidecar" ||
+          cp "$LIB/x86_64-unix/x87sidecar" "$CXLIB/x86_64-unix/x87sidecar"; }; then
         echo "Installed winemetalgl into $CXLIB"
         echo "This changes CrossOver.app: updating CrossOver removes the module, and this has to run again."
     else
         echo "Could not write into $CXLIB (macOS may protect CrossOver.app: allow Terminal or" >&2
         echo "WineMetalGL Settings under Privacy & Security, App Management, or use a copy of" >&2
         echo "CrossOver.app in ~/Applications). Copy these by hand:" >&2
-        echo "  $LIB/x86_64-windows/winemetalgl.dll -> $CXLIB/x86_64-windows/" >&2
+        echo "  $LIB/$WIN_DIR/winemetalgl.dll -> $CXLIB/$WIN_DIR/" >&2
         echo "  $LIB/i386-windows/winemetalgl.dll -> $CXLIB/i386-windows/" >&2
-        echo "  $LIB/x86_64-unix/winemetalgl.so -> $CXLIB/x86_64-unix/" >&2
-        echo "  $LIB/x86_64-unix/libwinemetalgl.dylib -> $CXLIB/x86_64-unix/" >&2
-        test -e "$LIB/x86_64-unix/x87sidecar" && echo "  $LIB/x86_64-unix/x87sidecar -> $CXLIB/x86_64-unix/" >&2
+        echo "  $LIB/$UNIX_DIR/winemetalgl.so -> $CXLIB/$UNIX_DIR/" >&2
+        echo "  $LIB/$UNIX_DIR/libwinemetalgl.dylib -> $CXLIB/$UNIX_DIR/" >&2
+        test "$ARCH" = x86_64 && test -e "$LIB/x86_64-unix/x87sidecar" && echo "  $LIB/x86_64-unix/x87sidecar -> $CXLIB/x86_64-unix/" >&2
         exit 1
     fi
 fi

@@ -119,6 +119,10 @@ jobs:
           brew install sdl2 sdl3 glfw
           WINEMETALGL_REQUIRE_GLUE=1 scripts/stage-arm64-core.sh "$RUNNER_TEMP/out/winemetalgl-$VERSION-arm64-core"
 
+      # The Wine module for a native arm64 Wine (CrossOver 27, MetalSharp's Wine), with the arm64 core.
+      - name: Stage the arm64 Wine release (Wine module and core)
+        run: scripts/stage-release-arm64.sh "$RUNNER_TEMP/deps/wine-11.0" "$RUNNER_TEMP/out/winemetalgl-$VERSION-arm64"
+
       - name: Notarize the signed libraries
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -135,6 +139,8 @@ jobs:
           cp "$out/winemetalgl-$VERSION-x86_64/module/x86_64-unix/winemetalgl.so" "$RUNNER_TEMP/notarize/winemetalgl.so"
           cp "$out/winemetalgl-$VERSION-x86_64/module/x86_64-unix/x87sidecar" "$RUNNER_TEMP/notarize/x87sidecar"
           cp "$out/winemetalgl-$VERSION-arm64-core/lib/libwinemetalgl.dylib" "$RUNNER_TEMP/notarize/libwinemetalgl-arm64.dylib"
+          cp "$out/winemetalgl-$VERSION-arm64/module/aarch64-unix/winemetalgl.so" "$RUNNER_TEMP/notarize/winemetalgl-arm64.so"
+          cp "$out/winemetalgl-$VERSION-arm64/module/aarch64-unix/libwinemetalgl.dylib" "$RUNNER_TEMP/notarize/libwinemetalgl-arm64-module.dylib"
           for glue in "$out/winemetalgl-$VERSION-arm64-core"/glue/*/*.dylib; do
             game=$(basename "$(dirname "$glue")")
             cp "$glue" "$RUNNER_TEMP/notarize/glue-$game-$(basename "$glue")"
@@ -159,9 +165,10 @@ jobs:
           mkdir -p dist
           tar -czf "dist/winemetalgl-$VERSION-x86_64.tar.gz" -C "$out" "winemetalgl-$VERSION-x86_64"
           tar -czf "dist/winemetalgl-$VERSION-arm64-core.tar.gz" -C "$out" "winemetalgl-$VERSION-arm64-core"
+          tar -czf "dist/winemetalgl-$VERSION-arm64.tar.gz" -C "$out" "winemetalgl-$VERSION-arm64"
           cp scripts/install-wine-module.sh scripts/install-crossover.sh dist/
-          (cd dist && shasum -a 256 "winemetalgl-$VERSION-x86_64.tar.gz" "winemetalgl-$VERSION-arm64-core.tar.gz" \
-            install-wine-module.sh install-crossover.sh > SHA256SUMS.txt)
+          (cd dist && shasum -a 256 "winemetalgl-$VERSION-x86_64.tar.gz" "winemetalgl-$VERSION-arm64.tar.gz" \
+            "winemetalgl-$VERSION-arm64-core.tar.gz" install-wine-module.sh install-crossover.sh > SHA256SUMS.txt)
           cat dist/SHA256SUMS.txt
 
       - name: Publish the release
@@ -173,7 +180,8 @@ jobs:
           notes=(--generate-notes)
           if test -f "docs/release-notes/$VERSION.md"; then notes=(--notes-file "docs/release-notes/$VERSION.md"); fi
           gh release create "$tag" --target "$GITHUB_SHA" --title "WineMetalGL $VERSION" "${notes[@]}" \
-            "dist/winemetalgl-$VERSION-x86_64.tar.gz" "dist/winemetalgl-$VERSION-arm64-core.tar.gz" \
+            "dist/winemetalgl-$VERSION-x86_64.tar.gz" "dist/winemetalgl-$VERSION-arm64.tar.gz" \
+            "dist/winemetalgl-$VERSION-arm64-core.tar.gz" \
             dist/install-wine-module.sh dist/install-crossover.sh dist/SHA256SUMS.txt
 
       # The settings app carries both, a whole runtime in its disk image; a
