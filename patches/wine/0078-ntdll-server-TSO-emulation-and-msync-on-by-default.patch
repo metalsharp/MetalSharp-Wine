@@ -1,0 +1,72 @@
+From 36d46a29010d0356e4c982f2cf59354f4725da0e Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Mon, 26 Oct 2026 12:58:10 -0600
+Subject: [PATCH] ntdll, server: TSO emulation and msync on by default
+
+FEX now runs x86 code with its TSO emulation (ordered loads and stores, which need no Rosetta or hardware TSO): Red Dead Redemption 2's job queues hand work between threads with plain stores and lost it without x86's ordering, and the game hung. FEX_TSOENABLED=0 still turns it off.
+
+msync is on unless WINEMSYNC=0 (or WINEWFUSYNC=0), on both sides: ntdll and the wineserver decide the same way, since they must agree.
+---
+ dlls/ntdll/unix/loader.c | 10 ++++++----
+ dlls/ntdll/unix/msync.c  |  3 ++-
+ server/msync.c           |  5 +++--
+ 3 files changed, 11 insertions(+), 7 deletions(-)
+
+diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
+index e16fd085952..ee771c71d79 100644
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -2416,10 +2416,12 @@ DECLSPEC_EXPORT void __wine_main( int argc, char *argv[] )
+     main_argv = argv;
+ 
+ #ifdef __aarch64__
+-    /* MetalSharp Wine runs x86 code through FEX without TSO emulation: macOS offers no hardware
+-     * TSO, and the emulated barriers cost more than they buy. FEX reads its configuration from the
+-     * process environment; an explicit FEX_TSOENABLED still wins. */
+-    setenv( "FEX_TSOENABLED", "0", 0 );
++    /* MetalSharp Wine runs x86 code through FEX with its TSO emulation (ordered loads and stores, not
++     * the hardware TSO macOS keeps to Rosetta): programs whose threads hand data over with plain
++     * stores lose it without x86's ordering (Red Dead Redemption 2's job queues dropped work and the
++     * game hung). FEX reads its configuration from the process environment; an explicit
++     * FEX_TSOENABLED=0 still turns it off. */
++    setenv( "FEX_TSOENABLED", "1", 0 );
+     /* Keep FEX's second-level block lookup cache: games with large code footprints (Unity,
+      * Mono) otherwise take the slow lookup path on every L1 miss of an indirect branch. */
+     setenv( "FEX_DISABLEL2CACHE", "0", 0 );
+diff --git a/dlls/ntdll/unix/msync.c b/dlls/ntdll/unix/msync.c
+index e405edcf31c..2e23e9cf25c 100644
+--- a/dlls/ntdll/unix/msync.c
++++ b/dlls/ntdll/unix/msync.c
+@@ -142,9 +142,10 @@ int do_msync(void)
+ {
+     if (do_msync_env_cached == -1)
+     {
++        /* on unless WINEMSYNC=0; server/msync.c decides the same way, and both sides must agree */
+         const char *env = getenv( "WINEMSYNC" );
+         if (!env) env = getenv( "WINEWFUSYNC" );  /* upstream WineForge name */
+-        do_msync_env_cached = (env && atoi( env )) ? 1 : 0;
++        do_msync_env_cached = (!env || atoi( env )) ? 1 : 0;
+     }
+ 
+     return do_msync_env_cached;
+diff --git a/server/msync.c b/server/msync.c
+index 6f538e6588d..fee960ee00c 100644
+--- a/server/msync.c
++++ b/server/msync.c
+@@ -28,10 +28,11 @@ int do_msync(void)
+ 
+     if (enabled == -1)
+     {
+-        /* WINEWFUSYNC is the upstream WineForge name */
++        /* on unless WINEMSYNC=0, as dlls/ntdll/unix/msync.c decides; WINEWFUSYNC is the upstream
++         * WineForge name */
+         const char *env = getenv( "WINEMSYNC" );
+         if (!env) env = getenv( "WINEWFUSYNC" );
+-        enabled = env && atoi( env );
++        enabled = !env || atoi( env );
+     }
+     return enabled;
+ }
+-- 
+2.54.0 (Apple Git-157)
+

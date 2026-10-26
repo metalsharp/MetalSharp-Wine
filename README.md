@@ -70,7 +70,8 @@ ___
 * Direct3D: Mullion on Metal is the default. For x86_64 games, GRAPHICS_BACKEND=dxvk uses DXVK-macOS (D3D9/10/11 on MoltenVK) and GRAPHICS_BACKEND=vkd3d uses VKD3D-Proton (D3D12 on MoltenVK). GRAPHICS_BACKEND=wine uses Wine’s own wined3d.
 * VKD3D-Proton: run it with WINEDEBUG=-all. With Wine's default debug channels, device creation can fail ("Lacking support for single texel alignment").
 * OpenGL: WineMetalGL 4.6 is the default. OPENGL_BACKEND=wine switches back to Wine’s own.
-* Sync: WINEMSYNC=1 turns on msync, which helps performance.
+* Sync: msync is on by default and is much faster than going through the wineserver. WINEMSYNC=0 turns it off.
+* Memory ordering: FEX runs x86 code with its TSO emulation on by default, which games that hand data between threads with plain stores need (Red Dead Redemption 2 hangs without it). FEX_TSOENABLED=0 turns it off, which is faster for programs that don't need it.
 * x87: 32-bit programs run x87 floating point in double precision by default, as under Rosetta; full 80-bit emulation is much slower (it made Ori's FMOD audio stutter). FEX_X87REDUCEDPRECISION=0 restores full precision for a program that needs it.
 * Mouse: setting UseGCMouse to N (in HKCU\Software\Wine\Mac Driver) goes back to the old mouse input path if GCMouse raw input misbehaves in a game.
 * Settings: WINEPREFIX=~/Games/my-prefix $WINE winecfg opens Wine’s settings.
@@ -87,7 +88,7 @@ ___
 | Vulkan | MoltenVK 1.4.3 (MetalSharp build from VKD3D-Proton-MacOS: the pipeline cache is saved during long compiles and keyed on the shader sources, and compiled Metal libraries and binary archives are cached) |
 | Media | FFmpeg 8.0 (LGPL, VideoToolbox/AudioToolbox) and GStreamer 1.26 |
 | .NET / HTML | Wine Mono 11.3.0 (arm64, x86, x86_64) and Wine Gecko 2.47.4 (x86, x86_64) |
-| Sync | msync (shared-memory synchronization; `WINEMSYNC=1`) |
+| Sync | msync (shared-memory synchronization; on by default, `WINEMSYNC=0` turns it off) |
 | Fonts | Metric-compatible Arial, Times New Roman and Courier New files (renamed Liberation) in every prefix's `C:\windows\Fonts`. CJK Windows families are mapped to the macOS system fonts |
 | Controllers | winebus with SDL2 and IOHID (XInput and DirectInput) |
 | Tools | `innoextract` 1.9 (Inno Setup / GOG installers) and `cabextract` 1.11 |
