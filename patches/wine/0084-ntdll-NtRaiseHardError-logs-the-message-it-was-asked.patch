@@ -1,0 +1,35 @@
+From 129ab3c963ded82830c8f492bd52e6067ee1f5fd Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Mon, 26 Oct 2026 19:43:52 -0600
+Subject: [PATCH 84/84] ntdll: NtRaiseHardError logs the message it was asked
+ to show
+
+The function is a stub, so a program that reports a fatal error through it (a MessageBox with
+MB_SERVICE_NOTIFICATION) exits with nothing shown. Its text and caption, the UNICODE_STRING
+parameters, now go to the fixme log.
+---
+ dlls/ntdll/unix/system.c | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/dlls/ntdll/unix/system.c b/dlls/ntdll/unix/system.c
+index ac7385493dd..b96f6169d87 100644
+--- a/dlls/ntdll/unix/system.c
++++ b/dlls/ntdll/unix/system.c
+@@ -4926,7 +4926,14 @@ NTSTATUS WINAPI NtRaiseHardError( NTSTATUS status, ULONG count,
+                                   ULONG params_mask, void **params,
+                                   HARDERROR_RESPONSE_OPTION option, HARDERROR_RESPONSE *response )
+ {
++    ULONG i;
++
+     FIXME( "%#08x %u %#x %p %u %p: stub\n", status, count, params_mask, params, option, response );
++    /* The message a program meant to show (MB_SERVICE_NOTIFICATION boxes come here): its text and
++     * caption are the UNICODE_STRING parameters. */
++    for (i = 0; params && i < count && i < 32; i++)
++        if ((params_mask & (1u << i)) && params[i])
++            FIXME( "  param %u: %s\n", i, debugstr_us( (const UNICODE_STRING *)params[i] ));
+     return STATUS_NOT_IMPLEMENTED;
+ }
+ 
+-- 
+2.54.0 (Apple Git-157)
+

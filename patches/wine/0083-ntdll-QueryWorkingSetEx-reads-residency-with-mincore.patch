@@ -1,0 +1,40 @@
+From 2d89612bd99ae8965aae7005f10d137711e03730 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Mon, 26 Oct 2026 19:43:52 -0600
+Subject: [PATCH 83/84] ntdll: QueryWorkingSetEx reads residency with mincore()
+ on macOS
+
+macOS has no /proc/self/pagemap, so every page was reported not Valid, without its protection,
+whether resident or not. mincore() gives the same: resident, and for a file mapping whether the
+page has been written (no longer shared).
+---
+ dlls/ntdll/unix/virtual.c | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index 83623a6e8ba..cffadf96ef2 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -5938,6 +5938,19 @@ static void fill_working_set_info( struct fill_working_set_info_data *d, struct
+             d->buffer_len = len / sizeof(pagemap);
+         }
+         pagemap = d->pm_buffer[page - d->buffer_start];
++#ifdef __APPLE__
++        /* MetalSharp: macOS has no /proc/self/pagemap, which left every page not Valid (and without
++         * its protection) in QueryWorkingSetEx, whether resident or not. mincore() tells the same
++         * things: resident (pagemap bit 63) and, for a file mapping, not yet written (bit 61, shared). */
++        if (pagemap_fd == -1)
++        {
++            char state = 0;
++
++            if (!mincore( (void *)(page * host_page_size), host_page_size, &state ))
++                pagemap = ((UINT64)!!(state & MINCORE_INCORE) << 63) |
++                          ((UINT64)!(state & MINCORE_MODIFIED) << 61);
++        }
++#endif
+ 
+         p->VirtualAttributes.Valid = !(vprot & VPROT_GUARD) && (vprot & 0x0f) && (pagemap >> 63);
+         p->VirtualAttributes.Shared = !is_view_valloc( view ) && ((pagemap >> 61) & 1);
+-- 
+2.54.0 (Apple Git-157)
+
