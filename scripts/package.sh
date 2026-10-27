@@ -55,6 +55,8 @@ rpath_for() {
 
 for f in $(find $D -type f \( -name '*.dylib' -o -name '*.so' -o -perm -u+x \)); do
   file -b $f | grep -q Mach-O || continue
+  # Apple's converter library ships unmodified (its license forbids changes); it links system libraries only.
+  [[ $f == $D/lib/libmetalirconverter.dylib ]] && continue
   args=()
   # dylib ids
   id=$(otool -D $f | sed -n 2p)

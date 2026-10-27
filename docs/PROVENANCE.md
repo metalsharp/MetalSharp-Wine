@@ -47,6 +47,17 @@ Some WineForge notices were rebranded on the way into MetalSharp. In particular,
 | WineMetalGL | MetalSharp | LGPL 3.0 | `source/winemetalgl` branch |
 | GStreamer, FreeType, GnuTLS, SDL2, FFmpeg and the other libraries in `deps/` | Their authors | Their own licenses | Unmodified upstream releases |
 | DXC, d3dcompiler_47 | Microsoft | Microsoft redistribution terms | Unmodified redistributables |
+| Metal Shader Converter library (`libmetalirconverter.dylib`, 4.0 beta 3) | Apple Inc. | Apple's Software License Agreement for Metal Shader Converter (proprietary) | Unmodified and Apple-signed, from metalsharp/VKD3D-Proton-MacOS's `deps-metal-shaderconverter-4.0b3` release |
+
+### Apple's Metal Shader Converter
+
+`lib/libmetalirconverter.dylib` is Apple's Metal Shader Converter library. It is proprietary and the only closed-source component in the bundle. MoltenVK loads it at runtime to convert the DXIL shaders of the VKD3D-Proton lane (`GRAPHICS_BACKEND=vkd3d`) into Metal libraries, which skips compiling MSL text at run time ([MSC-BRIDGE-CONTRACT.md](MSC-BRIDGE-CONTRACT.md)). It is used for nothing else. `METALSHARP_MSC=0` turns it off, and if it is missing, shaders go through SPIR-V as before.
+
+Apple's agreement, section 2B, allows installing, using, testing and distributing the library "for the sole purpose of shader conversion", which is what MoltenVK uses it for. The bundle ships only the library, as Apple published it:
+- **Unmodified:** section 2E forbids modifying or reverse engineering it. `scripts/package.sh` leaves it out of its rpath rewriting and re-signing, and `scripts/sign-app.sh` keeps Apple's signature on it.
+- **Apple hardware only, with its notices:** sections 2C and 2D limit it to Apple-branded systems, which is the only place MetalSharp Wine runs, and require its notices to be kept. Apple's agreement and acknowledgements ship in `share/licenses/metal-shaderconverter/`.
+
+Apple's agreement governs; the details are in VKD3D-Proton-MacOS's README, under third-party licenses.
 
 Every bundle carries these licenses in `share/licenses/` and next to each runtime in `lib/` (for example `lib/mullion/LICENSE` and `lib/wfdxcompat/LICENSE`).
 
