@@ -1,0 +1,56 @@
+From 9ebcbeb317b42ac2ce43db58cc961dcbd5739968 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Tue, 27 Oct 2026 09:15:48 -0600
+Subject: [PATCH] ntdll: Implement FileAllocationInformation in
+ NtSetInformationFile.
+
+An allocation size below the end of file truncates the file to it, as on Windows;
+one at or past the end only reserves space, which the host file system does as the
+file grows, so it succeeds. The class was unsupported and failed, so a program that
+sizes a file this way before writing it (Arxan's report in Forza Horizon 5) stopped
+there.
+---
+ dlls/ntdll/unix/file.c | 27 +++++++++++++++++++++++++++
+ 1 file changed, 27 insertions(+)
+
+diff --git a/dlls/ntdll/unix/file.c b/dlls/ntdll/unix/file.c
+index 45379189d78..f9e1bed43ae 100644
+--- a/dlls/ntdll/unix/file.c
++++ b/dlls/ntdll/unix/file.c
+@@ -5007,6 +5007,33 @@ NTSTATUS WINAPI NtSetInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
+         else status = STATUS_INVALID_PARAMETER_3;
+         break;
+ 
++    case FileAllocationInformation:
++        /* An allocation below the end of file truncates the file to it; one at or past it only reserves
++         * space, which the host file system does as the file grows. */
++        if (len >= sizeof(FILE_ALLOCATION_INFORMATION))
++        {
++            const FILE_ALLOCATION_INFORMATION *info = ptr;
++            struct stat st;
++
++            if ((status = server_get_unix_fd( handle, FILE_WRITE_DATA, &fd, &needs_close, NULL, NULL )))
++                break;
++            if (fstat( fd, &st ) == -1) status = errno_to_status( errno );
++            else if (info->AllocationSize.QuadPart < 0) status = STATUS_INVALID_PARAMETER;
++            else if (info->AllocationSize.QuadPart < st.st_size)
++            {
++                SERVER_START_REQ( set_fd_eof_info )
++                {
++                    req->handle = wine_server_obj_handle( handle );
++                    req->eof    = info->AllocationSize.QuadPart;
++                    status = wine_server_call( req );
++                }
++                SERVER_END_REQ;
++            }
++            if (needs_close) close( fd );
++        }
++        else status = STATUS_INVALID_PARAMETER_3;
++        break;
++
+     case FilePipeInformation:
+         if (len >= sizeof(FILE_PIPE_INFORMATION))
+         {
+-- 
+2.54.0 (Apple Git-157)
+
