@@ -5007,6 +5007,33 @@ NTSTATUS WINAPI NtSetInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
         else status = STATUS_INVALID_PARAMETER_3;
         break;
 
+    case FileAllocationInformation:
+        /* An allocation below the end of file truncates the file to it; one at or past it only reserves
+         * space, which the host file system does as the file grows. */
+        if (len >= sizeof(FILE_ALLOCATION_INFORMATION))
+        {
+            const FILE_ALLOCATION_INFORMATION *info = ptr;
+            struct stat st;
+
+            if ((status = server_get_unix_fd( handle, FILE_WRITE_DATA, &fd, &needs_close, NULL, NULL )))
+                break;
+            if (fstat( fd, &st ) == -1) status = errno_to_status( errno );
+            else if (info->AllocationSize.QuadPart < 0) status = STATUS_INVALID_PARAMETER;
+            else if (info->AllocationSize.QuadPart < st.st_size)
+            {
+                SERVER_START_REQ( set_fd_eof_info )
+                {
+                    req->handle = wine_server_obj_handle( handle );
+                    req->eof    = info->AllocationSize.QuadPart;
+                    status = wine_server_call( req );
+                }
+                SERVER_END_REQ;
+            }
+            if (needs_close) close( fd );
+        }
+        else status = STATUS_INVALID_PARAMETER_3;
+        break;
+
     case FilePipeInformation:
         if (len >= sizeof(FILE_PIPE_INFORMATION))
         {
