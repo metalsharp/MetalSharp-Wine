@@ -4044,6 +4044,46 @@ static void remove_trailing_backslash( OBJECT_ATTRIBUTES *attr, UNICODE_STRING *
 }
 
 /***********************************************************************
+ *           strip_globalroot
+ *
+ * \??\GLOBALROOT and \GLOBALROOT link to the root of the object namespace, so
+ * \??\GLOBALROOT\??\C:\dir\file names \??\C:\dir\file. Leaves the name without
+ * them in nt_name, which then takes the place of the object name.
+ */
+static NTSTATUS strip_globalroot( OBJECT_ATTRIBUTES *attr, UNICODE_STRING *nt_name )
+{
+    static const WCHAR globalrootW[] = {'G','L','O','B','A','L','R','O','O','T','\\'};
+    const WCHAR *name = attr->ObjectName->Buffer;
+    ULONG len = attr->ObjectName->Length / sizeof(WCHAR), skip = 0, pos;
+    WCHAR *buffer;
+
+    if (attr->RootDirectory) return STATUS_SUCCESS;
+    for (;;)
+    {
+        pos = skip;
+        if (len - pos >= ARRAY_SIZE(nt_prefixW) && !memcmp( name + pos, nt_prefixW, sizeof(nt_prefixW) ))
+            pos += ARRAY_SIZE(nt_prefixW);
+        else if (len - pos >= 1 && name[pos] == '\\')
+            pos++;
+        else break;
+        if (len - pos < ARRAY_SIZE(globalrootW) || wcsnicmp( name + pos, globalrootW, ARRAY_SIZE(globalrootW) ))
+            break;
+        skip = pos + ARRAY_SIZE(globalrootW) - 1;  /* keep the backslash that starts the rest */
+    }
+    if (!skip) return STATUS_SUCCESS;
+
+    len -= skip;
+    if (!(buffer = malloc( (len + 1) * sizeof(WCHAR) ))) return STATUS_NO_MEMORY;
+    memcpy( buffer, name + skip, len * sizeof(WCHAR) );
+    buffer[len] = 0;
+    nt_name->Buffer = buffer;
+    nt_name->Length = len * sizeof(WCHAR);
+    nt_name->MaximumLength = nt_name->Length + sizeof(WCHAR);
+    attr->ObjectName = nt_name;
+    return STATUS_SUCCESS;
+}
+
+/***********************************************************************
  *           get_nt_and_unix_names
  *
  * Get the true NT name (potentially after wow64 redirection) and the
@@ -4087,8 +4127,19 @@ NTSTATUS get_nt_and_unix_names( OBJECT_ATTRIBUTES *attr, UNICODE_STRING *nt_name
     }
     else
     {
+        if ((status = strip_globalroot( attr, nt_name ))) return status;
 #ifndef _WIN64
-        get_redirect( attr, nt_name );
+        {
+            UNICODE_STRING redir = { 0 };
+
+            get_redirect( attr, &redir );
+            if (redir.Buffer)
+            {
+                free( nt_name->Buffer );
+                *nt_name = redir;
+                attr->ObjectName = nt_name;
+            }
+        }
 #endif
         status = nt_to_unix_file_name( attr, nt_name, unix_name_ret, disposition, open_reparse );
     }
