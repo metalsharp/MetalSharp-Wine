@@ -73,6 +73,7 @@ static mach_port_t get_process_port( struct process *process )
     return process->trace_data;
 }
 
+#if defined(__i386__) || defined(__x86_64__)
 static int is_rosetta( void )
 {
     static int rosetta_status, did_check = 0;
@@ -91,6 +92,7 @@ static int is_rosetta( void )
 
     return rosetta_status;
 }
+#endif
 
 extern kern_return_t bootstrap_register2( mach_port_t bp, name_t service_name, mach_port_t sp, uint64_t flags );
 
@@ -477,15 +479,14 @@ int write_process_memory( struct process *process, client_ptr_t ptr, data_size_t
         }
 
         /*
-         * FIXME: Rosetta can turn RWX pages into R-X pages during execution.
-         * For now we will just have to ignore failures due to the wrong
-         * protection here.
+         * MetalSharp: no check of the region's current protection here. Wine keeps copy-on-write
+         * pages (images, and VirtualProtect to a writable protection on them) read-only on the
+         * host until the process writes to them, so a write here to a page Windows calls writable
+         * was refused (hook engines writing their jump into ntdll with WriteProcessMemory:
+         * Trackmania's "Error at hooking API"). Linux's /proc/pid/mem write ignores protection,
+         * and Windows' WriteProcessMemory writes code pages too; the loop below makes each region
+         * writable for the write (a private copy where it is a shared mapping) and restores it.
          */
-        if (!is_rosetta() && !(info.protection & VM_PROT_WRITE))
-        {
-            ret = KERN_PROTECTION_FAILURE;
-            goto out;
-        }
 
         /* The following operations should seem atomic from the perspective of the
          * target process. */
@@ -508,18 +509,14 @@ int write_process_memory( struct process *process, client_ptr_t ptr, data_size_t
                 break;
             }
 
-            /* FIXME: See the above Rosetta remark. */
-            if (!is_rosetta() && !(info.protection & VM_PROT_WRITE))
-            {
-                ret = KERN_PROTECTION_FAILURE;
-                break;
-            }
-
             write_size = region_size - (current_address - region_address);
             if (write_size > remaining_size) write_size = remaining_size;
 
+            /* VM_PROT_COPY gives a mapping that cannot be written (a shared one) a private copy,
+             * as a copy-on-write fault does. */
             ret = mach_vm_protect( process_port, current_address, write_size, 0,
-                    VM_PROT_READ | VM_PROT_WRITE );
+                    VM_PROT_READ | VM_PROT_WRITE |
+                    ((info.max_protection & VM_PROT_WRITE) ? 0 : VM_PROT_COPY) );
             if (ret != KERN_SUCCESS) break;
 
             ret = mach_vm_write( process_port, current_address,
