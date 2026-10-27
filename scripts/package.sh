@@ -15,6 +15,17 @@ rsync -a --include='*.dylib' --exclude='*' $PREFIX/lib/gstreamer-1.0/ $D/lib/gst
 if [[ -f $ROOT/deps/moltenvk/libMoltenVK.dylib ]]; then
   rm -f $D/lib/libMoltenVK.dylib; cp $ROOT/deps/moltenvk/libMoltenVK.dylib $D/lib/libMoltenVK.dylib
 fi
+# Metal Shader Converter's library (Apple, shipped unmodified and Apple-signed under its license, section 2B), which
+# MoltenVK loads to convert DXIL shaders for VKD3D-Proton (docs/MSC-BRIDGE-CONTRACT.md), with its license and
+# acknowledgements: the files VKD3D-Proton-MacOS's MoltenVK package carries (its fetch script checks their SHA-256s).
+MSC=$ROOT/src/vkd3d-proton/artifacts/metal-shaderconverter
+MSC_FETCH=$ROOT/src/vkd3d-proton/scripts/fetch-metal-shaderconverter.sh
+[[ -f $MSC/libmetalirconverter.dylib || ! -f $MSC_FETCH ]] || bash $MSC_FETCH
+if [[ -f $MSC/libmetalirconverter.dylib ]]; then
+  cp $MSC/libmetalirconverter.dylib $D/lib/
+  mkdir -p $D/share/licenses/metal-shaderconverter
+  cp $MSC/LICENSE.metal-shaderconverter.rtf $MSC/ACKNOWLEDGEMENTS.metal-shaderconverter.rtf $D/share/licenses/metal-shaderconverter/
+fi
 # innoextract (scripts/build-innoextract.sh), for unpacking Inno Setup installers
 if [[ -x $ROOT/deps/innoextract/innoextract ]]; then
   cp $ROOT/deps/innoextract/innoextract $D/bin/

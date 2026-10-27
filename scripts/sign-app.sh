@@ -116,6 +116,9 @@ opts=(-f -s $IDENTITY)
 # share/metalsharp holds the MetalSharp app's dylibs and Mono runtimes (stage-metalsharp-assets.sh)
 for f in $(find $APP/Contents/lib $APP/Contents/MacOS $APP/Contents/share/metalsharp -type f 2>/dev/null); do
   [[ $f == $APP/Contents/MacOS/wine || $f == $LOADER_APP/* ]] && continue
+  # Apple-signed libraries (Metal Shader Converter's libmetalirconverter.dylib) keep Apple's signature: its
+  # license allows shipping it but not modifying it, and Apple-signed code passes notarization as is.
+  codesign -dv --verbose=2 $f 2>&1 | grep -qx 'Authority=Software Signing' && continue
   case "$(file -b $f)" in
     *Mach-O*executable*) codesign $opts --entitlements $ENT_BASE $f ;;
     *Mach-O*) codesign $opts $f ;;
