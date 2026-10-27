@@ -4926,7 +4926,14 @@ NTSTATUS WINAPI NtRaiseHardError( NTSTATUS status, ULONG count,
                                   ULONG params_mask, void **params,
                                   HARDERROR_RESPONSE_OPTION option, HARDERROR_RESPONSE *response )
 {
+    ULONG i;
+
     FIXME( "%#08x %u %#x %p %u %p: stub\n", status, count, params_mask, params, option, response );
+    /* The message a program meant to show (MB_SERVICE_NOTIFICATION boxes come here): its text and
+     * caption are the UNICODE_STRING parameters. */
+    for (i = 0; params && i < count && i < 32; i++)
+        if ((params_mask & (1u << i)) && params[i])
+            FIXME( "  param %u: %s\n", i, debugstr_us( (const UNICODE_STRING *)params[i] ));
     return STATUS_NOT_IMPLEMENTED;
 }
 
