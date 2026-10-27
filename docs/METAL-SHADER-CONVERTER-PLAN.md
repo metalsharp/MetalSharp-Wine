@@ -1,6 +1,9 @@
 # Plan: Metal Shader Converter to cut shader compile time
 
-Status: Phase 2 (VKD3D-Proton compute through Metal Shader Converter) implemented 2026-10-27, on by default (METALSHARP_MSC=0 turns it off); see MSC-BRIDGE-CONTRACT.md. In God of War it covered 11 compute pipelines; SM 6.6 heap indexing (530 more) is next.
+Status: Phases 2 (compute), 2b (SM 6.6 heap indexing) and 3 (vertex and pixel shaders) implemented 2026-10-27, on by default
+(METALSHARP_MSC=0 turns it off); see MSC-BRIDGE-CONTRACT.md. Shaders that reach typed buffers stay on SPIR-V (the
+converter can't express typed views that don't start 16-byte aligned). Checked natively and with VKD3D-Proton's D3D12
+tests; not yet measured in a game.
 
 ## Why
 
