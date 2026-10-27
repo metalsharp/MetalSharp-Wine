@@ -5938,6 +5938,19 @@ static void fill_working_set_info( struct fill_working_set_info_data *d, struct 
             d->buffer_len = len / sizeof(pagemap);
         }
         pagemap = d->pm_buffer[page - d->buffer_start];
+#ifdef __APPLE__
+        /* MetalSharp: macOS has no /proc/self/pagemap, which left every page not Valid (and without
+         * its protection) in QueryWorkingSetEx, whether resident or not. mincore() tells the same
+         * things: resident (pagemap bit 63) and, for a file mapping, not yet written (bit 61, shared). */
+        if (pagemap_fd == -1)
+        {
+            char state = 0;
+
+            if (!mincore( (void *)(page * host_page_size), host_page_size, &state ))
+                pagemap = ((UINT64)!!(state & MINCORE_INCORE) << 63) |
+                          ((UINT64)!(state & MINCORE_MODIFIED) << 61);
+        }
+#endif
 
         p->VirtualAttributes.Valid = !(vprot & VPROT_GUARD) && (vprot & 0x0f) && (pagemap >> 63);
         p->VirtualAttributes.Shared = !is_view_valloc( view ) && ((pagemap >> 61) & 1);
