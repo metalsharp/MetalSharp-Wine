@@ -970,6 +970,99 @@ static void append_envW( WCHAR **env, SIZE_T *pos, SIZE_T *size, const char *nam
     set_env_var( env, pos, size, nameW, wcslen(nameW), value );
 }
 
+static void append_envA( WCHAR **env, SIZE_T *pos, SIZE_T *size, const char *name, const char *value );
+
+/* MetalSharp: <folder of the program>/.metalsharp/launch.env sets the environment a program starts
+ * with, whoever starts it (Steam, a game's own launcher, MetalSharp). Each line is NAME=value, or
+ * -NAME to remove a variable; empty lines and lines starting with # are skipped. The variables go
+ * into the Windows environment and the Unix one alike, before anything reads them (the graphics
+ * backend is chosen right after), and on to the program's children. Only the program's own folder
+ * is read, so a file elsewhere cannot reach other programs. */
+static void add_launch_environment( WCHAR **env, SIZE_T *pos, SIZE_T *size, const WCHAR *image )
+{
+    static const WCHAR ntprefixW[] = {'\\','?','?','\\'};
+    char *unix_name = NULL, *slash, *path, *data, *line, *next;
+    struct stat st;
+    ssize_t len;
+    int fd;
+
+    if (!image) return;
+    if (!wcsncmp( image, ntprefixW, ARRAY_SIZE(ntprefixW) )) image += ARRAY_SIZE(ntprefixW);
+    if (ntdll_get_unix_file_name( image, &unix_name, FILE_OPEN ) || !unix_name) return;
+    if (!(slash = strrchr( unix_name, '/' )) ||
+        !(path = malloc( (slash - unix_name) + sizeof("/.metalsharp/launch.env") )))
+    {
+        free( unix_name );
+        return;
+    }
+    memcpy( path, unix_name, slash - unix_name );
+    strcpy( path + (slash - unix_name), "/.metalsharp/launch.env" );
+    free( unix_name );
+    fd = open( path, O_RDONLY | O_CLOEXEC );
+    free( path );
+    if (fd == -1) return;
+    if (fstat( fd, &st ) || !S_ISREG( st.st_mode ) || st.st_size <= 0 || st.st_size > 65536 ||
+        !(data = malloc( st.st_size + 1 )))
+    {
+        close( fd );
+        return;
+    }
+    len = read( fd, data, st.st_size );
+    close( fd );
+    if (len <= 0)
+    {
+        free( data );
+        return;
+    }
+    data[len] = 0;
+    for (line = data; line; line = next)
+    {
+        char *value, *p;
+        BOOL remove = FALSE;
+
+        if ((next = strchr( line, '\n' ))) *next++ = 0;
+        if ((p = strchr( line, '\r' ))) *p = 0;
+        if (!line[0] || line[0] == '#') continue;
+        if (line[0] == '-')
+        {
+            remove = TRUE;
+            line++;
+            value = NULL;
+        }
+        else if ((value = strchr( line, '=' ))) *value++ = 0;
+        else continue;
+        if (!line[0]) continue;
+        for (p = line; *p; p++)
+            if (!((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z') || (*p >= '0' && *p <= '9') || *p == '_'))
+                break;
+        if (*p) continue;
+        {
+            WCHAR nameW[256];
+            SIZE_T namelen = strlen( line );
+
+            if (namelen >= ARRAY_SIZE(nameW)) continue;
+            ascii_to_unicode( nameW, line, namelen + 1 );
+            if (remove)
+            {
+                set_env_var( env, pos, size, nameW, namelen, NULL );
+                unsetenv( line );
+            }
+            else
+            {
+                SIZE_T vlen = strlen( value ) + 1;
+                WCHAR *valueW = malloc( vlen * sizeof(WCHAR) );
+
+                if (!valueW) continue;
+                ntdll_umbstowcs( value, vlen, valueW, vlen );
+                set_env_var( env, pos, size, nameW, namelen, valueW );
+                free( valueW );
+                setenv( line, value, 1 );
+            }
+        }
+    }
+    free( data );
+}
+
 static void append_envA( WCHAR **env, SIZE_T *pos, SIZE_T *size, const char *name, const char *value )
 {
     if (value)
@@ -1954,6 +2047,11 @@ static RTL_USER_PROCESS_PARAMETERS *build_initial_params(void)
     is_prefix_bootstrap = !!bootstrap;
     free( bootstrap );
     add_registry_environment( &env, &env_pos, &env_size );
+    if (main_argv[1] && !get_full_path( main_argv[1], curdir, &nt_name ))
+    {
+        add_launch_environment( &env, &env_pos, &env_size, nt_name.Buffer );
+        free( nt_name.Buffer );
+    }
     env[env_pos++] = 0;
 
     get_full_path( main_argv[1], curdir, &nt_name );
@@ -2084,6 +2182,18 @@ void init_startup_info(void)
     env_pos = env_size - 1;
     add_dynamic_environment( &env, &env_pos, &env_size );
     is_prefix_bootstrap = !!find_env_var( env, env_pos, bootstrapW, ARRAY_SIZE(bootstrapW) );
+    {
+        /* the image path from the server, which is NT form and not null-terminated */
+        WCHAR *image = malloc( info->imagepath_len + sizeof(WCHAR) );
+
+        if (image)
+        {
+            memcpy( image, info + 1, info->imagepath_len );
+            image[info->imagepath_len / sizeof(WCHAR)] = 0;
+            add_launch_environment( &env, &env_pos, &env_size, image );
+            free( image );
+        }
+    }
     env[env_pos++] = 0;
 
     nt_name.Buffer = (WCHAR *)(info + 1);
