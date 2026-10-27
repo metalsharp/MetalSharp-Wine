@@ -520,6 +520,75 @@ static BOOL append_process_args( WCHAR **cmd_line, const WCHAR *append )
     return TRUE;
 }
 
+/* MetalSharp: a game folder's .metalsharp holds what MetalSharp's Play wants for the program Steam
+ * starts there (Steam runs its own default launch option, and arguments on its steam://run URL make
+ * it ask before every launch). launch-exe names the program the player chose for a game that has
+ * several (Control's DX11 and DX12 builds), relative to the folder; launch-args holds arguments for
+ * the program (a renderer flag, per-title switches). The first program created from the folder, or
+ * below it, takes them. Each file is used once: it is renamed before it is read, so only one
+ * CreateProcess takes it. */
+static DWORD take_launch_file( const WCHAR *dir, const WCHAR *name, char *data, DWORD size )
+{
+    WCHAR path[MAX_PATH + 40], taken[MAX_PATH + 48];
+    DWORD read = 0;
+    HANDLE file;
+
+    swprintf( path, ARRAY_SIZE(path), L"%s\\.metalsharp\\%s", dir, name );
+    swprintf( taken, ARRAY_SIZE(taken), L"%s.taken", path );
+    if (!MoveFileExW( path, taken, MOVEFILE_REPLACE_EXISTING )) return 0;
+    file = CreateFileW( taken, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, 0, NULL );
+    if (file != INVALID_HANDLE_VALUE)
+    {
+        if (!ReadFile( file, data, size - 1, &read, NULL )) read = 0;
+        CloseHandle( file );
+    }
+    DeleteFileW( taken );
+    while (read && (data[read - 1] == '\n' || data[read - 1] == '\r' || data[read - 1] == ' ')) read--;
+    data[read] = 0;
+    return read;
+}
+
+static BOOL get_metalsharp_launch( const WCHAR *app_name, WCHAR *chosen, DWORD size, WCHAR *args, DWORD args_size )
+{
+    WCHAR dir[MAX_PATH], path[MAX_PATH + 40], relative[MAX_PATH];
+    char data[MAX_PATH * 3];
+    DWORD attr;
+    WCHAR *p;
+    int up;
+
+    chosen[0] = args[0] = 0;
+    if (!GetFullPathNameW( app_name, ARRAY_SIZE(dir), dir, NULL )) return FALSE;
+    for (up = 0; up < 4; up++)
+    {
+        if (!(p = wcsrchr( dir, '\\' ))) return FALSE;
+        *p = 0;
+        swprintf( path, ARRAY_SIZE(path), L"%s\\.metalsharp\\launch-exe", dir );
+        if (GetFileAttributesW( path ) != INVALID_FILE_ATTRIBUTES) break;
+        swprintf( path, ARRAY_SIZE(path), L"%s\\.metalsharp\\launch-args", dir );
+        if (GetFileAttributesW( path ) != INVALID_FILE_ATTRIBUTES) break;
+    }
+    if (up == 4) return FALSE;
+
+    if (take_launch_file( dir, L"launch-exe", data, sizeof(data) ) && !strstr( data, ".." ) && data[0] != '/' &&
+        data[0] != '\\' && !strchr( data, ':' ) &&
+        MultiByteToWideChar( CP_UTF8, 0, data, -1, relative, ARRAY_SIZE(relative) ))
+    {
+        for (p = relative; *p; p++) if (*p == '/') *p = '\\';
+        if (swprintf( chosen, size, L"%s\\%s", dir, relative ) < 0) chosen[0] = 0;
+        attr = chosen[0] ? GetFileAttributesW( chosen ) : INVALID_FILE_ATTRIBUTES;
+        if (attr == INVALID_FILE_ATTRIBUTES || (attr & FILE_ATTRIBUTE_DIRECTORY) ||
+            !GetFullPathNameW( app_name, ARRAY_SIZE(path), path, NULL ) || !wcsicmp( path, chosen ))
+            chosen[0] = 0;
+    }
+    if (take_launch_file( dir, L"launch-args", data, sizeof(data) ) &&
+        !MultiByteToWideChar( CP_UTF8, 0, data, -1, args, args_size ))
+        args[0] = 0;
+    if (chosen[0] || args[0])
+        TRACE( "MetalSharp: starting %s with %s in place of %s\n", debugstr_w(chosen[0] ? chosen : app_name),
+               debugstr_w(args), debugstr_w(app_name) );
+    return chosen[0] || args[0];
+}
+
 /**********************************************************************
  *           CreateProcessInternalW   (kernelbase.@)
  */
@@ -531,7 +600,7 @@ BOOL WINAPI DECLSPEC_HOTPATCH CreateProcessInternalW( HANDLE token, const WCHAR 
                                                       PROCESS_INFORMATION *info, HANDLE *new_token )
 {
     const struct proc_thread_attr *handle_list = NULL, *job_list = NULL;
-    WCHAR name[MAX_PATH];
+    WCHAR name[MAX_PATH], chosen[MAX_PATH], launch_args[MAX_PATH * 3];
     WCHAR *p, *tidy_cmdline = cmd_line;
     RTL_USER_PROCESS_PARAMETERS *params = NULL;
     RTL_USER_PROCESS_INFORMATION rtl_info = { 0 };
@@ -573,6 +642,37 @@ BOOL WINAPI DECLSPEC_HOTPATCH CreateProcessInternalW( HANDLE token, const WCHAR 
             goto done;
         }
         if (old_cmdline != cmd_line) HeapFree( GetProcessHeap(), 0, old_cmdline );
+    }
+
+    if (get_metalsharp_launch( app_name, chosen, ARRAY_SIZE(chosen), launch_args, ARRAY_SIZE(launch_args) ))
+    {
+        /* the chosen program (or the one asked for), with the arguments it was given and MetalSharp's */
+        WCHAR *old_cmdline = tidy_cmdline, *args = tidy_cmdline, *new_cmdline;
+        SIZE_T len;
+
+        if (*args == '"')
+        {
+            for (args++; *args && *args != '"'; args++);
+            if (*args) args++;
+        }
+        else while (*args && *args != ' ' && *args != '\t') args++;
+        len = lstrlenW( chosen[0] ? chosen : app_name ) + (args - tidy_cmdline) + lstrlenW( args ) +
+              lstrlenW( launch_args ) + 5;
+        if ((new_cmdline = HeapAlloc( GetProcessHeap(), 0, len * sizeof(WCHAR) )))
+        {
+            if (chosen[0])
+                swprintf( new_cmdline, len, L"\"%s\"%s", chosen, args );
+            else
+                lstrcpyW( new_cmdline, tidy_cmdline );
+            if (launch_args[0])
+            {
+                lstrcatW( new_cmdline, L" " );
+                lstrcatW( new_cmdline, launch_args );
+            }
+            tidy_cmdline = new_cmdline;
+            if (chosen[0]) app_name = chosen;
+            if (old_cmdline != cmd_line) HeapFree( GetProcessHeap(), 0, old_cmdline );
+        }
     }
 
     /* Warn if unsupported features are used */
