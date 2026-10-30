@@ -81,7 +81,7 @@ ___
 | Area | Details |
 |---|---|
 | Direct3D 10/11/12 | **Mullion** (DXMT fork) on Metal, the default. ARM64X, so native ARM64 and x86_64 programs use one build; there's also an i386 build (D3D10/11). `GRAPHICS_BACKEND=wine` selects wined3d |
-| Direct3D 9/10/11 (opt-in) | **DXVK-macOS 1.10.x** (Gcenx's DXVK-macOS with its D3D9-on-MoltenVK fixes, [Gcenx/DXVK-macOS#21](https://github.com/Gcenx/DXVK-macOS/pull/21)), built as ARM64X and run by x86_64 programs as ARM64EC under FEX: `GRAPHICS_BACKEND=dxvk` |
+| Direct3D 9/10/11 (opt-in) | **DXVK-MacOS 3.1** ([metalsharp/DXVK-MacOS](https://github.com/metalsharp/DXVK-MacOS), DXVK 3.1.1 ported to MoltenVK), built as ARM64X and run by x86_64 programs as ARM64EC under FEX: `GRAPHICS_BACKEND=dxvk` |
 | Direct3D 12 (opt-in) | **VKD3D-Proton** for macOS ([metalsharp/VKD3D-Proton-MacOS](https://github.com/metalsharp/VKD3D-Proton-MacOS)), ARM64X, with DXVK 2.7.1's DXGI and D3D10/11 for swap chains and D3D11On12, on MetalSharp's MoltenVK: `GRAPHICS_BACKEND=vkd3d` (x86_64 programs; D3D9 there comes from DXVK-macOS). Apple's Metal Shader Converter turns its compute shaders, and pipelines of a vertex and a pixel shader, into Metal libraries directly; shaders a game's quirks change and pixel shaders with wave operations stay on SPIR-V (`METALSHARP_MSC=0` turns the converter off, `METALSHARP_MSC=compute` keeps it to compute) |
 | Tracing | `MULLION_TRACE_<CATEGORY>=1` or `heavy` (Mullion: gpu, sync, resource, memory, shader, present, pass, api, cpu) and `METALSHARP_TRACE=<category>[+heavy]` (VKD3D-Proton and MoltenVK) write a log per game: `~/Library/Logs/Mullion/<exe>/mullion.log`, and `vkd3d.log` and `moltenvk.log` in `~/.metalsharp/logs/trace/<exe>/` |
 | Shader compilers | Microsoft's DXC 1.9 (`dxcompiler.dll`, `dxil.dll`; ARM64 and x86) and the ARM64 `d3dcompiler_47.dll` are installed into every prefix, for programs that compile HLSL at run time |
@@ -111,7 +111,7 @@ The modified sources are kept in this repository as branches, and `main` links t
 | `src/winemetalgl` | [`source/winemetalgl`](../../tree/source/winemetalgl) | WineMetalGL's arm64 Wine module |
 | `src/wfdxcompat` | [`source/wfdxcompat`](../../tree/source/wfdxcompat) | WineForge DXCompat, built ARM64EC for Mullion: the Rockstar launcher companion |
 | `src/mullion` | [aaf2tbz/mullion](https://github.com/aaf2tbz/mullion) `metalsharp-2.1` | Mullion (DXMT fork). Developed there and sent upstream to [dttdrv/mullion](https://github.com/dttdrv/mullion) as pull requests |
-| `src/dxvk-macos` | [metalsharp/DXVK-macOS-1.10](https://github.com/metalsharp/DXVK-macOS-1.10) `metalsharp` | DXVK-macOS 1.10.x, a fork of [Gcenx/DXVK-macOS](https://github.com/Gcenx/DXVK-macOS) with its D3D9-on-MoltenVK fixes ([Gcenx/DXVK-macOS#21](https://github.com/Gcenx/DXVK-macOS/pull/21)): the `GRAPHICS_BACKEND=dxvk` lane, built as ARM64X |
+| `src/dxvk-macos` | [metalsharp/DXVK-MacOS](https://github.com/metalsharp/DXVK-MacOS) `main` | DXVK-MacOS 3.1, DXVK 3.1.1 ported to MoltenVK: the `GRAPHICS_BACKEND=dxvk` lane, built as ARM64X |
 | `src/vkd3d-proton` | [metalsharp/VKD3D-Proton-MacOS](https://github.com/metalsharp/VKD3D-Proton-MacOS) `main` | VKD3D-Proton macOS: the `GRAPHICS_BACKEND=vkd3d` lane (D3D12 on Vulkan, with DXVK's DXGI and D3D10/11) and MetalSharp's MoltenVK, as patches on the upstream projects |
 
 The branches are full source trees with their upstream history (Wine's is large), which is why they are linked rather than merged into `main`. `legacy-1.x` holds the previous MetalSharp Wine (VKMT) history.
@@ -206,7 +206,7 @@ The bundle is signed with the hardened runtime, as notarization requires. Wine m
 - **Wine and the Wine changes:** LGPL-2.1-or-later.
 - **FEX and its fork:** MIT.
 - **Mullion/DXMT:** LGPL-2.1-or-later.
-- **VKD3D-Proton:** LGPL-2.1. **DXVK and DXVK-macOS:** zlib. **MoltenVK:** Apache-2.0.
+- **VKD3D-Proton:** LGPL-2.1. **DXVK and DXVK-MacOS:** zlib; DXVK-MacOS's dxbc-spirv: MIT. **MoltenVK:** Apache-2.0.
 - **WineMetalGL:** LGPL-3.0.
 - **Everything else:** each redistributed component keeps its own license, and the app carries them all in `share/licenses/`.
 - **Microsoft's VC++ and core-fonts installers and shader compilers (DXC, d3dcompiler_47)** are included unmodified under Microsoft's redistribution terms.

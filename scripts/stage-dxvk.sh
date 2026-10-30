@@ -1,5 +1,5 @@
 #!/bin/zsh
-# DXVK-macOS 1.10.x (src/dxvk-macos, built as ARM64X by build-dxvk-macos.sh) as the opt-in GRAPHICS_BACKEND=dxvk
+# DXVK-MacOS 3.1 (src/dxvk-macos, built as ARM64X by build-dxvk-macos.sh) as the opt-in GRAPHICS_BACKEND=dxvk
 # for x86_64 programs (D3D9/10/11 on MoltenVK, as ARM64EC under FEX). Installed into
 # install/lib/dxvk/x86_64-windows, where the loader looks for the lane's DLLs, with the Wine builtin signature,
 # which the loader requires on its builtin path.
@@ -25,5 +25,6 @@ with open(sys.argv[1], "r+b") as f:
 PY
 done
 cp $D/LICENSE $O/LICENSE
-echo "DXVK-macOS $(git -C $D describe --always --tags 2>/dev/null) (metalsharp/DXVK-macOS-1.10, ARM64X)" > $O/VERSION
+cp $D/subprojects/dxbc-spirv/LICENSE $O/LICENSE.dxbc-spirv
+echo "DXVK-MacOS $(git -C $D describe --always --tags 2>/dev/null) (metalsharp/DXVK-MacOS, ARM64X)" > $O/VERSION
 echo "dxvk: $(cat $O/VERSION)"
