@@ -25,9 +25,9 @@
  * to the main display's before the game reads it. Without a record yet, a saved resolution is
  * replaced if it fits only the built-in screen while a larger external display is the main one.
  * Windowed sizes are left alone. Known settings: Unity (registry), Unreal Engine (GameUserSettings.ini),
- * Remedy's Northlight (Control's renderer.ini) and ELDEN RING (GraphicsConfig.xml). With MetalFX, the main
- * display's size is divided by the upscale factor, and a saved size of the whole display, or one larger than the
- * divided one, is replaced even without a record. */
+ * Remedy's Northlight (Control's renderer.ini), REDengine 3 (The Witcher 3's user.settings) and ELDEN RING
+ * (GraphicsConfig.xml). With MetalFX, the main display's size is divided by the upscale factor, and a saved size
+ * of the whole display, or one larger than the divided one, is replaced even without a record. */
 
 #if 0
 #pragma makedep unix
@@ -779,6 +779,46 @@ done:
     return ret;
 }
 
+/* CD Projekt RED's REDengine 3 (The Witcher 3): Documents\The Witcher 3\dx12user.settings (user.settings for
+ * DirectX 11), [Viewport] Resolution="<width>x<height>", FullScreenMode 0 windowed, 1 borderless, 2 fullscreen */
+static BOOL fit_redengine( const char *exe, const char *profile, const struct main_display *display,
+                           const char *record )
+{
+    static const char *const files[] = {"dx12user.settings", "user.settings"};
+    const char *name = strrchr( exe, '/' ) ? strrchr( exe, '/' ) + 1 : exe;
+    char path[PATH_MAX], number[32], *text, *key, *end, *out;
+    unsigned int width, height, mode, i;
+    size_t size, nlen;
+    BOOL ret = FALSE;
+
+    if (!profile || strcasecmp( name, "witcher3.exe" )) return FALSE;
+    for (i = 0; i < ARRAY_SIZE(files); i++)
+    {
+        if (snprintf( path, sizeof(path), "%s/Documents/The Witcher 3/%s", profile, files[i] ) >= sizeof(path))
+            continue;
+        if (!(text = read_file( path, &size ))) continue;
+        if ((key = strstr( text, "\nResolution=\"" )) && sscanf( key + 13, "%ux%u", &width, &height ) == 2 &&
+            (!get_number( text, "\nFullScreenMode=", &mode ) || mode) &&
+            needs_reset( display, record, width, height ) && (end = strchr( key + 13, '"' )) &&
+            (out = malloc( size + 32 )))
+        {
+            nlen = snprintf( number, sizeof(number), "%ux%u", display->width, display->height );
+            memcpy( out, text, key + 13 - text );
+            memcpy( out + (key + 13 - text), number, nlen );
+            memcpy( out + (key + 13 - text) + nlen, end, size - (end - text) + 1 );
+            if (write_file( path, out, size - (end - (key + 13)) + nlen ))
+            {
+                MESSAGE( "MetalSharp: the saved resolution %ux%u in %s is now %ux%u\n", width, height, path,
+                         display->width, display->height );
+                ret = TRUE;
+            }
+            free( out );
+        }
+        free( text );
+    }
+    return ret;
+}
+
 /* Remedy's Northlight engine (Control): <game folder>/renderer.ini, a JSON rend::UserRendererSettings. The output
  * resolution is the fullscreen one (windowed sizes are m_iLastWindowSize); the render resolution follows it where
  * it was the output's or would be larger than the new one. */
@@ -836,13 +876,14 @@ static BOOL is_game_folder( const char *dir, const char *exe )
     struct stat st;
 
     if (strstr( exe, "/Binaries/Win64/" )) return TRUE;
+    if (strrchr( exe, '/' ) && !strcasecmp( strrchr( exe, '/' ) + 1, "witcher3.exe" )) return TRUE;
     if (dot && snprintf( path, sizeof(path), "%.*s_Data/app.info", (int)(dot - exe), exe ) < sizeof(path) &&
         !stat( path, &st ))
         return TRUE;
     return is_elden_ring_folder( dir ) || is_remedy_folder( dir );
 }
 
-void fit_saved_resolution( const char *exe, const char *appdata, const char *localappdata )
+void fit_saved_resolution( const char *exe, const char *appdata, const char *localappdata, const char *profile )
 {
     struct main_display display;
     char dir[PATH_MAX], record_path[PATH_MAX], *record, line[128];
@@ -872,7 +913,8 @@ void fit_saved_resolution( const char *exe, const char *appdata, const char *loc
     record = read_file( record_path, &size );
 
     if (!fit_unity( exe, &display, record ) && !fit_unreal( exe, localappdata, &display, record ) &&
-        !fit_remedy( dir, &display, record ) && is_elden_ring_folder( dir ))
+        !fit_remedy( dir, &display, record ) && !fit_redengine( exe, profile, &display, record ) &&
+        is_elden_ring_folder( dir ))
         fit_elden_ring( appdata, &display, record );
 
     len = snprintf( line, sizeof(line), "%s %ux%u\n", display.id, display.width, display.height );
@@ -889,7 +931,7 @@ void fit_saved_resolution( const char *exe, const char *appdata, const char *loc
 
 #else
 
-void fit_saved_resolution( const char *exe, const char *appdata, const char *localappdata )
+void fit_saved_resolution( const char *exe, const char *appdata, const char *localappdata, const char *profile )
 {
     init_metalfx_scale( exe );
     init_dlss_game( exe );

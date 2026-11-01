@@ -1016,7 +1016,7 @@ static void fit_launch_resolution( WCHAR **env, SIZE_T *pos, SIZE_T *size, const
     static const WCHAR ntprefixW[] = {'\\','?','?','\\'};
     static const WCHAR configW[] = {'M','U','L','L','I','O','N','_','C','O','N','F','I','G'};
     static const WCHAR nvextW[] = {'M','U','L','L','I','O','N','_','E','N','A','B','L','E','_','N','V','E','X','T'};
-    char *unix_name = NULL, *appdata, *localappdata, config[512];
+    char *unix_name = NULL, *appdata, *localappdata, *profile, config[512];
     const char *description, *driver_version;
     unsigned int vendor, device;
     WCHAR *value;
@@ -1027,7 +1027,9 @@ static void fit_launch_resolution( WCHAR **env, SIZE_T *pos, SIZE_T *size, const
     if (ntdll_get_unix_file_name( image, &unix_name, FILE_OPEN ) || !unix_name) return;
     appdata = get_env_unix_path( *env, *pos, "APPDATA" );
     localappdata = get_env_unix_path( *env, *pos, "LOCALAPPDATA" );
-    fit_saved_resolution( unix_name, appdata, localappdata );
+    profile = get_env_unix_path( *env, *pos, "USERPROFILE" );
+    fit_saved_resolution( unix_name, appdata, localappdata, profile );
+    free( profile );
     free( localappdata );
     free( appdata );
     free( unix_name );
