@@ -290,10 +290,23 @@ static void parse_gpu_line( BOOL *active, const char *exe_name, const char *line
     }
 }
 
+/* MetalSharp's Direct3D lanes that run DLSS and MetalFX: Mullion's (dxmt), and VKD3D-Proton's with DXVK (vkd3d; dxvk is
+ * its alias), whose configuration files are vkd3d.conf and dxvk.conf */
+static BOOL is_mullion_backend( const char *backend )
+{
+    return backend && (!strcasecmp( backend, "dxmt" ) || !strcasecmp( backend, "mullion" ));
+}
+
+static BOOL is_vkd3d_backend( const char *backend )
+{
+    return backend && (!strcasecmp( backend, "vkd3d" ) || !strcasecmp( backend, "dxvk" ));
+}
+
 /* MetalSharp: a game that comes with NVIDIA's DLSS (nvngx_dlss.dll, nvngx_dlssd.dll) or Streamline
  * (sl.interposer.dll) anywhere in its folder (its steamapps/common/<game> folder, the one above an Unreal Engine
- * project's, else its program's) is shown an NVIDIA GPU on the Mullion backend, so DLSS runs on MetalFX: in Windows' device list here,
- * and by Mullion through MULLION_CONFIG and MULLION_ENABLE_NVEXT (env.c), unless its winemac.conf section names
+ * project's, else its program's) is shown an NVIDIA GPU on the Mullion and VKD3D-Proton backends, so DLSS runs on MetalFX: in Windows'
+ * device list here, and by Mullion or DXVK's DXGI through MULLION_CONFIG or DXVK_CONFIG and MULLION_ENABLE_NVEXT
+ * (env.c), unless its winemac.conf section names
  * another GPU. A Streamline game is hidden Wine's exports too: The Witcher 3 starts Streamline only without
  * wine_get_version. The search is kept in <program's folder>/.metalsharp/dlss while it is newer than the program. */
 enum { DLSS_NGX = 1, DLSS_STREAMLINE = 2 };
@@ -333,7 +346,7 @@ static void init_dlss_game( const char *exe )
 
     dlss_game = 0;
     if (!is_launched_game( exe )) return;
-    if (!backend || (strcasecmp( backend, "dxmt" ) && strcasecmp( backend, "mullion" ))) return;
+    if (!is_mullion_backend( backend ) && !is_vkd3d_backend( backend )) return;
     if (snprintf( cache, sizeof(cache), "%.*s/.metalsharp/dlss", (int)(exe_name - exe), exe ) >= sizeof(cache))
         return;
     if (!stat( exe, &exe_st ) && !stat( cache, &cache_st ) && cache_st.st_mtime >= exe_st.st_mtime &&
@@ -376,7 +389,7 @@ static void init_dlss_game( const char *exe )
     if (found) MESSAGE( "MetalSharp: %s comes with %s\n", exe_name + 1, found & DLSS_STREAMLINE ? "Streamline" : "DLSS" );
 }
 
-/* the DLSS a game MetalSharp started on the Mullion backend comes with: 1 NGX, 3 Streamline, 0 none */
+/* the DLSS a game MetalSharp started on the Mullion or VKD3D-Proton backend comes with: 1 NGX, 3 Streamline, 0 none */
 int metalsharp_dlss_game(void)
 {
     return dlss_game;
@@ -443,25 +456,43 @@ int ntdll_get_gpu_override( unsigned int *vendor, unsigned int *device, const ch
 static void init_metalfx_scale( const char *exe )
 {
     struct metalfx_options options = {{-1, -1}, {0, 0}};
-    const char *file = getenv( "MULLION_CONFIG_FILE" ), *line = getenv( "MULLION_CONFIG" );
-    const char *backend = getenv( "GRAPHICS_BACKEND" ), *swapchain = getenv( "MULLION_METALFX_SPATIAL_SWAPCHAIN" );
+    const char *backend = getenv( "GRAPHICS_BACKEND" ), *swapchain = NULL, *files[2] = {NULL}, *lines[2] = {NULL};
     const char *exe_name = strrchr( exe, '/' ) ? strrchr( exe, '/' ) + 1 : exe;
-    BOOL active = TRUE, enable;
+    BOOL active, enable;
     double factor;
     char *text;
     size_t size;
+    int i;
 
     metalfx_scale = 1.0;
     if (!is_launched_game( exe )) return;
-    if (backend && *backend && strcasecmp( backend, "dxmt" ) && strcasecmp( backend, "mullion" )) return;
-    if (!file && !line && !swapchain) return;
-    if (file && (text = read_file( file, &size )))
+    /* VKD3D-Proton's lane: vkd3d.conf for Direct3D 12, dxvk.conf for 11 and earlier, which MetalSharp gives the
+     * same MetalFX lines as mullion.conf */
+    if (is_vkd3d_backend( backend ))
     {
-        parse_metalfx_text( &options, &active, exe_name, text, '\n' );
-        free( text );
+        files[0] = getenv( "VKD3D_CONFIG_FILE" );
+        files[1] = getenv( "DXVK_CONFIG_FILE" );
+        lines[0] = getenv( "DXVK_CONFIG" );
+    }
+    else if (!backend || !*backend || is_mullion_backend( backend ))
+    {
+        files[0] = getenv( "MULLION_CONFIG_FILE" );
+        lines[0] = getenv( "MULLION_CONFIG" );
+        swapchain = getenv( "MULLION_METALFX_SPATIAL_SWAPCHAIN" );
+    }
+    else return;
+    if (!files[0] && !files[1] && !lines[0] && !swapchain) return;
+    for (i = 0; i < 2; i++)
+    {
+        active = TRUE;
+        if (files[i] && (text = read_file( files[i], &size )))
+        {
+            parse_metalfx_text( &options, &active, exe_name, text, '\n' );
+            free( text );
+        }
     }
     active = TRUE;  /* the environment applies to this program, whichever section the file ended in */
-    if (line) parse_metalfx_text( &options, &active, exe_name, line, ';' );
+    if (lines[0]) parse_metalfx_text( &options, &active, exe_name, lines[0], ';' );
 
     enable = (swapchain && !strcmp( swapchain, "1" )) ||
              (options.enable[1] != -1 ? options.enable[1] : options.enable[0] == 1);
