@@ -201,27 +201,134 @@ static char *read_file( const char *path, size_t *size )
     return data;
 }
 
+/* a game MetalSharp started, whose folder has its launch.env: Steam and the programs it starts inherit
+ * MetalSharp's configuration too, and Wine's own programs (explorer, services) the environment of the program
+ * that started them */
+static BOOL is_launched_game( const char *exe )
+{
+    const char *exe_name = strrchr( exe, '/' );
+    char env_path[PATH_MAX];
+    struct stat st;
+
+    if (!exe_name || exe_name - exe + sizeof("/.metalsharp/launch.env") > sizeof(env_path)) return FALSE;
+    snprintf( env_path, sizeof(env_path), "%.*s/.metalsharp/launch.env", (int)(exe_name - exe), exe );
+    if (stat( env_path, &st ) || !S_ISREG( st.st_mode )) return FALSE;
+    return !strcasestr( exe, "/windows/system32/" ) && !strcasestr( exe, "/windows/syswow64/" );
+}
+
+/* MetalSharp: the GPU a game is shown in Windows' device list (SetupAPI, WMI, the display adapter's registry
+ * keys), from its [program.exe] section of winemac.conf ($WINEMAC_CONFIG_FILE, or winemac.conf next to
+ * $MULLION_CONFIG_FILE):
+ *     gpu.vendorId = 10de                          PCI vendor and device, in hex
+ *     gpu.deviceId = 2704
+ *     gpu.description = "NVIDIA GeForce RTX 4080"
+ *     gpu.driverVersion = 617.14                   NVIDIA's numbering, or a Windows driver version (35.0.16.1714)
+ * Windows has one device list for every program, so win32u registers the GPU of the game that starts (the Mac's
+ * own for a game without a section) when it differs from the one registered; other programs leave it. */
+static int gpu_override = -1;  /* -1 not a game, 0 a game shown the Mac's GPU, 1 a game shown gpu_* */
+static unsigned int gpu_vendor, gpu_device;
+static char gpu_description[128], gpu_driver_version[32];
+
+static void parse_gpu_line( BOOL *active, const char *exe_name, const char *line, const char *end )
+{
+    char key[64], value[128];
+    size_t len = 0, vlen = 0;
+    BOOL quoted = FALSE;
+
+    while (line < end && (*line == ' ' || *line == '\t')) line++;
+    if (line >= end || *line == '#') return;
+    if (*line == '[')
+    {
+        const char *close = memchr( line, ']', end - line );
+        *active = close && (size_t)(close - line - 1) == strlen( exe_name ) &&
+                  !strncasecmp( line + 1, exe_name, close - line - 1 );
+        return;
+    }
+    while (line < end && len < sizeof(key) - 1 && (isalnum( (unsigned char)*line ) || *line == '.' || *line == '_'))
+        key[len++] = *line++;
+    key[len] = 0;
+    while (line < end && (*line == ' ' || *line == '\t')) line++;
+    if (!*active || !len || line >= end || *line++ != '=') return;
+    while (line < end && (*line == ' ' || *line == '\t')) line++;
+    for (; line < end && vlen < sizeof(value) - 1; line++)
+    {
+        if (!quoted && (*line == ' ' || *line == '\t' || *line == '\r' || *line == '#')) break;
+        if (*line == '"') quoted = !quoted;
+        else value[vlen++] = *line;
+    }
+    value[vlen] = 0;
+
+    if (!strcasecmp( key, "gpu.vendorId" )) gpu_vendor = strtoul( value, NULL, 16 );
+    else if (!strcasecmp( key, "gpu.deviceId" )) gpu_device = strtoul( value, NULL, 16 );
+    else if (!strcasecmp( key, "gpu.description" ))
+        snprintf( gpu_description, sizeof(gpu_description), "%s", value );
+    else if (!strcasecmp( key, "gpu.driverVersion" ))
+    {
+        unsigned int major, minor, a, b, c, d;
+        /* NVIDIA's 617.14 is Windows' x.x.16.1714: the last five digits, with 10 added before the last four */
+        if (sscanf( value, "%u.%u.%u.%u", &a, &b, &c, &d ) == 4)
+            snprintf( gpu_driver_version, sizeof(gpu_driver_version), "%u.%u.%u.%u", a, b, c, d );
+        else if (sscanf( value, "%u.%u", &major, &minor ) == 2 && major < 1000 && minor < 100)
+            snprintf( gpu_driver_version, sizeof(gpu_driver_version), "35.0.%u.%04u",
+                      10 + (major * 100 + minor) / 10000, (major * 100 + minor) % 10000 );
+    }
+}
+
+static void init_gpu_override( const char *exe )
+{
+    const char *exe_name = strrchr( exe, '/' ) ? strrchr( exe, '/' ) + 1 : exe;
+    const char *file = getenv( "WINEMAC_CONFIG_FILE" ), *mullion = getenv( "MULLION_CONFIG_FILE" ), *slash;
+    char path[PATH_MAX], *text, *line, *end;
+    BOOL active = FALSE;
+    size_t size;
+
+    gpu_override = -1;
+    if (!is_launched_game( exe )) return;
+    gpu_override = 0;
+    if (!file && mullion && (slash = strrchr( mullion, '/' )) &&
+        snprintf( path, sizeof(path), "%.*s/winemac.conf", (int)(slash - mullion), mullion ) < sizeof(path))
+        file = path;
+    if (!file || !(text = read_file( file, &size ))) return;
+    for (line = text; *line; line = *end ? end + 1 : end)
+    {
+        if (!(end = strchr( line, '\n' ))) end = line + strlen( line );
+        parse_gpu_line( &active, exe_name, line, end );
+    }
+    free( text );
+    if (!gpu_vendor || !gpu_device) return;
+    gpu_override = 1;
+    MESSAGE( "MetalSharp: %s is shown the GPU %04x:%04x %s, driver %s\n", exe_name, gpu_vendor, gpu_device,
+             gpu_description, gpu_driver_version[0] ? gpu_driver_version : "(Wine's)" );
+}
+
+/* -1 for a program that is not a game MetalSharp started, 0 for one shown the Mac's GPU, 1 for one shown the GPU
+ * of its winemac.conf section (empty strings for the description and driver version it does not set) */
+int ntdll_get_gpu_override( unsigned int *vendor, unsigned int *device, const char **description,
+                            const char **driver_version )
+{
+    if (gpu_override == 1)
+    {
+        *vendor = gpu_vendor;
+        *device = gpu_device;
+        *description = gpu_description;
+        *driver_version = gpu_driver_version;
+    }
+    return gpu_override;
+}
+
 static void init_metalfx_scale( const char *exe )
 {
     struct metalfx_options options = {{-1, -1}, {0, 0}};
     const char *file = getenv( "MULLION_CONFIG_FILE" ), *line = getenv( "MULLION_CONFIG" );
     const char *backend = getenv( "GRAPHICS_BACKEND" ), *swapchain = getenv( "MULLION_METALFX_SPATIAL_SWAPCHAIN" );
     const char *exe_name = strrchr( exe, '/' ) ? strrchr( exe, '/' ) + 1 : exe;
-    char env_path[PATH_MAX];
     BOOL active = TRUE, enable;
-    struct stat st;
     double factor;
     char *text;
     size_t size;
 
     metalfx_scale = 1.0;
-    /* only a game MetalSharp started, whose folder has its launch.env: Steam and the programs it starts
-     * inherit Mullion's configuration from MetalSharp too */
-    if (exe_name == exe || exe_name - exe + sizeof("/.metalsharp/launch.env") > sizeof(env_path)) return;
-    snprintf( env_path, sizeof(env_path), "%.*s/.metalsharp/launch.env", (int)(exe_name - exe - 1), exe );
-    if (stat( env_path, &st ) || !S_ISREG( st.st_mode )) return;
-    /* Wine's own programs (explorer, services) inherit the environment of the program that started them */
-    if (strcasestr( exe, "/windows/system32/" ) || strcasestr( exe, "/windows/syswow64/" )) return;
+    if (!is_launched_game( exe )) return;
     if (backend && *backend && strcasecmp( backend, "dxmt" ) && strcasecmp( backend, "mullion" )) return;
     if (!file && !line && !swapchain) return;
     if (file && (text = read_file( file, &size )))
@@ -638,6 +745,7 @@ void fit_saved_resolution( const char *exe, const char *appdata, const char *loc
     memcpy( dir, exe, slash - exe );
     dir[slash - exe] = 0;
     init_metalfx_scale( exe );
+    init_gpu_override( exe );
     if (!is_game_folder( dir, exe ) || !get_main_display( &display )) return;
     if (metalfx_scale > 1.0)
     {
@@ -674,6 +782,7 @@ void fit_saved_resolution( const char *exe, const char *appdata, const char *loc
 void fit_saved_resolution( const char *exe, const char *appdata, const char *localappdata )
 {
     init_metalfx_scale( exe );
+    init_gpu_override( exe );
 }
 
 #endif

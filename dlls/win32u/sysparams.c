@@ -1204,8 +1204,109 @@ static BOOL read_gpu_from_registry( struct gpu *gpu )
     return TRUE;
 }
 
+/* MetalSharp: the GPU a game is shown in the device list, from its winemac.conf section (ntdll saved_resolution.c).
+ * The device list is the prefix's, so the GPU registered is that of the last game that started; a volatile value
+ * says which, and a game whose GPU differs registers the devices again (lock_display_devices). */
+static const char metalsharp_gpu_keyA[] = "\\Registry\\Machine\\Software\\Wine\\MetalSharp";
+
+static int get_gpu_override( unsigned int *vendor, unsigned int *device, const char **description,
+                             const char **driver_version )
+{
+    static unsigned int cached_vendor, cached_device;
+    static const char *cached_description = "", *cached_driver_version = "";
+    static int cached = -2;
+
+    if (cached == -2)
+        cached = ntdll_get_gpu_override( &cached_vendor, &cached_device, &cached_description,
+                                         &cached_driver_version );
+    if (vendor) *vendor = cached_vendor;
+    if (device) *device = cached_device;
+    if (description) *description = cached_description;
+    if (driver_version) *driver_version = cached_driver_version;
+    return cached;
+}
+
+/* "vvvv:dddd" for a GPU registered from winemac.conf, "mac" for the Mac's own */
+static void gpu_override_identity( char *buffer, size_t size )
+{
+    unsigned int vendor, device;
+
+    if (get_gpu_override( &vendor, &device, NULL, NULL ) == 1) snprintf( buffer, size, "%04x:%04x", vendor, device );
+    else snprintf( buffer, size, "mac" );
+}
+
+static void write_registered_gpu_identity(void)
+{
+    char identity[16];
+    HKEY hkey;
+
+    if (!(hkey = reg_create_ascii_key( NULL, metalsharp_gpu_keyA, REG_OPTION_VOLATILE, NULL ))) return;
+    gpu_override_identity( identity, sizeof(identity) );
+    set_reg_ascii_value( hkey, "RegisteredGpu", identity );
+    NtClose( hkey );
+}
+
+/* the first GPU's LUID for this session: the adapter is the same whichever GPU is registered for it, and
+ * Streamline, NVAPI and D3D match adapters by LUID, so one that changed with the registered GPU is not found */
+static BOOL get_primary_gpu_luid( LUID *luid )
+{
+    char buffer[256];
+    KEY_VALUE_PARTIAL_INFORMATION *value = (void *)buffer;
+    BOOL ret = FALSE;
+    HKEY hkey;
+
+    if (!(hkey = reg_open_ascii_key( NULL, metalsharp_gpu_keyA ))) return FALSE;
+    if (query_reg_ascii_value( hkey, "PrimaryGpuLuid", value, sizeof(buffer) ) && value->Type == REG_QWORD &&
+        value->DataLength == sizeof(*luid))
+    {
+        memcpy( luid, value->Data, sizeof(*luid) );
+        ret = TRUE;
+    }
+    NtClose( hkey );
+    return ret;
+}
+
+static void set_primary_gpu_luid( const LUID *luid )
+{
+    HKEY hkey;
+    WCHAR nameW[16];
+
+    if (!(hkey = reg_create_ascii_key( NULL, metalsharp_gpu_keyA, REG_OPTION_VOLATILE, NULL ))) return;
+    asciiz_to_unicode( nameW, "PrimaryGpuLuid" );
+    set_reg_value( hkey, nameW, REG_QWORD, luid, sizeof(*luid) );
+    NtClose( hkey );
+}
+
+/* a game shown another GPU than the one registered */
+static BOOL gpu_override_pending(void)
+{
+    char buffer[256], identity[16], registered[16] = "mac";
+    KEY_VALUE_PARTIAL_INFORMATION *value = (void *)buffer;
+    ULONG size, i;
+    HKEY hkey;
+
+    if (get_gpu_override( NULL, NULL, NULL, NULL ) < 0) return FALSE;
+    if ((hkey = reg_open_ascii_key( NULL, metalsharp_gpu_keyA )))
+    {
+        if ((size = query_reg_ascii_value( hkey, "RegisteredGpu", value, sizeof(buffer) )) && value->Type == REG_SZ)
+        {
+            for (i = 0; i < value->DataLength / sizeof(WCHAR) && i < sizeof(registered) - 1; i++)
+                registered[i] = ((WCHAR *)value->Data)[i];
+            registered[i] = 0;
+        }
+        NtClose( hkey );
+    }
+    gpu_override_identity( identity, sizeof(identity) );
+    return strcmp( identity, registered ) != 0;
+}
+
 static const char* driver_vendor_to_version( UINT16 vendor )
 {
+    unsigned int override_vendor;
+    const char *version;
+
+    if (get_gpu_override( &override_vendor, NULL, NULL, &version ) == 1 && vendor == override_vendor && version[0])
+        return version;
     /* The last seven digits are the driver number. */
     switch (vendor)
     {
@@ -1730,6 +1831,13 @@ static BOOL write_gpu_to_registry( const struct gpu *gpu, const struct pci_id *p
     if (hkey)
     {
         UINT64 ver = 0x230000000f1ff4; /* Some version in the future. */
+        unsigned int override_vendor, a, b, c, d;
+        const char *version;
+
+        /* MetalSharp: a winemac.conf driver version is the DirectX one too */
+        if (get_gpu_override( &override_vendor, NULL, NULL, &version ) == 1 && pci->vendor == override_vendor &&
+            sscanf( version, "%u.%u.%u.%u", &a, &b, &c, &d ) == 4)
+            ver = ((UINT64)a << 48) | ((UINT64)b << 32) | ((UINT64)c << 16) | d;
 
         asciiz_to_unicode( bufferW, "AdapterLuid" );
         set_reg_value( hkey, bufferW, REG_QWORD, &gpu->luid, sizeof(gpu->luid) );
@@ -1807,6 +1915,9 @@ static void add_gpu( const char *name, const struct pci_id *pci_id, const GUID *
     char buffer[4096];
     KEY_VALUE_PARTIAL_INFORMATION *value = (void *)buffer;
     struct gpu_info *vulkan_gpu = NULL, *opengl_gpu = NULL;
+    struct pci_id override_pci;
+    LUID own_luid;
+    BOOL has_own_luid = FALSE;
     ULONGLONG memory = 0;
     struct gpu *gpu;
     unsigned int i;
@@ -1840,6 +1951,25 @@ static void add_gpu( const char *name, const struct pci_id *pci_id, const GUID *
     if (!pci_id->vendor && !pci_id->device && vulkan_gpu) pci_id = &vulkan_gpu->pci_id;
     if (!pci_id->vendor && !pci_id->device && opengl_gpu) pci_id = &opengl_gpu->pci_id;
 
+    /* MetalSharp: the GPU a game's winemac.conf section names, in place of the first */
+    if (!gpu->index)
+    {
+        const char *override_name, *override_version;
+        unsigned int override_vendor, override_device;
+
+        if (get_gpu_override( &override_vendor, &override_device, &override_name, &override_version ) == 1)
+        {
+            override_pci = *pci_id;
+            override_pci.vendor = override_vendor;
+            override_pci.device = override_device;
+            override_pci.subsystem = 0;
+            override_pci.revision = 0;
+            pci_id = &override_pci;
+            if (override_name[0]) name = override_name;
+        }
+        write_registered_gpu_identity();
+    }
+
     name = gpu_device_name( pci_id->vendor, pci_id->device, name );
     if (!strcmp( name, "Wine Adapter" ) && vulkan_gpu) name = vulkan_gpu->name;
     if (!strcmp( name, "Wine Adapter" ) && opengl_gpu) name = opengl_gpu->name;
@@ -1869,9 +1999,19 @@ static void add_gpu( const char *name, const struct pci_id *pci_id, const GUID *
         NtClose( subkey );
     }
 
+    /* MetalSharp: the first GPU keeps one LUID while the registered GPU changes between the Mac's own and a
+     * game's winemac.conf one, whose device keys differ */
+    if (!gpu->index) has_own_luid = get_primary_gpu_luid( &own_luid );
+
     if ((subkey = reg_create_ascii_key( hkey, devpropkey_gpu_luidA, 0, NULL )))
     {
-        if (query_reg_value( subkey, NULL, value, sizeof(buffer) ) != sizeof(LUID))
+        if (has_own_luid)
+        {
+            gpu->luid = own_luid;
+            set_reg_value( subkey, NULL, 0xffff0000 | DEVPROP_TYPE_UINT64, &gpu->luid, sizeof(gpu->luid) );
+            TRACE("kept luid %08x%08x\n", gpu->luid.HighPart, gpu->luid.LowPart );
+        }
+        else if (query_reg_value( subkey, NULL, value, sizeof(buffer) ) != sizeof(LUID))
         {
             NtAllocateLocallyUniqueId( &gpu->luid );
             TRACE("allocated luid %08x%08x\n", gpu->luid.HighPart, gpu->luid.LowPart );
@@ -1882,6 +2022,7 @@ static void add_gpu( const char *name, const struct pci_id *pci_id, const GUID *
             TRACE("got luid %08x%08x\n", gpu->luid.HighPart, gpu->luid.LowPart );
         }
         NtClose( subkey );
+        if (!gpu->index && !has_own_luid) set_primary_gpu_luid( &gpu->luid );
     }
 
     NtClose( hkey );
@@ -2970,6 +3111,15 @@ static BOOL lock_display_devices( BOOL force )
     }
 
     if (!force && !update_display_cache_from_registry( serial )) force = TRUE;
+    /* MetalSharp: a game shown another GPU than the one registered registers the devices again, once */
+    {
+        static BOOL gpu_checked;
+        if (!gpu_checked)
+        {
+            gpu_checked = TRUE;
+            if (gpu_override_pending()) force = TRUE;
+        }
+    }
     if (force)
     {
         if (!get_vulkan_gpus( &ctx.vulkan_gpus )) WARN( "Failed to find any Vulkan GPU\n" );

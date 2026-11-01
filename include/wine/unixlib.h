@@ -258,6 +258,8 @@ NTSYSAPI int ntdll_wcsicmp( const WCHAR *str1, const WCHAR *str2 );
 NTSYSAPI int ntdll_wcsnicmp( const WCHAR *str1, const WCHAR *str2, int n );
 /* MetalSharp: the MetalFX upscale factor of this program, 1 without MetalFX (ntdll saved_resolution.c) */
 NTSYSAPI double ntdll_get_metalfx_scale(void);
+NTSYSAPI int ntdll_get_gpu_override( unsigned int *vendor, unsigned int *device, const char **description,
+                                     const char **driver_version );
 NTSYSAPI BOOL ntdll_metalfx_size( unsigned int width, unsigned int height, unsigned int *scaled_width,
                                   unsigned int *scaled_height );
 
