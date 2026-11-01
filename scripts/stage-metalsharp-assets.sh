@@ -3,8 +3,8 @@
 # in install/share/metalsharp with the bundles' own layout (assets/..., goldberg, steam, ...):
 #   goldberg (Steam emulator), the Steam installer and CEF wrapper, FNA/XNA, fnalibs, the FNA
 #   MonoKickstart, Unity Mono lanes, SDL3, the dylib shims, the Terraria launchers, the CEF launcher
-#   hooks, Mullion's default mullion.conf (the bundles' dxmt.conf) and the compat rules
-#   (mscompatdb_rules.toml).
+#   hooks, Mullion's default mullion.conf (the bundles' dxmt.conf), the default winemac.conf
+#   (resources/) and the compat rules (mscompatdb_rules.toml).
 # Mono (arm64 and x86_64) and FAudio go in as archives/<name>.tar.zst (top folder <name>), which the
 # app extracts into its runtime/ during setup; compressed, they stay out of signing and notarization
 # and keep the app small. Setup needs nothing else from the network.
@@ -24,6 +24,8 @@ done
 # MetalFX off until the app turns it on (factor 1.00 off, as the app writes it, for WineMetalGL)
 sed -e 's/^d3d11.metalSpatialUpscaleFactor.*/d3d11.metalSpatialUpscaleFactor = 1.00\
 d3d11.metalSpatialUpscale = False/' $X/metalsharp-assets/assets/wine/etc/dxmt.conf > $O/assets/wine/etc/mullion.conf
+# the GPU games are shown in Windows' device list (MetalSharp Wine's ntdll reads it from here)
+cp $ROOT/resources/winemac.conf $O/assets/wine/etc/winemac.conf
 rsync -a $X/goldberg/ $O/goldberg/
 rsync -a $X/metalsharp-steam/steam/ $O/steam/
 rsync -a $X/metalsharp-scripts-tools/scripts/tools/cef $O/tools/
