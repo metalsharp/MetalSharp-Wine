@@ -30,6 +30,7 @@
 #include "winreg.h"
 #include "ddrawi.h"
 #include "winternl.h"
+#include <sys/sysctl.h>
 
 WINE_DEFAULT_DEBUG_CHANNEL(display);
 
@@ -89,10 +90,31 @@ static int display_mode_bits_per_pixel(CGDisplayModeRef display_mode)
 }
 
 
+/* CrossOver Hack #18576: don't check for kDisplayModeSafeFlag on Apple Silicon. */
+static int is_apple_silicon(void)
+{
+#ifdef __aarch64__
+    return 1;
+#else
+    /* sysctl.proc_translated is 1 for a translated (Rosetta) process, 0 for a native one or on error */
+    static int translated = -1;
+    if (translated == -1)
+    {
+        int ret = 0;
+        size_t size = sizeof(ret);
+        if (sysctlbyname("sysctl.proc_translated", &ret, &size, NULL, 0) == -1) ret = 0;
+        translated = ret;
+    }
+    return translated;
+#endif
+}
+
 static BOOL display_mode_is_supported(CGDisplayModeRef display_mode)
 {
     uint32_t io_flags = CGDisplayModeGetIOFlags(display_mode);
-    return (io_flags & kDisplayModeValidFlag) && (io_flags & kDisplayModeSafeFlag);
+    /* CrossOver Hack #18576: don't check for kDisplayModeSafeFlag on Apple Silicon. */
+    return (io_flags & kDisplayModeValidFlag) &&
+            ((io_flags & kDisplayModeSafeFlag) || is_apple_silicon());
 }
 
 
