@@ -2423,8 +2423,20 @@ static void check_fbo_compat(struct wined3d_caps_gl_ctx *ctx, struct wined3d_for
             type_string = "depth / stencil";
         }
 
-        status = gl_info->fbo_ops.glCheckFramebufferStatus(GL_FRAMEBUFFER);
-        checkGLcall("Framebuffer format check");
+        /* CrossOver Hack #18775: glCheckFramebufferStatus() throws a Metal
+         * exception for GL_TEXTURE_CUBE_MAP and GL_RGB_422_APPLE on Big Sur on
+         * Apple Silicon. (Fixed on Monterey).
+         * Manually return GL_FRAMEBUFFER_UNSUPPORTED.
+         */
+        if (type == WINED3D_GL_RES_TYPE_TEX_CUBE && format->format == GL_RGB_422_APPLE)
+        {
+            status = GL_FRAMEBUFFER_UNSUPPORTED;
+        }
+        else
+        {
+            status = gl_info->fbo_ops.glCheckFramebufferStatus(GL_FRAMEBUFFER);
+            checkGLcall("Framebuffer format check");
+        }
 
         if (status == GL_FRAMEBUFFER_COMPLETE)
         {
