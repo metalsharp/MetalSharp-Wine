@@ -201,6 +201,21 @@ static char *read_file( const char *path, size_t *size )
     return data;
 }
 
+static BOOL write_file( const char *path, const char *data, size_t size )
+{
+    char tmp[PATH_MAX];
+    int fd;
+    BOOL ret;
+
+    if (snprintf( tmp, sizeof(tmp), "%s.metalsharp-tmp", path ) >= sizeof(tmp)) return FALSE;
+    if ((fd = open( tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644 )) == -1) return FALSE;
+    ret = write( fd, data, size ) == size;
+    close( fd );
+    if (ret) ret = !rename( tmp, path );
+    if (!ret) unlink( tmp );
+    return ret;
+}
+
 /* a game MetalSharp started, whose folder has its launch.env: Steam and the programs it starts inherit
  * MetalSharp's configuration too, and Wine's own programs (explorer, services) the environment of the program
  * that started them */
@@ -224,7 +239,8 @@ static BOOL is_launched_game( const char *exe )
  *     gpu.description = "NVIDIA GeForce RTX 4080"
  *     gpu.driverVersion = 617.14                   NVIDIA's numbering, or a Windows driver version (35.0.16.1714)
  * Windows has one device list for every program, so win32u registers the GPU of the game that starts (the Mac's
- * own for a game without a section) when it differs from the one registered; other programs leave it. */
+ * own for a game without a section, or an NVIDIA one for a DLSS game, init_dlss_game) when it differs from the one
+ * registered; other programs leave it. */
 static int gpu_override = -1;  /* -1 not a game, 0 a game shown the Mac's GPU, 1 a game shown gpu_* */
 static unsigned int gpu_vendor, gpu_device;
 static char gpu_description[128], gpu_driver_version[32];
@@ -274,12 +290,104 @@ static void parse_gpu_line( BOOL *active, const char *exe_name, const char *line
     }
 }
 
+/* MetalSharp: a game that comes with NVIDIA's DLSS (nvngx_dlss.dll, nvngx_dlssd.dll) or Streamline
+ * (sl.interposer.dll) anywhere in its folder (its steamapps/common/<game> folder, the one above an Unreal Engine
+ * project's, else its program's) is shown an NVIDIA GPU on the Mullion backend, so DLSS runs on MetalFX: in Windows' device list here,
+ * and by Mullion through MULLION_CONFIG and MULLION_ENABLE_NVEXT (env.c), unless its winemac.conf section names
+ * another GPU. A Streamline game is hidden Wine's exports too: The Witcher 3 starts Streamline only without
+ * wine_get_version. The search is kept in <program's folder>/.metalsharp/dlss while it is newer than the program. */
+enum { DLSS_NGX = 1, DLSS_STREAMLINE = 2 };
+static int dlss_game;
+
+static void scan_for_dlss( const char *dir, int depth, int *found, unsigned int *budget )
+{
+    char path[PATH_MAX];
+    struct dirent *entry;
+    struct stat st;
+    DIR *d;
+
+    if (!(d = opendir( dir ))) return;
+    while ((entry = readdir( d )) && *budget && !(*found & DLSS_STREAMLINE))
+    {
+        --*budget;
+        if (entry->d_name[0] == '.') continue;
+        if (!strcasecmp( entry->d_name, "nvngx_dlss.dll" ) || !strcasecmp( entry->d_name, "nvngx_dlssd.dll" ))
+            *found |= DLSS_NGX;
+        else if (!strcasecmp( entry->d_name, "sl.interposer.dll" ))
+            *found |= DLSS_NGX | DLSS_STREAMLINE;
+        else if (depth && snprintf( path, sizeof(path), "%s/%s", dir, entry->d_name ) < sizeof(path) &&
+                 (entry->d_type == DT_DIR || (entry->d_type == DT_UNKNOWN && !stat( path, &st ) && S_ISDIR(st.st_mode))))
+            scan_for_dlss( path, depth - 1, found, budget );
+    }
+    closedir( d );
+}
+
+static void init_dlss_game( const char *exe )
+{
+    const char *exe_name = strrchr( exe, '/' ), *backend = getenv( "GRAPHICS_BACKEND" ), *common, *end;
+    char root[PATH_MAX], cache[PATH_MAX], value[4];
+    struct stat exe_st, cache_st;
+    unsigned int budget = 200000;
+    int fd, found = 0, i;
+    ssize_t len;
+
+    dlss_game = 0;
+    if (!is_launched_game( exe )) return;
+    if (!backend || (strcasecmp( backend, "dxmt" ) && strcasecmp( backend, "mullion" ))) return;
+    if (snprintf( cache, sizeof(cache), "%.*s/.metalsharp/dlss", (int)(exe_name - exe), exe ) >= sizeof(cache))
+        return;
+    if (!stat( exe, &exe_st ) && !stat( cache, &cache_st ) && cache_st.st_mtime >= exe_st.st_mtime &&
+        (fd = open( cache, O_RDONLY | O_CLOEXEC )) != -1)
+    {
+        len = read( fd, value, sizeof(value) - 1 );
+        close( fd );
+        if (len > 0 && value[0] >= '0' && value[0] <= '3')
+        {
+            dlss_game = value[0] - '0';
+            return;
+        }
+    }
+
+    if ((common = strcasestr( exe, "/steamapps/common/" )) && (end = strchr( common + 18, '/' )) &&
+        end - exe < sizeof(root))
+    {
+        memcpy( root, exe, end - exe );
+        root[end - exe] = 0;
+    }
+    else
+    {
+        /* Unreal Engine's <game>/<Project>/Binaries/Win64/<program>.exe has DLSS in <Project>/Plugins or Engine/,
+         * so from <game>; elsewhere the program's own folder (not its neighbours) */
+        snprintf( root, sizeof(root), "%.*s", (int)(exe_name - exe), exe );
+        if ((end = strcasestr( root, "/Binaries/Win64" )) && !end[15])
+        {
+            for (i = 0; i < 3; i++)
+            {
+                char *slash = strrchr( root, '/' );
+                if (slash && slash != root) *slash = 0;
+            }
+        }
+    }
+    scan_for_dlss( root, 8, &found, &budget );
+    dlss_game = found;
+    value[0] = '0' + found;
+    value[1] = '\n';
+    write_file( cache, value, 2 );
+    if (found) MESSAGE( "MetalSharp: %s comes with %s\n", exe_name + 1, found & DLSS_STREAMLINE ? "Streamline" : "DLSS" );
+}
+
+/* the DLSS a game MetalSharp started on the Mullion backend comes with: 1 NGX, 3 Streamline, 0 none */
+int metalsharp_dlss_game(void)
+{
+    return dlss_game;
+}
+
 static void init_gpu_override( const char *exe )
 {
     const char *exe_name = strrchr( exe, '/' ) ? strrchr( exe, '/' ) + 1 : exe;
     const char *file = getenv( "WINEMAC_CONFIG_FILE" ), *mullion = getenv( "MULLION_CONFIG_FILE" ), *slash;
     char path[PATH_MAX], *text, *line, *end;
-    BOOL active = FALSE;
+    BOOL active = FALSE, section = FALSE;
     size_t size;
 
     gpu_override = -1;
@@ -294,13 +402,23 @@ static void init_gpu_override( const char *exe )
         snprintf( path, sizeof(path), "%.*s/metalsharp/assets/wine/etc/winemac.conf", (int)(slash - data_dir),
                   data_dir ) < sizeof(path))
         file = path;
-    if (!file || !(text = read_file( file, &size ))) return;
-    for (line = text; *line; line = *end ? end + 1 : end)
+    if (file && (text = read_file( file, &size )))
     {
-        if (!(end = strchr( line, '\n' ))) end = line + strlen( line );
-        parse_gpu_line( &active, exe_name, line, end );
+        for (line = text; *line; line = *end ? end + 1 : end)
+        {
+            if (!(end = strchr( line, '\n' ))) end = line + strlen( line );
+            parse_gpu_line( &active, exe_name, line, end );
+            section |= active;
+        }
+        free( text );
     }
-    free( text );
+    if ((!gpu_vendor || !gpu_device) && !section && dlss_game)
+    {
+        gpu_vendor = 0x10de;  /* an RTX 4080, and a driver newer than any DLSS game asks for */
+        gpu_device = 0x2704;
+        snprintf( gpu_description, sizeof(gpu_description), "NVIDIA GeForce RTX 4080" );
+        snprintf( gpu_driver_version, sizeof(gpu_driver_version), "35.0.16.1714" );
+    }
     if (!gpu_vendor || !gpu_device) return;
     gpu_override = 1;
     MESSAGE( "MetalSharp: %s is shown the GPU %04x:%04x %s, driver %s\n", exe_name, gpu_vendor, gpu_device,
@@ -430,21 +548,6 @@ static BOOL needs_reset( const struct main_display *display, const char *record,
     return !display->builtin && display->builtin_width && width <= display->builtin_width &&
            height <= display->builtin_height && (width < display->width || height < display->height) &&
            (width > display->builtin_width / 2 || height > display->builtin_height / 2);
-}
-
-static BOOL write_file( const char *path, const char *data, size_t size )
-{
-    char tmp[PATH_MAX];
-    int fd;
-    BOOL ret;
-
-    if (snprintf( tmp, sizeof(tmp), "%s.metalsharp-tmp", path ) >= sizeof(tmp)) return FALSE;
-    if ((fd = open( tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644 )) == -1) return FALSE;
-    ret = write( fd, data, size ) == size;
-    close( fd );
-    if (ret) ret = !rename( tmp, path );
-    if (!ret) unlink( tmp );
-    return ret;
 }
 
 /* replaces the number after the first "key" (followed by the end character) */
@@ -751,6 +854,7 @@ void fit_saved_resolution( const char *exe, const char *appdata, const char *loc
     memcpy( dir, exe, slash - exe );
     dir[slash - exe] = 0;
     init_metalfx_scale( exe );
+    init_dlss_game( exe );
     init_gpu_override( exe );
     if (!is_game_folder( dir, exe ) || !get_main_display( &display )) return;
     if (metalfx_scale > 1.0)
@@ -788,6 +892,7 @@ void fit_saved_resolution( const char *exe, const char *appdata, const char *loc
 void fit_saved_resolution( const char *exe, const char *appdata, const char *localappdata )
 {
     init_metalfx_scale( exe );
+    init_dlss_game( exe );
     init_gpu_override( exe );
 }
 

@@ -998,21 +998,59 @@ static char *get_env_unix_path( WCHAR *env, SIZE_T size, const char *name )
     return unix_name;
 }
 
-/* MetalSharp: a game's saved resolution follows the main display (saved_resolution.c) */
-static void fit_launch_resolution( WCHAR *env, SIZE_T size, const WCHAR *image )
+/* sets a variable in the Windows environment and the Unix one */
+static void set_launch_var( WCHAR **env, SIZE_T *pos, SIZE_T *size, const char *name, const char *value )
+{
+    append_envA( env, pos, size, name, value );
+    if (value) setenv( name, value, 1 );
+    else unsetenv( name );
+}
+
+/* MetalSharp: a game's saved resolution follows the main display, and a DLSS game is set up for it
+ * (saved_resolution.c): a game shown an NVIDIA GPU is shown one by Mullion as well (its NVIDIA extension on,
+ * unless MULLION_ENABLE_NVEXT says otherwise), and a Streamline game is hidden Wine's exports
+ * (METALSHARP_HIDE_WINE_EXPORTS, read by the loader; removed for programs it does not apply to) */
+static void fit_launch_resolution( WCHAR **env, SIZE_T *pos, SIZE_T *size, const WCHAR *image )
 {
     static const WCHAR ntprefixW[] = {'\\','?','?','\\'};
-    char *unix_name = NULL, *appdata, *localappdata;
+    static const WCHAR configW[] = {'M','U','L','L','I','O','N','_','C','O','N','F','I','G'};
+    static const WCHAR nvextW[] = {'M','U','L','L','I','O','N','_','E','N','A','B','L','E','_','N','V','E','X','T'};
+    char *unix_name = NULL, *appdata, *localappdata, config[512];
+    const char *description, *driver_version;
+    unsigned int vendor, device;
+    WCHAR *value;
+    int len;
 
     if (!image) return;
     if (!wcsncmp( image, ntprefixW, ARRAY_SIZE(ntprefixW) )) image += ARRAY_SIZE(ntprefixW);
     if (ntdll_get_unix_file_name( image, &unix_name, FILE_OPEN ) || !unix_name) return;
-    appdata = get_env_unix_path( env, size, "APPDATA" );
-    localappdata = get_env_unix_path( env, size, "LOCALAPPDATA" );
+    appdata = get_env_unix_path( *env, *pos, "APPDATA" );
+    localappdata = get_env_unix_path( *env, *pos, "LOCALAPPDATA" );
     fit_saved_resolution( unix_name, appdata, localappdata );
     free( localappdata );
     free( appdata );
     free( unix_name );
+
+    set_launch_var( env, pos, size, "METALSHARP_HIDE_WINE_EXPORTS", metalsharp_dlss_game() & 2 ? "1" : NULL );
+    if (!metalsharp_dlss_game() ||
+        ntdll_get_gpu_override( &vendor, &device, &description, &driver_version ) != 1 || vendor != 0x10de)
+        return;
+    if (!(value = get_env_var( *env, *pos, nvextW, ARRAY_SIZE(nvextW) )))
+        set_launch_var( env, pos, size, "MULLION_ENABLE_NVEXT", "1" );
+    free( value );
+    len = 0;
+    if ((value = get_env_var( *env, *pos, configW, ARRAY_SIZE(configW) )))
+    {
+        len = ntdll_wcstoumbs( value, wcslen( value ), config, sizeof(config) - 160, FALSE );
+        if (len < 0) len = 0;
+        free( value );
+    }
+    config[len] = 0;
+    if (strstr( config, "dxgi.customVendorId=10de" )) return;  /* inherited from the program that started it */
+    snprintf( config + len, sizeof(config) - len,
+              "%sdxgi.customVendorId=10de;dxgi.customDeviceId=%04x;dxgi.customDeviceDesc=\"%s\"",
+              len ? ";" : "", device, description[0] ? description : "NVIDIA GeForce RTX 4080" );
+    set_launch_var( env, pos, size, "MULLION_CONFIG", config );
 }
 
 static void add_launch_environment( WCHAR **env, SIZE_T *pos, SIZE_T *size, const WCHAR *image )
@@ -2057,7 +2095,7 @@ static RTL_USER_PROCESS_PARAMETERS *build_initial_params( void **module )
     if (main_argv[1] && !get_full_path( main_argv[1], curdir, &nt_name ))
     {
         add_launch_environment( &env, &env_pos, &env_size, nt_name.Buffer );
-        fit_launch_resolution( env, env_pos, nt_name.Buffer );
+        fit_launch_resolution( &env, &env_pos, &env_size, nt_name.Buffer );
         free( nt_name.Buffer );
     }
     env[env_pos++] = 0;
@@ -2195,7 +2233,7 @@ void init_startup_info(void)
             memcpy( image, info + 1, info->imagepath_len );
             image[info->imagepath_len / sizeof(WCHAR)] = 0;
             add_launch_environment( &env, &env_pos, &env_size, image );
-            fit_launch_resolution( env, env_pos, image );
+            fit_launch_resolution( &env, &env_pos, &env_size, image );
             free( image );
         }
     }
