@@ -729,6 +729,211 @@ void window_surface_set_shape( struct window_surface *surface, HRGN shape_region
     window_surface_flush( surface );
 }
 
+/* CX HACK 23950 - START
+ *
+ * A child window whose parent belongs to another process can't paint into the
+ * parent's window surface. Give it a surface in a shared section and have the
+ * parent's process draw the dirty part into the window whenever it is flushed.
+ *
+ * Modified for MetalSharp Wine: adapted to Wine 11.20's window surface
+ * functions, and the section handle duplicated into the parent is closed even
+ * when its process can't be opened for anything else.
+ */
+
+struct shm_window_surface
+{
+    struct window_surface header;
+    HANDLE      section;  /* the section, as a handle in the parent's process */
+    HWND        parent;
+    BITMAPINFO  info;
+};
+
+static struct shm_window_surface *get_shm_surface( struct window_surface *surface )
+{
+    return CONTAINING_RECORD( surface, struct shm_window_surface, header );
+}
+
+static void shm_surface_set_clip( struct window_surface *window_surface, const RECT *rects, UINT count )
+{
+}
+
+static BOOL shm_surface_flush( struct window_surface *window_surface, const RECT *rect, const RECT *dirty,
+                               const BITMAPINFO *color_info, const void *color_bits, BOOL shape_changed,
+                               const BITMAPINFO *shape_info, const void *shape_bits )
+{
+    struct shm_window_surface *surface = get_shm_surface( window_surface );
+    struct flush_shm_surface_params params;
+
+    TRACE( "surface %p, dirty %s\n", surface, wine_dbgstr_rect( dirty ) );
+
+    params.section = HandleToLong( surface->section );
+    params.hwnd = HandleToLong( surface->header.hwnd );
+    params.info = surface->info;
+    params.bounds = *dirty;
+
+    return send_message_timeout( surface->parent, WM_WINE_FLUSHSHMSURFACE, 0, (LPARAM)&params,
+                                 SMTO_ABORTIFHUNG | SMTO_BLOCK, 500, FALSE );
+}
+
+static HANDLE open_window_process( HWND hwnd )
+{
+    OBJECT_ATTRIBUTES attr = { .Length = sizeof(attr) };
+    CLIENT_ID cid = { 0 };
+    HANDLE process;
+    unsigned int status;
+    DWORD pid;
+
+    get_window_thread( hwnd, &pid );
+    cid.UniqueProcess = ULongToHandle( pid );
+    if ((status = NtOpenProcess( &process, PROCESS_DUP_HANDLE, &attr, &cid )))
+    {
+        ERR( "NtOpenProcess failed: %#x\n", status );
+        return 0;
+    }
+    return process;
+}
+
+static void shm_surface_destroy( struct window_surface *window_surface )
+{
+    struct shm_window_surface *surface = get_shm_surface( window_surface );
+    unsigned int status;
+    HANDLE process;
+
+    TRACE( "freeing %p\n", surface );
+    if (surface->section && (process = open_window_process( surface->parent )))
+    {
+        if ((status = NtDuplicateObject( process, surface->section, 0, NULL, 0, 0, DUPLICATE_CLOSE_SOURCE )))
+            ERR( "NtDuplicateObject failed: %#x\n", status );
+        NtClose( process );
+    }
+}
+
+static const struct window_surface_funcs shm_surface_funcs =
+{
+    .size = sizeof(struct shm_window_surface),
+    .set_clip = shm_surface_set_clip,
+    .flush = shm_surface_flush,
+    .destroy = shm_surface_destroy,
+};
+
+struct window_surface *create_shm_surface( HWND hwnd, HWND parent, const RECT *visible_rect,
+                                           struct window_surface *old_surface )
+{
+    struct shm_window_surface *surface;
+    struct window_surface *window_surface;
+    LARGE_INTEGER section_size;
+    HANDLE mapping, process;
+    unsigned int status;
+    BITMAPINFO info;
+    HBITMAP bitmap;
+    RECT rect;
+
+    TRACE( "hwnd %p, parent %p, visible_rect %s\n", hwnd, parent, wine_dbgstr_rect( visible_rect ) );
+
+    rect = *visible_rect;
+    OffsetRect( &rect, -rect.left, -rect.top );
+    if (IsRectEmpty( &rect )) return NULL;
+
+    if (old_surface && old_surface->funcs == &shm_surface_funcs && EqualRect( &old_surface->rect, &rect ) &&
+        get_shm_surface( old_surface )->parent == parent)
+    {
+        TRACE( "reusing surface %p\n", old_surface );
+        window_surface_add_ref( old_surface );
+        return old_surface;
+    }
+
+    memset( &info, 0, sizeof(info) );
+    info.bmiHeader.biSize        = sizeof(info.bmiHeader);
+    info.bmiHeader.biWidth       = rect.right;
+    info.bmiHeader.biHeight      = -rect.bottom; /* top-down */
+    info.bmiHeader.biPlanes      = 1;
+    info.bmiHeader.biBitCount    = 32;
+    info.bmiHeader.biSizeImage   = get_dib_image_size( &info );
+    info.bmiHeader.biCompression = BI_RGB;
+
+    section_size.QuadPart = info.bmiHeader.biSizeImage;
+    if ((status = NtCreateSection( &mapping, GENERIC_READ | SECTION_MAP_READ | SECTION_MAP_WRITE,
+                                   NULL, &section_size, PAGE_READWRITE, SEC_COMMIT, 0 )))
+    {
+        ERR( "NtCreateSection failed: %#x\n", status );
+        return NULL;
+    }
+
+    if (!(bitmap = NtGdiCreateDIBSection( 0, mapping, 0, &info, DIB_RGB_COLORS, 0, 0, 0, NULL )))
+    {
+        ERR( "NtGdiCreateDIBSection failed\n" );
+        NtClose( mapping );
+        return NULL;
+    }
+
+    if (!(window_surface = window_surface_create( &shm_surface_funcs, hwnd, &rect, &info, bitmap )))
+    {
+        NtGdiDeleteObjectApp( bitmap );
+        NtClose( mapping );
+        return NULL;
+    }
+    surface = get_shm_surface( window_surface );
+    surface->info = info;
+    surface->parent = parent;
+
+    if (!(process = open_window_process( parent )))
+    {
+        window_surface_release( window_surface );
+        NtClose( mapping );
+        return NULL;
+    }
+    status = NtDuplicateObject( GetCurrentProcess(), mapping, process, &surface->section,
+                                SECTION_MAP_READ, 0, 0 );
+    NtClose( process );
+    NtClose( mapping );
+    if (status)
+    {
+        ERR( "NtDuplicateObject failed: %#x\n", status );
+        surface->section = 0;
+        window_surface_release( window_surface );
+        return NULL;
+    }
+
+    TRACE( "created surface %p for hwnd %p, parent %p\n", surface, hwnd, parent );
+    return window_surface;
+}
+
+/* runs in the parent's process: draws the dirty part of a child's shm surface into the child */
+void process_surface_message( struct flush_shm_surface_params *params )
+{
+    HANDLE mapping = LongToHandle( params->section );
+    HWND hwnd = LongToHandle( params->hwnd );
+    SIZE_T view_size = 0;
+    unsigned int height, status;
+    void *bits = NULL;
+    HDC hdc;
+
+    TRACE( "flushing hwnd %p bounds %s\n", hwnd, wine_dbgstr_rect( &params->bounds ) );
+
+    status = NtMapViewOfSection( mapping, GetCurrentProcess(), &bits, 0, 0, NULL, &view_size,
+                                 ViewShare, 0, PAGE_READONLY );
+    if (!bits)
+    {
+        ERR( "NtMapViewOfSection failed: %#x\n", status );
+        return;
+    }
+    height = abs( params->info.bmiHeader.biHeight );
+
+    if ((hdc = NtUserGetDCEx( hwnd, NULL, DCX_CLIPSIBLINGS )))
+    {
+        NtGdiSetDIBitsToDeviceInternal( hdc, params->bounds.left, params->bounds.top,
+                                        params->bounds.right - params->bounds.left,
+                                        params->bounds.bottom - params->bounds.top,
+                                        params->bounds.left, height - params->bounds.bottom, 0, height,
+                                        bits, &params->info, DIB_RGB_COLORS, 0, 0, FALSE, NULL );
+        NtUserReleaseDC( hwnd, hdc );
+    }
+    NtUnmapViewOfSection( GetCurrentProcess(), bits );
+}
+
+/* CX HACK 23950 - END */
+
+
 /*******************************************************************
  *           register_window_surface
  *

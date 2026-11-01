@@ -623,6 +623,15 @@ enum associate_input_context_result
     AICR_FAILED,
 };
 
+/* WM_WINE_FLUSHSHMSURFACE params, CX HACK 23950 */
+struct flush_shm_surface_params
+{
+    BITMAPINFO info;
+    RECT bounds;
+    ULONG section;
+    ULONG hwnd;
+};
+
 /* internal messages codes */
 enum wine_internal_message
 {
@@ -640,6 +649,7 @@ enum wine_internal_message
     WM_WINE_UPDATEWINDOWSTATE,
     WM_WINE_TRACKMOUSEEVENT,
     WM_WINE_SETPIXELFORMAT,
+    WM_WINE_FLUSHSHMSURFACE, /* CX HACK 23950 */
     WM_WINE_FIRST_DRIVER_MSG = 0x80001000,  /* range of messages reserved for the USER driver */
     WM_WINE_CLIPCURSOR = 0x80001ff0, /* internal driver notification messages */
     WM_WINE_SETCURSOR,

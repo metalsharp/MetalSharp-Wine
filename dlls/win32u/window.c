@@ -2313,9 +2313,20 @@ static BOOL apply_window_pos( HWND hwnd, HWND insert_after, UINT swp_flags, stru
     struct window_surface *old_surface;
     HICON icon, icon_small;
     ICONINFO ii, ii_small;
+    BOOL shm_surface = FALSE;
+    HWND parent;
+
+    /* CX HACK 23950: provide a default shm surface for windows with parents in other process */
+    parent = NtUserGetAncestor( hwnd, GA_PARENT );
+    if (!(swp_flags & SWP_HIDEWINDOW))
+    {
+        win = get_win_ptr( parent );
+        if (win == WND_OTHER_PROCESS) shm_surface = TRUE;
+        else if (win && win != WND_DESKTOP) release_win_ptr( win );
+    }
 
     toplevel = NtUserGetAncestor( hwnd, GA_ROOT );
-    is_layered = new_surface && new_surface->alpha_mask;
+    is_layered = !shm_surface && new_surface && new_surface->alpha_mask;
     is_child = toplevel && toplevel != hwnd;
 
     if (is_child) get_win_monitor_dpi( toplevel, &raw_dpi );
@@ -2326,6 +2337,10 @@ static BOOL apply_window_pos( HWND hwnd, HWND insert_after, UINT swp_flags, stru
 
     if (!(win = get_win_ptr( hwnd )) || win == WND_DESKTOP || win == WND_OTHER_PROCESS) return FALSE;
     old_surface = win->surface;
+
+    /* CX HACK 23950. The new surface's reference is released at the end. */
+    if (shm_surface) new_surface = create_shm_surface( hwnd, parent, &new_rects->visible, old_surface );
+
     if (old_surface != new_surface) swp_flags |= SWP_FRAMECHANGED;  /* force refreshing non-client area */
 
     if (new_surface == &dummy_surface) swp_flags |= SWP_NOREDRAW;
@@ -2484,6 +2499,7 @@ static BOOL apply_window_pos( HWND hwnd, HWND insert_after, UINT swp_flags, stru
         update_client_surfaces( toplevel );
     }
 
+    if (shm_surface && new_surface) window_surface_release( new_surface );
     return ret;
 }
 
