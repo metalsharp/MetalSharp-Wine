@@ -51,7 +51,7 @@ Some macOS display, painting and wined3d fixes come from the Wine in CodeWeavers
 | 0097 wined3d swapchain size | Hack 23854: a swapchain of at least 1x1 | Ported |
 | 0098 wined3d GL format check | Hack 18775: no framebuffer check for GL_RGB_422_APPLE cube maps | Ported |
 
-0099 (Wine brought to the front when it shows a window) and 0100 (wined3d's Vulkan renderer at feature level 10 and above on MoltenVK) are MetalSharp Wine's own.
+0099 (Wine brought to the front when it shows a window), 0100 (wined3d's Vulkan renderer at feature level 10 and above on MoltenVK) and 0101 (a NativeFullscreen Mac Driver option for WineForge's native fullscreen, off for ELDEN RING) are MetalSharp Wine's own.
 
 ## Other upstream projects
 
