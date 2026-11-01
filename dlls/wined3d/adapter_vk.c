@@ -2212,14 +2212,17 @@ static bool feature_level_9_3_supported(const struct wined3d_physical_device_inf
             && info->features2.features.independentBlend;
 }
 
-static bool feature_level_10_supported(const struct wined3d_physical_device_info *info, unsigned int shader_model)
+static bool feature_level_10_supported(const struct wined3d_physical_device_info *info, unsigned int shader_model,
+        bool moltenvk)
 {
+    /* MetalSharp: Metal has no pipeline statistics, so MoltenVK has no
+     * pipelineStatisticsQuery; its queries then report zero counts. */
     return shader_model >= 4
             && info->features2.features.multiViewport
             && info->features2.features.geometryShader
             && info->features2.features.depthClamp
             && info->features2.features.depthBiasClamp
-            && info->features2.features.pipelineStatisticsQuery
+            && (info->features2.features.pipelineStatisticsQuery || moltenvk)
             && info->features2.features.shaderClipDistance
             && info->features2.features.shaderCullDistance
             && info->draw_parameters_features.shaderDrawParameters
@@ -2248,7 +2251,7 @@ static bool feature_level_11_1_supported(const struct wined3d_physical_device_in
 }
 
 static enum wined3d_feature_level feature_level_from_caps(const struct wined3d_physical_device_info *info,
-        const struct shader_caps *shader_caps)
+        const struct shader_caps *shader_caps, bool moltenvk)
 {
     unsigned int shader_model;
 
@@ -2269,7 +2272,7 @@ static enum wined3d_feature_level feature_level_from_caps(const struct wined3d_p
     if (!feature_level_9_3_supported(info, shader_model))
         return WINED3D_FEATURE_LEVEL_9_2;
 
-    if (!feature_level_10_supported(info, shader_model))
+    if (!feature_level_10_supported(info, shader_model, moltenvk))
         return WINED3D_FEATURE_LEVEL_9_3;
 
     if (!feature_level_10_1_supported(info, shader_model))
@@ -2351,7 +2354,9 @@ static void wined3d_adapter_vk_init_d3d_info(struct wined3d_adapter_vk *adapter_
     d3d_info->full_ffp_varyings = !!(shader_caps.wined3d_caps & WINED3D_SHADER_CAP_FULL_FFP_VARYINGS);
     d3d_info->scaled_resolve = false;
     d3d_info->pbo = true;
-    d3d_info->feature_level = feature_level_from_caps(&device_info, &shader_caps);
+    adapter_vk->pipeline_statistics_query = device_info.features2.features.pipelineStatisticsQuery;
+    d3d_info->feature_level = feature_level_from_caps(&device_info, &shader_caps,
+            adapter_vk->driver_properties.driverID == VK_DRIVER_ID_MOLTENVK);
     d3d_info->subpixel_viewport = true;
     d3d_info->fences = true;
     d3d_info->persistent_map = true;
