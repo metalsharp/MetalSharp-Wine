@@ -2986,12 +2986,15 @@ static bool wined3d_context_vk_begin_render_pass(struct wined3d_context_vk *cont
     unsigned int attachment_count, i;
     struct wined3d_texture *texture;
     VkFramebufferCreateInfo fb_desc;
+    struct wined3d_adapter_vk *adapter_vk;
+    int offset_x = 0, offset_y = 0;
     VkResult vr;
 
     if (context_vk->vk_render_pass)
         return true;
 
-    limits = &wined3d_adapter_vk(device_vk->d.adapter)->device_limits;
+    adapter_vk = wined3d_adapter_vk(device_vk->d.adapter);
+    limits = &adapter_vk->device_limits;
     fb_width = limits->maxFramebufferWidth;
     fb_height = limits->maxFramebufferHeight;
     fb_layer_count = limits->maxFramebufferLayers;
@@ -3110,6 +3113,37 @@ static bool wined3d_context_vk_begin_render_pass(struct wined3d_context_vk *cont
     fb_desc.height = fb_height;
     fb_desc.layers = fb_layer_count;
 
+    /* CX Hack 20098: on Apple's tiled GPUs, we should trim the render area, so that it doesn't
+     * try to preallocate huge amounts of memory for rasterization when there's no attachments.
+     * For now, let's always do that if we're running with MoltenVK. We could detect only
+     * the tiled architecture GPUs if needed.
+     * Note that multiple viewports are disabled when using MoltenVK (for bug 22877).
+     *
+     * Modified for MetalSharp Wine: the framebuffer reaches from the origin to the
+     * viewport's far corner and the render area is the viewport, inside it (CrossOver
+     * took the viewport's height as negative, which wined3d's viewports never are).
+     */
+    context_vk->hack_render_area_trimmed_to_viewport = 0;
+    if (adapter_vk->driver_properties.driverID == VK_DRIVER_ID_MOLTENVK && !attachment_count)
+    {
+        const struct wined3d_viewport *viewport = &state->viewports[0];
+        float right = min(viewport->x + viewport->width, (float)fb_width);
+        float bottom = min(viewport->y + viewport->height, (float)fb_height);
+        int left = max(floorf(viewport->x), 0.0f), top = max(floorf(viewport->y), 0.0f);
+
+        if (right > left && bottom > top)
+        {
+            WARN("No attachments, trimming render area to the viewport.\n");
+
+            fb_desc.width = fb_width = ceilf(right);
+            fb_desc.height = fb_height = ceilf(bottom);
+            fb_desc.layers = 1;
+            offset_x = left;
+            offset_y = top;
+            context_vk->hack_render_area_trimmed_to_viewport = 1;
+        }
+    }
+
     if ((vr = VK_CALL(vkCreateFramebuffer(device_vk->vk_device, &fb_desc, NULL, &context_vk->vk_framebuffer))) < 0)
     {
         WARN("Failed to create Vulkan framebuffer, vr %s.\n", wined3d_debug_vkresult(vr));
@@ -3120,10 +3154,10 @@ static bool wined3d_context_vk_begin_render_pass(struct wined3d_context_vk *cont
     begin_info.pNext = NULL;
     begin_info.renderPass = context_vk->vk_render_pass;
     begin_info.framebuffer = context_vk->vk_framebuffer;
-    begin_info.renderArea.offset.x = 0;
-    begin_info.renderArea.offset.y = 0;
-    begin_info.renderArea.extent.width = fb_width;
-    begin_info.renderArea.extent.height = fb_height;
+    begin_info.renderArea.offset.x = offset_x;
+    begin_info.renderArea.offset.y = offset_y;
+    begin_info.renderArea.extent.width = fb_width - offset_x;
+    begin_info.renderArea.extent.height = fb_height - offset_y;
     begin_info.pClearValues = clear_values;
     VK_CALL(vkCmdBeginRenderPass(vk_command_buffer, &begin_info, VK_SUBPASS_CONTENTS_INLINE));
 
@@ -4056,7 +4090,9 @@ VkCommandBuffer wined3d_context_vk_apply_draw_state(struct wined3d_context_vk *c
 
     wined3d_context_vk_load_buffers(context_vk, state, indirect_vk, indexed);
 
-    if (wined3d_context_is_graphics_state_dirty(&context_vk->c, STATE_FRAMEBUFFER))
+    if (wined3d_context_is_graphics_state_dirty(&context_vk->c, STATE_FRAMEBUFFER) ||
+            (context_vk->hack_render_area_trimmed_to_viewport &&
+            wined3d_context_is_graphics_state_dirty(&context_vk->c, STATE_VIEWPORT)))
         wined3d_context_vk_end_current_render_pass(context_vk);
 
     if (!wined3d_context_vk_begin_render_pass(context_vk, state, vk_info))

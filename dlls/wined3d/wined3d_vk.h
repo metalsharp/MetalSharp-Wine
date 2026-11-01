@@ -682,7 +682,8 @@ struct wined3d_context_vk
 
     uint32_t update_compute_pipeline : 1;
     uint32_t update_stream_output : 1;
-    uint32_t padding : 30;
+    uint32_t hack_render_area_trimmed_to_viewport : 1;
+    uint32_t padding : 29;
 
     struct
     {
