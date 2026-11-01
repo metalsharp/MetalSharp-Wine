@@ -978,6 +978,44 @@ static void append_envA( WCHAR **env, SIZE_T *pos, SIZE_T *size, const char *nam
  * into the Windows environment and the Unix one alike, before anything reads them (the graphics
  * backend is chosen right after), and on to the program's children. Only the program's own folder
  * is read, so a file elsewhere cannot reach other programs. */
+/* the Unix path of a folder named by a variable of a Windows environment block, or NULL */
+static char *get_env_unix_path( WCHAR *env, SIZE_T size, const char *name )
+{
+    static const WCHAR ntprefixW[] = {'\\','?','?','\\'};
+    WCHAR nameW[32], *value, *nt;
+    char *unix_name = NULL;
+    SIZE_T len = strlen( name );
+
+    ascii_to_unicode( nameW, name, len + 1 );
+    if (!(value = get_env_var( env, size, nameW, len ))) return NULL;
+    if ((nt = malloc( (wcslen( value ) + 5) * sizeof(WCHAR) )))
+    {
+        memcpy( nt, ntprefixW, sizeof(ntprefixW) );
+        wcscpy( nt + 4, value );
+        if (ntdll_get_unix_file_name( nt, &unix_name, FILE_OPEN )) unix_name = NULL;
+        free( nt );
+    }
+    free( value );
+    return unix_name;
+}
+
+/* MetalSharp: a game's saved resolution follows the main display (saved_resolution.c) */
+static void fit_launch_resolution( WCHAR *env, SIZE_T size, const WCHAR *image )
+{
+    static const WCHAR ntprefixW[] = {'\\','?','?','\\'};
+    char *unix_name = NULL, *appdata, *localappdata;
+
+    if (!image) return;
+    if (!wcsncmp( image, ntprefixW, ARRAY_SIZE(ntprefixW) )) image += ARRAY_SIZE(ntprefixW);
+    if (ntdll_get_unix_file_name( image, &unix_name, FILE_OPEN ) || !unix_name) return;
+    appdata = get_env_unix_path( env, size, "APPDATA" );
+    localappdata = get_env_unix_path( env, size, "LOCALAPPDATA" );
+    fit_saved_resolution( unix_name, appdata, localappdata );
+    free( localappdata );
+    free( appdata );
+    free( unix_name );
+}
+
 static void add_launch_environment( WCHAR **env, SIZE_T *pos, SIZE_T *size, const WCHAR *image )
 {
     static const WCHAR ntprefixW[] = {'\\','?','?','\\'};
@@ -2050,6 +2088,7 @@ static RTL_USER_PROCESS_PARAMETERS *build_initial_params(void)
     if (main_argv[1] && !get_full_path( main_argv[1], curdir, &nt_name ))
     {
         add_launch_environment( &env, &env_pos, &env_size, nt_name.Buffer );
+        fit_launch_resolution( env, env_pos, nt_name.Buffer );
         free( nt_name.Buffer );
     }
     env[env_pos++] = 0;
@@ -2191,6 +2230,7 @@ void init_startup_info(void)
             memcpy( image, info + 1, info->imagepath_len );
             image[info->imagepath_len / sizeof(WCHAR)] = 0;
             add_launch_environment( &env, &env_pos, &env_size, image );
+            fit_launch_resolution( env, env_pos, image );
             free( image );
         }
     }

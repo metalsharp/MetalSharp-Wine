@@ -63,6 +63,7 @@ SOURCES = \
 	unix/msync.c \
 	unix/process.c \
 	unix/registry.c \
+	unix/saved_resolution.c \
 	unix/security.c \
 	unix/serial.c \
 	unix/server.c \
