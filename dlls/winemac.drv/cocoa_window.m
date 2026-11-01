@@ -1621,6 +1621,7 @@ static inline BOOL stage_manager_enabled(void)
         {
             BOOL needAdjustWindowLevels = FALSE;
             BOOL wasVisible;
+            BOOL bringToFront;
             WineWindow* parent;
             WineWindow* child;
 
@@ -1628,6 +1629,14 @@ static inline BOOL stage_manager_enabled(void)
             if ([NSApp isHidden])
                 [NSApp unhide:nil];
             wasVisible = [self isVisible];
+
+            /* MetalSharp: bring Wine to the front whenever one of its windows
+               is shown, so a game or launcher doesn't open behind the app that
+               started it. Windows that don't take the foreground (tooltips,
+               WS_EX_NOACTIVATE) still don't. */
+            bringToFront = !wasVisible && !self.noForeground && !self.preventsAppActivation;
+            if (bringToFront)
+                activate = TRUE;
 
             if (activate)
                 [controller tryToActivateIgnoringOtherApps:YES];
@@ -1701,6 +1710,12 @@ static inline BOOL stage_manager_enabled(void)
                 needAdjustWindowLevels = TRUE;
             }
             pendingOrderOut = FALSE;
+
+            /* MetalSharp: since macOS 14 activation is cooperative, and the
+               application in front (Finder, the launcher) doesn't give it up,
+               so put the window above other applications' windows anyway. */
+            if (bringToFront && ![NSApp isActive] && !self.parentWindow)
+                [self orderFrontRegardless];
 
             if ([self becameEligibleParentOrChild])
                 needAdjustWindowLevels = TRUE;
