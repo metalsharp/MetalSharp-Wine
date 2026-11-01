@@ -64,6 +64,7 @@ SOURCES = \
 	unix/process.c \
 	unix/wfdxcompat_loader.c \
 	unix/registry.c \
+	unix/saved_resolution.c \
 	unix/security.c \
 	unix/serial.c \
 	unix/server.c \
