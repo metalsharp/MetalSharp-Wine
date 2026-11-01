@@ -363,6 +363,7 @@ struct launcher_policy
 
 extern void get_launcher_policy( const char *image_path, struct launcher_policy *policy );
 extern void fit_saved_resolution( const char *exe, const char *appdata, const char *localappdata );
+extern int metalsharp_dlss_game(void);
 extern BOOL steam_cef_native_vulkan_loader( const UNICODE_STRING *nt_name, const char *module );
 /* WineForge-Internal: graphics/process-backend-policy-v1. */
 extern void init_process_graphics_backend( const WCHAR *image_path );

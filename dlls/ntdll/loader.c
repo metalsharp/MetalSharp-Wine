@@ -4316,7 +4316,17 @@ static void load_hide_wine_exports(void)
 
     /* MetalSharp: on for the programs known to refuse what they need under Wine, unless the registry says
      * otherwise: The Witcher 3 starts NVIDIA Streamline (DLSS) only without wine_get_version, and God of War
-     * Ragnarok's PlayStation PC SDK quits on Wine's exports */
+     * Ragnarok's PlayStation PC SDK quits on Wine's exports. And on for any game that comes with Streamline, as
+     * MetalSharp's launch environment says (METALSHARP_HIDE_WINE_EXPORTS, set by ntdll's env.c) */
+    {
+        UNICODE_STRING var_name = RTL_CONSTANT_STRING( L"METALSHARP_HIDE_WINE_EXPORTS" ), var_value;
+        WCHAR value[2];
+
+        var_value.Buffer = value;
+        var_value.MaximumLength = sizeof(value);
+        if (!RtlQueryEnvironmentVariable_U( NULL, &var_name, &var_value ) && value[0] == '1')
+            hide_wine_exports = TRUE;
+    }
     if (appname)
     {
         const WCHAR *name = appname;
