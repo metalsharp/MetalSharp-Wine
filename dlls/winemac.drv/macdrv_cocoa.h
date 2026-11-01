@@ -111,6 +111,7 @@ extern bool allow_immovable_windows;
 extern bool use_confinement_cursor_clipping;
 extern bool cursor_clipping_locks_windows;
 extern bool use_precise_scrolling;
+extern bool native_fullscreen;  /* MetalSharp: "NativeFullscreen" Mac Driver option */
 extern bool use_gcmouse;
 extern int gl_surface_mode;
 extern CFDictionaryRef localized_strings;

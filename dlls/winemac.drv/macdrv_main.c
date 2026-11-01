@@ -50,6 +50,7 @@ bool allow_immovable_windows = true;
 bool use_confinement_cursor_clipping = true;
 bool cursor_clipping_locks_windows = true;
 bool use_precise_scrolling = true;
+bool native_fullscreen = true;
 bool use_gcmouse = true;
 int gl_surface_mode = GL_SURFACE_IN_FRONT_OPAQUE;
 bool retina_enabled = false;
@@ -346,6 +347,17 @@ static void setup_options(void)
 
     if (!get_config_key(hkey, appkey, "UsePreciseScrolling", buffer, sizeof(buffer)))
         use_precise_scrolling = IS_OPTION_TRUE(buffer[0]);
+
+    /* MetalSharp hack: ELDEN RING can't change its resolution or screen mode
+     * in native macOS fullscreen, which keeps resizing its window back to the
+     * screen, so it reverts every change. The NativeFullscreen option still
+     * overrides this. */
+    {
+        static const WCHAR eldenringW[] = {'e','l','d','e','n','r','i','n','g','.','e','x','e',0};
+        if (!wcsicmp(appname, eldenringW)) native_fullscreen = false;
+    }
+    if (!get_config_key(hkey, appkey, "NativeFullscreen", buffer, sizeof(buffer)))
+        native_fullscreen = IS_OPTION_TRUE(buffer[0]);
 
     if (!get_config_key(hkey, appkey, "UseGCMouse", buffer, sizeof(buffer)))
         use_gcmouse = IS_OPTION_TRUE(buffer[0]);

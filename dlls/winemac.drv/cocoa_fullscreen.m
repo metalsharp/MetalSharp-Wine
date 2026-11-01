@@ -53,6 +53,7 @@ static char presentation_options_context;
 
 int macdrv_cocoa_fullscreen_available(void)
 {
+    if (!native_fullscreen) return FALSE;
 #ifdef MAC_OS_VERSION_27_0
     if (@available(macOS 27.0, *)) return TRUE;
 #endif
