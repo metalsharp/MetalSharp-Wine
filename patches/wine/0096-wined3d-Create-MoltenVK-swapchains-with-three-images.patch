@@ -1,0 +1,35 @@
+From 43bc4049447b92f11daffad234dcb96be8b4f3ee Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Sun, 1 Nov 2026 08:36:15 -0700
+Subject: [PATCH 096/100] wined3d: Create MoltenVK swapchains with three
+ images.
+
+MoltenVK's documentation recommends three; fullscreen swapchains with
+two present badly. From CrossOver 26.3 (CodeWeavers, LGPL 2.1 or
+later), CrossOver bug 18838.
+---
+ dlls/wined3d/swapchain.c | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/wined3d/swapchain.c b/dlls/wined3d/swapchain.c
+index 6d602b5b782..da236eb6eed 100644
+--- a/dlls/wined3d/swapchain.c
++++ b/dlls/wined3d/swapchain.c
+@@ -957,7 +957,13 @@ static HRESULT wined3d_swapchain_vk_create_vulkan_swapchain(struct wined3d_swapc
+         goto fail;
+     }
+ 
+-    image_count = desc->backbuffer_count;
++    /* For CW bug 18838. Create MoltenVK swapchains with 3 images, as
++     * recommended by the MoltenVK documentation. Performance of full-screen
++     * swapchains is atrocious with the only other supported image count of 2. */
++    if (adapter_vk->driver_properties.driverID == VK_DRIVER_ID_MOLTENVK)
++        image_count = 3;
++    else
++        image_count = desc->backbuffer_count;
+     if (image_count < surface_caps.minImageCount)
+         image_count = surface_caps.minImageCount;
+     else if (surface_caps.maxImageCount && image_count > surface_caps.maxImageCount)
+-- 
+2.54.0 (Apple Git-157)
+

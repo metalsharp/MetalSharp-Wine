@@ -1,0 +1,61 @@
+From 9a1cc5bae602fcd25640265a6021aa4859f7304d Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Sun, 1 Nov 2026 08:37:01 -0700
+Subject: [PATCH 099/100] winemac.drv: Bring Wine to the front when it shows a
+ window.
+
+MetalSharp: a window that is ordered in while hidden activates Wine, so a
+game or launcher started from MetalSharp, Steam or Finder doesn't open
+behind the application that started it. Since macOS 14 activation is
+cooperative and the application in front doesn't give it up, so such a
+top-level window is also ordered above other applications' windows
+(orderFrontRegardless) while Wine isn't active. Windows that don't take
+the foreground (no_foreground, as for tooltips and WS_EX_NOACTIVATE, or
+preventsAppActivation) still don't.
+---
+ dlls/winemac.drv/cocoa_window.m | 15 +++++++++++++++
+ 1 file changed, 15 insertions(+)
+
+diff --git a/dlls/winemac.drv/cocoa_window.m b/dlls/winemac.drv/cocoa_window.m
+index 94f6a261599..42ec2c32b35 100644
+--- a/dlls/winemac.drv/cocoa_window.m
++++ b/dlls/winemac.drv/cocoa_window.m
+@@ -1621,6 +1621,7 @@ - (void) orderBelow:(WineWindow*)prev orAbove:(WineWindow*)next activate:(BOOL)a
+         {
+             BOOL needAdjustWindowLevels = FALSE;
+             BOOL wasVisible;
++            BOOL bringToFront;
+             WineWindow* parent;
+             WineWindow* child;
+ 
+@@ -1629,6 +1630,14 @@ - (void) orderBelow:(WineWindow*)prev orAbove:(WineWindow*)next activate:(BOOL)a
+                 [NSApp unhide:nil];
+             wasVisible = [self isVisible];
+ 
++            /* MetalSharp: bring Wine to the front whenever one of its windows
++               is shown, so a game or launcher doesn't open behind the app that
++               started it. Windows that don't take the foreground (tooltips,
++               WS_EX_NOACTIVATE) still don't. */
++            bringToFront = !wasVisible && !self.noForeground && !self.preventsAppActivation;
++            if (bringToFront)
++                activate = TRUE;
++
+             if (activate)
+                 [controller tryToActivateIgnoringOtherApps:YES];
+ 
+@@ -1702,6 +1711,12 @@ - (void) orderBelow:(WineWindow*)prev orAbove:(WineWindow*)next activate:(BOOL)a
+             }
+             pendingOrderOut = FALSE;
+ 
++            /* MetalSharp: since macOS 14 activation is cooperative, and the
++               application in front (Finder, the launcher) doesn't give it up,
++               so put the window above other applications' windows anyway. */
++            if (bringToFront && ![NSApp isActive] && !self.parentWindow)
++                [self orderFrontRegardless];
++
+             if ([self becameEligibleParentOrChild])
+                 needAdjustWindowLevels = TRUE;
+ 
+-- 
+2.54.0 (Apple Git-157)
+

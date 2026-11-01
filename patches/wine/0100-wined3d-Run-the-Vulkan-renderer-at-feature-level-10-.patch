@@ -1,0 +1,134 @@
+From c93dfa80101a80b3c0a4bafc275f68cb0722fef4 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Sun, 1 Nov 2026 08:47:27 -0700
+Subject: [PATCH 100/100] wined3d: Run the Vulkan renderer at feature level 10
+ and above on MoltenVK.
+
+Metal has no pipeline statistics, so MoltenVK leaves pipelineStatistics-
+Query off, and wined3d then capped the Vulkan adapter at feature level
+9_3: every D3D10 and D3D11 device creation failed in wined3d_state_create
+("Failed to create command stream"). On MoltenVK, don't require it, and
+answer pipeline statistics queries at once with zero counts.
+
+MetalSharp: on an Apple M4 this gives feature level 11_1.
+---
+ dlls/wined3d/adapter_vk.c | 15 ++++++++++-----
+ dlls/wined3d/query.c      | 29 +++++++++++++++++++++++++++++
+ dlls/wined3d/wined3d_vk.h |  1 +
+ 3 files changed, 40 insertions(+), 5 deletions(-)
+
+diff --git a/dlls/wined3d/adapter_vk.c b/dlls/wined3d/adapter_vk.c
+index ec7dd61f7ee..28101aad93f 100644
+--- a/dlls/wined3d/adapter_vk.c
++++ b/dlls/wined3d/adapter_vk.c
+@@ -2212,14 +2212,17 @@ static bool feature_level_9_3_supported(const struct wined3d_physical_device_inf
+             && info->features2.features.independentBlend;
+ }
+ 
+-static bool feature_level_10_supported(const struct wined3d_physical_device_info *info, unsigned int shader_model)
++static bool feature_level_10_supported(const struct wined3d_physical_device_info *info, unsigned int shader_model,
++        bool moltenvk)
+ {
++    /* MetalSharp: Metal has no pipeline statistics, so MoltenVK has no
++     * pipelineStatisticsQuery; its queries then report zero counts. */
+     return shader_model >= 4
+             && info->features2.features.multiViewport
+             && info->features2.features.geometryShader
+             && info->features2.features.depthClamp
+             && info->features2.features.depthBiasClamp
+-            && info->features2.features.pipelineStatisticsQuery
++            && (info->features2.features.pipelineStatisticsQuery || moltenvk)
+             && info->features2.features.shaderClipDistance
+             && info->features2.features.shaderCullDistance
+             && info->draw_parameters_features.shaderDrawParameters
+@@ -2248,7 +2251,7 @@ static bool feature_level_11_1_supported(const struct wined3d_physical_device_in
+ }
+ 
+ static enum wined3d_feature_level feature_level_from_caps(const struct wined3d_physical_device_info *info,
+-        const struct shader_caps *shader_caps)
++        const struct shader_caps *shader_caps, bool moltenvk)
+ {
+     unsigned int shader_model;
+ 
+@@ -2269,7 +2272,7 @@ static enum wined3d_feature_level feature_level_from_caps(const struct wined3d_p
+     if (!feature_level_9_3_supported(info, shader_model))
+         return WINED3D_FEATURE_LEVEL_9_2;
+ 
+-    if (!feature_level_10_supported(info, shader_model))
++    if (!feature_level_10_supported(info, shader_model, moltenvk))
+         return WINED3D_FEATURE_LEVEL_9_3;
+ 
+     if (!feature_level_10_1_supported(info, shader_model))
+@@ -2351,7 +2354,9 @@ static void wined3d_adapter_vk_init_d3d_info(struct wined3d_adapter_vk *adapter_
+     d3d_info->full_ffp_varyings = !!(shader_caps.wined3d_caps & WINED3D_SHADER_CAP_FULL_FFP_VARYINGS);
+     d3d_info->scaled_resolve = false;
+     d3d_info->pbo = true;
+-    d3d_info->feature_level = feature_level_from_caps(&device_info, &shader_caps);
++    adapter_vk->pipeline_statistics_query = device_info.features2.features.pipelineStatisticsQuery;
++    d3d_info->feature_level = feature_level_from_caps(&device_info, &shader_caps,
++            adapter_vk->driver_properties.driverID == VK_DRIVER_ID_MOLTENVK);
+     d3d_info->subpixel_viewport = true;
+     d3d_info->fences = true;
+     d3d_info->persistent_map = true;
+diff --git a/dlls/wined3d/query.c b/dlls/wined3d/query.c
+index 26e4f5e51f2..81f21ff242c 100644
+--- a/dlls/wined3d/query.c
++++ b/dlls/wined3d/query.c
+@@ -1761,6 +1761,30 @@ static const struct wined3d_query_ops wined3d_query_vk_ops =
+     .query_destroy = wined3d_query_vk_destroy,
+ };
+ 
++/* Pipeline statistics on a device without pipelineStatisticsQuery (MoltenVK:
++ * Metal has none) complete at once with zero counts. */
++static BOOL wined3d_query_zero_vk_poll(struct wined3d_query *query, uint32_t flags)
++{
++    return TRUE;
++}
++
++static BOOL wined3d_query_zero_vk_issue(struct wined3d_query *query, uint32_t flags)
++{
++    return FALSE;
++}
++
++static void wined3d_query_zero_vk_destroy(struct wined3d_query *query)
++{
++    free(wined3d_query_vk(query));
++}
++
++static const struct wined3d_query_ops wined3d_query_zero_vk_ops =
++{
++    .query_poll = wined3d_query_zero_vk_poll,
++    .query_issue = wined3d_query_zero_vk_issue,
++    .query_destroy = wined3d_query_zero_vk_destroy,
++};
++
+ static BOOL wined3d_query_event_vk_poll(struct wined3d_query *query, uint32_t flags)
+ {
+     struct wined3d_device_vk *device_vk = wined3d_device_vk(query->device);
+@@ -1935,6 +1959,11 @@ HRESULT wined3d_query_vk_create(struct wined3d_device *device, enum wined3d_quer
+             break;
+ 
+         case WINED3D_QUERY_TYPE_PIPELINE_STATISTICS:
++            if (!wined3d_adapter_vk(device->adapter)->pipeline_statistics_query)
++            {
++                WARN("Pipeline statistics queries not supported, their counts will be zero.\n");
++                ops = &wined3d_query_zero_vk_ops;
++            }
+             data_size = sizeof(struct wined3d_query_data_pipeline_statistics);
+             break;
+ 
+diff --git a/dlls/wined3d/wined3d_vk.h b/dlls/wined3d/wined3d_vk.h
+index ae3c3a3ea91..54daf1cee3d 100644
+--- a/dlls/wined3d/wined3d_vk.h
++++ b/dlls/wined3d/wined3d_vk.h
+@@ -836,6 +836,7 @@ struct wined3d_adapter_vk
+     VkPhysicalDeviceLimits device_limits;
+     VkPhysicalDeviceMemoryProperties memory_properties;
+     VkPhysicalDeviceDriverProperties driver_properties;
++    bool pipeline_statistics_query;
+ };
+ 
+ static inline struct wined3d_adapter_vk *wined3d_adapter_vk(struct wined3d_adapter *adapter)
+-- 
+2.54.0 (Apple Git-157)
+

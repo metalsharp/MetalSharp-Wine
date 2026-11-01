@@ -1,0 +1,366 @@
+From 547bc61c868a16560f59bb8ff4507a8c52df08a2 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Sun, 1 Nov 2026 08:33:44 -0700
+Subject: [PATCH 091/100] win32u: Draw child windows whose parent belongs to
+ another process.
+
+A child window can't paint into a window surface of another process, so
+such windows (a launcher's page hosted in a parent from another process,
+and the like) stayed blank. Give them a window surface in a shared
+section; on each flush the parent's process maps it and draws the dirty
+part into the child with WM_WINE_FLUSHSHMSURFACE.
+
+From CrossOver 26.3 (CodeWeavers, LGPL 2.1 or later), CX HACK 23950.
+Changed from CrossOver's: adapted to Wine 11.20's window surface
+functions; the surface's creation reference is released after
+apply_window_pos (CrossOver leaked every surface, and with it the section
+in the parent); a surface is reused only for the same parent; the
+section is duplicated for reading only.
+---
+ dlls/win32u/dce.c            | 205 +++++++++++++++++++++++++++++++++++
+ dlls/win32u/message.c        |   9 ++
+ dlls/win32u/win32u_private.h |   3 +
+ dlls/win32u/window.c         |  18 ++-
+ include/ntuser.h             |  10 ++
+ 5 files changed, 244 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/win32u/dce.c b/dlls/win32u/dce.c
+index 67d3dc84bc7..70d67bca467 100644
+--- a/dlls/win32u/dce.c
++++ b/dlls/win32u/dce.c
+@@ -732,6 +732,211 @@ void window_surface_set_shape( struct window_surface *surface, HRGN shape_region
+     window_surface_flush( surface );
+ }
+ 
++/* CX HACK 23950 - START
++ *
++ * A child window whose parent belongs to another process can't paint into the
++ * parent's window surface. Give it a surface in a shared section and have the
++ * parent's process draw the dirty part into the window whenever it is flushed.
++ *
++ * Modified for MetalSharp Wine: adapted to Wine 11.20's window surface
++ * functions, and the section handle duplicated into the parent is closed even
++ * when its process can't be opened for anything else.
++ */
++
++struct shm_window_surface
++{
++    struct window_surface header;
++    HANDLE      section;  /* the section, as a handle in the parent's process */
++    HWND        parent;
++    BITMAPINFO  info;
++};
++
++static struct shm_window_surface *get_shm_surface( struct window_surface *surface )
++{
++    return CONTAINING_RECORD( surface, struct shm_window_surface, header );
++}
++
++static void shm_surface_set_clip( struct window_surface *window_surface, const RECT *rects, UINT count )
++{
++}
++
++static BOOL shm_surface_flush( struct window_surface *window_surface, const RECT *rect, const RECT *dirty,
++                               const BITMAPINFO *color_info, const void *color_bits, BOOL shape_changed,
++                               const BITMAPINFO *shape_info, const void *shape_bits )
++{
++    struct shm_window_surface *surface = get_shm_surface( window_surface );
++    struct flush_shm_surface_params params;
++
++    TRACE( "surface %p, dirty %s\n", surface, wine_dbgstr_rect( dirty ) );
++
++    params.section = HandleToLong( surface->section );
++    params.hwnd = HandleToLong( surface->header.hwnd );
++    params.info = surface->info;
++    params.bounds = *dirty;
++
++    return send_message_timeout( surface->parent, WM_WINE_FLUSHSHMSURFACE, 0, (LPARAM)&params,
++                                 SMTO_ABORTIFHUNG | SMTO_BLOCK, 500, FALSE );
++}
++
++static HANDLE open_window_process( HWND hwnd )
++{
++    OBJECT_ATTRIBUTES attr = { .Length = sizeof(attr) };
++    CLIENT_ID cid = { 0 };
++    HANDLE process;
++    unsigned int status;
++    DWORD pid;
++
++    get_window_thread( hwnd, &pid );
++    cid.UniqueProcess = ULongToHandle( pid );
++    if ((status = NtOpenProcess( &process, PROCESS_DUP_HANDLE, &attr, &cid )))
++    {
++        ERR( "NtOpenProcess failed: %#x\n", status );
++        return 0;
++    }
++    return process;
++}
++
++static void shm_surface_destroy( struct window_surface *window_surface )
++{
++    struct shm_window_surface *surface = get_shm_surface( window_surface );
++    unsigned int status;
++    HANDLE process;
++
++    TRACE( "freeing %p\n", surface );
++    if (surface->section && (process = open_window_process( surface->parent )))
++    {
++        if ((status = NtDuplicateObject( process, surface->section, 0, NULL, 0, 0, DUPLICATE_CLOSE_SOURCE )))
++            ERR( "NtDuplicateObject failed: %#x\n", status );
++        NtClose( process );
++    }
++}
++
++static const struct window_surface_funcs shm_surface_funcs =
++{
++    .size = sizeof(struct shm_window_surface),
++    .set_clip = shm_surface_set_clip,
++    .flush = shm_surface_flush,
++    .destroy = shm_surface_destroy,
++};
++
++struct window_surface *create_shm_surface( HWND hwnd, HWND parent, const RECT *visible_rect,
++                                           struct window_surface *old_surface )
++{
++    struct shm_window_surface *surface;
++    struct window_surface *window_surface;
++    LARGE_INTEGER section_size;
++    HANDLE mapping, process;
++    unsigned int status;
++    BITMAPINFO info;
++    HBITMAP bitmap;
++    RECT rect;
++
++    TRACE( "hwnd %p, parent %p, visible_rect %s\n", hwnd, parent, wine_dbgstr_rect( visible_rect ) );
++
++    rect = *visible_rect;
++    OffsetRect( &rect, -rect.left, -rect.top );
++    if (IsRectEmpty( &rect )) return NULL;
++
++    if (old_surface && old_surface->funcs == &shm_surface_funcs && EqualRect( &old_surface->rect, &rect ) &&
++        get_shm_surface( old_surface )->parent == parent)
++    {
++        TRACE( "reusing surface %p\n", old_surface );
++        window_surface_add_ref( old_surface );
++        return old_surface;
++    }
++
++    memset( &info, 0, sizeof(info) );
++    info.bmiHeader.biSize        = sizeof(info.bmiHeader);
++    info.bmiHeader.biWidth       = rect.right;
++    info.bmiHeader.biHeight      = -rect.bottom; /* top-down */
++    info.bmiHeader.biPlanes      = 1;
++    info.bmiHeader.biBitCount    = 32;
++    info.bmiHeader.biSizeImage   = get_dib_image_size( &info );
++    info.bmiHeader.biCompression = BI_RGB;
++
++    section_size.QuadPart = info.bmiHeader.biSizeImage;
++    if ((status = NtCreateSection( &mapping, GENERIC_READ | SECTION_MAP_READ | SECTION_MAP_WRITE,
++                                   NULL, &section_size, PAGE_READWRITE, SEC_COMMIT, 0 )))
++    {
++        ERR( "NtCreateSection failed: %#x\n", status );
++        return NULL;
++    }
++
++    if (!(bitmap = NtGdiCreateDIBSection( 0, mapping, 0, &info, DIB_RGB_COLORS, 0, 0, 0, NULL )))
++    {
++        ERR( "NtGdiCreateDIBSection failed\n" );
++        NtClose( mapping );
++        return NULL;
++    }
++
++    if (!(window_surface = window_surface_create( &shm_surface_funcs, hwnd, &rect, &info, bitmap )))
++    {
++        NtGdiDeleteObjectApp( bitmap );
++        NtClose( mapping );
++        return NULL;
++    }
++    surface = get_shm_surface( window_surface );
++    surface->info = info;
++    surface->parent = parent;
++
++    if (!(process = open_window_process( parent )))
++    {
++        window_surface_release( window_surface );
++        NtClose( mapping );
++        return NULL;
++    }
++    status = NtDuplicateObject( GetCurrentProcess(), mapping, process, &surface->section,
++                                SECTION_MAP_READ, 0, 0 );
++    NtClose( process );
++    NtClose( mapping );
++    if (status)
++    {
++        ERR( "NtDuplicateObject failed: %#x\n", status );
++        surface->section = 0;
++        window_surface_release( window_surface );
++        return NULL;
++    }
++
++    TRACE( "created surface %p for hwnd %p, parent %p\n", surface, hwnd, parent );
++    return window_surface;
++}
++
++/* runs in the parent's process: draws the dirty part of a child's shm surface into the child */
++void process_surface_message( struct flush_shm_surface_params *params )
++{
++    HANDLE mapping = LongToHandle( params->section );
++    HWND hwnd = LongToHandle( params->hwnd );
++    SIZE_T view_size = 0;
++    unsigned int height, status;
++    void *bits = NULL;
++    HDC hdc;
++
++    TRACE( "flushing hwnd %p bounds %s\n", hwnd, wine_dbgstr_rect( &params->bounds ) );
++
++    status = NtMapViewOfSection( mapping, GetCurrentProcess(), &bits, 0, 0, NULL, &view_size,
++                                 ViewShare, 0, PAGE_READONLY );
++    if (!bits)
++    {
++        ERR( "NtMapViewOfSection failed: %#x\n", status );
++        return;
++    }
++    height = abs( params->info.bmiHeader.biHeight );
++
++    if ((hdc = NtUserGetDCEx( hwnd, NULL, DCX_CLIPSIBLINGS )))
++    {
++        NtGdiSetDIBitsToDeviceInternal( hdc, params->bounds.left, params->bounds.top,
++                                        params->bounds.right - params->bounds.left,
++                                        params->bounds.bottom - params->bounds.top,
++                                        params->bounds.left, height - params->bounds.bottom, 0, height,
++                                        bits, &params->info, DIB_RGB_COLORS, 0, 0, FALSE, NULL );
++        NtUserReleaseDC( hwnd, hdc );
++    }
++    NtUnmapViewOfSection( GetCurrentProcess(), bits );
++}
++
++/* CX HACK 23950 - END */
++
++
+ /*******************************************************************
+  *           register_window_surface
+  *
+diff --git a/dlls/win32u/message.c b/dlls/win32u/message.c
+index 8dd7ee3f46f..ee8ec699c3b 100644
+--- a/dlls/win32u/message.c
++++ b/dlls/win32u/message.c
+@@ -918,6 +918,9 @@ static BOOL unpack_message( HWND hwnd, UINT message, WPARAM *wparam, LPARAM *lpa
+         memcpy( &ps->hook, &h_extra, sizeof(h_extra) );
+         break;
+     }
++    case WM_WINE_FLUSHSHMSURFACE: /* CX HACK 23950 */
++        minsize = sizeof(struct flush_shm_surface_params);
++        break;
+     case CB_GETCOMBOBOXINFO:
+     {
+         COMBOBOXINFO cbi = { sizeof(COMBOBOXINFO) };
+@@ -1287,6 +1290,9 @@ static size_t pack_message( HWND hwnd, UINT message, WPARAM wparam, LPARAM lpara
+         push_data( data, (LPVOID)h_extra->lparam, sizeof(MSLLHOOKSTRUCT) );
+         return 0;
+     }
++    case WM_WINE_FLUSHSHMSURFACE: /* CX HACK 23950 */
++        push_data( data, (struct flush_shm_surface_params *)lparam, sizeof(struct flush_shm_surface_params) );
++        return 0;
+     case WM_NCPAINT:
+         if (wparam <= 1) return 0;
+         FIXME( "WM_NCPAINT hdc packing not supported yet\n" );
+@@ -2278,6 +2284,9 @@ static LRESULT handle_internal_message( HWND hwnd, UINT msg, WPARAM wparam, LPAR
+         info.dwHoverTime = lparam;
+         return NtUserTrackMouseEvent( &info );
+     }
++    case WM_WINE_FLUSHSHMSURFACE: /* CX HACK 23950 */
++        process_surface_message( (struct flush_shm_surface_params *)lparam );
++        return 1;
+     default:
+         if (msg >= WM_WINE_FIRST_DRIVER_MSG && msg <= WM_WINE_LAST_DRIVER_MSG)
+             return user_driver->pWindowMessage( hwnd, msg, wparam, lparam );
+diff --git a/dlls/win32u/win32u_private.h b/dlls/win32u/win32u_private.h
+index 2c92515a01c..32ebc912d2e 100644
+--- a/dlls/win32u/win32u_private.h
++++ b/dlls/win32u/win32u_private.h
+@@ -55,6 +55,9 @@ extern void move_window_bits_surface( HWND hwnd, const RECT *window_rect, struct
+                                       const RECT *old_visible_rect, const RECT *valid_rects );
+ extern void register_window_surface( struct window_surface *old,
+                                      struct window_surface *new );
++extern struct window_surface *create_shm_surface( HWND hwnd, HWND parent, const RECT *visible_rect,
++                                                  struct window_surface *old_surface );
++extern void process_surface_message( struct flush_shm_surface_params *params );
+ 
+ extern void window_surface_lock( struct window_surface *surface );
+ extern void window_surface_unlock( struct window_surface *surface );
+diff --git a/dlls/win32u/window.c b/dlls/win32u/window.c
+index 03ce3987349..ca1523fb063 100644
+--- a/dlls/win32u/window.c
++++ b/dlls/win32u/window.c
+@@ -2330,9 +2330,20 @@ static BOOL apply_window_pos( HWND hwnd, HWND insert_after, UINT swp_flags, stru
+     struct window_surface *old_surface;
+     HICON icon, icon_small;
+     ICONINFO ii, ii_small;
++    BOOL shm_surface = FALSE;
++    HWND parent;
++
++    /* CX HACK 23950: provide a default shm surface for windows with parents in other process */
++    parent = NtUserGetAncestor( hwnd, GA_PARENT );
++    if (!(swp_flags & SWP_HIDEWINDOW))
++    {
++        win = get_win_ptr( parent );
++        if (win == WND_OTHER_PROCESS) shm_surface = TRUE;
++        else if (win && win != WND_DESKTOP) release_win_ptr( win );
++    }
+ 
+     toplevel = NtUserGetAncestor( hwnd, GA_ROOT );
+-    is_layered = new_surface && new_surface->alpha_mask;
++    is_layered = !shm_surface && new_surface && new_surface->alpha_mask;
+     is_child = toplevel && toplevel != hwnd;
+ 
+     if (is_child) get_win_monitor_dpi( toplevel, &raw_dpi );
+@@ -2343,6 +2354,10 @@ static BOOL apply_window_pos( HWND hwnd, HWND insert_after, UINT swp_flags, stru
+ 
+     if (!(win = get_win_ptr( hwnd )) || win == WND_DESKTOP || win == WND_OTHER_PROCESS) return FALSE;
+     old_surface = win->surface;
++
++    /* CX HACK 23950. The new surface's reference is released at the end. */
++    if (shm_surface) new_surface = create_shm_surface( hwnd, parent, &new_rects->visible, old_surface );
++
+     if (old_surface != new_surface) swp_flags |= SWP_FRAMECHANGED;  /* force refreshing non-client area */
+ 
+     if (new_surface == &dummy_surface) swp_flags |= SWP_NOREDRAW;
+@@ -2501,6 +2516,7 @@ static BOOL apply_window_pos( HWND hwnd, HWND insert_after, UINT swp_flags, stru
+         update_client_surfaces( toplevel );
+     }
+ 
++    if (shm_surface && new_surface) window_surface_release( new_surface );
+     return ret;
+ }
+ 
+diff --git a/include/ntuser.h b/include/ntuser.h
+index be41b33adfd..00a6c7b6624 100644
+--- a/include/ntuser.h
++++ b/include/ntuser.h
+@@ -623,6 +623,15 @@ enum associate_input_context_result
+     AICR_FAILED,
+ };
+ 
++/* WM_WINE_FLUSHSHMSURFACE params, CX HACK 23950 */
++struct flush_shm_surface_params
++{
++    BITMAPINFO info;
++    RECT bounds;
++    ULONG section;
++    ULONG hwnd;
++};
++
+ /* internal messages codes */
+ enum wine_internal_message
+ {
+@@ -640,6 +649,7 @@ enum wine_internal_message
+     WM_WINE_UPDATEWINDOWSTATE,
+     WM_WINE_TRACKMOUSEEVENT,
+     WM_WINE_SETPIXELFORMAT,
++    WM_WINE_FLUSHSHMSURFACE, /* CX HACK 23950 */
+     WM_WINE_FIRST_DRIVER_MSG = 0x80001000,  /* range of messages reserved for the USER driver */
+     WM_WINE_CLIPCURSOR = 0x80001ff0, /* internal driver notification messages */
+     WM_WINE_SETCURSOR,
+-- 
+2.54.0 (Apple Git-157)
+

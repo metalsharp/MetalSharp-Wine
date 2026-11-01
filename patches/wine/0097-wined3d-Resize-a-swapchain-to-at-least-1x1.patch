@@ -1,0 +1,37 @@
+From b7d9bd2cd5424234f154c5f8c8ab682f90356d4b Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Sun, 1 Nov 2026 08:36:15 -0700
+Subject: [PATCH 097/100] wined3d: Resize a swapchain to at least 1x1.
+
+A swapchain resized to zero while its window's client area is empty
+(a minimized window, for one) kept a zero dimension and failed. From
+CrossOver 26.3 (CodeWeavers, LGPL 2.1 or later), CX HACK 23854.
+---
+ dlls/wined3d/swapchain.c | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/dlls/wined3d/swapchain.c b/dlls/wined3d/swapchain.c
+index da236eb6eed..0c01c091d9f 100644
+--- a/dlls/wined3d/swapchain.c
++++ b/dlls/wined3d/swapchain.c
+@@ -2084,6 +2084,17 @@ HRESULT CDECL wined3d_swapchain_resize_buffers(struct wined3d_swapchain *swapcha
+             height = client_rect.bottom;
+     }
+ 
++    /* CX HACK 23854 */
++    if (!width || !height)
++    {
++        ERR("Still have a zero dimension after getting the window's client rect: %u x %u; hacking to 1\n", width, height);
++        if (!width)
++            width = 1;
++
++        if (!height)
++            height = 1;
++    }
++
+     if (width != desc->backbuffer_width || height != desc->backbuffer_height)
+     {
+         desc->backbuffer_width = width;
+-- 
+2.54.0 (Apple Git-157)
+

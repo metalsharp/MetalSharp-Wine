@@ -1,0 +1,46 @@
+From 8878f5f46f61116e15a370a9b64785a8c6b9c778 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Sun, 1 Nov 2026 08:34:10 -0700
+Subject: [PATCH 092/100] win32u: Don't let a hung window stop the painting of
+ others.
+
+WM_NCPAINT is sent as a notification, and WM_ERASEBKGND gives up after a
+second on a window that stopped answering, so a window that hangs while
+painting no longer freezes the thread that paints the windows after it.
+
+From CrossOver 26.3 (CodeWeavers, LGPL 2.1 or later), CW Hacks 20969,
+23394 and 23427.
+---
+ dlls/win32u/dce.c | 9 +++++++--
+ 1 file changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/win32u/dce.c b/dlls/win32u/dce.c
+index 70d67bca467..41dc9e38bd8 100644
+--- a/dlls/win32u/dce.c
++++ b/dlls/win32u/dce.c
+@@ -1801,7 +1801,8 @@ static HRGN send_ncpaint( HWND hwnd, HWND *child, UINT *flags )
+                 if (style & WS_VSCROLL)
+                     set_standard_scroll_painted( hwnd, SB_VERT, FALSE );
+ 
+-                send_message( hwnd, WM_NCPAINT, (WPARAM)whole_rgn, 0 );
++                /* CW Hack 20969, 23427 */
++                send_notify_message( hwnd, WM_NCPAINT, (WPARAM)whole_rgn, 0, FALSE );
+             }
+             if (whole_rgn > (HRGN)1) NtGdiDeleteObjectApp( whole_rgn );
+         }
+@@ -1838,7 +1839,11 @@ static BOOL send_erase( HWND hwnd, UINT flags, HRGN client_rgn,
+             {
+                 /* don't erase if the clip box is empty */
+                 if (type != NULLREGION)
+-                    need_erase = !send_message( hwnd, WM_ERASEBKGND, (WPARAM)hdc, 0 );
++                {
++                    /* CW Hack 23394, 23427 */
++                    need_erase = !send_message_timeout( hwnd, WM_ERASEBKGND, (WPARAM)hdc, 0, SMTO_ABORTIFHUNG, 1000, FALSE );
++                    if (need_erase && RtlGetLastWin32Error() == ERROR_TIMEOUT) ERR( "timeout.\n" );
++                }
+             }
+             if (!hdc_ret) release_dc( hwnd, hdc, TRUE );
+         }
+-- 
+2.54.0 (Apple Git-157)
+

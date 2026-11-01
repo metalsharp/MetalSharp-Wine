@@ -33,6 +33,26 @@ Some WineForge notices were rebranded on the way into MetalSharp. In particular,
 
 [WFDXCompat](https://github.com/metalsharp/MetalSharp-Wine/tree/source/wfdxcompat), WineForge's DirectX compatibility companion by Radim Vesely, is carried with its LGPL 2.1 license. MetalSharp Wine's change to it (running the companion on Mullion as ARM64EC) is a separate commit on top.
 
+## CrossOver
+
+Some macOS display, painting and wined3d fixes come from the Wine in CodeWeavers' CrossOver 26.3 source release, which is LGPL 2.1 or later like Wine. CrossOver marks them as hacks with its bug numbers, and the ports keep those markers. Where MetalSharp Wine changed the code, the source says "Modified for MetalSharp Wine" next to it.
+
+| Patch (`patches/wine/`) | CrossOver origin | What MetalSharp Wine changed |
+| --- | --- | --- |
+| 0088 winemac display modes | Hack 18576: modes without kDisplayModeSafeFlag on Apple silicon | On for every native arm64 build (CrossOver checks for Rosetta) |
+| 0089 winemac focus events | Hack 18896: keep a window's focus event when Wine makes it key | Ported |
+| 0090 winemac BC7 textures | Hack 23422: decode BC7 2D array textures for OpenGL, credited to nastys; bcdec by iOrange (MIT or Unlicense) | Decodes every layer, keeps edge blocks inside the rows, handles a failed allocation |
+| 0091 win32u cross-process child windows | Hack 23950: shared-memory window surface for a child of another process's window | Adapted to Wine 11.20's window surfaces; no longer leaks a surface and its section per window |
+| 0092 win32u painting | Hacks 20969, 23394, 23427: WM_NCPAINT as a notification, WM_ERASEBKGND with a timeout | Ported |
+| 0093 wined3d driver properties | Vulkan driver ID query | Ported |
+| 0094 wined3d viewports | Bug 22877: no multiple viewports on MoltenVK | Ported |
+| 0095 wined3d render area | Hack 20098: render area of attachment-less draws trimmed to the viewport on MoltenVK | Viewport's sign and framebuffer bounds fixed |
+| 0096 wined3d swapchain images | Bug 18838: three swapchain images on MoltenVK | Ported |
+| 0097 wined3d swapchain size | Hack 23854: a swapchain of at least 1x1 | Ported |
+| 0098 wined3d GL format check | Hack 18775: no framebuffer check for GL_RGB_422_APPLE cube maps | Ported |
+
+0099 (Wine brought to the front when it shows a window) and 0100 (wined3d's Vulkan renderer at feature level 10 and above on MoltenVK) are MetalSharp Wine's own.
+
 ## Other upstream projects
 
 | Project | Authors | License | Source of what we ship |

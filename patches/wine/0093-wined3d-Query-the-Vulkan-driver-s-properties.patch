@@ -1,0 +1,50 @@
+From 804ebbcab29bb975f73f45f0ded98860a717be70 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Sun, 1 Nov 2026 08:34:51 -0700
+Subject: [PATCH 093/100] wined3d: Query the Vulkan driver's properties.
+
+The MoltenVK workarounds that follow need the driver ID. From CrossOver
+26.3 (CodeWeavers, LGPL 2.1 or later).
+---
+ dlls/wined3d/adapter_vk.c | 5 +++++
+ dlls/wined3d/wined3d_vk.h | 1 +
+ 2 files changed, 6 insertions(+)
+
+diff --git a/dlls/wined3d/adapter_vk.c b/dlls/wined3d/adapter_vk.c
+index b761f4c4753..79f92ecb322 100644
+--- a/dlls/wined3d/adapter_vk.c
++++ b/dlls/wined3d/adapter_vk.c
+@@ -2426,6 +2426,7 @@ static bool wined3d_adapter_vk_init_device_extensions(struct wined3d_adapter_vk
+         {VK_KHR_SAMPLER_YCBCR_CONVERSION_EXTENSION_NAME,    VK_API_VERSION_1_1},
+         {VK_KHR_SHADER_DRAW_PARAMETERS_EXTENSION_NAME,      VK_API_VERSION_1_1},
+         {VK_KHR_SWAPCHAIN_EXTENSION_NAME,                   ~0u,                true},
++        {VK_KHR_DRIVER_PROPERTIES_EXTENSION_NAME,           VK_API_VERSION_1_2},
+         /* KHR_synchronization2 is required for KHR_video_queue. */
+         {VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME,           ~0u},
+         {VK_KHR_VIDEO_DECODE_H264_EXTENSION_NAME,           ~0u},
+@@ -2579,6 +2580,10 @@ static BOOL wined3d_adapter_vk_init(struct wined3d_adapter_vk *adapter_vk,
+     else
+         minmax = NULL;
+ 
++    memset(&adapter_vk->driver_properties, 0, sizeof(adapter_vk->driver_properties));
++    adapter_vk->driver_properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES;
++    id_properties.pNext = &adapter_vk->driver_properties;
++
+     if (vk_info->vk_ops.vkGetPhysicalDeviceProperties2)
+         VK_CALL(vkGetPhysicalDeviceProperties2(adapter_vk->physical_device, &properties2));
+     else
+diff --git a/dlls/wined3d/wined3d_vk.h b/dlls/wined3d/wined3d_vk.h
+index 74a4f5ccc75..03fb7457c6e 100644
+--- a/dlls/wined3d/wined3d_vk.h
++++ b/dlls/wined3d/wined3d_vk.h
+@@ -834,6 +834,7 @@ struct wined3d_adapter_vk
+ 
+     VkPhysicalDeviceLimits device_limits;
+     VkPhysicalDeviceMemoryProperties memory_properties;
++    VkPhysicalDeviceDriverProperties driver_properties;
+ };
+ 
+ static inline struct wined3d_adapter_vk *wined3d_adapter_vk(struct wined3d_adapter *adapter)
+-- 
+2.54.0 (Apple Git-157)
+

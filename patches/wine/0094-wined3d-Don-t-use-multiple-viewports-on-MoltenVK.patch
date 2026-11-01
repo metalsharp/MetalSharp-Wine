@@ -1,0 +1,29 @@
+From 60147fc605eefdf657a4785109b264a3d168fb2f Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Sun, 1 Nov 2026 08:34:51 -0700
+Subject: [PATCH 094/100] wined3d: Don't use multiple viewports on MoltenVK.
+
+They make several games glitch on MoltenVK. From CrossOver 26.3
+(CodeWeavers, LGPL 2.1 or later), CrossOver bug 22877.
+---
+ dlls/wined3d/adapter_vk.c | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/wined3d/adapter_vk.c b/dlls/wined3d/adapter_vk.c
+index 79f92ecb322..ec7dd61f7ee 100644
+--- a/dlls/wined3d/adapter_vk.c
++++ b/dlls/wined3d/adapter_vk.c
+@@ -2368,7 +2368,9 @@ static void wined3d_adapter_vk_init_d3d_info(struct wined3d_adapter_vk *adapter_
+ 
+     d3d_info->multisample_draw_location = WINED3D_LOCATION_TEXTURE_RGB;
+ 
+-    vk_info->multiple_viewports = device_info.features2.features.multiViewport;
++    /* HACK: Disable multiple viewports when running with MoltenVK. As of writing, it causes glitches in multiple games. */
++    if (adapter_vk->driver_properties.driverID != VK_DRIVER_ID_MOLTENVK)
++        vk_info->multiple_viewports = device_info.features2.features.multiViewport;
+     vk_info->uav_read_without_format = device_info.features2.features.shaderStorageImageReadWithoutFormat;
+     vk_info->dynamic_state2 = device_info.dynamic_state2_features.extendedDynamicState2;
+     vk_info->dynamic_patch_vertex_count = device_info.dynamic_state2_features.extendedDynamicState2PatchControlPoints;
+-- 
+2.54.0 (Apple Git-157)
+
