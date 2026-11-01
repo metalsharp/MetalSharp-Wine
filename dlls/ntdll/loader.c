@@ -4327,6 +4327,7 @@ static void load_global_options(void)
 static void load_hide_wine_exports(void)
 {
     static const WCHAR value_name[] = L"HideWineExports";
+    static const WCHAR * const default_apps[] = { L"witcher3.exe", L"GoWR.exe" };
     const WCHAR *p, *appname = NtCurrentTeb()->Peb->ProcessParameters->ImagePathName.Buffer;
     WCHAR app_key[MAX_PATH + 20], buffer[64];
     KEY_VALUE_PARTIAL_INFORMATION *info = (KEY_VALUE_PARTIAL_INFORMATION *)buffer;
@@ -4335,6 +4336,18 @@ static void load_hide_wine_exports(void)
     HANDLE root, config_key, hkey;
     ULONG size;
     int i;
+
+    /* MetalSharp: on for the programs known to refuse what they need under Wine, unless the registry says
+     * otherwise: The Witcher 3 starts NVIDIA Streamline (DLSS) only without wine_get_version, and God of War
+     * Ragnarok's PlayStation PC SDK quits on Wine's exports */
+    if (appname)
+    {
+        const WCHAR *name = appname;
+        if ((p = wcsrchr( name, '/' ))) name = p + 1;
+        if ((p = wcsrchr( name, '\\' ))) name = p + 1;
+        for (i = 0; i < ARRAY_SIZE(default_apps); i++)
+            if (!wcsicmp( name, default_apps[i] )) hide_wine_exports = TRUE;
+    }
 
     RtlOpenCurrentUser( KEY_READ, &root );
     InitializeObjectAttributes( &attr, &nameW, OBJ_CASE_INSENSITIVE, root, NULL );
