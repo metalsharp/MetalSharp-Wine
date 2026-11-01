@@ -5,10 +5,12 @@
 #   install/lib/mullion/{aarch64-windows,i386-windows,aarch64-unix}   the runtime
 #   install/lib/wine/{aarch64,i386}-windows/winemetal.dll, aarch64-unix/winemetal.so
 #   install/lib/wine/aarch64-windows/nvngx.dll     NGX core for DLSS on MetalFX, signed (see below)
+#   install/lib/wine/aarch64-windows/nvapi64.dll   NVAPI, for DLSS games (Streamline loads it from System32)
 # nvngx.dll is signed with Mullion's NGX key when MULLION_NGX_SIGNING_KEY_FILE names it (a PEM private key; the
 # certificate is src/mullion/src/nvngx/signing/mullion-ngx.pem): NVIDIA's NGX library loads only a signed core, and
-# Mullion's DXGI trusts the certificate with MULLION_ENABLE_NVEXT=1. As a Wine builtin it reaches every prefix's
-# System32, where NGX looks. nvapi64.dll stays in lib/mullion only: Steam's processes hang where they can load it.
+# Mullion's DXGI trusts the certificate with NVEXT on. As Wine builtins both reach every prefix's System32, where
+# NGX and Streamline look; nvapi64.dll loads only in a program Mullion shows an NVIDIA GPU (a DLSS game, which
+# MetalSharp Wine sets up), so Steam and other programs find no NVAPI, as on another vendor's GPU.
 # winemetal is a new module name for Wine, so wineboot creates its placeholder in every prefix;
 # d3d11/dxgi/... are routed to the runtime only for processes with GRAPHICS_BACKEND=dxmt.
 set -e
@@ -53,6 +55,7 @@ cp $M/LICENSE $R/LICENSE
 echo "Mullion $(git -C $M rev-parse --short HEAD)" > $R/VERSION
 
 cp $R/aarch64-windows/winemetal.dll $R/aarch64-windows/nvngx.dll $I/lib/wine/aarch64-windows/
+mv $R/aarch64-windows/nvapi64.dll $I/lib/wine/aarch64-windows/
 cp $R/i386-windows/winemetal.dll $I/lib/wine/i386-windows/
 rm -f $I/lib/wine/aarch64-unix/winemetal.so; cp $R/aarch64-unix/winemetal.so $I/lib/wine/aarch64-unix/
 echo "mullion: $R ($(cat $R/VERSION))"
