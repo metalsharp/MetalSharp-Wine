@@ -1,5 +1,5 @@
 /* metalfxdisplay: prints the display a program sees (screen metrics, the primary monitor, the current, registry
- * and largest modes, DXGI's output), to check that a MetalFX game is shown the display divided by its factor */
+ * and largest modes, DXGI's output, the adapter's LUID), to check that a MetalFX game is shown the display divided by its factor */
 #define COBJMACROS
 #define INITGUID
 #include <windows.h>
@@ -35,6 +35,16 @@ int main(void)
         IDXGIOutput_GetDesc(output, &desc);
         printf("dxgi output %ldx%ld\n", desc.DesktopCoordinates.right - desc.DesktopCoordinates.left,
                desc.DesktopCoordinates.bottom - desc.DesktopCoordinates.top);
+    }
+    {
+        struct { WCHAR DeviceName[32]; UINT hAdapter; LUID AdapterLuid; UINT VidPnSourceId; } open = {0};
+        LONG (WINAPI *open_adapter)(void *) = (void *)GetProcAddress(GetModuleHandleA("gdi32.dll"),
+                                                                     "D3DKMTOpenAdapterFromGdiDisplayName");
+        MONITORINFOEXW mi = {.cbSize = sizeof(mi)};
+        GetMonitorInfoW(MonitorFromPoint((POINT){0, 0}, MONITOR_DEFAULTTOPRIMARY), (MONITORINFO *)&mi);
+        lstrcpyW(open.DeviceName, mi.szDevice);
+        if (open_adapter && !open_adapter(&open))
+            printf("adapter luid %#lx:%#lx\n", open.AdapterLuid.HighPart, open.AdapterLuid.LowPart);
     }
     hwnd = CreateWindowExW(0, L"static", L"metalfx", WS_POPUP | WS_VISIBLE, 0, 0, info.rcMonitor.right,
                            info.rcMonitor.bottom, NULL, NULL, NULL, NULL);

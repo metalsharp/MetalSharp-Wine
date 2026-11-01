@@ -1,0 +1,410 @@
+From 0b02dcd58f439ce9b61cb0497f31afef82991a21 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Sun, 1 Nov 2026 14:32:01 -0700
+Subject: [PATCH] ntdll, win32u: winemac.conf names the GPU a game sees in
+ Windows' device list.
+
+A game's [program.exe] section of winemac.conf ($WINEMAC_CONFIG_FILE, or next to $MULLION_CONFIG_FILE) sets
+gpu.vendorId, gpu.deviceId, gpu.description and gpu.driverVersion (NVIDIA's 617.14, or a Windows version).
+Windows has one device list for every program, so when a game MetalSharp launched starts, win32u registers
+its GPU (the Mac's own for a game without a section) where that differs from the one registered, and the
+volatile HKLM\Software\Wine\MetalSharp\RegisteredGpu says which. The driver version is written for SetupAPI,
+WMI and DirectX alike. The first GPU keeps one LUID for the session (PrimaryGpuLuid), whichever is registered:
+Streamline, NVAPI and D3D match adapters by LUID, and a GPU registered anew got a new one.
+
+The Witcher 3's Streamline DLSS needs an NVIDIA GPU there with driver 617.14 or later.
+---
+ dlls/ntdll/unix/saved_resolution.c | 127 ++++++++++++++++++++++--
+ dlls/win32u/sysparams.c            | 152 ++++++++++++++++++++++++++++-
+ include/wine/unixlib.h             |   2 +
+ 3 files changed, 271 insertions(+), 10 deletions(-)
+
+diff --git a/dlls/ntdll/unix/saved_resolution.c b/dlls/ntdll/unix/saved_resolution.c
+index 3b2d4542675..98668f26842 100644
+--- a/dlls/ntdll/unix/saved_resolution.c
++++ b/dlls/ntdll/unix/saved_resolution.c
+@@ -201,27 +201,134 @@ static char *read_file( const char *path, size_t *size )
+     return data;
+ }
+ 
++/* a game MetalSharp started, whose folder has its launch.env: Steam and the programs it starts inherit
++ * MetalSharp's configuration too, and Wine's own programs (explorer, services) the environment of the program
++ * that started them */
++static BOOL is_launched_game( const char *exe )
++{
++    const char *exe_name = strrchr( exe, '/' );
++    char env_path[PATH_MAX];
++    struct stat st;
++
++    if (!exe_name || exe_name - exe + sizeof("/.metalsharp/launch.env") > sizeof(env_path)) return FALSE;
++    snprintf( env_path, sizeof(env_path), "%.*s/.metalsharp/launch.env", (int)(exe_name - exe), exe );
++    if (stat( env_path, &st ) || !S_ISREG( st.st_mode )) return FALSE;
++    return !strcasestr( exe, "/windows/system32/" ) && !strcasestr( exe, "/windows/syswow64/" );
++}
++
++/* MetalSharp: the GPU a game is shown in Windows' device list (SetupAPI, WMI, the display adapter's registry
++ * keys), from its [program.exe] section of winemac.conf ($WINEMAC_CONFIG_FILE, or winemac.conf next to
++ * $MULLION_CONFIG_FILE):
++ *     gpu.vendorId = 10de                          PCI vendor and device, in hex
++ *     gpu.deviceId = 2704
++ *     gpu.description = "NVIDIA GeForce RTX 4080"
++ *     gpu.driverVersion = 617.14                   NVIDIA's numbering, or a Windows driver version (35.0.16.1714)
++ * Windows has one device list for every program, so win32u registers the GPU of the game that starts (the Mac's
++ * own for a game without a section) when it differs from the one registered; other programs leave it. */
++static int gpu_override = -1;  /* -1 not a game, 0 a game shown the Mac's GPU, 1 a game shown gpu_* */
++static unsigned int gpu_vendor, gpu_device;
++static char gpu_description[128], gpu_driver_version[32];
++
++static void parse_gpu_line( BOOL *active, const char *exe_name, const char *line, const char *end )
++{
++    char key[64], value[128];
++    size_t len = 0, vlen = 0;
++    BOOL quoted = FALSE;
++
++    while (line < end && (*line == ' ' || *line == '\t')) line++;
++    if (line >= end || *line == '#') return;
++    if (*line == '[')
++    {
++        const char *close = memchr( line, ']', end - line );
++        *active = close && (size_t)(close - line - 1) == strlen( exe_name ) &&
++                  !strncasecmp( line + 1, exe_name, close - line - 1 );
++        return;
++    }
++    while (line < end && len < sizeof(key) - 1 && (isalnum( (unsigned char)*line ) || *line == '.' || *line == '_'))
++        key[len++] = *line++;
++    key[len] = 0;
++    while (line < end && (*line == ' ' || *line == '\t')) line++;
++    if (!*active || !len || line >= end || *line++ != '=') return;
++    while (line < end && (*line == ' ' || *line == '\t')) line++;
++    for (; line < end && vlen < sizeof(value) - 1; line++)
++    {
++        if (!quoted && (*line == ' ' || *line == '\t' || *line == '\r' || *line == '#')) break;
++        if (*line == '"') quoted = !quoted;
++        else value[vlen++] = *line;
++    }
++    value[vlen] = 0;
++
++    if (!strcasecmp( key, "gpu.vendorId" )) gpu_vendor = strtoul( value, NULL, 16 );
++    else if (!strcasecmp( key, "gpu.deviceId" )) gpu_device = strtoul( value, NULL, 16 );
++    else if (!strcasecmp( key, "gpu.description" ))
++        snprintf( gpu_description, sizeof(gpu_description), "%s", value );
++    else if (!strcasecmp( key, "gpu.driverVersion" ))
++    {
++        unsigned int major, minor, a, b, c, d;
++        /* NVIDIA's 617.14 is Windows' x.x.16.1714: the last five digits, with 10 added before the last four */
++        if (sscanf( value, "%u.%u.%u.%u", &a, &b, &c, &d ) == 4)
++            snprintf( gpu_driver_version, sizeof(gpu_driver_version), "%u.%u.%u.%u", a, b, c, d );
++        else if (sscanf( value, "%u.%u", &major, &minor ) == 2 && major < 1000 && minor < 100)
++            snprintf( gpu_driver_version, sizeof(gpu_driver_version), "35.0.%u.%04u",
++                      10 + (major * 100 + minor) / 10000, (major * 100 + minor) % 10000 );
++    }
++}
++
++static void init_gpu_override( const char *exe )
++{
++    const char *exe_name = strrchr( exe, '/' ) ? strrchr( exe, '/' ) + 1 : exe;
++    const char *file = getenv( "WINEMAC_CONFIG_FILE" ), *mullion = getenv( "MULLION_CONFIG_FILE" ), *slash;
++    char path[PATH_MAX], *text, *line, *end;
++    BOOL active = FALSE;
++    size_t size;
++
++    gpu_override = -1;
++    if (!is_launched_game( exe )) return;
++    gpu_override = 0;
++    if (!file && mullion && (slash = strrchr( mullion, '/' )) &&
++        snprintf( path, sizeof(path), "%.*s/winemac.conf", (int)(slash - mullion), mullion ) < sizeof(path))
++        file = path;
++    if (!file || !(text = read_file( file, &size ))) return;
++    for (line = text; *line; line = *end ? end + 1 : end)
++    {
++        if (!(end = strchr( line, '\n' ))) end = line + strlen( line );
++        parse_gpu_line( &active, exe_name, line, end );
++    }
++    free( text );
++    if (!gpu_vendor || !gpu_device) return;
++    gpu_override = 1;
++    MESSAGE( "MetalSharp: %s is shown the GPU %04x:%04x %s, driver %s\n", exe_name, gpu_vendor, gpu_device,
++             gpu_description, gpu_driver_version[0] ? gpu_driver_version : "(Wine's)" );
++}
++
++/* -1 for a program that is not a game MetalSharp started, 0 for one shown the Mac's GPU, 1 for one shown the GPU
++ * of its winemac.conf section (empty strings for the description and driver version it does not set) */
++int ntdll_get_gpu_override( unsigned int *vendor, unsigned int *device, const char **description,
++                            const char **driver_version )
++{
++    if (gpu_override == 1)
++    {
++        *vendor = gpu_vendor;
++        *device = gpu_device;
++        *description = gpu_description;
++        *driver_version = gpu_driver_version;
++    }
++    return gpu_override;
++}
++
+ static void init_metalfx_scale( const char *exe )
+ {
+     struct metalfx_options options = {{-1, -1}, {0, 0}};
+     const char *file = getenv( "MULLION_CONFIG_FILE" ), *line = getenv( "MULLION_CONFIG" );
+     const char *backend = getenv( "GRAPHICS_BACKEND" ), *swapchain = getenv( "MULLION_METALFX_SPATIAL_SWAPCHAIN" );
+     const char *exe_name = strrchr( exe, '/' ) ? strrchr( exe, '/' ) + 1 : exe;
+-    char env_path[PATH_MAX];
+     BOOL active = TRUE, enable;
+-    struct stat st;
+     double factor;
+     char *text;
+     size_t size;
+ 
+     metalfx_scale = 1.0;
+-    /* only a game MetalSharp started, whose folder has its launch.env: Steam and the programs it starts
+-     * inherit Mullion's configuration from MetalSharp too */
+-    if (exe_name == exe || exe_name - exe + sizeof("/.metalsharp/launch.env") > sizeof(env_path)) return;
+-    snprintf( env_path, sizeof(env_path), "%.*s/.metalsharp/launch.env", (int)(exe_name - exe - 1), exe );
+-    if (stat( env_path, &st ) || !S_ISREG( st.st_mode )) return;
+-    /* Wine's own programs (explorer, services) inherit the environment of the program that started them */
+-    if (strcasestr( exe, "/windows/system32/" ) || strcasestr( exe, "/windows/syswow64/" )) return;
++    if (!is_launched_game( exe )) return;
+     if (backend && *backend && strcasecmp( backend, "dxmt" ) && strcasecmp( backend, "mullion" )) return;
+     if (!file && !line && !swapchain) return;
+     if (file && (text = read_file( file, &size )))
+@@ -638,6 +745,7 @@ void fit_saved_resolution( const char *exe, const char *appdata, const char *loc
+     memcpy( dir, exe, slash - exe );
+     dir[slash - exe] = 0;
+     init_metalfx_scale( exe );
++    init_gpu_override( exe );
+     if (!is_game_folder( dir, exe ) || !get_main_display( &display )) return;
+     if (metalfx_scale > 1.0)
+     {
+@@ -674,6 +782,7 @@ void fit_saved_resolution( const char *exe, const char *appdata, const char *loc
+ void fit_saved_resolution( const char *exe, const char *appdata, const char *localappdata )
+ {
+     init_metalfx_scale( exe );
++    init_gpu_override( exe );
+ }
+ 
+ #endif
+diff --git a/dlls/win32u/sysparams.c b/dlls/win32u/sysparams.c
+index 435fc8ce6a3..bed506aeb17 100644
+--- a/dlls/win32u/sysparams.c
++++ b/dlls/win32u/sysparams.c
+@@ -1204,8 +1204,109 @@ static BOOL read_gpu_from_registry( struct gpu *gpu )
+     return TRUE;
+ }
+ 
++/* MetalSharp: the GPU a game is shown in the device list, from its winemac.conf section (ntdll saved_resolution.c).
++ * The device list is the prefix's, so the GPU registered is that of the last game that started; a volatile value
++ * says which, and a game whose GPU differs registers the devices again (lock_display_devices). */
++static const char metalsharp_gpu_keyA[] = "\\Registry\\Machine\\Software\\Wine\\MetalSharp";
++
++static int get_gpu_override( unsigned int *vendor, unsigned int *device, const char **description,
++                             const char **driver_version )
++{
++    static unsigned int cached_vendor, cached_device;
++    static const char *cached_description = "", *cached_driver_version = "";
++    static int cached = -2;
++
++    if (cached == -2)
++        cached = ntdll_get_gpu_override( &cached_vendor, &cached_device, &cached_description,
++                                         &cached_driver_version );
++    if (vendor) *vendor = cached_vendor;
++    if (device) *device = cached_device;
++    if (description) *description = cached_description;
++    if (driver_version) *driver_version = cached_driver_version;
++    return cached;
++}
++
++/* "vvvv:dddd" for a GPU registered from winemac.conf, "mac" for the Mac's own */
++static void gpu_override_identity( char *buffer, size_t size )
++{
++    unsigned int vendor, device;
++
++    if (get_gpu_override( &vendor, &device, NULL, NULL ) == 1) snprintf( buffer, size, "%04x:%04x", vendor, device );
++    else snprintf( buffer, size, "mac" );
++}
++
++static void write_registered_gpu_identity(void)
++{
++    char identity[16];
++    HKEY hkey;
++
++    if (!(hkey = reg_create_ascii_key( NULL, metalsharp_gpu_keyA, REG_OPTION_VOLATILE, NULL ))) return;
++    gpu_override_identity( identity, sizeof(identity) );
++    set_reg_ascii_value( hkey, "RegisteredGpu", identity );
++    NtClose( hkey );
++}
++
++/* the first GPU's LUID for this session: the adapter is the same whichever GPU is registered for it, and
++ * Streamline, NVAPI and D3D match adapters by LUID, so one that changed with the registered GPU is not found */
++static BOOL get_primary_gpu_luid( LUID *luid )
++{
++    char buffer[256];
++    KEY_VALUE_PARTIAL_INFORMATION *value = (void *)buffer;
++    BOOL ret = FALSE;
++    HKEY hkey;
++
++    if (!(hkey = reg_open_ascii_key( NULL, metalsharp_gpu_keyA ))) return FALSE;
++    if (query_reg_ascii_value( hkey, "PrimaryGpuLuid", value, sizeof(buffer) ) && value->Type == REG_QWORD &&
++        value->DataLength == sizeof(*luid))
++    {
++        memcpy( luid, value->Data, sizeof(*luid) );
++        ret = TRUE;
++    }
++    NtClose( hkey );
++    return ret;
++}
++
++static void set_primary_gpu_luid( const LUID *luid )
++{
++    HKEY hkey;
++    WCHAR nameW[16];
++
++    if (!(hkey = reg_create_ascii_key( NULL, metalsharp_gpu_keyA, REG_OPTION_VOLATILE, NULL ))) return;
++    asciiz_to_unicode( nameW, "PrimaryGpuLuid" );
++    set_reg_value( hkey, nameW, REG_QWORD, luid, sizeof(*luid) );
++    NtClose( hkey );
++}
++
++/* a game shown another GPU than the one registered */
++static BOOL gpu_override_pending(void)
++{
++    char buffer[256], identity[16], registered[16] = "mac";
++    KEY_VALUE_PARTIAL_INFORMATION *value = (void *)buffer;
++    ULONG size, i;
++    HKEY hkey;
++
++    if (get_gpu_override( NULL, NULL, NULL, NULL ) < 0) return FALSE;
++    if ((hkey = reg_open_ascii_key( NULL, metalsharp_gpu_keyA )))
++    {
++        if ((size = query_reg_ascii_value( hkey, "RegisteredGpu", value, sizeof(buffer) )) && value->Type == REG_SZ)
++        {
++            for (i = 0; i < value->DataLength / sizeof(WCHAR) && i < sizeof(registered) - 1; i++)
++                registered[i] = ((WCHAR *)value->Data)[i];
++            registered[i] = 0;
++        }
++        NtClose( hkey );
++    }
++    gpu_override_identity( identity, sizeof(identity) );
++    return strcmp( identity, registered ) != 0;
++}
++
+ static const char* driver_vendor_to_version( UINT16 vendor )
+ {
++    unsigned int override_vendor;
++    const char *version;
++
++    if (get_gpu_override( &override_vendor, NULL, NULL, &version ) == 1 && vendor == override_vendor && version[0])
++        return version;
+     /* The last seven digits are the driver number. */
+     switch (vendor)
+     {
+@@ -1730,6 +1831,13 @@ static BOOL write_gpu_to_registry( const struct gpu *gpu, const struct pci_id *p
+     if (hkey)
+     {
+         UINT64 ver = 0x230000000f1ff4; /* Some version in the future. */
++        unsigned int override_vendor, a, b, c, d;
++        const char *version;
++
++        /* MetalSharp: a winemac.conf driver version is the DirectX one too */
++        if (get_gpu_override( &override_vendor, NULL, NULL, &version ) == 1 && pci->vendor == override_vendor &&
++            sscanf( version, "%u.%u.%u.%u", &a, &b, &c, &d ) == 4)
++            ver = ((UINT64)a << 48) | ((UINT64)b << 32) | ((UINT64)c << 16) | d;
+ 
+         asciiz_to_unicode( bufferW, "AdapterLuid" );
+         set_reg_value( hkey, bufferW, REG_QWORD, &gpu->luid, sizeof(gpu->luid) );
+@@ -1807,6 +1915,9 @@ static void add_gpu( const char *name, const struct pci_id *pci_id, const GUID *
+     char buffer[4096];
+     KEY_VALUE_PARTIAL_INFORMATION *value = (void *)buffer;
+     struct gpu_info *vulkan_gpu = NULL, *opengl_gpu = NULL;
++    struct pci_id override_pci;
++    LUID own_luid;
++    BOOL has_own_luid = FALSE;
+     ULONGLONG memory = 0;
+     struct gpu *gpu;
+     unsigned int i;
+@@ -1840,6 +1951,25 @@ static void add_gpu( const char *name, const struct pci_id *pci_id, const GUID *
+     if (!pci_id->vendor && !pci_id->device && vulkan_gpu) pci_id = &vulkan_gpu->pci_id;
+     if (!pci_id->vendor && !pci_id->device && opengl_gpu) pci_id = &opengl_gpu->pci_id;
+ 
++    /* MetalSharp: the GPU a game's winemac.conf section names, in place of the first */
++    if (!gpu->index)
++    {
++        const char *override_name, *override_version;
++        unsigned int override_vendor, override_device;
++
++        if (get_gpu_override( &override_vendor, &override_device, &override_name, &override_version ) == 1)
++        {
++            override_pci = *pci_id;
++            override_pci.vendor = override_vendor;
++            override_pci.device = override_device;
++            override_pci.subsystem = 0;
++            override_pci.revision = 0;
++            pci_id = &override_pci;
++            if (override_name[0]) name = override_name;
++        }
++        write_registered_gpu_identity();
++    }
++
+     name = gpu_device_name( pci_id->vendor, pci_id->device, name );
+     if (!strcmp( name, "Wine Adapter" ) && vulkan_gpu) name = vulkan_gpu->name;
+     if (!strcmp( name, "Wine Adapter" ) && opengl_gpu) name = opengl_gpu->name;
+@@ -1869,9 +1999,19 @@ static void add_gpu( const char *name, const struct pci_id *pci_id, const GUID *
+         NtClose( subkey );
+     }
+ 
++    /* MetalSharp: the first GPU keeps one LUID while the registered GPU changes between the Mac's own and a
++     * game's winemac.conf one, whose device keys differ */
++    if (!gpu->index) has_own_luid = get_primary_gpu_luid( &own_luid );
++
+     if ((subkey = reg_create_ascii_key( hkey, devpropkey_gpu_luidA, 0, NULL )))
+     {
+-        if (query_reg_value( subkey, NULL, value, sizeof(buffer) ) != sizeof(LUID))
++        if (has_own_luid)
++        {
++            gpu->luid = own_luid;
++            set_reg_value( subkey, NULL, 0xffff0000 | DEVPROP_TYPE_UINT64, &gpu->luid, sizeof(gpu->luid) );
++            TRACE("kept luid %08x%08x\n", gpu->luid.HighPart, gpu->luid.LowPart );
++        }
++        else if (query_reg_value( subkey, NULL, value, sizeof(buffer) ) != sizeof(LUID))
+         {
+             NtAllocateLocallyUniqueId( &gpu->luid );
+             TRACE("allocated luid %08x%08x\n", gpu->luid.HighPart, gpu->luid.LowPart );
+@@ -1882,6 +2022,7 @@ static void add_gpu( const char *name, const struct pci_id *pci_id, const GUID *
+             TRACE("got luid %08x%08x\n", gpu->luid.HighPart, gpu->luid.LowPart );
+         }
+         NtClose( subkey );
++        if (!gpu->index && !has_own_luid) set_primary_gpu_luid( &gpu->luid );
+     }
+ 
+     NtClose( hkey );
+@@ -2970,6 +3111,15 @@ static BOOL lock_display_devices( BOOL force )
+     }
+ 
+     if (!force && !update_display_cache_from_registry( serial )) force = TRUE;
++    /* MetalSharp: a game shown another GPU than the one registered registers the devices again, once */
++    {
++        static BOOL gpu_checked;
++        if (!gpu_checked)
++        {
++            gpu_checked = TRUE;
++            if (gpu_override_pending()) force = TRUE;
++        }
++    }
+     if (force)
+     {
+         if (!get_vulkan_gpus( &ctx.vulkan_gpus )) WARN( "Failed to find any Vulkan GPU\n" );
+diff --git a/include/wine/unixlib.h b/include/wine/unixlib.h
+index dc4870306d9..dd5f3c61ba3 100644
+--- a/include/wine/unixlib.h
++++ b/include/wine/unixlib.h
+@@ -258,6 +258,8 @@ NTSYSAPI int ntdll_wcsicmp( const WCHAR *str1, const WCHAR *str2 );
+ NTSYSAPI int ntdll_wcsnicmp( const WCHAR *str1, const WCHAR *str2, int n );
+ /* MetalSharp: the MetalFX upscale factor of this program, 1 without MetalFX (ntdll saved_resolution.c) */
+ NTSYSAPI double ntdll_get_metalfx_scale(void);
++NTSYSAPI int ntdll_get_gpu_override( unsigned int *vendor, unsigned int *device, const char **description,
++                                     const char **driver_version );
+ NTSYSAPI BOOL ntdll_metalfx_size( unsigned int width, unsigned int height, unsigned int *scaled_width,
+                                   unsigned int *scaled_height );
+ 
+-- 
+2.54.0 (Apple Git-157)
+
