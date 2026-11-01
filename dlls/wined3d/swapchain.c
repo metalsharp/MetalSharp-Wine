@@ -2083,6 +2083,17 @@ HRESULT CDECL wined3d_swapchain_resize_buffers(struct wined3d_swapchain *swapcha
             height = client_rect.bottom;
     }
 
+    /* CX HACK 23854 */
+    if (!width || !height)
+    {
+        ERR("Still have a zero dimension after getting the window's client rect: %u x %u; hacking to 1\n", width, height);
+        if (!width)
+            width = 1;
+
+        if (!height)
+            height = 1;
+    }
+
     if (width != desc->backbuffer_width || height != desc->backbuffer_height)
     {
         desc->backbuffer_width = width;
