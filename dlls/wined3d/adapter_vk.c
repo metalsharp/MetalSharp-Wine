@@ -2426,6 +2426,7 @@ static bool wined3d_adapter_vk_init_device_extensions(struct wined3d_adapter_vk 
         {VK_KHR_SAMPLER_YCBCR_CONVERSION_EXTENSION_NAME,    VK_API_VERSION_1_1},
         {VK_KHR_SHADER_DRAW_PARAMETERS_EXTENSION_NAME,      VK_API_VERSION_1_1},
         {VK_KHR_SWAPCHAIN_EXTENSION_NAME,                   ~0u,                true},
+        {VK_KHR_DRIVER_PROPERTIES_EXTENSION_NAME,           VK_API_VERSION_1_2},
         /* KHR_synchronization2 is required for KHR_video_queue. */
         {VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME,           ~0u},
         {VK_KHR_VIDEO_DECODE_H264_EXTENSION_NAME,           ~0u},
@@ -2578,6 +2579,10 @@ static BOOL wined3d_adapter_vk_init(struct wined3d_adapter_vk *adapter_vk,
         properties2.pNext = minmax;
     else
         minmax = NULL;
+
+    memset(&adapter_vk->driver_properties, 0, sizeof(adapter_vk->driver_properties));
+    adapter_vk->driver_properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES;
+    id_properties.pNext = &adapter_vk->driver_properties;
 
     if (vk_info->vk_ops.vkGetPhysicalDeviceProperties2)
         VK_CALL(vkGetPhysicalDeviceProperties2(adapter_vk->physical_device, &properties2));
