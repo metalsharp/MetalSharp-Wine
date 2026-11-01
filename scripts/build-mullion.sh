@@ -4,6 +4,11 @@
 # (D3D10/11 only; Mullion's D3D12 is 64-bit only) and the arm64 unix side, then installs:
 #   install/lib/mullion/{aarch64-windows,i386-windows,aarch64-unix}   the runtime
 #   install/lib/wine/{aarch64,i386}-windows/winemetal.dll, aarch64-unix/winemetal.so
+#   install/lib/wine/aarch64-windows/nvngx.dll     NGX core for DLSS on MetalFX, signed (see below)
+# nvngx.dll is signed with Mullion's NGX key when MULLION_NGX_SIGNING_KEY_FILE names it (a PEM private key; the
+# certificate is src/mullion/src/nvngx/signing/mullion-ngx.pem): NVIDIA's NGX library loads only a signed core, and
+# Mullion's DXGI trusts the certificate with MULLION_ENABLE_NVEXT=1. As a Wine builtin it reaches every prefix's
+# System32, where NGX looks. nvapi64.dll stays in lib/mullion only: Steam's processes hang where they can load it.
 # winemetal is a new module name for Wine, so wineboot creates its placeholder in every prefix;
 # d3d11/dxgi/... are routed to the runtime only for processes with GRAPHICS_BACKEND=dxmt.
 set -e
@@ -16,11 +21,15 @@ mkdir -p $M/toolchains && ln -sfn $ROOT/deps/llvm15 $M/toolchains/llvm
 
 build() {  # build <dir> <cross-file> [meson options]
   local dir=$1 cross=$2; shift 2
-  [[ -f $M/$dir/build.ninja ]] || meson setup $M/$dir $M --cross-file $M/$cross --buildtype release \
+  if [[ -f $M/$dir/build.ninja ]]; then
+    (( $# )) && meson configure $M/$dir "$@" >/dev/null
+  else
+    meson setup $M/$dir $M --cross-file $M/$cross --buildtype release \
       -Dwine_build_path=$ROOT/src/wine -Dnative_llvm_path=$ROOT/deps/llvm15 "$@"
+  fi
   ninja -C $M/$dir -j$JOBS
 }
-build build-arm64ec build-arm64ec.txt
+build build-arm64ec build-arm64ec.txt -Denable_nvngx=true -Denable_nvapi=true
 build build-win32 build-win32.txt -Denable_d3d12=false
 
 R=$I/lib/mullion
@@ -29,12 +38,21 @@ B=$M/build-arm64ec/src
 cp $B/d3d10/d3d10core.dll $B/d3d11/d3d11.dll $B/d3d12/d3d12.dll $B/d3d12/d3d12core.dll \
    $B/dxgi/dxgi.dll $B/winemetal/winemetal.dll $R/aarch64-windows/
 cp $B/winemetal/unix/winemetal.so $R/aarch64-unix/
+cp $B/nvapi/nvapi64.dll $R/aarch64-windows/
+if [[ -n $MULLION_NGX_SIGNING_KEY_FILE ]]; then
+  osslsigncode sign -certs $M/src/nvngx/signing/mullion-ngx.pem -key $MULLION_NGX_SIGNING_KEY_FILE -n "Mullion NGX" \
+    -h sha256 -in $B/nvngx/nvngx.dll -out $R/aarch64-windows/nvngx.dll >/dev/null
+  osslsigncode verify -CAfile $M/src/nvngx/signing/mullion-ngx.pem -in $R/aarch64-windows/nvngx.dll >/dev/null
+else
+  echo "warning: MULLION_NGX_SIGNING_KEY_FILE is not set: nvngx.dll is unsigned, and NGX (DLSS) will not load it" >&2
+  cp $B/nvngx/nvngx.dll $R/aarch64-windows/
+fi
 B=$M/build-win32/src
 cp $B/d3d10/d3d10core.dll $B/d3d11/d3d11.dll $B/dxgi/dxgi.dll $B/winemetal/winemetal.dll $R/i386-windows/
 cp $M/LICENSE $R/LICENSE
 echo "Mullion $(git -C $M rev-parse --short HEAD)" > $R/VERSION
 
-cp $R/aarch64-windows/winemetal.dll $I/lib/wine/aarch64-windows/
+cp $R/aarch64-windows/winemetal.dll $R/aarch64-windows/nvngx.dll $I/lib/wine/aarch64-windows/
 cp $R/i386-windows/winemetal.dll $I/lib/wine/i386-windows/
 rm -f $I/lib/wine/aarch64-unix/winemetal.so; cp $R/aarch64-unix/winemetal.so $I/lib/wine/aarch64-unix/
 echo "mullion: $R ($(cat $R/VERSION))"
