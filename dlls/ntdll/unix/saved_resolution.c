@@ -218,7 +218,7 @@ static BOOL is_launched_game( const char *exe )
 
 /* MetalSharp: the GPU a game is shown in Windows' device list (SetupAPI, WMI, the display adapter's registry
  * keys), from its [program.exe] section of winemac.conf ($WINEMAC_CONFIG_FILE, or winemac.conf next to
- * $MULLION_CONFIG_FILE):
+ * $MULLION_CONFIG_FILE, else the one MetalSharp Wine comes with, share/metalsharp/assets/wine/etc/winemac.conf):
  *     gpu.vendorId = 10de                          PCI vendor and device, in hex
  *     gpu.deviceId = 2704
  *     gpu.description = "NVIDIA GeForce RTX 4080"
@@ -286,7 +286,13 @@ static void init_gpu_override( const char *exe )
     if (!is_launched_game( exe )) return;
     gpu_override = 0;
     if (!file && mullion && (slash = strrchr( mullion, '/' )) &&
-        snprintf( path, sizeof(path), "%.*s/winemac.conf", (int)(slash - mullion), mullion ) < sizeof(path))
+        snprintf( path, sizeof(path), "%.*s/winemac.conf", (int)(slash - mullion), mullion ) < sizeof(path) &&
+        !access( path, R_OK ))
+        file = path;
+    /* else MetalSharp's own, which comes with MetalSharp Wine (share/metalsharp next to Wine's data) */
+    if (!file && data_dir && (slash = strrchr( data_dir, '/' )) &&
+        snprintf( path, sizeof(path), "%.*s/metalsharp/assets/wine/etc/winemac.conf", (int)(slash - data_dir),
+                  data_dir ) < sizeof(path))
         file = path;
     if (!file || !(text = read_file( file, &size ))) return;
     for (line = text; *line; line = *end ? end + 1 : end)
