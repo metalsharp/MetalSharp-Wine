@@ -1761,6 +1761,30 @@ static const struct wined3d_query_ops wined3d_query_vk_ops =
     .query_destroy = wined3d_query_vk_destroy,
 };
 
+/* Pipeline statistics on a device without pipelineStatisticsQuery (MoltenVK:
+ * Metal has none) complete at once with zero counts. */
+static BOOL wined3d_query_zero_vk_poll(struct wined3d_query *query, uint32_t flags)
+{
+    return TRUE;
+}
+
+static BOOL wined3d_query_zero_vk_issue(struct wined3d_query *query, uint32_t flags)
+{
+    return FALSE;
+}
+
+static void wined3d_query_zero_vk_destroy(struct wined3d_query *query)
+{
+    free(wined3d_query_vk(query));
+}
+
+static const struct wined3d_query_ops wined3d_query_zero_vk_ops =
+{
+    .query_poll = wined3d_query_zero_vk_poll,
+    .query_issue = wined3d_query_zero_vk_issue,
+    .query_destroy = wined3d_query_zero_vk_destroy,
+};
+
 static BOOL wined3d_query_event_vk_poll(struct wined3d_query *query, uint32_t flags)
 {
     struct wined3d_device_vk *device_vk = wined3d_device_vk(query->device);
@@ -1935,6 +1959,11 @@ HRESULT wined3d_query_vk_create(struct wined3d_device *device, enum wined3d_quer
             break;
 
         case WINED3D_QUERY_TYPE_PIPELINE_STATISTICS:
+            if (!wined3d_adapter_vk(device->adapter)->pipeline_statistics_query)
+            {
+                WARN("Pipeline statistics queries not supported, their counts will be zero.\n");
+                ops = &wined3d_query_zero_vk_ops;
+            }
             data_size = sizeof(struct wined3d_query_data_pipeline_statistics);
             break;
 
