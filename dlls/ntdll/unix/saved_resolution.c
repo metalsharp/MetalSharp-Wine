@@ -24,8 +24,10 @@
  * main-display) and, if that changed, sets the game's saved fullscreen and borderless resolution
  * to the main display's before the game reads it. Without a record yet, a saved resolution is
  * replaced if it fits only the built-in screen while a larger external display is the main one.
- * Windowed sizes are left alone. Known settings: Unity (registry), Unreal Engine
- * (GameUserSettings.ini) and ELDEN RING (GraphicsConfig.xml). */
+ * Windowed sizes are left alone. Known settings: Unity (registry), Unreal Engine (GameUserSettings.ini),
+ * Remedy's Northlight (Control's renderer.ini) and ELDEN RING (GraphicsConfig.xml). With MetalFX, the main
+ * display's size is divided by the upscale factor, and a saved size of the whole display, or one larger than the
+ * divided one, is replaced even without a record. */
 
 #if 0
 #pragma makedep unix
@@ -33,6 +35,7 @@
 
 #include "config.h"
 
+#include <ctype.h>
 #include <dirent.h>
 #include <dlfcn.h>
 #include <fcntl.h>
@@ -49,13 +52,202 @@
 #include "winternl.h"
 #include "unix_private.h"
 
+/* MetalSharp: Mullion's MetalFX spatial scaler shows each frame at the upscale factor times the size the game
+ * renders at. So that a game renders at the size that upscales to the display, a game with MetalFX on is shown a
+ * display of the main display's size divided by the factor (win32u), and its saved resolution is fitted to that.
+ * The factor is the one Mullion uses for this program: d3d12.metalSpatialUpscale[Factor], or d3d11's where the
+ * d3d12 options are unset, from $MULLION_CONFIG_FILE (its own [program.exe] section included) and $MULLION_CONFIG,
+ * or MULLION_METALFX_SPATIAL_SWAPCHAIN=1 with the default factor of 2. Only games MetalSharp launched (their folder
+ * has .metalsharp/launch.env) are shown it; programs on another graphics backend, programs not told about Mullion's
+ * configuration, Steam and Wine's own programs see the display's size. */
+static double metalfx_scale = 1.0;
+
+/* the scale programs see, 1 without MetalFX */
+double ntdll_get_metalfx_scale(void)
+{
+    return metalfx_scale;
+}
+
+static unsigned int gcd( unsigned int a, unsigned int b )
+{
+    while (b)
+    {
+        unsigned int r = a % b;
+        a = b;
+        b = r;
+    }
+    return a;
+}
+
+/* the size a display is shown at: the nearest to its size divided by the factor that keeps its exact aspect ratio
+ * (games list only modes of a display's aspect) and that win32u's DPI ratios can take (the display's size over it,
+ * times a DPI up to 480, under 65536 once reduced); FALSE without MetalFX */
+BOOL ntdll_metalfx_size( unsigned int width, unsigned int height, unsigned int *scaled_width,
+                         unsigned int *scaled_height )
+{
+    unsigned int unit_width, unit_height, base, steps, i, n, w, h;
+
+    if (metalfx_scale <= 1.0 || !width || !height) return FALSE;
+    unit_width = width / gcd( width, height );
+    unit_height = height / gcd( width, height );
+    steps = width / unit_width;
+    base = width / metalfx_scale / unit_width + 0.5;
+    for (i = 0; i < 2 * 64; i++)
+    {
+        n = i & 1 ? base + (i + 1) / 2 : base - i / 2;
+        if (!n || n >= steps) continue;
+        w = n * unit_width;
+        h = n * unit_height;
+        if (width / gcd( width, w ) * 480 < 65536 && height / gcd( height, h ) * 480 < 65536)
+        {
+            *scaled_width = w;
+            *scaled_height = h;
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+struct metalfx_options
+{
+    int enable[2];      /* d3d11, d3d12: -1 unset */
+    double factor[2];   /* 0 unset */
+};
+
+static void parse_metalfx_line( struct metalfx_options *options, BOOL *active, const char *exe_name,
+                                const char *line, const char *end )
+{
+    static const char *const prefixes[2] = {"d3d11.", "d3d12."};
+    char key[64], value[64];
+    size_t len = 0, vlen = 0;
+    BOOL quoted = FALSE;
+    int i;
+
+    while (line < end && (*line == ' ' || *line == '\t')) line++;
+    if (line < end && *line == '[')
+    {
+        const char *close = end;
+        while (close > line + 1 && close[-1] != ']') close--;
+        if (close > line + 1) close--;
+        *active = (size_t)(close - line - 1) == strlen( exe_name ) && !memcmp( line + 1, exe_name, close - line - 1 );
+        return;
+    }
+    while (line < end && len < sizeof(key) - 1 && (isalnum( (unsigned char)*line ) || *line == '.' || *line == '_'))
+        key[len++] = *line++;
+    key[len] = 0;
+    while (line < end && (*line == ' ' || *line == '\t')) line++;
+    if (!*active || !len || line >= end || *line++ != '=') return;
+    while (line < end && (*line == ' ' || *line == '\t')) line++;
+    for (; line < end && vlen < sizeof(value) - 1; line++)
+    {
+        if (!quoted && (*line == ' ' || *line == '\t' || *line == '\r')) break;
+        if (*line == '"') quoted = !quoted;
+        else value[vlen++] = *line;
+    }
+    value[vlen] = 0;
+
+    for (i = 0; i < 2; i++)
+    {
+        size_t plen = strlen( prefixes[i] );
+        if (strncmp( key, prefixes[i], plen )) continue;
+        if (!strcmp( key + plen, "metalSpatialUpscale" ))
+        {
+            if (!strcasecmp( value, "true" )) options->enable[i] = 1;
+            else if (!strcasecmp( value, "false" )) options->enable[i] = 0;
+        }
+        else if (!strcmp( key + plen, "metalSpatialUpscaleFactor" ))
+        {
+            char *stop;
+            double factor = strtod( value, &stop );
+            if (stop != value && !*stop && factor > 0) options->factor[i] = factor;
+        }
+    }
+}
+
+static void parse_metalfx_text( struct metalfx_options *options, BOOL *active, const char *exe_name,
+                                const char *text, char separator )
+{
+    const char *end;
+
+    for (; *text; text = *end ? end + 1 : end)
+    {
+        if (!(end = strchr( text, separator ))) end = text + strlen( text );
+        parse_metalfx_line( options, active, exe_name, text, end );
+    }
+}
+
+static char *read_file( const char *path, size_t *size )
+{
+    struct stat st;
+    char *data = NULL;
+    int fd;
+
+    if ((fd = open( path, O_RDONLY | O_CLOEXEC )) == -1) return NULL;
+    if (!fstat( fd, &st ) && S_ISREG( st.st_mode ) && st.st_size > 0 && st.st_size < (1 << 20) &&
+        (data = malloc( st.st_size + 1 )))
+    {
+        if (read( fd, data, st.st_size ) != st.st_size)
+        {
+            free( data );
+            data = NULL;
+        }
+        else
+        {
+            data[st.st_size] = 0;
+            *size = st.st_size;
+        }
+    }
+    close( fd );
+    return data;
+}
+
+static void init_metalfx_scale( const char *exe )
+{
+    struct metalfx_options options = {{-1, -1}, {0, 0}};
+    const char *file = getenv( "MULLION_CONFIG_FILE" ), *line = getenv( "MULLION_CONFIG" );
+    const char *backend = getenv( "GRAPHICS_BACKEND" ), *swapchain = getenv( "MULLION_METALFX_SPATIAL_SWAPCHAIN" );
+    const char *exe_name = strrchr( exe, '/' ) ? strrchr( exe, '/' ) + 1 : exe;
+    char env_path[PATH_MAX];
+    BOOL active = TRUE, enable;
+    struct stat st;
+    double factor;
+    char *text;
+    size_t size;
+
+    metalfx_scale = 1.0;
+    /* only a game MetalSharp started, whose folder has its launch.env: Steam and the programs it starts
+     * inherit Mullion's configuration from MetalSharp too */
+    if (exe_name == exe || exe_name - exe + sizeof("/.metalsharp/launch.env") > sizeof(env_path)) return;
+    snprintf( env_path, sizeof(env_path), "%.*s/.metalsharp/launch.env", (int)(exe_name - exe - 1), exe );
+    if (stat( env_path, &st ) || !S_ISREG( st.st_mode )) return;
+    /* Wine's own programs (explorer, services) inherit the environment of the program that started them */
+    if (strcasestr( exe, "/windows/system32/" ) || strcasestr( exe, "/windows/syswow64/" )) return;
+    if (backend && *backend && strcasecmp( backend, "dxmt" ) && strcasecmp( backend, "mullion" )) return;
+    if (!file && !line && !swapchain) return;
+    if (file && (text = read_file( file, &size )))
+    {
+        parse_metalfx_text( &options, &active, exe_name, text, '\n' );
+        free( text );
+    }
+    active = TRUE;  /* the environment applies to this program, whichever section the file ended in */
+    if (line) parse_metalfx_text( &options, &active, exe_name, line, ';' );
+
+    enable = (swapchain && !strcmp( swapchain, "1" )) ||
+             (options.enable[1] != -1 ? options.enable[1] : options.enable[0] == 1);
+    factor = options.factor[1] ? options.factor[1] : options.factor[0] ? options.factor[0] : 2.0;
+    if (!enable || factor <= 1.0) return;
+    metalfx_scale = factor;
+    MESSAGE( "MetalSharp: MetalFX upscales %s by %g; it is shown the main display divided by that\n", exe_name, factor );
+}
+
 #ifdef __APPLE__
 
 WINE_DEFAULT_DEBUG_CHANNEL(environ);
 
 struct main_display
 {
-    unsigned int width, height;      /* current mode, in the points Wine reports */
+    unsigned int width, height;      /* current mode, in the points Wine reports; divided by the MetalFX factor */
+    unsigned int full_width, full_height;  /* the current mode, when divided by a MetalFX factor */
     char id[64];                     /* vendor-model-serial */
     BOOL builtin;
     unsigned int builtin_width, builtin_height;  /* the built-in screen, when it is online */
@@ -116,35 +308,15 @@ static BOOL needs_reset( const struct main_display *display, const char *record,
     if (!width || !height || (width == display->width && height == display->height)) return FALSE;
     if (record && sscanf( record, "%63s %ux%u", id, &old_width, &old_height ) == 3)
         return strcmp( id, display->id ) || old_width != display->width || old_height != display->height;
+    /* no record, with MetalFX: the saved size is the whole display's, the size a game starts at, or larger than
+     * the display the game is shown, which lists no such mode */
+    if (display->full_width && ((width == display->full_width && height == display->full_height) ||
+                                width > display->width || height > display->height))
+        return TRUE;
     /* no record: the saved size fits only the built-in screen, and a larger external one is the main display */
     return !display->builtin && display->builtin_width && width <= display->builtin_width &&
            height <= display->builtin_height && (width < display->width || height < display->height) &&
            (width > display->builtin_width / 2 || height > display->builtin_height / 2);
-}
-
-static char *read_file( const char *path, size_t *size )
-{
-    struct stat st;
-    char *data = NULL;
-    int fd;
-
-    if ((fd = open( path, O_RDONLY | O_CLOEXEC )) == -1) return NULL;
-    if (!fstat( fd, &st ) && S_ISREG( st.st_mode ) && st.st_size > 0 && st.st_size < (1 << 20) &&
-        (data = malloc( st.st_size + 1 )))
-    {
-        if (read( fd, data, st.st_size ) != st.st_size)
-        {
-            free( data );
-            data = NULL;
-        }
-        else
-        {
-            data[st.st_size] = 0;
-            *size = st.st_size;
-        }
-    }
-    close( fd );
-    return data;
 }
 
 static BOOL write_file( const char *path, const char *data, size_t size )
@@ -391,6 +563,48 @@ done:
     return ret;
 }
 
+/* Remedy's Northlight engine (Control): <game folder>/renderer.ini, a JSON rend::UserRendererSettings. The output
+ * resolution is the fullscreen one (windowed sizes are m_iLastWindowSize); the render resolution follows it where
+ * it was the output's or would be larger than the new one. */
+static BOOL fit_remedy( const char *dir, const struct main_display *display, const char *record )
+{
+    char path[PATH_MAX], *text;
+    unsigned int width, height, render_width = 0, render_height = 0;
+    size_t size;
+    BOOL ret = FALSE;
+
+    if (snprintf( path, sizeof(path), "%s/renderer.ini", dir ) >= sizeof(path)) return FALSE;
+    if (!(text = read_file( path, &size ))) return FALSE;
+    if (strstr( text, "\"rend::UserRendererSettings\"" ) &&
+        get_number( text, "\"m_iOutputResolutionX\": ", &width ) &&
+        get_number( text, "\"m_iOutputResolutionY\": ", &height ) && needs_reset( display, record, width, height ))
+    {
+        get_number( text, "\"m_iRenderResolutionX\": ", &render_width );
+        get_number( text, "\"m_iRenderResolutionY\": ", &render_height );
+        text = replace_number( text, &size, "\"m_iOutputResolutionX\": ", ',', display->width );
+        text = replace_number( text, &size, "\"m_iOutputResolutionY\": ", ',', display->height );
+        if ((render_width == width && render_height == height) || render_width > display->width ||
+            render_height > display->height)
+        {
+            text = replace_number( text, &size, "\"m_iRenderResolutionX\": ", ',', display->width );
+            text = replace_number( text, &size, "\"m_iRenderResolutionY\": ", ',', display->height );
+        }
+        if ((ret = write_file( path, text, size )))
+            MESSAGE( "MetalSharp: the saved resolution %ux%u in %s is now %ux%u\n", width, height, path,
+                     display->width, display->height );
+    }
+    free( text );
+    return ret;
+}
+
+static BOOL is_remedy_folder( const char *dir )
+{
+    char path[PATH_MAX];
+    struct stat st;
+
+    return snprintf( path, sizeof(path), "%s/renderer.ini", dir ) < sizeof(path) && !stat( path, &st );
+}
+
 static BOOL is_elden_ring_folder( const char *dir )
 {
     char path[PATH_MAX];
@@ -409,7 +623,7 @@ static BOOL is_game_folder( const char *dir, const char *exe )
     if (dot && snprintf( path, sizeof(path), "%.*s_Data/app.info", (int)(dot - exe), exe ) < sizeof(path) &&
         !stat( path, &st ))
         return TRUE;
-    return is_elden_ring_folder( dir );
+    return is_elden_ring_folder( dir ) || is_remedy_folder( dir );
 }
 
 void fit_saved_resolution( const char *exe, const char *appdata, const char *localappdata )
@@ -423,13 +637,24 @@ void fit_saved_resolution( const char *exe, const char *appdata, const char *loc
     if (!slash || slash - exe >= sizeof(dir)) return;
     memcpy( dir, exe, slash - exe );
     dir[slash - exe] = 0;
+    init_metalfx_scale( exe );
     if (!is_game_folder( dir, exe ) || !get_main_display( &display )) return;
+    if (metalfx_scale > 1.0)
+    {
+        display.full_width = display.width;
+        display.full_height = display.height;
+        if (!ntdll_metalfx_size( display.full_width, display.full_height, &display.width, &display.height ))
+        {
+            display.width = display.full_width;
+            display.height = display.full_height;
+        }
+    }
     if (snprintf( record_path, sizeof(record_path), "%s/.metalsharp/main-display", dir ) >= sizeof(record_path))
         return;
     record = read_file( record_path, &size );
 
     if (!fit_unity( exe, &display, record ) && !fit_unreal( exe, localappdata, &display, record ) &&
-        is_elden_ring_folder( dir ))
+        !fit_remedy( dir, &display, record ) && is_elden_ring_folder( dir ))
         fit_elden_ring( appdata, &display, record );
 
     len = snprintf( line, sizeof(line), "%s %ux%u\n", display.id, display.width, display.height );
@@ -448,6 +673,7 @@ void fit_saved_resolution( const char *exe, const char *appdata, const char *loc
 
 void fit_saved_resolution( const char *exe, const char *appdata, const char *localappdata )
 {
+    init_metalfx_scale( exe );
 }
 
 #endif

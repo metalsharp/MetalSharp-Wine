@@ -542,6 +542,70 @@ static BOOL read_source_mode( HKEY hkey, UINT index, DEVMODEW *mode )
     return TRUE;
 }
 
+/* MetalSharp: a game Mullion upscales with MetalFX sees the primary display divided by the upscale factor, so it
+ * renders at the size that upscales to the display (ntdll saved_resolution.c). The display's own mode stays the
+ * physical one, and Wine scales the game's windows to it as for an emulated mode change. Only this process sees it. */
+static BOOL metalfx_scaled_size( const struct source *source, UINT *width, UINT *height )
+{
+    if (is_virtual_desktop() || !(source->state_flags & DISPLAY_DEVICE_PRIMARY_DEVICE) ||
+        !(source->state_flags & DISPLAY_DEVICE_ATTACHED_TO_DESKTOP))
+        return FALSE;
+    return ntdll_metalfx_size( source->physical.dmPelsWidth, source->physical.dmPelsHeight, width, height );
+}
+
+/* a mode of the physical display's size becomes the scaled display's */
+static void metalfx_scale_mode( const struct source *source, DEVMODEW *mode )
+{
+    UINT width, height;
+
+    if (mode->dmPelsWidth != source->physical.dmPelsWidth || mode->dmPelsHeight != source->physical.dmPelsHeight ||
+        !metalfx_scaled_size( source, &width, &height ))
+        return;
+    mode->dmPelsWidth = width;
+    mode->dmPelsHeight = height;
+}
+
+static int mode_compare(const void *p1, const void *p2);
+
+/* the current mode, unless the game set one, and the modes up to the scaled display's size */
+static void metalfx_scale_source( struct source *source )
+{
+    UINT width, height, count = 0, i, j;
+    DEVMODEW *modes;
+
+    if (source->current.dmPelsWidth != source->physical.dmPelsWidth ||
+        source->current.dmPelsHeight != source->physical.dmPelsHeight ||
+        !metalfx_scaled_size( source, &width, &height ) || !source->modes)
+        return;
+    if (!(modes = calloc( 2 * source->mode_count + 2, sizeof(*modes) ))) return;
+    for (i = 0; i < source->mode_count; i++)
+    {
+        DEVMODEW mode = source->modes[i];
+
+        if (mode.dmPelsWidth == source->physical.dmPelsWidth && mode.dmPelsHeight == source->physical.dmPelsHeight)
+        {
+            mode.dmPelsWidth = width;
+            mode.dmPelsHeight = height;
+        }
+        else if (mode.dmPelsWidth > width || mode.dmPelsHeight > height) continue;
+        for (j = 0; j < count; j++) if (!mode_compare( &modes[j], &mode )) break;
+        if (j == count) modes[count++] = mode;
+    }
+    if (!count)
+    {
+        free( modes );
+        return;
+    }
+    qsort( modes, count, sizeof(*modes), mode_compare );
+    free( source->modes );
+    source->modes = modes;
+    source->mode_count = count;
+    source->current.dmPelsWidth = width;
+    source->current.dmPelsHeight = height;
+    TRACE( "MetalFX: primary display %ux%u shown as %ux%u\n", (UINT)source->physical.dmPelsWidth,
+           (UINT)source->physical.dmPelsHeight, width, height );
+}
+
 static BOOL source_get_registry_settings( const struct source *source, DEVMODEW *mode )
 {
     BOOL ret = FALSE;
@@ -558,6 +622,7 @@ static BOOL source_get_registry_settings( const struct source *source, DEVMODEW 
     }
 
     release_display_device_init_mutex( mutex );
+    if (ret) metalfx_scale_mode( source, mode );
     return ret;
 }
 
@@ -738,6 +803,7 @@ static BOOL read_source_from_registry( unsigned int index, struct source *source
     source->physical = source->current;
     if (read_source_mode( hkey, WINE_ENUM_PHYSICAL_SETTINGS, &source->physical ))
         source->physical.dmSize = sizeof(source->physical);
+    metalfx_scale_source( source );
 
     /* DeviceID */
     size = query_reg_ascii_value( hkey, "GPUID", value, sizeof(buffer) );
@@ -6082,6 +6148,8 @@ void sysparams_init(void)
         decorated_mode = IS_OPTION_TRUE( buffer[0] );
     if (!get_config_key( hkey, appkey, "EmulateModeset", buffer, sizeof(buffer) ))
         emulate_modeset = IS_OPTION_TRUE( buffer[0] );
+    /* MetalSharp: a game shown a display divided by its MetalFX factor changes modes as emulated ones */
+    if (ntdll_get_metalfx_scale() > 1.0) emulate_modeset = TRUE;
 
 #undef IS_OPTION_TRUE
 
