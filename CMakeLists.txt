@@ -50,6 +50,7 @@ find_library(FOUNDATION_FRAMEWORK Foundation REQUIRED)
 find_library(METAL_FRAMEWORK Metal REQUIRED)
 find_library(QUARTZCORE_FRAMEWORK QuartzCore REQUIRED)
 find_library(METALFX_FRAMEWORK MetalFX REQUIRED)
+find_library(COREGRAPHICS_FRAMEWORK CoreGraphics REQUIRED)
 
 # ---------------------------------------------------------------------------
 # WineMetalGL core: the OpenGL implementation on Metal. Built as
@@ -142,7 +143,7 @@ set_source_files_properties(
     TARGET_DIRECTORY winemetalgl_core PROPERTIES LANGUAGE OBJCXX)
 target_link_libraries(winemetalgl_core PRIVATE
     wmgl_portable
-    "${FOUNDATION_FRAMEWORK}" "${METAL_FRAMEWORK}" "${QUARTZCORE_FRAMEWORK}" "${METALFX_FRAMEWORK}")
+    "${FOUNDATION_FRAMEWORK}" "${METAL_FRAMEWORK}" "${QUARTZCORE_FRAMEWORK}" "${METALFX_FRAMEWORK}" "${COREGRAPHICS_FRAMEWORK}")
 target_compile_options(winemetalgl_core PRIVATE
     $<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>
     -fvisibility=hidden -Wall -Wno-unused-parameter -Werror=missing-prototypes)
