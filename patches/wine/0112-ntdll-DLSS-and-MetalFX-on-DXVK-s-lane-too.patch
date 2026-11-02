@@ -1,0 +1,90 @@
+From be96f499f03ce547bf8152b8167435e6fd8a53aa Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Sun, 1 Nov 2026 17:48:34 -0700
+Subject: [PATCH 112/112] ntdll: DLSS and MetalFX on DXVK's lane too.
+
+The DXVK lane (GRAPHICS_BACKEND=dxvk, DXVK-MacOS) loads its own NGX core and NVAPI from lib/dxvk, is
+set up for DLSS games like VKD3D-Proton's, and launches at the main display divided by dxvk.conf's
+MetalFX factor.
+---
+ dlls/ntdll/unix/env.c              |  2 +-
+ dlls/ntdll/unix/loader.c           |  4 +++-
+ dlls/ntdll/unix/saved_resolution.c | 15 ++++++++-------
+ 3 files changed, 12 insertions(+), 9 deletions(-)
+
+diff --git a/dlls/ntdll/unix/env.c b/dlls/ntdll/unix/env.c
+index be93c13c899..fde2a384174 100644
+--- a/dlls/ntdll/unix/env.c
++++ b/dlls/ntdll/unix/env.c
+@@ -1045,7 +1045,7 @@ static void fit_launch_resolution( WCHAR **env, SIZE_T *pos, SIZE_T *size, const
+     if (!(value = get_env_var( *env, *pos, nvextW, ARRAY_SIZE(nvextW) )))
+         set_launch_var( env, pos, size, "MULLION_ENABLE_NVEXT", "1" );
+     free( value );
+-    /* Mullion's configuration, or DXVK's DXGI's on VKD3D-Proton's lane (DLSS games run on those two) */
++    /* Mullion's configuration, or DXVK's DXGI's on VKD3D-Proton's and DXVK's lanes */
+     if (backend && (!strcasecmp( backend, "vkd3d" ) || !strcasecmp( backend, "dxvk" )))
+     {
+         configW = dxvk_configW;
+diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
+index 1190a9ce026..9206daf283b 100644
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -1311,7 +1311,9 @@ static char *resolve_vkd3d_pe_path( const char *module )
+ 
+ static char *resolve_dxvk_pe_path( const char *module )
+ {
+-    static const char *const names[] = { "d3d9.dll", "d3d10core.dll", "d3d11.dll", "dxgi.dll" };
++    /* and the lane's own NGX core and NVAPI, where it has them (DLSS on MetalFX) */
++    static const char *const names[] = { "d3d9.dll", "d3d10core.dll", "d3d11.dll", "dxgi.dll",
++                                         "nvngx.dll", "nvapi64.dll" };
+     const char *name = strrchr( module, '/' );
+     unsigned int i;
+ 
+diff --git a/dlls/ntdll/unix/saved_resolution.c b/dlls/ntdll/unix/saved_resolution.c
+index 65beb1cdd19..8fcea2835e6 100644
+--- a/dlls/ntdll/unix/saved_resolution.c
++++ b/dlls/ntdll/unix/saved_resolution.c
+@@ -290,14 +290,15 @@ static void parse_gpu_line( BOOL *active, const char *exe_name, const char *line
+     }
+ }
+ 
+-/* MetalSharp's Direct3D lanes that run DLSS and MetalFX: Mullion's (dxmt), and VKD3D-Proton's with DXVK (vkd3d; dxvk is
+- * its alias), whose configuration files are vkd3d.conf and dxvk.conf */
++/* MetalSharp's Direct3D lanes that run DLSS and MetalFX: Mullion's (dxmt), VKD3D-Proton's with DXVK (vkd3d), whose
++ * configuration files are vkd3d.conf and dxvk.conf, and DXVK-MacOS's (dxvk), whose file is dxvk.conf */
+ static BOOL is_mullion_backend( const char *backend )
+ {
+     return backend && (!strcasecmp( backend, "dxmt" ) || !strcasecmp( backend, "mullion" ));
+ }
+ 
+-static BOOL is_vkd3d_backend( const char *backend )
++/* VKD3D-Proton's lane or DXVK's, both on MoltenVK */
++static BOOL is_vulkan_lane_backend( const char *backend )
+ {
+     return backend && (!strcasecmp( backend, "vkd3d" ) || !strcasecmp( backend, "dxvk" ));
+ }
+@@ -346,7 +347,7 @@ static void init_dlss_game( const char *exe )
+ 
+     dlss_game = 0;
+     if (!is_launched_game( exe )) return;
+-    if (!is_mullion_backend( backend ) && !is_vkd3d_backend( backend )) return;
++    if (!is_mullion_backend( backend ) && !is_vulkan_lane_backend( backend )) return;
+     if (snprintf( cache, sizeof(cache), "%.*s/.metalsharp/dlss", (int)(exe_name - exe), exe ) >= sizeof(cache))
+         return;
+     if (!stat( exe, &exe_st ) && !stat( cache, &cache_st ) && cache_st.st_mtime >= exe_st.st_mtime &&
+@@ -466,9 +467,9 @@ static void init_metalfx_scale( const char *exe )
+ 
+     metalfx_scale = 1.0;
+     if (!is_launched_game( exe )) return;
+-    /* VKD3D-Proton's lane: vkd3d.conf for Direct3D 12, dxvk.conf for 11 and earlier, which MetalSharp gives the
+-     * same MetalFX lines as mullion.conf */
+-    if (is_vkd3d_backend( backend ))
++    /* VKD3D-Proton's lane: vkd3d.conf for Direct3D 12, dxvk.conf for 11 and earlier; DXVK's: dxvk.conf. MetalSharp
++     * gives them the same MetalFX lines as mullion.conf */
++    if (is_vulkan_lane_backend( backend ))
+     {
+         files[0] = getenv( "VKD3D_CONFIG_FILE" );
+         files[1] = getenv( "DXVK_CONFIG_FILE" );
+-- 
+2.54.0 (Apple Git-157)
+

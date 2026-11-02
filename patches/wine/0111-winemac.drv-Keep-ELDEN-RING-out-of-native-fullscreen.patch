@@ -1,0 +1,46 @@
+From 2028ba3b2024b9ff63352b1ec43ce1d860a46b8b Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Sun, 1 Nov 2026 17:36:58 -0700
+Subject: [PATCH 111/112] winemac.drv: Keep ELDEN RING out of native fullscreen
+ as Steam starts it too.
+
+Steam starts it as Game\start_protected_game.exe, which MetalSharp replaces with a copy of
+eldenring.exe to start it without EasyAntiCheat, so the eldenring.exe rule never applied to
+MetalSharp's launches: in native fullscreen Wine kept its view at the emulated mode's size and
+macOS scaled it, so there was nothing for MetalFX to upscale, and its resolution changes reverted.
+---
+ dlls/winemac.drv/macdrv_main.c | 16 +++++++++++++---
+ 1 file changed, 13 insertions(+), 3 deletions(-)
+
+diff --git a/dlls/winemac.drv/macdrv_main.c b/dlls/winemac.drv/macdrv_main.c
+index 5cc67564fb3..de82f5b66f3 100644
+--- a/dlls/winemac.drv/macdrv_main.c
++++ b/dlls/winemac.drv/macdrv_main.c
+@@ -350,11 +350,21 @@ static void setup_options(void)
+ 
+     /* MetalSharp hack: ELDEN RING can't change its resolution or screen mode
+      * in native macOS fullscreen, which keeps resizing its window back to the
+-     * screen, so it reverts every change. The NativeFullscreen option still
+-     * overrides this. */
++     * screen, so it reverts every change. Steam starts it as
++     * Game\start_protected_game.exe, which MetalSharp replaces with a copy of
++     * eldenring.exe to start it without EasyAntiCheat. The NativeFullscreen
++     * option still overrides this. */
+     {
+         static const WCHAR eldenringW[] = {'e','l','d','e','n','r','i','n','g','.','e','x','e',0};
+-        if (!wcsicmp(appname, eldenringW)) native_fullscreen = false;
++        static const WCHAR protectedW[] = {'\\','E','L','D','E','N',' ','R','I','N','G','\\','G','a','m','e','\\',
++                                           's','t','a','r','t','_','p','r','o','t','e','c','t','e','d','_',
++                                           'g','a','m','e','.','e','x','e',0};
++        const WCHAR *image = RtlGetCurrentPeb()->ProcessParameters->ImagePathName.Buffer;
++        size_t image_len = lstrlenW(image), protected_len = ARRAY_SIZE(protectedW) - 1;
++
++        if (!wcsicmp(appname, eldenringW) ||
++            (image_len >= protected_len && !wcsicmp(image + image_len - protected_len, protectedW)))
++            native_fullscreen = false;
+     }
+     if (!get_config_key(hkey, appkey, "NativeFullscreen", buffer, sizeof(buffer)))
+         native_fullscreen = IS_OPTION_TRUE(buffer[0]);
+-- 
+2.54.0 (Apple Git-157)
+

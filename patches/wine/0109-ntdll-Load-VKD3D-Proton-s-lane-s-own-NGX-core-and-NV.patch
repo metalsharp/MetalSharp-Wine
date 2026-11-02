@@ -1,0 +1,32 @@
+From 098f1ca63a154341183293342379071a940f1c69 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Sun, 1 Nov 2026 17:04:01 -0700
+Subject: [PATCH 109/112] ntdll: Load VKD3D-Proton's lane's own NGX core and
+ NVAPI.
+
+---
+ dlls/ntdll/unix/loader.c | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
+index ee771c71d79..1190a9ce026 100644
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -1293,10 +1293,12 @@ BOOL vkd3d_runtime_available(void)
+ }
+ 
+ /* D3D12 and DXGI from VKD3D-Proton, and D3D10/11 when it has them (the DXVK that its DXGI belongs to, which also
+- * makes D3D11 devices on D3D12 ones: D3D11On12CreateDevice); otherwise DXVK's, from resolve_dxvk_pe_path() */
++ * makes D3D11 devices on D3D12 ones: D3D11On12CreateDevice); otherwise DXVK's, from resolve_dxvk_pe_path(). The lane's
++ * own NGX core and NVAPI too, where it has them (DLSS on MetalFX), in place of Mullion's builtins of those names. */
+ static char *resolve_vkd3d_pe_path( const char *module )
+ {
+-    static const char *const names[] = { "d3d12.dll", "d3d12core.dll", "dxgi.dll", "d3d11.dll", "d3d10core.dll" };
++    static const char *const names[] = { "d3d12.dll", "d3d12core.dll", "dxgi.dll", "d3d11.dll", "d3d10core.dll",
++                                         "nvngx.dll", "nvapi64.dll" };
+     const char *name = strrchr( module, '/' );
+     unsigned int i;
+ 
+-- 
+2.54.0 (Apple Git-157)
+

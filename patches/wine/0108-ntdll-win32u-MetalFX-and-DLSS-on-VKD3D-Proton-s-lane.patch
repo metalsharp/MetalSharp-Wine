@@ -1,0 +1,193 @@
+From 11e7a9d37efef9fe76694f23b3d2c0fdbd45cd90 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Sun, 1 Nov 2026 16:45:33 -0700
+Subject: [PATCH 108/112] ntdll, win32u: MetalFX and DLSS on VKD3D-Proton's
+ lane.
+
+A game on the vkd3d lane (dxvk is its alias) is set up for DLSS as on Mullion's, its NVIDIA identity in
+DXVK_CONFIG for DXVK's DXGI, and launches at the main display divided by the MetalFX factor of vkd3d.conf
+or dxvk.conf (VKD3D_CONFIG_FILE, DXVK_CONFIG_FILE). win32u keeps the application's chain when it adds
+present scaling to a swapchain, where MoltenVK's MetalFX upscaling request is.
+---
+ dlls/ntdll/unix/env.c              | 27 +++++++++++---
+ dlls/ntdll/unix/saved_resolution.c | 57 +++++++++++++++++++++++-------
+ dlls/win32u/vulkan.c               |  2 ++
+ 3 files changed, 68 insertions(+), 18 deletions(-)
+
+diff --git a/dlls/ntdll/unix/env.c b/dlls/ntdll/unix/env.c
+index bbfc667d57e..be93c13c899 100644
+--- a/dlls/ntdll/unix/env.c
++++ b/dlls/ntdll/unix/env.c
+@@ -1008,16 +1008,20 @@ static void set_launch_var( WCHAR **env, SIZE_T *pos, SIZE_T *size, const char *
+ }
+ 
+ /* MetalSharp: a game's saved resolution follows the main display, and a DLSS game is set up for it
+- * (saved_resolution.c): a game shown an NVIDIA GPU is shown one by Mullion as well (its NVIDIA extension on,
++ * (saved_resolution.c): a game shown an NVIDIA GPU is shown one by Mullion, or DXVK's DXGI on VKD3D-Proton's lane,
++ * as well (their NVIDIA extension on,
+  * unless MULLION_ENABLE_NVEXT says otherwise), and a Streamline game is hidden Wine's exports
+  * (METALSHARP_HIDE_WINE_EXPORTS, read by the loader; removed for programs it does not apply to) */
+ static void fit_launch_resolution( WCHAR **env, SIZE_T *pos, SIZE_T *size, const WCHAR *image )
+ {
+     static const WCHAR ntprefixW[] = {'\\','?','?','\\'};
+-    static const WCHAR configW[] = {'M','U','L','L','I','O','N','_','C','O','N','F','I','G'};
++    static const WCHAR mullion_configW[] = {'M','U','L','L','I','O','N','_','C','O','N','F','I','G'};
++    static const WCHAR dxvk_configW[] = {'D','X','V','K','_','C','O','N','F','I','G'};
+     static const WCHAR nvextW[] = {'M','U','L','L','I','O','N','_','E','N','A','B','L','E','_','N','V','E','X','T'};
+     char *unix_name = NULL, *appdata, *localappdata, *profile, config[512];
+-    const char *description, *driver_version;
++    const char *description, *driver_version, *backend = getenv( "GRAPHICS_BACKEND" ), *config_name;
++    const WCHAR *configW;
++    SIZE_T config_len;
+     unsigned int vendor, device;
+     WCHAR *value;
+     int len;
+@@ -1041,8 +1045,21 @@ static void fit_launch_resolution( WCHAR **env, SIZE_T *pos, SIZE_T *size, const
+     if (!(value = get_env_var( *env, *pos, nvextW, ARRAY_SIZE(nvextW) )))
+         set_launch_var( env, pos, size, "MULLION_ENABLE_NVEXT", "1" );
+     free( value );
++    /* Mullion's configuration, or DXVK's DXGI's on VKD3D-Proton's lane (DLSS games run on those two) */
++    if (backend && (!strcasecmp( backend, "vkd3d" ) || !strcasecmp( backend, "dxvk" )))
++    {
++        configW = dxvk_configW;
++        config_len = ARRAY_SIZE(dxvk_configW);
++        config_name = "DXVK_CONFIG";
++    }
++    else
++    {
++        configW = mullion_configW;
++        config_len = ARRAY_SIZE(mullion_configW);
++        config_name = "MULLION_CONFIG";
++    }
+     len = 0;
+-    if ((value = get_env_var( *env, *pos, configW, ARRAY_SIZE(configW) )))
++    if ((value = get_env_var( *env, *pos, configW, config_len )))
+     {
+         len = ntdll_wcstoumbs( value, wcslen( value ), config, sizeof(config) - 160, FALSE );
+         if (len < 0) len = 0;
+@@ -1053,7 +1070,7 @@ static void fit_launch_resolution( WCHAR **env, SIZE_T *pos, SIZE_T *size, const
+     snprintf( config + len, sizeof(config) - len,
+               "%sdxgi.customVendorId=10de;dxgi.customDeviceId=%04x;dxgi.customDeviceDesc=\"%s\"",
+               len ? ";" : "", device, description[0] ? description : "NVIDIA GeForce RTX 4080" );
+-    set_launch_var( env, pos, size, "MULLION_CONFIG", config );
++    set_launch_var( env, pos, size, config_name, config );
+ }
+ 
+ static void add_launch_environment( WCHAR **env, SIZE_T *pos, SIZE_T *size, const WCHAR *image )
+diff --git a/dlls/ntdll/unix/saved_resolution.c b/dlls/ntdll/unix/saved_resolution.c
+index 90b15c277cb..65beb1cdd19 100644
+--- a/dlls/ntdll/unix/saved_resolution.c
++++ b/dlls/ntdll/unix/saved_resolution.c
+@@ -290,10 +290,23 @@ static void parse_gpu_line( BOOL *active, const char *exe_name, const char *line
+     }
+ }
+ 
++/* MetalSharp's Direct3D lanes that run DLSS and MetalFX: Mullion's (dxmt), and VKD3D-Proton's with DXVK (vkd3d; dxvk is
++ * its alias), whose configuration files are vkd3d.conf and dxvk.conf */
++static BOOL is_mullion_backend( const char *backend )
++{
++    return backend && (!strcasecmp( backend, "dxmt" ) || !strcasecmp( backend, "mullion" ));
++}
++
++static BOOL is_vkd3d_backend( const char *backend )
++{
++    return backend && (!strcasecmp( backend, "vkd3d" ) || !strcasecmp( backend, "dxvk" ));
++}
++
+ /* MetalSharp: a game that comes with NVIDIA's DLSS (nvngx_dlss.dll, nvngx_dlssd.dll) or Streamline
+  * (sl.interposer.dll) anywhere in its folder (its steamapps/common/<game> folder, the one above an Unreal Engine
+- * project's, else its program's) is shown an NVIDIA GPU on the Mullion backend, so DLSS runs on MetalFX: in Windows' device list here,
+- * and by Mullion through MULLION_CONFIG and MULLION_ENABLE_NVEXT (env.c), unless its winemac.conf section names
++ * project's, else its program's) is shown an NVIDIA GPU on the Mullion and VKD3D-Proton backends, so DLSS runs on MetalFX: in Windows'
++ * device list here, and by Mullion or DXVK's DXGI through MULLION_CONFIG or DXVK_CONFIG and MULLION_ENABLE_NVEXT
++ * (env.c), unless its winemac.conf section names
+  * another GPU. A Streamline game is hidden Wine's exports too: The Witcher 3 starts Streamline only without
+  * wine_get_version. The search is kept in <program's folder>/.metalsharp/dlss while it is newer than the program. */
+ enum { DLSS_NGX = 1, DLSS_STREAMLINE = 2 };
+@@ -333,7 +346,7 @@ static void init_dlss_game( const char *exe )
+ 
+     dlss_game = 0;
+     if (!is_launched_game( exe )) return;
+-    if (!backend || (strcasecmp( backend, "dxmt" ) && strcasecmp( backend, "mullion" ))) return;
++    if (!is_mullion_backend( backend ) && !is_vkd3d_backend( backend )) return;
+     if (snprintf( cache, sizeof(cache), "%.*s/.metalsharp/dlss", (int)(exe_name - exe), exe ) >= sizeof(cache))
+         return;
+     if (!stat( exe, &exe_st ) && !stat( cache, &cache_st ) && cache_st.st_mtime >= exe_st.st_mtime &&
+@@ -376,7 +389,7 @@ static void init_dlss_game( const char *exe )
+     if (found) MESSAGE( "MetalSharp: %s comes with %s\n", exe_name + 1, found & DLSS_STREAMLINE ? "Streamline" : "DLSS" );
+ }
+ 
+-/* the DLSS a game MetalSharp started on the Mullion backend comes with: 1 NGX, 3 Streamline, 0 none */
++/* the DLSS a game MetalSharp started on the Mullion or VKD3D-Proton backend comes with: 1 NGX, 3 Streamline, 0 none */
+ int metalsharp_dlss_game(void)
+ {
+     return dlss_game;
+@@ -443,25 +456,43 @@ int ntdll_get_gpu_override( unsigned int *vendor, unsigned int *device, const ch
+ static void init_metalfx_scale( const char *exe )
+ {
+     struct metalfx_options options = {{-1, -1}, {0, 0}};
+-    const char *file = getenv( "MULLION_CONFIG_FILE" ), *line = getenv( "MULLION_CONFIG" );
+-    const char *backend = getenv( "GRAPHICS_BACKEND" ), *swapchain = getenv( "MULLION_METALFX_SPATIAL_SWAPCHAIN" );
++    const char *backend = getenv( "GRAPHICS_BACKEND" ), *swapchain = NULL, *files[2] = {NULL}, *lines[2] = {NULL};
+     const char *exe_name = strrchr( exe, '/' ) ? strrchr( exe, '/' ) + 1 : exe;
+-    BOOL active = TRUE, enable;
++    BOOL active, enable;
+     double factor;
+     char *text;
+     size_t size;
++    int i;
+ 
+     metalfx_scale = 1.0;
+     if (!is_launched_game( exe )) return;
+-    if (backend && *backend && strcasecmp( backend, "dxmt" ) && strcasecmp( backend, "mullion" )) return;
+-    if (!file && !line && !swapchain) return;
+-    if (file && (text = read_file( file, &size )))
++    /* VKD3D-Proton's lane: vkd3d.conf for Direct3D 12, dxvk.conf for 11 and earlier, which MetalSharp gives the
++     * same MetalFX lines as mullion.conf */
++    if (is_vkd3d_backend( backend ))
+     {
+-        parse_metalfx_text( &options, &active, exe_name, text, '\n' );
+-        free( text );
++        files[0] = getenv( "VKD3D_CONFIG_FILE" );
++        files[1] = getenv( "DXVK_CONFIG_FILE" );
++        lines[0] = getenv( "DXVK_CONFIG" );
++    }
++    else if (!backend || !*backend || is_mullion_backend( backend ))
++    {
++        files[0] = getenv( "MULLION_CONFIG_FILE" );
++        lines[0] = getenv( "MULLION_CONFIG" );
++        swapchain = getenv( "MULLION_METALFX_SPATIAL_SWAPCHAIN" );
++    }
++    else return;
++    if (!files[0] && !files[1] && !lines[0] && !swapchain) return;
++    for (i = 0; i < 2; i++)
++    {
++        active = TRUE;
++        if (files[i] && (text = read_file( files[i], &size )))
++        {
++            parse_metalfx_text( &options, &active, exe_name, text, '\n' );
++            free( text );
++        }
+     }
+     active = TRUE;  /* the environment applies to this program, whichever section the file ended in */
+-    if (line) parse_metalfx_text( &options, &active, exe_name, line, ';' );
++    if (lines[0]) parse_metalfx_text( &options, &active, exe_name, lines[0], ';' );
+ 
+     enable = (swapchain && !strcmp( swapchain, "1" )) ||
+              (options.enable[1] != -1 ? options.enable[1] : options.enable[0] == 1);
+diff --git a/dlls/win32u/vulkan.c b/dlls/win32u/vulkan.c
+index ba568b749e1..12e16c09e8e 100644
+--- a/dlls/win32u/vulkan.c
++++ b/dlls/win32u/vulkan.c
+@@ -1923,6 +1923,8 @@ static VkResult win32u_vkCreateSwapchainKHR( VkDevice client_device, const VkSwa
+         physical_device->extensions.has_VK_KHR_swapchain_maintenance1)
+     {
+         scaling.scalingBehavior = VK_PRESENT_SCALING_STRETCH_BIT_EXT;
++        /* keep the application's chain (MetalSharp: MoltenVK's MetalFX swapchain upscaling is in it) */
++        scaling.pNext = create_info_host.pNext;
+         create_info_host.pNext = &scaling;
+     }
+ 
+-- 
+2.54.0 (Apple Git-157)
+

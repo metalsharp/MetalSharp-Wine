@@ -24,6 +24,22 @@ with open(sys.argv[1], "r+b") as f:
     f.write(b"Wine builtin DLL".ljust(32, b"\0"))
 PY
 done
+# the NGX core and NVAPI for DLSS on MetalFX (VKD3D-Proton-MacOS's ngx/, scripts/build-ngx-arm64x.sh), which Wine
+# loads for this lane in place of Mullion's builtins of those names
+NGX=${2:-$ROOT/src/vkd3d-proton/artifacts/build/ngx/aarch64-windows}
+if [[ -f $NGX/nvngx.dll && -f $NGX/nvapi64.dll ]]; then
+  for f in nvngx nvapi64; do
+    cp $NGX/$f.dll $O/x86_64-windows/
+    python3 - $O/x86_64-windows/$f.dll <<'PY'
+import struct, sys
+with open(sys.argv[1], "r+b") as f:
+    header = f.read(64)
+    assert header[:2] == b"MZ" and struct.unpack_from("<I", header, 60)[0] >= 96
+    f.seek(64)
+    f.write(b"Wine builtin DLL".ljust(32, b"\0"))
+PY
+  done
+fi
 cp $D/LICENSE $O/LICENSE
 cp $D/subprojects/dxbc-spirv/LICENSE $O/LICENSE.dxbc-spirv
 echo "DXVK-MacOS $(git -C $D describe --always --tags 2>/dev/null) (metalsharp/DXVK-MacOS, ARM64X)" > $O/VERSION
