@@ -1073,7 +1073,8 @@ static void fit_launch_resolution( WCHAR **env, SIZE_T *pos, SIZE_T *size, const
     set_launch_var( env, pos, size, config_name, config );
 }
 
-static void add_launch_environment( WCHAR **env, SIZE_T *pos, SIZE_T *size, const WCHAR *image )
+static void add_launch_environment_file( WCHAR **env, SIZE_T *pos, SIZE_T *size, const WCHAR *image,
+                                        const char *name )
 {
     static const WCHAR ntprefixW[] = {'\\','?','?','\\'};
     char *unix_name = NULL, *slash, *path, *data, *line, *next;
@@ -1085,13 +1086,14 @@ static void add_launch_environment( WCHAR **env, SIZE_T *pos, SIZE_T *size, cons
     if (!wcsncmp( image, ntprefixW, ARRAY_SIZE(ntprefixW) )) image += ARRAY_SIZE(ntprefixW);
     if (ntdll_get_unix_file_name( image, &unix_name, FILE_OPEN ) || !unix_name) return;
     if (!(slash = strrchr( unix_name, '/' )) ||
-        !(path = malloc( (slash - unix_name) + sizeof("/.metalsharp/launch.env") )))
+        !(path = malloc( (slash - unix_name) + sizeof("/.metalsharp/") + strlen( name ) )))
     {
         free( unix_name );
         return;
     }
     memcpy( path, unix_name, slash - unix_name );
-    strcpy( path + (slash - unix_name), "/.metalsharp/launch.env" );
+    strcpy( path + (slash - unix_name), "/.metalsharp/" );
+    strcat( path, name );
     free( unix_name );
     fd = open( path, O_RDONLY | O_CLOEXEC );
     free( path );
@@ -1156,6 +1158,14 @@ static void add_launch_environment( WCHAR **env, SIZE_T *pos, SIZE_T *size, cons
         }
     }
     free( data );
+}
+
+/* launch.env, which MetalSharp writes at each launch, then launch.local.env, which it never writes: the user's own
+ * variables for the programs of the folder (a debugging option, say), applied over it */
+static void add_launch_environment( WCHAR **env, SIZE_T *pos, SIZE_T *size, const WCHAR *image )
+{
+    add_launch_environment_file( env, pos, size, image, "launch.env" );
+    add_launch_environment_file( env, pos, size, image, "launch.local.env" );
 }
 
 static void append_envA( WCHAR **env, SIZE_T *pos, SIZE_T *size, const char *name, const char *value )
