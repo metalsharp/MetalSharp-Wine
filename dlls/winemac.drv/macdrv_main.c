@@ -366,6 +366,11 @@ static void setup_options(void)
             (image_len >= protected_len && !wcsicmp(image + image_len - protected_len, protectedW)))
             native_fullscreen = false;
     }
+    /* MetalSharp: a game shown a display divided by its MetalFX factor (an emulated mode) stays out of native
+     * fullscreen too: macOS sizing the window to the screen raced the emulated mode's scaling of the game's
+     * window, which was sometimes left at the mode's size in a corner of the screen, with nothing for MetalFX
+     * to upscale it to. Wine's own fullscreen scales it to the screen. */
+    if (ntdll_get_metalfx_scale() > 1.0) native_fullscreen = false;
     if (!get_config_key(hkey, appkey, "NativeFullscreen", buffer, sizeof(buffer)))
         native_fullscreen = IS_OPTION_TRUE(buffer[0]);
 
