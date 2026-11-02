@@ -1,5 +1,6 @@
 #include "core/surface.h"
 
+#import <CoreGraphics/CoreGraphics.h>
 #import <MetalFX/MetalFX.h>
 #include <dlfcn.h>
 
@@ -44,8 +45,22 @@ float windowUpscale() {
         MetalFxSettings settings;
         settings.winemetalgl = std::getenv("WINEMETALGL_METALFX");
         using MetalFxScale = double (*)();
-        if (auto wine = reinterpret_cast<MetalFxScale>(dlsym(RTLD_DEFAULT, "ntdll_get_metalfx_scale")))
+        using MetalFxSize = int (*)(unsigned, unsigned, unsigned*, unsigned*);
+        if (auto wine = reinterpret_cast<MetalFxScale>(dlsym(RTLD_DEFAULT, "ntdll_get_metalfx_scale"))) {
             settings.wine = wine();
+            // The display Wine shows keeps the main display's exact aspect
+            // ratio, so its size is near the factor's; upscale by the ratio
+            // it took.
+            auto size = reinterpret_cast<MetalFxSize>(dlsym(RTLD_DEFAULT, "ntdll_metalfx_size"));
+            if (CGDisplayModeRef mode = settings.wine > 1 && size ? CGDisplayCopyDisplayMode(CGMainDisplayID()) : nullptr) {
+                const unsigned width = static_cast<unsigned>(CGDisplayModeGetWidth(mode));
+                const unsigned height = static_cast<unsigned>(CGDisplayModeGetHeight(mode));
+                unsigned shownWidth = 0, shownHeight = 0;
+                if (size(width, height, &shownWidth, &shownHeight) && shownWidth)
+                    settings.wine = static_cast<double>(width) / shownWidth;
+                CGDisplayModeRelease(mode);
+            }
+        }
         settings.swapchain = std::getenv("DXMT_METALFX_SPATIAL_SWAPCHAIN");
         settings.config = std::getenv("DXMT_CONFIG");
         if (const char* file = std::getenv("DXMT_CONFIG_FILE")) {
