@@ -57,7 +57,8 @@
  * display of the main display's size divided by the factor (win32u), and its saved resolution is fitted to that.
  * The factor is the one Mullion uses for this program: d3d12.metalSpatialUpscale[Factor], or d3d11's where the
  * d3d12 options are unset, from $MULLION_CONFIG_FILE (its own [program.exe] section included) and $MULLION_CONFIG,
- * or MULLION_METALFX_SPATIAL_SWAPCHAIN=1 with the default factor of 2. Only games MetalSharp launched (their folder
+ * or MULLION_METALFX_SPATIAL_SWAPCHAIN=1 with the default factor of 2. WineMetalGL, whatever the backend, upscales
+ * OpenGL windows by the same factor (ntdll_get_metalfx_scale). Only games MetalSharp launched (their folder
  * has .metalsharp/launch.env) are shown it; programs on another graphics backend, programs not told about Mullion's
  * configuration, Steam and Wine's own programs see the display's size. */
 static double metalfx_scale = 1.0;
@@ -475,7 +476,9 @@ static void init_metalfx_scale( const char *exe )
         files[1] = getenv( "DXVK_CONFIG_FILE" );
         lines[0] = getenv( "DXVK_CONFIG" );
     }
-    else if (!backend || !*backend || is_mullion_backend( backend ))
+    /* the OpenGL lane (Wine's own Direct3D too) is WineMetalGL's, which upscales by this factor; MetalSharp
+     * gives it mullion.conf */
+    else if (!backend || !*backend || is_mullion_backend( backend ) || !strcasecmp( backend, "wine" ))
     {
         files[0] = getenv( "MULLION_CONFIG_FILE" );
         lines[0] = getenv( "MULLION_CONFIG" );
