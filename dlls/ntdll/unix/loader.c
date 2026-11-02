@@ -1311,7 +1311,9 @@ static char *resolve_vkd3d_pe_path( const char *module )
 
 static char *resolve_dxvk_pe_path( const char *module )
 {
-    static const char *const names[] = { "d3d9.dll", "d3d10core.dll", "d3d11.dll", "dxgi.dll" };
+    /* and the lane's own NGX core and NVAPI, where it has them (DLSS on MetalFX) */
+    static const char *const names[] = { "d3d9.dll", "d3d10core.dll", "d3d11.dll", "dxgi.dll",
+                                         "nvngx.dll", "nvapi64.dll" };
     const char *name = strrchr( module, '/' );
     unsigned int i;
 

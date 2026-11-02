@@ -1045,7 +1045,7 @@ static void fit_launch_resolution( WCHAR **env, SIZE_T *pos, SIZE_T *size, const
     if (!(value = get_env_var( *env, *pos, nvextW, ARRAY_SIZE(nvextW) )))
         set_launch_var( env, pos, size, "MULLION_ENABLE_NVEXT", "1" );
     free( value );
-    /* Mullion's configuration, or DXVK's DXGI's on VKD3D-Proton's lane (DLSS games run on those two) */
+    /* Mullion's configuration, or DXVK's DXGI's on VKD3D-Proton's and DXVK's lanes */
     if (backend && (!strcasecmp( backend, "vkd3d" ) || !strcasecmp( backend, "dxvk" )))
     {
         configW = dxvk_configW;

@@ -290,14 +290,15 @@ static void parse_gpu_line( BOOL *active, const char *exe_name, const char *line
     }
 }
 
-/* MetalSharp's Direct3D lanes that run DLSS and MetalFX: Mullion's (dxmt), and VKD3D-Proton's with DXVK (vkd3d; dxvk is
- * its alias), whose configuration files are vkd3d.conf and dxvk.conf */
+/* MetalSharp's Direct3D lanes that run DLSS and MetalFX: Mullion's (dxmt), VKD3D-Proton's with DXVK (vkd3d), whose
+ * configuration files are vkd3d.conf and dxvk.conf, and DXVK-MacOS's (dxvk), whose file is dxvk.conf */
 static BOOL is_mullion_backend( const char *backend )
 {
     return backend && (!strcasecmp( backend, "dxmt" ) || !strcasecmp( backend, "mullion" ));
 }
 
-static BOOL is_vkd3d_backend( const char *backend )
+/* VKD3D-Proton's lane or DXVK's, both on MoltenVK */
+static BOOL is_vulkan_lane_backend( const char *backend )
 {
     return backend && (!strcasecmp( backend, "vkd3d" ) || !strcasecmp( backend, "dxvk" ));
 }
@@ -346,7 +347,7 @@ static void init_dlss_game( const char *exe )
 
     dlss_game = 0;
     if (!is_launched_game( exe )) return;
-    if (!is_mullion_backend( backend ) && !is_vkd3d_backend( backend )) return;
+    if (!is_mullion_backend( backend ) && !is_vulkan_lane_backend( backend )) return;
     if (snprintf( cache, sizeof(cache), "%.*s/.metalsharp/dlss", (int)(exe_name - exe), exe ) >= sizeof(cache))
         return;
     if (!stat( exe, &exe_st ) && !stat( cache, &cache_st ) && cache_st.st_mtime >= exe_st.st_mtime &&
@@ -466,9 +467,9 @@ static void init_metalfx_scale( const char *exe )
 
     metalfx_scale = 1.0;
     if (!is_launched_game( exe )) return;
-    /* VKD3D-Proton's lane: vkd3d.conf for Direct3D 12, dxvk.conf for 11 and earlier, which MetalSharp gives the
-     * same MetalFX lines as mullion.conf */
-    if (is_vkd3d_backend( backend ))
+    /* VKD3D-Proton's lane: vkd3d.conf for Direct3D 12, dxvk.conf for 11 and earlier; DXVK's: dxvk.conf. MetalSharp
+     * gives them the same MetalFX lines as mullion.conf */
+    if (is_vulkan_lane_backend( backend ))
     {
         files[0] = getenv( "VKD3D_CONFIG_FILE" );
         files[1] = getenv( "DXVK_CONFIG_FILE" );
