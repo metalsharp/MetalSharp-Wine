@@ -35,10 +35,17 @@ std::string readFile(const char* path) {
 // The MetalFX upscale factor of window back buffers (1: off); see
 // metalFxFactor. The Wine installation's etc/dxmt.conf is next to the lib
 // directory holding the core (lib/wine/<arch>-unix/libwinemetalgl.dylib).
+// MetalSharp Wine decides it itself: it shows a game with MetalFX on a
+// display of the main display's size divided by the factor, and its ntdll
+// says by how much (1 for no MetalFX), so the back buffers upscale to the
+// display.
 float windowUpscale() {
     static const float factor = [] {
         MetalFxSettings settings;
         settings.winemetalgl = std::getenv("WINEMETALGL_METALFX");
+        using MetalFxScale = double (*)();
+        if (auto wine = reinterpret_cast<MetalFxScale>(dlsym(RTLD_DEFAULT, "ntdll_get_metalfx_scale")))
+            settings.wine = wine();
         settings.swapchain = std::getenv("DXMT_METALFX_SPATIAL_SWAPCHAIN");
         settings.config = std::getenv("DXMT_CONFIG");
         if (const char* file = std::getenv("DXMT_CONFIG_FILE")) {

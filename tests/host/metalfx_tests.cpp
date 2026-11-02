@@ -45,3 +45,16 @@ TEST(metalfx_swapchain_switch_defaults_to_2) {
     s.config = "d3d11.metalSpatialUpscaleFactor=1.25";
     CHECK(metalFxFactor(s) == 1.25f);
 }
+
+TEST(metalfx_metalsharp_wine_decides) {
+    MetalFxSettings s;
+    s.configFile = "d3d11.metalSpatialUpscaleFactor = 2.0\n";
+    s.swapchain = "1";
+    s.wine = 1.0;
+    CHECK(metalFxFactor(s) == 1.0f);  // MetalSharp Wine without MetalFX for this game: off
+    s.wine = 1.5;
+    s.swapchain = "0";
+    CHECK(metalFxFactor(s) == 1.5f);  // its factor over DXMT's settings
+    s.winemetalgl = "2";
+    CHECK(metalFxFactor(s) == 2.0f);  // WINEMETALGL_METALFX over it
+}

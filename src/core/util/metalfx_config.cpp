@@ -29,6 +29,8 @@ float metalFxFactor(const MetalFxSettings& settings) {
     float factor;
     if (settings.winemetalgl) {
         factor = std::strtof(settings.winemetalgl, nullptr);
+    } else if (settings.wine > 0) {
+        factor = static_cast<float>(settings.wine);
     } else {
         if (settings.swapchain && settings.swapchain[0] == '0') return 1.0f;
         const bool on = settings.swapchain && settings.swapchain[0] != '\0';
