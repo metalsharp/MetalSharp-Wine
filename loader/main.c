@@ -75,17 +75,6 @@ static void init_reserved_areas(void)
 /* the preloader will set this variable */
 const __attribute((visibility("default"))) struct wine_preload_info *wine_main_preload_info = NULL;
 
-#if defined(__APPLE__) && defined(__aarch64__)
-/* MetalSharp: arm64 executables are position independent and their PAGEZERO is at most 4G, so system frameworks'
- * images and allocations made before main() can land just above it, where 64-bit Windows images load
- * (0x140000000, and a module that cannot be relocated fails to load, STATUS_CONFLICTING_ADDRESSES). This zero-fill
- * segment follows the loader's image there and keeps that range free; ntdll unmaps it and reserves the low 8G
- * (virtual_init). */
-__asm__(".zerofill WINE_RESERVE,WINE_RESERVE");
-static char __wine_reserve[0x100000000] __attribute__((section("WINE_RESERVE, WINE_RESERVE")));
-const __attribute((visibility("default"))) struct wine_preload_info wine_main_reserve = { __wine_reserve, sizeof(__wine_reserve) };
-#endif
-
 static void init_reserved_areas(void)
 {
 }
