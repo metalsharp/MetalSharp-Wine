@@ -634,7 +634,7 @@ static void release_inproc_sync( struct inproc_sync *sync )
     LONG ref = InterlockedDecrement( &sync->refcount );
 
     assert( ref >= 0 );
-    if (!ref) close( fd );
+    if (!ref && fd >= 0) close( fd );
 }
 
 static struct inproc_sync *get_cached_inproc_sync( HANDLE handle )
@@ -681,6 +681,16 @@ static NTSTATUS get_server_inproc_sync( HANDLE handle, struct inproc_sync *sync 
             sync->type = reply->type;
             sync->closed = 0;
             msync_cache_inproc_sync( handle, reply->type, reply->access, reply->shm_idx, sync->fd );
+#ifdef __APPLE__
+            /* MetalSharp: without an ntsync device the object's fd is msync's shared memory, which msync keeps
+             * once for the process (msync_shared_fd) and reaches by shm_idx; one per object open ran a game
+             * holding tens of thousands of objects out of file descriptors */
+            if (inproc_device_fd < 0 && sync->fd >= 0)
+            {
+                close( sync->fd );
+                sync->fd = -1;
+            }
+#endif
         }
     }
     SERVER_END_REQ;
