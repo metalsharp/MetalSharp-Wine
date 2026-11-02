@@ -50,21 +50,40 @@ static bool gcmouse_active;
 @end
 
 
+/* GCMouse reports fractions of a count; the event carries whole ones. What truncation leaves is carried to the next
+ * report, as the NSEvent path does, or slow and steady movement comes out as uneven steps (and none below a count).
+ * Only gcmouse_queue, which is serial, touches these. */
+static float remainder_x, remainder_y;
+
+
 static void post_mouse_movement(float delta_x, float delta_y)
 {
     WineApplicationController *controller;
     WineWindow *window;
     macdrv_event *event;
+    int x, y;
 
     if (!macdrv_gcmouse_input_active() || !NSApp || (!delta_x && !delta_y)) return;
 
+    remainder_x += delta_x;
+    remainder_y -= delta_y;
+    x = (int)remainder_x;
+    y = (int)remainder_y;
+    if (!x && !y) return;
+
     controller = [WineApplicationController sharedController];
     window = [controller mouseCaptureWindow] ?: [controller frontWineWindow];
-    if (!window) return;
+    if (!window)
+    {
+        remainder_x = remainder_y = 0;
+        return;
+    }
+    remainder_x -= x;
+    remainder_y -= y;
 
     event = macdrv_create_event(MOUSE_MOVED_RAW, window);
-    event->mouse_moved.x = delta_x;
-    event->mouse_moved.y = -delta_y;
+    event->mouse_moved.x = x;
+    event->mouse_moved.y = y;
     event->mouse_moved.time_ms = [controller ticksForEventTime:[[NSProcessInfo processInfo] systemUptime]];
     [window.queue postEvent:event];
     macdrv_release_event(event);
