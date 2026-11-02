@@ -3471,7 +3471,13 @@ void virtual_init(void)
     else if (is_win64)
     {
 #if defined(__APPLE__) && defined(__aarch64__)
+        /* MetalSharp: the loader's zero-fill segment that keeps 4G-8G free of system frameworks' images and early
+         * allocations, where 64-bit Windows images load (loader/main.c), goes for reserve_area() to take */
+        const struct preload_info *reserve = dlsym( RTLD_DEFAULT, "wine_main_reserve" );
+
         release_low_pagezero();
+        if (reserve && reserve->size && !munmap( reserve->addr, reserve->size ))
+            TRACE( "released the loader's reserve %p-%p\n", reserve->addr, (char *)reserve->addr + reserve->size );
 #endif
         reserve_area( (void *)0x00010000, (void *)0x200000000 );
     }
