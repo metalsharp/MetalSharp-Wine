@@ -350,11 +350,21 @@ static void setup_options(void)
 
     /* MetalSharp hack: ELDEN RING can't change its resolution or screen mode
      * in native macOS fullscreen, which keeps resizing its window back to the
-     * screen, so it reverts every change. The NativeFullscreen option still
-     * overrides this. */
+     * screen, so it reverts every change. Steam starts it as
+     * Game\start_protected_game.exe, which MetalSharp replaces with a copy of
+     * eldenring.exe to start it without EasyAntiCheat. The NativeFullscreen
+     * option still overrides this. */
     {
         static const WCHAR eldenringW[] = {'e','l','d','e','n','r','i','n','g','.','e','x','e',0};
-        if (!wcsicmp(appname, eldenringW)) native_fullscreen = false;
+        static const WCHAR protectedW[] = {'\\','E','L','D','E','N',' ','R','I','N','G','\\','G','a','m','e','\\',
+                                           's','t','a','r','t','_','p','r','o','t','e','c','t','e','d','_',
+                                           'g','a','m','e','.','e','x','e',0};
+        const WCHAR *image = RtlGetCurrentPeb()->ProcessParameters->ImagePathName.Buffer;
+        size_t image_len = lstrlenW(image), protected_len = ARRAY_SIZE(protectedW) - 1;
+
+        if (!wcsicmp(appname, eldenringW) ||
+            (image_len >= protected_len && !wcsicmp(image + image_len - protected_len, protectedW)))
+            native_fullscreen = false;
     }
     if (!get_config_key(hkey, appkey, "NativeFullscreen", buffer, sizeof(buffer)))
         native_fullscreen = IS_OPTION_TRUE(buffer[0]);
