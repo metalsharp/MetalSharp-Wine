@@ -841,6 +841,20 @@ void macdrv_mouse_button(HWND hwnd, const macdrv_event *event)
           event->mouse_button.x, event->mouse_button.y,
           event->mouse_button.time_ms, (NtGetTickCount() - event->mouse_button.time_ms));
 
+    if (event->mouse_button.toggle_confine)
+    {
+        HWND toplevel = NtUserGetAncestor(hwnd, GA_ROOT);
+        UINT_PTR confine = event->mouse_button.clipping ? METALSHARP_CONFINE_OFF : METALSHARP_CONFINE_ON;
+
+        /* MetalSharp: release the cursor, or keep it in the window (clip_fullscreen_window) */
+        TRACE("win %p cursor confinement %s\n", toplevel, confine == METALSHARP_CONFINE_ON ? "on" : "off");
+        NtUserSetProp(toplevel, METALSHARP_CONFINE_PROP, (HANDLE)confine);
+        NtUserClipCursor(NULL);
+        if (confine == METALSHARP_CONFINE_ON)
+            NtUserPostMessage(toplevel, WM_WINE_CLIPCURSOR, SET_CURSOR_FSCLIP, 0);
+        return;
+    }
+
     if (event->mouse_button.pressed)
     {
         switch (event->mouse_button.button)

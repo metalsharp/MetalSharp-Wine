@@ -1477,7 +1477,7 @@ static NSString* WineLocalizedString(unsigned int stringID)
         WineWindow* window = (WineWindow*)[theEvent window];
         NSEventType type = [theEvent type];
         WineWindow* windowBroughtForward = nil;
-        BOOL process = FALSE;
+        BOOL process = FALSE, toggleConfine = FALSE;
 
         if ([window isKindOfClass:[WineWindow class]] &&
             type == NSEventTypeLeftMouseDown &&
@@ -1557,7 +1557,12 @@ static NSString* WineLocalizedString(unsigned int stringID)
                         }
                     }
                 }
-                if (process)
+                /* MetalSharp: Cmd+left click toggles the cursor confinement of the window; its button up
+                   isn't sent either */
+                if (process && type == NSEventTypeLeftMouseDown && !mouseCaptureWindow &&
+                    [theEvent wine_commandKeyDown])
+                    toggleConfine = TRUE;
+                else if (process)
                     unmatchedMouseDowns |= NSEventMaskFromType(type);
             }
             else
@@ -1580,6 +1585,8 @@ static NSString* WineLocalizedString(unsigned int stringID)
                 event->mouse_button.x = floor(pt.x);
                 event->mouse_button.y = floor(pt.y);
                 event->mouse_button.time_ms = [self ticksForEventTime:[theEvent timestamp]];
+                event->mouse_button.toggle_confine = toggleConfine;
+                event->mouse_button.clipping = self.clippingCursor;
 
                 [window.queue postEvent:event];
 
