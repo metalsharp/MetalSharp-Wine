@@ -132,24 +132,35 @@ void Queue::wait(uint64_t serial) {
     completed_.wait(lock, [&] { return !inflight_.count(serial); });
 }
 
+namespace {
+
+// Waits until `done`, or `timeoutNs` (UINT64_MAX: no timeout). A timeout past the clock's range is a
+// wait without one too: wined3d waits ~0 >> 1 ns, and now plus that overflowed into a deadline in the
+// past, so each of its fence waits timed out at once.
+template <typename Done>
+bool waitUpTo(std::condition_variable& cv, std::unique_lock<std::mutex>& lock, uint64_t timeoutNs, Done done) {
+    const auto now = std::chrono::steady_clock::now();
+    const auto room =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::time_point::max() - now);
+    if (timeoutNs == UINT64_MAX || timeoutNs >= static_cast<uint64_t>(room.count())) {
+        cv.wait(lock, done);
+        return true;
+    }
+    return cv.wait_until(lock, now + std::chrono::nanoseconds(timeoutNs), done);
+}
+
+}  // namespace
+
 bool Queue::wait(uint64_t serial, uint64_t timeoutNs) {
     std::unique_lock<std::mutex> lock(mutex_);
     auto done = [&] { return !inflight_.count(serial); };
-    if (timeoutNs == UINT64_MAX) {
-        completed_.wait(lock, done);
-        return true;
-    }
-    return completed_.wait_for(lock, std::chrono::nanoseconds(timeoutNs), done);
+    return waitUpTo(completed_, lock, timeoutNs, done);
 }
 
 bool Queue::waitSignaled(uint64_t serial, uint64_t timeoutNs) {
     std::unique_lock<std::mutex> lock(mutex_);
     auto done = [&] { return !inflight_.count(serial) && !reserved_.count(serial); };
-    if (timeoutNs == UINT64_MAX) {
-        completed_.wait(lock, done);
-        return true;
-    }
-    return completed_.wait_for(lock, std::chrono::nanoseconds(timeoutNs), done);
+    return waitUpTo(completed_, lock, timeoutNs, done);
 }
 
 void Queue::waitIdle() {

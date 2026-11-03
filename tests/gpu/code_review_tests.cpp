@@ -209,6 +209,21 @@ GPU_TEST(gpu_cr_lazy_fence) {
     CHECK_GL();
 }
 
+GPU_TEST(gpu_cr_fence_timeout_past_the_clock) {
+    // wined3d waits ~0 >> 1 ns for its fences: past the clock's range, which
+    // must wait for the fence, not time out at once (Crusader Kings II
+    // stalled loading with every wined3d fence wait failing).
+    for (const GLuint64 timeout : {~static_cast<GLuint64>(0) >> 1, ~static_cast<GLuint64>(0) - 1}) {
+        glClear(GL_COLOR_BUFFER_BIT);
+        GLsync sync = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+        CHECK(sync != nullptr);
+        const GLenum waited = glClientWaitSync(sync, GL_SYNC_FLUSH_COMMANDS_BIT, timeout);
+        CHECK(waited == GL_CONDITION_SATISFIED || waited == GL_ALREADY_SIGNALED);
+        glDeleteSync(sync);
+    }
+    CHECK_GL();
+}
+
 GPU_TEST(gpu_cr_fence_on_idle_stream) {
     // With nothing recorded, a fence covers the committed work and signals
     // without a flush (tests/wine/opengl_sync.c polls it with timeout 0).
