@@ -267,11 +267,29 @@ void Context::initStrings() {
     // advertise the OpenGL ES names instead.
     featureExtensions_ = extensions_;
     if (config_.es) initEsStrings();
+    // Programs written for OpenGL 1.x and 2.x copy or print GL_EXTENSIONS
+    // into fixed buffers: Quake III engine games print it through a 4096-byte
+    // one (Jedi Academy overran it with the whole ~5 KB string and crashed).
+    // Their contexts get the extensions, oldest first, that fit in 3900 bytes
+    // (Wine's opengl32 appends its WGL ones), as drivers' legacy extension
+    // string limits do; glGetStringi still lists them all.
+    // WINEMETALGL_EXTENSIONS_LENGTH sets the limit (0: none).
+    size_t limit = config_.legacyRequest && !config_.es ? 3900 : 0;
+    if (const char* length = std::getenv("WINEMETALGL_EXTENSIONS_LENGTH"); length && *length)
+        limit = std::strtoul(length, nullptr, 10);
     extensionString_.clear();
+    size_t kept = 0;
     for (const std::string& ext : extensions_) {
+        const size_t added = (extensionString_.empty() ? 0 : 1) + ext.size();
+        if (limit && extensionString_.size() + added > limit) break;
         if (!extensionString_.empty()) extensionString_ += ' ';
         extensionString_ += ext;
+        kept++;
     }
+    if (kept < extensions_.size())
+        WMGL_INFO(Context, "GL_EXTENSIONS: %zu of %zu extensions (%zu bytes) for a program that asked for OpenGL 1.x or 2.x; "
+                  "glGetStringi lists them all, WINEMETALGL_EXTENSIONS_LENGTH=0 gives the whole string",
+                  kept, extensions_.size(), extensionString_.size());
 }
 
 bool Context::hasExtension(const char* name) const {
