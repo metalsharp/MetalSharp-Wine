@@ -1,0 +1,175 @@
+From 6f23d9e8e2b24a967f27234e6d5efa83e3e9566e Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Tue, 3 Nov 2026 10:58:55 -0700
+Subject: [PATCH] FEXCore, Windows: Don't keep code decoded before its page was
+ write-protected, and open code pages for file reads
+
+A writable code page is write-protected only once a block from it is added,
+after it was decoded, so a write landing during the decode didn't fault and
+the block kept the bytes from before it, protected as current, until the next
+write: code another thread patched (a hook, an unpacker) kept running the old
+code, or a half-written instruction. Pages without code are now protected
+right after a decode and decoded again, so a racing write faults, waits for
+the compile and invalidates its block.
+
+NtReadFile into a code page FEX had protected failed (ERROR_NOACCESS) unless
+the program was P5R.exe: the kernel's write faults. Open the pages before the
+read, without holding the locks through it, and invalidate after it as before.
+
+smc probe (x64, VirtualAlloc/image RWX patched from another thread; ReadFile
+into run code): 4 stale results and a ReadFile crash before, none after, 3 runs.
+fexprobe calls/bigfoot/jit_new/jit_patch unchanged.
+---
+ FEXCore/Source/Interface/Core/Core.cpp      | 26 +++++++++++++++++++++
+ FEXCore/Source/Interface/Core/Frontend.cpp  | 16 ++++++++++++-
+ FEXCore/Source/Interface/Core/Frontend.h    |  3 +++
+ FEXCore/Source/Interface/Core/LookupCache.h |  7 ++++++
+ Source/Windows/ARM64EC/Module.cpp           |  9 ++++++-
+ Source/Windows/WOW64/Module.cpp             |  6 ++++-
+ 6 files changed, 64 insertions(+), 3 deletions(-)
+
+diff --git a/FEXCore/Source/Interface/Core/Core.cpp b/FEXCore/Source/Interface/Core/Core.cpp
+index 340388d82..6d16bfcef 100644
+--- a/FEXCore/Source/Interface/Core/Core.cpp
++++ b/FEXCore/Source/Interface/Core/Core.cpp
+@@ -547,6 +547,32 @@ ContextImpl::GenerateIR(FEXCore::Core::InternalThreadState* Thread, uint64_t Gue
+ 
+     Thread->FrontendDecoder->DecodeLoop(GuestCode);
+ 
++    // MetalSharp: writable pages without code are not write-protected yet (a write unprotects a page and invalidates its
++    // code), so a write that lands while they are decoded doesn't fault, and the block would keep the bytes from
++    // before it, protected as if they were current, until the next write: another thread patching code (a hook,
++    // an unpacker) left the old code running, or a half-written instruction. Protect them, then decode again: a
++    // write from then on faults and waits on CodeInvalidationMutex for this compile, then invalidates its block.
++    // Protecting a page twice (the frontend is told again when the block is added) is harmless.
++    if (!Thread->FrontendDecoder->GetDecodedBlockInfo()->Blocks.empty()) {
++      fextl::set<uint64_t> Protected;
++      for (;;) {
++        bool Fresh = false;
++        for (auto CodePage : Thread->FrontendDecoder->GetDecodedBlockInfo()->CodePages) {
++          if (!Protected.contains(CodePage) && !Thread->LookupCache->HasCodeInPage(CodePage) &&
++              SyscallHandler->QueryGuestExecutableRange(Thread, CodePage).Writable) {
++            SyscallHandler->MarkGuestExecutableRange(Thread, CodePage, FEXCore::Utils::FEX_PAGE_SIZE);
++            Protected.insert(CodePage);
++            Fresh = true;
++          }
++        }
++        if (!Fresh) {
++          break;
++        }
++        Thread->FrontendDecoder->RestartDecodeInstructionsAtEntry(Thread, GuestRIP);
++        Thread->FrontendDecoder->DecodeLoop(GuestCode);
++      }
++    }
++
+     const auto* BlockInfo = Thread->FrontendDecoder->GetDecodedBlockInfo();
+     const auto& CodeBlocks = BlockInfo->Blocks;
+ 
+diff --git a/FEXCore/Source/Interface/Core/Frontend.cpp b/FEXCore/Source/Interface/Core/Frontend.cpp
+index 78d5f1a2e..2cc24a348 100644
+--- a/FEXCore/Source/Interface/Core/Frontend.cpp
++++ b/FEXCore/Source/Interface/Core/Frontend.cpp
+@@ -1751,9 +1751,23 @@ void Decoder::SetupDecodeInstructionsAtEntry(FEXCore::Core::InternalThreadState*
+     MaxInst = CTX->Config.MaxInstPerBlock;
+   }
+   this->MaxInst = MaxInst;
++  DecodedBuffer = PoolObject.ReownOrClaimBuffer();
++  ResetDecodeState(Thread, PC);
++}
++
++void Decoder::RestartDecodeInstructionsAtEntry(FEXCore::Core::InternalThreadState* Thread, uint64_t PC) {
++  BlockInfo.TotalInstructionCount = 0;
++  BlockInfo.Blocks.clear();
++  VisitedBlocks.clear();
++  Paused = false;
++  BlockResume = -1;
++  DecodedSize = 0;
++  ResetDecodeState(Thread, PC);
++}
++
++void Decoder::ResetDecodeState(FEXCore::Core::InternalThreadState* Thread, uint64_t PC) {
+   MaxCondBranchForward = 0;
+   MaxCondBranchBackwards = ~0ULL;
+-  DecodedBuffer = PoolObject.ReownOrClaimBuffer();
+ 
+   // Decode operating mode from thread's CS segment.
+   const auto CSSegment = Core::CPUState::GetSegmentFromIndex(Thread->CurrentFrame->State, Thread->CurrentFrame->State.cs_idx);
+diff --git a/FEXCore/Source/Interface/Core/Frontend.h b/FEXCore/Source/Interface/Core/Frontend.h
+index 1fc0e6ed3..40977ffb1 100644
+--- a/FEXCore/Source/Interface/Core/Frontend.h
++++ b/FEXCore/Source/Interface/Core/Frontend.h
+@@ -64,6 +64,8 @@ public:
+   bool CheckIfCacheable(FEXCore::Core::InternalThreadState&, const uint8_t* InstStream, uint64_t PC, uint64_t MaxInst);
+ 
+   void SetupDecodeInstructionsAtEntry(FEXCore::Core::InternalThreadState* Thread, uint64_t PC, uint64_t MaxInst);
++  // Decodes again from the same entry, into the buffer the setup claimed
++  void RestartDecodeInstructionsAtEntry(FEXCore::Core::InternalThreadState* Thread, uint64_t PC);
+   void DecodeLoop(const uint8_t* InstStream, uint64_t GuestPause = 0);
+ 
+   const DecodedBlockInformation* GetDecodedBlockInfo() const {
+@@ -139,6 +141,7 @@ private:
+   bool EntryBlock {};
+   bool FinalInstruction {};
+   uint64_t MaxInst {};
++  void ResetDecodeState(FEXCore::Core::InternalThreadState* Thread, uint64_t PC);
+   bool Paused {};
+   int64_t BlockResume = -1;
+   uint64_t PCOffset {};
+diff --git a/FEXCore/Source/Interface/Core/LookupCache.h b/FEXCore/Source/Interface/Core/LookupCache.h
+index 391d48560..fab44c7e2 100644
+--- a/FEXCore/Source/Interface/Core/LookupCache.h
++++ b/FEXCore/Source/Interface/Core/LookupCache.h
+@@ -282,6 +282,13 @@ public:
+ 
+   GuestToHostMap* Shared = nullptr;
+ 
++  // Whether any compiled block has code in the page at Address
++  bool HasCodeInPage(uint64_t Address) {
++    auto lk = Shared->AcquireReadLock();
++    auto It = Shared->CodePages.find(Address >> 12);
++    return It != Shared->CodePages.end() && !It->second.empty();
++  }
++
+   // Appends a list of Block {Address} to CodePages [Start, Start + Length)
+   // Returns true if new pages are marked as containing code
+   bool AddBlockExecutableRange(FEXCore::Core::InternalThreadState* Thread, auto& Addresses, uint64_t Start, uint64_t Length) {
+diff --git a/Source/Windows/ARM64EC/Module.cpp b/Source/Windows/ARM64EC/Module.cpp
+index 2bf3b5fb6..56cb7e664 100644
+--- a/Source/Windows/ARM64EC/Module.cpp
++++ b/Source/Windows/ARM64EC/Module.cpp
+@@ -1006,7 +1006,14 @@ void BTCpu64NotifyReadFile(HANDLE Handle, void* Address, SIZE_T Size, BOOL After
+     return;
+   }
+ 
+-  if (After && Status == STATUS_SUCCESS) {
++  if (!After) {
++    // MetalSharp: open the write-protected code pages of the buffer before the read, without holding the locks
++    // through it, or the kernel's write faults and the read fails (ERROR_NOACCESS). Code translated from the range
++    // during the read protects it again; that read then fails as before.
++    std::scoped_lock Lock(ThreadCreationMutex);
++    std::scoped_lock CodeLock(CTX->GetCodeInvalidationMutex());
++    InvalidationTracker->BeginUntrackedWriteLocked(reinterpret_cast<uint64_t>(Address), static_cast<uint64_t>(Size));
++  } else if (Status == STATUS_SUCCESS) {
+     std::scoped_lock Lock(ThreadCreationMutex);
+     InvalidationTracker->InvalidateAlignedInterval(reinterpret_cast<uint64_t>(Address), static_cast<uint64_t>(Size), false);
+   }
+diff --git a/Source/Windows/WOW64/Module.cpp b/Source/Windows/WOW64/Module.cpp
+index bf7718893..7feb5bf48 100644
+--- a/Source/Windows/WOW64/Module.cpp
++++ b/Source/Windows/WOW64/Module.cpp
+@@ -905,7 +905,11 @@ void BTCpuNotifyReadFile(HANDLE Handle, void* Address, SIZE_T Size, BOOL After,
+   }
+ 
+   // See arm64ec `BTCpu64NotifyReadFile` for why this like this.
+-  if (After && Status == STATUS_SUCCESS) {
++  if (!After) {
++    std::scoped_lock Lock(ThreadCreationMutex);
++    std::scoped_lock CodeLock(CTX->GetCodeInvalidationMutex());
++    InvalidationTracker->BeginUntrackedWriteLocked(reinterpret_cast<uint64_t>(Address), static_cast<uint64_t>(Size));
++  } else if (Status == STATUS_SUCCESS) {
+     std::scoped_lock Lock(ThreadCreationMutex);
+     InvalidationTracker->InvalidateAlignedInterval(reinterpret_cast<uint64_t>(Address), static_cast<uint64_t>(Size), false);
+   }
+-- 
+2.54.0 (Apple Git-157)
+

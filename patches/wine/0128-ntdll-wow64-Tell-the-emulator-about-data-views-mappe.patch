@@ -1,0 +1,65 @@
+From e842d48a732c4ee6998b7646c27b0cbabc5c8f56 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Tue, 3 Nov 2026 10:58:55 -0700
+Subject: [PATCH] ntdll, wow64: Tell the emulator about data views mapped
+ executable.
+
+MetalSharp: only image views were reported, so FEX never knew a MapViewOfFile
+view with FILE_MAP_EXECUTE was code: running it faulted as non-executable, and
+writes to it weren't tracked. Report it as memory allocated executable.
+---
+ dlls/ntdll/signal_arm64ec.c | 12 +++++++++++-
+ dlls/wow64/virtual.c        | 12 +++++++++++-
+ 2 files changed, 22 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/ntdll/signal_arm64ec.c b/dlls/ntdll/signal_arm64ec.c
+index 3b673a27af6..23ad0ad6263 100644
+--- a/dlls/ntdll/signal_arm64ec.c
++++ b/dlls/ntdll/signal_arm64ec.c
+@@ -748,8 +748,18 @@ static void notify_map_view_of_section( HANDLE handle, void *addr, SIZE_T size,
+     NTSTATUS status;
+ 
+     if (!pNotifyMapViewOfSection) return;
++    if (NtQuerySection( handle, SectionImageInformation, &info, sizeof(info), NULL ))
++    {
++        /* MetalSharp: a data view mapped executable (MapViewOfFile with FILE_MAP_EXECUTE) is code the
++         * emulator runs and must track for changes, as memory allocated executable is */
++        if (pNotifyMemoryAlloc && (protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)))
++        {
++            pNotifyMemoryAlloc( addr, size, MEM_COMMIT, protect, FALSE, 0 );
++            pNotifyMemoryAlloc( addr, size, MEM_COMMIT, protect, TRUE, STATUS_SUCCESS );
++        }
++        return;
++    }
+     if (!NtCurrentTeb()->Tib.ArbitraryUserPointer) return;
+-    if (NtQuerySection( handle, SectionImageInformation, &info, sizeof(info), NULL )) return;
+     status = pNotifyMapViewOfSection( NULL, addr, NULL, size, alloc, protect );
+     if (NT_SUCCESS(status)) return;
+     NtUnmapViewOfSection( GetCurrentProcess(), addr );
+diff --git a/dlls/wow64/virtual.c b/dlls/wow64/virtual.c
+index 6f692f3a12c..6261911b7df 100644
+--- a/dlls/wow64/virtual.c
++++ b/dlls/wow64/virtual.c
+@@ -448,8 +448,18 @@ static void notify_map_view_of_section( HANDLE handle, void *addr, SIZE_T size,
+     SECTION_IMAGE_INFORMATION info;
+     NTSTATUS status;
+ 
++    if (NtQuerySection( handle, SectionImageInformation, &info, sizeof(info), NULL ))
++    {
++        /* MetalSharp: a data view mapped executable (MapViewOfFile with FILE_MAP_EXECUTE) is code the
++         * emulator runs and must track for changes, as memory allocated executable is */
++        if (pBTCpuNotifyMemoryAlloc && (protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)))
++        {
++            pBTCpuNotifyMemoryAlloc( addr, size, MEM_COMMIT, protect, FALSE, 0 );
++            pBTCpuNotifyMemoryAlloc( addr, size, MEM_COMMIT, protect, TRUE, STATUS_SUCCESS );
++        }
++        return;
++    }
+     if (!NtCurrentTeb()->Tib.ArbitraryUserPointer) return;
+-    if (NtQuerySection( handle, SectionImageInformation, &info, sizeof(info), NULL )) return;
+     if (info.Machine != current_machine) return;
+     init_image_mapping( addr );
+     if (!pBTCpuNotifyMapViewOfSection) return;
+-- 
+2.54.0 (Apple Git-157)
+
