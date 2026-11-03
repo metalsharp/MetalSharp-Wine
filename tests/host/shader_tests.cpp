@@ -675,6 +675,22 @@ TEST(shader_vertex_input_matrix_array) {
     CHECK(r.stages[0].msl.find("m_3 [[attribute(") != std::string::npos);
 }
 
+// A user-defined struct type whose name is an MSL keyword ("vertex", as in
+// Mewgenics) compiles: the type's own name is renamed, like variable, function
+// and member names are (issue #77).
+TEST(shader_msl_reserved_struct_type_name) {
+    const char* vs =
+        "#version 430 core\n"
+        "struct vertex { vec4 color; vec2 texcoord; };\n"
+        "in vec4 in_color;\n"
+        "void main() { vertex v; v.color = in_color; v.texcoord = in_color.xy;\n"
+        "              gl_Position = v.color; }\n";
+    const LinkResult r = link43(vs, kPassFs);
+    if (!r.ok) std::fprintf(stderr, "%s\n", r.log.c_str());
+    CHECK(r.ok);
+    CHECK(r.stages[0].msl.find("struct vertex\n") == std::string::npos);
+}
+
 // GLSL 4.30: an array of arrays with an initializer may leave any dimension
 // unsized; the initializer sizes them.
 TEST(shader_unsized_arrays_of_arrays_with_initializer) {

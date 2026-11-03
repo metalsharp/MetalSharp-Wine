@@ -25,6 +25,12 @@
 # prefix Wine's own OpenGL back. A WINEPREFIX that does not exist yet is
 # created (wineboot).
 #
+# WINEMETALGL_WINE_LOADER names the Wine loader that sets the prefix up (reg, wineboot) instead
+# of WINE_INSTALL/bin/wine, with WINESERVER its wineserver: a NotProton runner, a copy of
+# CrossOver in ~/Library/Application Support/notproton/runners whose bin/wine is CrossOver's
+# bottle launcher, runs its games' prefixes (Steam's compatdata/<appid>/pfx) with the loader in
+# lib/wine/<arch>-unix itself, and so does WineMetalGL Settings for them.
+#
 # From a checkout, MODULE (default build/wine-module, or build/wine-module-arm64 for an arm64
 # Wine) and CORE (default build/release/libwinemetalgl.dylib, or build/arm64-release/) choose
 # what is installed; from a release package (this script at its top), its module directory
@@ -111,6 +117,8 @@ fi
 test -d "$WINE/Contents/Resources/wine/lib/wine" && WINE="$WINE/Contents/Resources/wine"
 LIB="$WINE/lib/wine"
 test -x "$WINE/bin/wine" || { echo "not a Wine installation (no bin/wine): $WINE" >&2; exit 1; }
+RUN_WINE=${WINEMETALGL_WINE_LOADER:-$WINE/bin/wine}
+test -x "$RUN_WINE" || { echo "not a Wine loader: $RUN_WINE" >&2; exit 1; }
 
 # Which Wine this is: the unix side it has, and for a Wine with both (CrossOver 27 carries
 # both), the prefix's own system32, else the architecture of its loader.
@@ -223,7 +231,7 @@ if test -z "$PREFIX"; then
 fi
 if ! test -e "$PREFIX"; then
     echo "Creating the Wine prefix $PREFIX"
-    if ! out=$(WINEPREFIX="$PREFIX" WINEDEBUG=-all "$WINE/bin/wine" wineboot -i 2>&1); then
+    if ! out=$(WINEPREFIX="$PREFIX" WINEDEBUG=-all "$RUN_WINE" wineboot -i 2>&1); then
         echo "$out" >&2
         echo "wineboot failed: $PREFIX" >&2
         exit 1
@@ -238,7 +246,7 @@ if test -d "$PREFIX/drive_c/windows/syswow64"; then
     cp "$MODULE/i386-windows/opengl32.dll" "$PREFIX/drive_c/windows/syswow64/opengl32.dll"
     cp "$MODULE/i386-windows/winemetalgl.dll" "$PREFIX/drive_c/windows/syswow64/winemetalgl.dll"
 fi
-if ! out=$(WINEPREFIX="$PREFIX" WINEDEBUG=-all "$WINE/bin/wine" reg add 'HKCU\Software\Wine\DllOverrides' \
+if ! out=$(WINEPREFIX="$PREFIX" WINEDEBUG=-all "$RUN_WINE" reg add 'HKCU\Software\Wine\DllOverrides' \
     /v opengl32 /d native /f 2>&1); then
     echo "$out" >&2
     echo "could not set opengl32=native in $PREFIX" >&2

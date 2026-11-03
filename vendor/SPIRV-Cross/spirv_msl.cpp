@@ -14679,6 +14679,13 @@ void CompilerMSL::replace_illegal_names()
 		if (!meta)
 			return;
 
+		// Types too (WineMetalGL): a GLSL struct named vertex, fragment, ...
+		// makes Metal reject the whole MSL ("declaration of anonymous struct
+		// must be a definition"), unlike variable, function and member names.
+		auto &dec = meta->decoration;
+		if (keywords.find(dec.alias) != end(keywords))
+			dec.alias += "0";
+
 		for (auto &mbr_dec : meta->members)
 			if (keywords.find(mbr_dec.alias) != end(keywords))
 				mbr_dec.alias += "0";
