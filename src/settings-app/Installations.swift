@@ -1,7 +1,7 @@
 // Where WineMetalGL is installed, switching it on and off there, and
 // installing it: CrossOver bottles, MetalSharp's prefixes (its Steam and GOG
-// ones), ~/.wine, and the
-// prefixes installed into from here. On and off is the prefix's DLL
+// ones), the prefixes of Steam games NotProton runs (issue #73), ~/.wine, and
+// the prefixes installed into from here. On and off is the prefix's DLL
 // override, opengl32=native (WineMetalGL) or builtin (Wine's own OpenGL),
 // set through that Wine's `reg`. Installing runs the release's own scripts,
 // which the app carries (Contents/Resources/Installer: install-crossover.sh,
@@ -12,11 +12,12 @@ import AppKit
 import SwiftUI
 
 struct WineTarget: Identifiable, Hashable, Sendable {
-    enum Kind { case crossover, prefix }
+    enum Kind { case crossover, prefix, notproton }
     var kind: Kind
     var name: String
     var prefix: URL      // the bottle's directory, or the WINEPREFIX
-    var wine: URL?       // a prefix's Wine (the directory with bin/wine); CrossOver's own for a bottle
+    var wine: URL?       // a prefix's Wine (the directory with bin/wine); CrossOver's own for a bottle;
+                         // for a NotProton game, its runner (a copy of CrossOver)
     var installed: Bool  // winemetalgl.dll is in its system32
     var enabled: Bool    // opengl32=native
     var id: String { prefix.path }
@@ -157,6 +158,9 @@ final class Installations: ObservableObject {
             found.append(target(.prefix, name: "MetalSharp " + dir.lastPathComponent,
                                 prefix: dir.appendingPathComponent("prefix"), wine: metalsharpWine))
         }
+        for game in Self.findNotProtonGames(home: home) {
+            found.append(target(.notproton, name: game.name, prefix: game.prefix, wine: game.runner))
+        }
         let defaultPrefix = home.appendingPathComponent(".wine")
         if fm.fileExists(atPath: defaultPrefix.appendingPathComponent("drive_c").path) {
             found.append(target(.prefix, name: "Default prefix", prefix: defaultPrefix, wine: wines.first?.wine))
@@ -247,6 +251,100 @@ final class Installations: ObservableObject {
         return found
     }
 
+    /// A Steam game NotProton runs: its prefix (Steam's compatdata/<appid>/pfx)
+    /// and the runner it last ran with.
+    struct NotProtonGame: Sendable {
+        var name: String
+        var prefix: URL
+        var runner: URL  // the runner's CrossOver directory, with lib/wine
+    }
+
+    /// The Steam games NotProton has set up (github.com/NotProtonNot/NotProton):
+    /// in every Steam library, each compatdata/<appid> with a pfx and the
+    /// notproton-build NotProton writes there (the runner build, then its
+    /// name), whose runner, ~/Library/Application Support/notproton/runners/
+    /// crossover-<build>/CrossOver, is still there. Named after the game's
+    /// appmanifest.
+    nonisolated static func findNotProtonGames(home: URL) -> [NotProtonGame] {
+        let fm = FileManager.default
+        let steam = home.appendingPathComponent("Library/Application Support/Steam")
+        let runners = home.appendingPathComponent("Library/Application Support/notproton/runners")
+        guard fm.fileExists(atPath: runners.path) else { return [] }
+        var libraries = [steam]
+        if let vdf = try? String(contentsOf: steam.appendingPathComponent("steamapps/libraryfolders.vdf"), encoding: .utf8) {
+            for line in vdf.split(separator: "\n") {
+                // "path"		"/Volumes/Games/SteamLibrary"
+                let fields = line.split(separator: "\"", omittingEmptySubsequences: false)
+                guard fields.count >= 4, fields[1] == "path", !fields[3].isEmpty else { continue }
+                let library = URL(fileURLWithPath: String(fields[3]).replacingOccurrences(of: "\\\\", with: "\\"))
+                if !libraries.contains(where: { $0.standardizedFileURL.path == library.standardizedFileURL.path }) {
+                    libraries.append(library)
+                }
+            }
+        }
+        var games: [NotProtonGame] = []
+        for library in libraries {
+            let steamapps = library.appendingPathComponent("steamapps")
+            let compatdata = steamapps.appendingPathComponent("compatdata")
+            let apps = (try? fm.contentsOfDirectory(at: compatdata, includingPropertiesForKeys: nil)) ?? []
+            for app in apps.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
+                let prefix = app.appendingPathComponent("pfx")
+                guard fm.fileExists(atPath: prefix.appendingPathComponent("drive_c").path),
+                      let record = try? String(contentsOf: app.appendingPathComponent("notproton-build"), encoding: .utf8)
+                else { continue }
+                let lines = record.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+                guard let build = lines.first, !build.isEmpty, !build.contains("/") else { continue }
+                let runner = runners.appendingPathComponent("crossover-\(build)/CrossOver")
+                guard fm.fileExists(atPath: runner.appendingPathComponent("lib/wine").path) else { continue }
+                let appID = app.lastPathComponent
+                let title = appName(appID, steamapps: steamapps) ?? "App \(appID)"
+                let runnerName = lines.count > 1 && !lines[1].isEmpty ? lines[1] : build
+                games.append(NotProtonGame(name: "\(title) (NotProton \(runnerName))", prefix: prefix, runner: runner))
+            }
+        }
+        return games
+    }
+
+    /// The "name" in a Steam library's appmanifest_<appid>.acf.
+    nonisolated static func appName(_ appID: String, steamapps: URL) -> String? {
+        guard let text = try? String(contentsOf: steamapps.appendingPathComponent("appmanifest_\(appID).acf"), encoding: .utf8)
+        else { return nil }
+        for line in text.split(separator: "\n") {
+            let fields = line.split(separator: "\"", omittingEmptySubsequences: false)
+            if fields.count >= 4, fields[1] == "name", !fields[3].isEmpty { return String(fields[3]) }
+        }
+        return nil
+    }
+
+    /// The Wine loader and wineserver NotProton runs a prefix with, as its
+    /// compat_run.sh picks them: the runner's arm64 ones for a prefix of the
+    /// arm64 Wine (an ARM64 system32), else its x86_64 ones (Rosetta).
+    nonisolated static func notProtonLoader(runner: URL, prefix: URL) -> (loader: URL, server: URL)? {
+        let fm = FileManager.default
+        let ntdll = prefix.appendingPathComponent("drive_c/windows/system32/ntdll.dll")
+        if peMachine(ntdll) == 0xaa64 {
+            let loader = runner.appendingPathComponent("lib/wine/aarch64-unix/wine.app/Contents/MacOS/wine")
+            let server = runner.appendingPathComponent("bin/wineserver-arm64")
+            if fm.isExecutableFile(atPath: loader.path), fm.isExecutableFile(atPath: server.path) { return (loader, server) }
+        }
+        let loader = runner.appendingPathComponent("lib/wine/x86_64-unix/wine")
+        guard fm.isExecutableFile(atPath: loader.path) else { return nil }
+        let server = ["bin/wineserver", "bin/wineserver-x86"].map { runner.appendingPathComponent($0) }
+            .first { fm.isExecutableFile(atPath: $0.path) }
+        return server.map { (loader, $0) }
+    }
+
+    /// A PE file's COFF machine (0xaa64 ARM64, 0x8664 x86_64, 0x14c i386).
+    nonisolated static func peMachine(_ file: URL) -> UInt16? {
+        guard let handle = try? FileHandle(forReadingFrom: file) else { return nil }
+        defer { try? handle.close() }
+        guard let dos = try? handle.read(upToCount: 64), dos.count == 64 else { return nil }
+        let offset = UInt64(dos[60]) | UInt64(dos[61]) << 8 | UInt64(dos[62]) << 16 | UInt64(dos[63]) << 24
+        guard (try? handle.seek(toOffset: offset + 4)) != nil, let machine = try? handle.read(upToCount: 2), machine.count == 2
+        else { return nil }
+        return UInt16(machine[0]) | UInt16(machine[1]) << 8
+    }
+
     /// The prefix's opengl32 override, from user.reg (as wineserver last saved it).
     static func overrideIsNative(prefix: URL) -> Bool {
         guard let text = try? String(contentsOf: prefix.appendingPathComponent("user.reg"), encoding: .utf8) else { return false }
@@ -272,12 +370,20 @@ final class Installations: ObservableObject {
         let value = on ? "native" : "builtin"
         var arguments = ["reg", "add", "HKCU\\Software\\Wine\\DllOverrides", "/v", "opengl32", "/d", value, "/f"]
         var environment = ["WINEDEBUG": "-all"]
+        var executable = wine.appendingPathComponent("bin/wine")
         if target.kind == .crossover {
             arguments = ["--bottle", target.prefix.path, "--wait-children"] + arguments
         } else {
             environment["WINEPREFIX"] = target.prefix.path
         }
-        let executable = wine.appendingPathComponent("bin/wine")
+        if target.kind == .notproton {
+            guard let tools = Self.notProtonLoader(runner: wine, prefix: target.prefix) else {
+                report = Report(title: "No Wine for \(target.name)", text: "\(wine.path) has no Wine loader for this prefix.")
+                return
+            }
+            executable = tools.loader
+            environment["WINESERVER"] = tools.server.path
+        }
         run(on ? "Turning WineMetalGL on in \(target.name)…" : "Turning WineMetalGL off in \(target.name)…",
             executable, arguments, environment) { [weak self] ok, output in
             guard let self else { return }
@@ -353,6 +459,26 @@ final class Installations: ObservableObject {
         }
     }
 
+    /// Install into a Steam game NotProton runs: WineMetalGL into its runner
+    /// (lib/wine, as for any Wine) and its prefix, set up with the loader
+    /// NotProton runs the prefix with.
+    func installNotProton(_ target: WineTarget) {
+        guard let installer, let runner = target.wine else { return }
+        guard let arguments = notProtonInstall(installer, target, runner) else {
+            report = Report(title: "Installing into \(target.name) failed", text: "\(runner.path) has no Wine loader for this prefix.")
+            return
+        }
+        run("Installing WineMetalGL into \(target.name)…", URL(fileURLWithPath: "/bin/sh"), arguments.0, arguments.1) { [weak self] ok, output in
+            self?.finishInstall(ok, output, into: target.name)
+        }
+    }
+
+    private func notProtonInstall(_ installer: URL, _ target: WineTarget, _ runner: URL) -> ([String], [String: String])? {
+        guard let tools = Self.notProtonLoader(runner: runner, prefix: target.prefix) else { return nil }
+        return ([installer.appendingPathComponent("install-wine-module.sh").path, runner.path, target.prefix.path],
+                ["WINEMETALGL_WINE_LOADER": tools.loader.path, "WINESERVER": tools.server.path])
+    }
+
     /// After an update (Updater.swift): this app's release, installed again
     /// into every bottle and prefix that has WineMetalGL, the way it was
     /// installed there.
@@ -362,8 +488,14 @@ final class Installations: ObservableObject {
         var failed: [String] = []
         var updated: [String] = []
         for target in targets where target.installed {
-            let arguments: [String]
-            if target.kind == .crossover {
+            var arguments: [String]
+            var environment: [String: String] = [:]
+            if target.kind == .notproton, let runner = target.wine, let install = notProtonInstall(installer, target, runner) {
+                (arguments, environment) = install
+            } else if target.kind == .notproton {
+                failed.append("\(target.name): its NotProton runner has no Wine loader for it.")
+                continue
+            } else if target.kind == .crossover {
                 arguments = [installer.appendingPathComponent("install-crossover.sh").path, target.prefix.path] + (crossover.map { [$0.path] } ?? [])
             } else if let wine = target.wine {
                 arguments = [installer.appendingPathComponent("install-wine-module.sh").path, wine.path, target.prefix.path]
@@ -371,7 +503,7 @@ final class Installations: ObservableObject {
                 failed.append("\(target.name): WineMetalGL Settings does not know which Wine runs it.")
                 continue
             }
-            let (ok, output) = await perform("Updating WineMetalGL in \(target.name)…", URL(fileURLWithPath: "/bin/sh"), arguments, [:])
+            let (ok, output) = await perform("Updating WineMetalGL in \(target.name)…", URL(fileURLWithPath: "/bin/sh"), arguments, environment)
             if ok { updated.append(target.name) } else { failed.append("\(target.name): \(output)") }
         }
         refresh()
@@ -622,7 +754,7 @@ struct InstallationsCard: View {
 
     private func row(_ target: WineTarget) -> some View {
         HStack(spacing: 10) {
-            Image(systemName: target.kind == .crossover ? "wineglass" : "folder")
+            Image(systemName: target.kind == .crossover ? "wineglass" : target.kind == .notproton ? "gamecontroller" : "folder")
                 .foregroundStyle(.secondary)
                 .frame(width: 18)
             VStack(alignment: .leading, spacing: 1) {
@@ -641,6 +773,12 @@ struct InstallationsCard: View {
                     .labelsHidden()
                     .disabled(installations.busy != nil)
                     .help(target.enabled ? "WineMetalGL is on here." : "Wine's own OpenGL is used here.")
+            } else if target.kind == .notproton {
+                // A NotProton game has no other way in: its runner and prefix come from NotProton.
+                Button("Install") { installations.installNotProton(target) }
+                    .glassButton(prominent: false)
+                    .disabled(installations.installer == nil || installations.busy != nil)
+                    .help("Install WineMetalGL into this game's NotProton runner and prefix.")
             } else {
                 Text("Not installed").font(.caption).foregroundStyle(.secondary)
             }

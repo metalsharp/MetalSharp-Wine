@@ -137,10 +137,17 @@ release has it as a signed and notarized disk image,
 `WineMetalGL-Settings-<version>.dmg`: open it and drag the app onto
 Applications.
 
-- **WineMetalGL**: the CrossOver bottles, MetalSharp's prefixes, `~/.wine` and
-  the prefixes installed into from the app, each with a switch that turns
+- **WineMetalGL**: the CrossOver bottles, MetalSharp's prefixes, the Steam
+  games [NotProton](https://github.com/NotProtonNot/NotProton) runs, `~/.wine`
+  and the prefixes installed into from the app, each with a switch that turns
   WineMetalGL on or off there (the `opengl32` override, `native` or
-  `builtin`). Three buttons always show:
+  `builtin`). A NotProton game is its prefix, `compatdata/<appid>/pfx` in any
+  Steam library, run by the NotProton runner (a copy of CrossOver in
+  `~/Library/Application Support/notproton/runners`) it last ran with; its
+  **Install** puts WineMetalGL into that runner's `lib/wine` and into the
+  prefix, set up with the Wine loader NotProton runs it with. NotProton
+  replacing the runner, or rebuilding the prefix, removes it again: the game
+  then shows **Install** once more. Three buttons always show:
   - **CrossOver** (Install into CrossOver): a bottle found anywhere on the Mac
     (CrossOver's Bottles folder, the bottles installed into from the app, any
     other `cxbottle.conf` Spotlight finds), grouped by copy of CrossOver when
