@@ -332,6 +332,7 @@ WMGL_EXPORT wmgl_context* wmgl_context_create(int format, wmgl_context* share, c
     config.forwardCompatible = flags & kForwardCompatibleBit;
     config.debug = flags & kDebugBit;
     config.robustAccess = flags & kRobustAccessBit;
+    config.legacyRequest = requestedMajor < 3;
     // GL may return any later version that is backwards compatible with the request.
     config.major = maxMajor;
     config.minor = maxMinor;
