@@ -335,6 +335,8 @@ typedef struct macdrv_event {
             int             x;
             int             y;
             unsigned long   time_ms;
+            bool            toggle_confine; /* MetalSharp: a Cmd+left click, not passed to Windows */
+            bool            clipping;
         }                                           mouse_button;
         struct {
             int             x;

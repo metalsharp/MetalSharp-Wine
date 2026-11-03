@@ -656,6 +656,11 @@ enum wine_internal_message
     WM_WINE_LAST_DRIVER_MSG = 0x80001fff
 };
 
+/* MetalSharp: a toplevel window's cursor confinement, set by a Cmd+click in the Mac driver */
+#define METALSHARP_CONFINE_PROP u"__wine_metalsharp_confine_cursor"
+#define METALSHARP_CONFINE_ON   1
+#define METALSHARP_CONFINE_OFF  2
+
 /* internal IME message */
 #define WM_IME_INTERNAL 0x287
 #define IME_INTERNAL_ACTIVATE   0x17

@@ -2793,16 +2793,46 @@ static BOOL is_fullscreen( const MONITORINFO *info, const RECT *rect )
            rect->top <= info->rcMonitor.top && rect->bottom >= info->rcMonitor.bottom;
 }
 
+/* MetalSharp: a game Steam (SteamAppId) or MetalSharp (METALSHARP_PIPELINE, from its launch.env) started keeps
+ * the cursor in its window while that window is fullscreen (borderless or exclusive) and in front: some games
+ * expect Windows to keep it there and lose it past their border on a Mac, where nothing else does. A windowed
+ * window, such as a launcher's, a store's or a game's own, keeps a free cursor. Cmd+left click on a window
+ * toggles it for that window (METALSHARP_CONFINE_PROP). METALSHARP_CONFINE_CURSOR=0 turns the default off.
+ * Leaving the app releases it as it does any clipping. */
+static BOOL confine_game_cursor(void)
+{
+    static int confine = -1;
+
+    if (confine == -1)
+    {
+        const char *value = getenv( "METALSHARP_CONFINE_CURSOR" );
+
+        if (value && *value) confine = strcmp( value, "0" ) != 0;
+        else confine = (getenv( "SteamAppId" ) && *getenv( "SteamAppId" )) ||
+                       (getenv( "METALSHARP_PIPELINE" ) && *getenv( "METALSHARP_PIPELINE" ));
+        TRACE( "confining the cursor to game windows: %d\n", confine );
+    }
+    return confine;
+}
+
+/* the window's Cmd+click choice: 0 for none, METALSHARP_CONFINE_ON or METALSHARP_CONFINE_OFF */
+static UINT_PTR confine_cursor_choice( HWND hwnd )
+{
+    return (UINT_PTR)NtUserGetProp( hwnd, METALSHARP_CONFINE_PROP );
+}
+
 /***********************************************************************
  *      clip_fullscreen_window
  *
- * Turn on clipping if the active window is fullscreen.
+ * Turn on clipping if the active window is fullscreen, or one Cmd+click confined (confine_game_cursor).
  */
 BOOL clip_fullscreen_window( HWND hwnd, BOOL reset )
 {
     struct user_thread_info *thread_info = get_user_thread_info();
     MONITORINFO monitor_info = {.cbSize = sizeof(MONITORINFO)};
-    RECT monitor_rect, window_rect, virtual_rect;
+    RECT monitor_rect, window_rect, virtual_rect, client_rect, clip_rect;
+    BOOL game = confine_game_cursor(), fullscreen;
+    UINT_PTR choice;
     DWORD style;
     UINT ctx;
     BOOL ret;
@@ -2813,8 +2843,10 @@ BOOL clip_fullscreen_window( HWND hwnd, BOOL reset )
     style = NtUserGetWindowLongW( hwnd, GWL_STYLE );
     if (!(style & WS_VISIBLE)) return FALSE;
     if ((style & (WS_POPUP | WS_CHILD)) == WS_CHILD) return FALSE;
+    if ((choice = confine_cursor_choice( hwnd )) == METALSHARP_CONFINE_OFF) return FALSE;
+    if (choice == METALSHARP_CONFINE_ON) game = TRUE;
     /* maximized windows don't count as full screen */
-    if ((style & WS_MAXIMIZE) && (style & WS_CAPTION) == WS_CAPTION) return FALSE;
+    if (!game && (style & WS_MAXIMIZE) && (style & WS_CAPTION) == WS_CAPTION) return FALSE;
 
     ctx = set_thread_dpi_awareness_context( NTUSER_DPI_PER_MONITOR_AWARE );
     if (!(ret = get_present_rect( hwnd, &window_rect, get_thread_dpi() )))
@@ -2822,20 +2854,38 @@ BOOL clip_fullscreen_window( HWND hwnd, BOOL reset )
     monitor_info = monitor_info_from_window( hwnd, MONITOR_DEFAULTTONEAREST );
     virtual_rect = get_virtual_screen_rect( get_thread_dpi(), MDT_DEFAULT );
     monitor_rect = map_rect_virt_to_raw( monitor_info.rcMonitor, get_thread_dpi() );
+    if (!get_client_rect_rel( hwnd, COORDS_SCREEN, &client_rect, get_thread_dpi() )) SetRectEmpty( &client_rect );
+    client_rect = map_rect_virt_to_raw( client_rect, get_thread_dpi() );
     set_thread_dpi_awareness_context( ctx );
 
-    if (!ret || !is_fullscreen( &monitor_info, &window_rect )) return FALSE;
+    if (!ret) return FALSE;
+    fullscreen = is_fullscreen( &monitor_info, &window_rect );
+    clip_rect = monitor_rect;
+    if (!fullscreen)
+    {
+        /* a windowed window only when Cmd+click confined it */
+        if (choice != METALSHARP_CONFINE_ON || IsRectEmpty( &client_rect )) return FALSE;
+        clip_rect = client_rect;
+    }
     if (is_captured_by_system()) return FALSE;
-    if (NtGetTickCount() - thread_info->clipping_reset < 1000) return FALSE;
-    if (!reset && clipping_cursor && thread_info->clipping_cursor) return FALSE;  /* already clipping */
+    if (!game && NtGetTickCount() - thread_info->clipping_reset < 1000) return FALSE;
+    if (!reset && clipping_cursor && thread_info->clipping_cursor)
+    {
+        RECT current;
 
-    if (!grab_fullscreen)
+        /* already clipping, unless a game window moved or changed size since */
+        if (!game || !get_clip_cursor( &current, no_dpi, MDT_RAW_DPI ) || EqualRect( &current, &clip_rect ))
+            return FALSE;
+    }
+
+    if (!grab_fullscreen && !game)
     {
         if (!EqualRect( &monitor_info.rcMonitor, &virtual_rect )) return FALSE;
         if (is_virtual_desktop()) return FALSE;
     }
 
-    TRACE( "win %p clipping fullscreen\n", hwnd );
+    TRACE( "win %p clipping %s to %s\n", hwnd, fullscreen ? "fullscreen" : "game window", wine_dbgstr_rect( &clip_rect ) );
+    monitor_rect = clip_rect;
 
     SERVER_START_REQ( set_cursor )
     {
@@ -2862,7 +2912,12 @@ BOOL process_wine_clipcursor( HWND hwnd, UINT flags, BOOL reset )
     if (reset)
     {
         thread_info->clipping_reset = NtGetTickCount();
-        return user_driver->pClipCursor( NULL, TRUE );
+        if (!user_driver->pClipCursor( NULL, TRUE )) return FALSE;
+        /* MetalSharp: the focus moving to a game's window resets the clipping (as the app activates on a Mac,
+         * right after the window did): a game window still in front is clipped again at once */
+        if (confine_game_cursor() || confine_cursor_choice( NtUserGetForegroundWindow() ) == METALSHARP_CONFINE_ON)
+            clip_fullscreen_window( NtUserGetForegroundWindow(), TRUE );
+        return TRUE;
     }
 
     if (!grab_pointer) return TRUE;
