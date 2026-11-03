@@ -2,6 +2,7 @@
 
 #import <MetalFX/MetalFX.h>
 #include <dlfcn.h>
+#include <mach/mach_time.h>
 
 #include <algorithm>
 #include <climits>
@@ -497,7 +498,11 @@ bool Surface::swap(CommandStream& stream) {
     stream.resolvePendingClear();
     stream.endEncoder();
     ensurePresentPipeline();
-    if (interval_ == 0) return swapMailbox(stream);
+    if (interval_ == 0) {
+        const bool presented = swapMailbox(stream);
+        limitFrameRate();
+        return presented;
+    }
     stopMailbox();
     // The frame's work reaches the GPU before the wait for a drawable (with
     // vsync, nextDrawable blocks until one is free), and the present is a
@@ -516,7 +521,35 @@ bool Surface::swap(CommandStream& stream) {
     encodePresent(stream.commandBuffer(), resolvedColor(), drawable);
     stream.present(drawable);
     stream.flush();
+    limitFrameRate();
     return true;
+}
+
+// WINEMETALGL_MAX_FRAME_RATE=<fps> caps how often SwapBuffers returns, as
+// DXVK's and DXMT's frame rate limits do: older games tie their physics to
+// the frame rate and have no limit of their own but vsync, which runs them at
+// 120 fps on a 120 Hz display. The frame's work is on the GPU before the wait,
+// and a frame later than one interval starts the schedule again rather than
+// letting the next ones hurry to catch up.
+void Surface::limitFrameRate() {
+    static const double fps = [] {
+        const char* value = std::getenv("WINEMETALGL_MAX_FRAME_RATE");
+        const double rate = value && *value ? std::strtod(value, nullptr) : 0.0;
+        if (rate > 0.0) WMGL_INFO(Surface, "frame rate limited to %g fps (WINEMETALGL_MAX_FRAME_RATE)", rate);
+        return rate > 0.0 ? rate : 0.0;
+    }();
+    if (fps <= 0.0) return;
+    static const uint64_t interval = [] {
+        mach_timebase_info_data_t timebase;
+        mach_timebase_info(&timebase);
+        return static_cast<uint64_t>(1e9 / fps * timebase.denom / timebase.numer);
+    }();
+    const uint64_t now = mach_absolute_time();
+    if (!nextFrameTime_ || now > nextFrameTime_ + interval)
+        nextFrameTime_ = now;
+    else if (now < nextFrameTime_)
+        mach_wait_until(nextFrameTime_);
+    nextFrameTime_ += interval;
 }
 
 bool Surface::swapMailbox(CommandStream& stream) {

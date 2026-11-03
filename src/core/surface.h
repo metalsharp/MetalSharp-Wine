@@ -93,6 +93,9 @@ private:
     struct Mailbox;
     bool swapMailbox(CommandStream& stream);
     void stopMailbox();
+    // WINEMETALGL_MAX_FRAME_RATE: waits until the next frame's time (see surface.mm).
+    void limitFrameRate();
+    uint64_t nextFrameTime_ = 0;  // mach_absolute_time units; 0 before the first frame
     void ensurePresentPipeline();
     // Encodes the full-screen copy of `source` into `drawable`.
     void encodePresent(id<MTLCommandBuffer> commandBuffer, id<MTLTexture> source, id<CAMetalDrawable> drawable);
