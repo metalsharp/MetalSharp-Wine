@@ -1,0 +1,119 @@
+From ee590cf78110e956fa32e94c5245186822b4432b Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Tue, 3 Nov 2026 08:42:58 -0700
+Subject: [PATCH] ntdll: Start an x64 thread entered on a hybrid module's
+ native export on its x64 export.
+
+A thread of an x64 process started on the native ARM64 code of an ARM64X module ran that
+code as x64 code. Such an entry comes from a module's export table read from its file:
+EA's overlay injects into games with CreateRemoteThread( kernel32's LoadLibraryW ) looked
+up that way (Star Wars Jedi: Fallen Order exited 0xC0000354 as it started), and winedbg's
+DbgUiRemoteBreakin thread crashed the same way.
+---
+ dlls/ntdll/signal_arm64ec.c | 83 +++++++++++++++++++++++++++++++++++++
+ 1 file changed, 83 insertions(+)
+
+diff --git a/dlls/ntdll/signal_arm64ec.c b/dlls/ntdll/signal_arm64ec.c
+index c942dc374d2..3b673a27af6 100644
+--- a/dlls/ntdll/signal_arm64ec.c
++++ b/dlls/ntdll/signal_arm64ec.c
+@@ -2129,6 +2129,88 @@ void __attribute__((naked)) RtlUserThreadStart( PRTL_THREAD_START_ROUTINE entry,
+ }
+ 
+ 
++/***********************************************************************
++ *           fixup_native_thread_entry
++ *
++ * MetalSharp: a thread of an x64 process started on the native (ARM64) code of a hybrid ARM64X module
++ * would run that ARM64 code as x64 code. Such an entry comes from a module's export table read from
++ * its file rather than from the loaded module (whose ARM64X relocations give x64 callers the ARM64EC
++ * exports): EA's overlay injects into a game with CreateRemoteThread( kernel32's LoadLibraryW ) looked
++ * up that way, and Star Wars Jedi: Fallen Order crashed as it started. Start such a thread on the
++ * module's export of the same name that x64 code calls instead.
++ */
++static ULONG_PTR fixup_native_thread_entry( ULONG_PTR entry )
++{
++    MEM_EXTENDED_PARAMETER param = { .Type = MemExtendedParameterImageMachine, .ULong = IMAGE_FILE_MACHINE_ARM64 };
++    const IMAGE_LOAD_CONFIG_DIRECTORY64 *cfg;
++    const IMAGE_EXPORT_DIRECTORY *exports;
++    const DWORD *functions, *names;
++    const WORD *ordinals;
++    LDR_DATA_TABLE_ENTRY *mod;
++    OBJECT_ATTRIBUTES attr;
++    UNICODE_STRING nt_name;
++    IO_STATUS_BLOCK io;
++    HANDLE file, section;
++    void *view = NULL, *ec_entry;
++    SIZE_T view_size = 0;
++    ULONG size, rva, i;
++    ANSI_STRING name;
++
++    if (!entry || RtlIsEcCode( entry )) return entry;
++    if (LdrFindEntryForAddress( (void *)entry, &mod )) return entry;
++    if (!(cfg = RtlImageDirectoryEntryToData( mod->DllBase, TRUE, IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG, &size )) ||
++        size < offsetof( IMAGE_LOAD_CONFIG_DIRECTORY64, CHPEMetadataPointer ) + sizeof(cfg->CHPEMetadataPointer) ||
++        !cfg->CHPEMetadataPointer)
++        return entry;  /* not a hybrid module: x64 code */
++
++    if (RtlDosPathNameToNtPathName_U_WithStatus( mod->FullDllName.Buffer, &nt_name, NULL, NULL )) return entry;
++    InitializeObjectAttributes( &attr, &nt_name, OBJ_CASE_INSENSITIVE, 0, NULL );
++    if (NtOpenFile( &file, GENERIC_READ | SYNCHRONIZE, &attr, &io, FILE_SHARE_READ | FILE_SHARE_DELETE,
++                    FILE_SYNCHRONOUS_IO_NONALERT | FILE_NON_DIRECTORY_FILE ))
++    {
++        RtlFreeUnicodeString( &nt_name );
++        return entry;
++    }
++    RtlFreeUnicodeString( &nt_name );
++    if (NtCreateSection( &section, SECTION_MAP_READ | SECTION_QUERY, NULL, NULL, PAGE_READONLY, SEC_IMAGE, file ))
++    {
++        NtClose( file );
++        return entry;
++    }
++    NtClose( file );
++    /* the module as an ARM64 program sees it: its native export table */
++    if (NtMapViewOfSectionEx( section, GetCurrentProcess(), &view, NULL, &view_size, 0, PAGE_READONLY, &param, 1 ) < 0)
++    {
++        NtClose( section );
++        return entry;
++    }
++    NtClose( section );
++
++    rva = entry - (ULONG_PTR)mod->DllBase;
++    if ((exports = RtlImageDirectoryEntryToData( view, TRUE, IMAGE_DIRECTORY_ENTRY_EXPORT, &size )))
++    {
++        functions = (const DWORD *)((char *)view + exports->AddressOfFunctions);
++        names = (const DWORD *)((char *)view + exports->AddressOfNames);
++        ordinals = (const WORD *)((char *)view + exports->AddressOfNameOrdinals);
++        for (i = 0; i < exports->NumberOfNames; i++)
++        {
++            if (ordinals[i] >= exports->NumberOfFunctions || functions[ordinals[i]] != rva) continue;
++            RtlInitAnsiString( &name, (const char *)view + names[i] );
++            /* the export x64 code calls, as GetProcAddress gives it */
++            if (!LdrGetProcedureAddress( mod->DllBase, &name, 0, &ec_entry ) && (ULONG_PTR)ec_entry != entry)
++            {
++                WARN( "thread entry %p is the native %s!%s, starting it on its x64 export %p\n", (void *)entry,
++                      debugstr_w(mod->BaseDllName.Buffer), name.Buffer, ec_entry );
++                entry = (ULONG_PTR)ec_entry;
++            }
++            break;
++        }
++    }
++    NtUnmapViewOfSection( GetCurrentProcess(), view );
++    return entry;
++}
++
++
+ /******************************************************************
+  *		LdrInitializeThunk (NTDLL.@)
+  */
+@@ -2147,6 +2229,7 @@ void WINAPI LdrInitializeThunk( CONTEXT *arm_context, ULONG_PTR unk2, ULONG_PTR
+ 
+     context_arm_to_x64( &context, (ARM64_NT_CONTEXT *)arm_context );
+     loader_init( &context.AMD64_Context, (void **)&context.X0 );
++    context.X0 = fixup_native_thread_entry( context.X0 );
+     TRACE_(relay)( "\1Starting thread proc %p (arg=%p)\n", (void *)context.X0, (void *)context.X1 );
+     NtContinue( &context.AMD64_Context, TRUE );
+ }
+-- 
+2.54.0 (Apple Git-157)
+
