@@ -1,0 +1,48 @@
+From 9b4826ef702c419c11e5b2110640e15a86f542dd Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Mon, 2 Nov 2026 06:04:32 -0700
+Subject: [PATCH 116/122] ntdll: Don't keep a file descriptor per in-process
+ sync object on macOS.
+
+Without an ntsync device, the fd the server sends with each object is msync's
+shared memory, which msync keeps once for the process and reaches by shm_idx.
+Keeping one per cached object ran Hogwarts Legacy, which holds tens of
+thousands of events, out of file descriptors (wine client error: pipe: Too
+many open files) and froze it.
+---
+ dlls/ntdll/unix/sync.c | 12 +++++++++++-
+ 1 file changed, 11 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/ntdll/unix/sync.c b/dlls/ntdll/unix/sync.c
+index d4ba865bb17..e20312372b5 100644
+--- a/dlls/ntdll/unix/sync.c
++++ b/dlls/ntdll/unix/sync.c
+@@ -634,7 +634,7 @@ static void release_inproc_sync( struct inproc_sync *sync )
+     LONG ref = InterlockedDecrement( &sync->refcount );
+ 
+     assert( ref >= 0 );
+-    if (!ref) close( fd );
++    if (!ref && fd >= 0) close( fd );
+ }
+ 
+ static struct inproc_sync *get_cached_inproc_sync( HANDLE handle )
+@@ -681,6 +681,16 @@ static NTSTATUS get_server_inproc_sync( HANDLE handle, struct inproc_sync *sync
+             sync->type = reply->type;
+             sync->closed = 0;
+             msync_cache_inproc_sync( handle, reply->type, reply->access, reply->shm_idx, sync->fd );
++#ifdef __APPLE__
++            /* MetalSharp: without an ntsync device the object's fd is msync's shared memory, which msync keeps
++             * once for the process (msync_shared_fd) and reaches by shm_idx; one per object open ran a game
++             * holding tens of thousands of objects out of file descriptors */
++            if (inproc_device_fd < 0 && sync->fd >= 0)
++            {
++                close( sync->fd );
++                sync->fd = -1;
++            }
++#endif
+         }
+     }
+     SERVER_END_REQ;
+-- 
+2.54.0 (Apple Git-157)
+

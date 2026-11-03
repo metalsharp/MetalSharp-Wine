@@ -1,0 +1,55 @@
+From d178834cba6e1f182fb13aa414b0396db2bb70e7 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Mon, 2 Nov 2026 07:26:58 -0700
+Subject: [PATCH 118/122] Revert "loader, ntdll: Keep 4G-8G free for 64-bit
+ images on arm64 macOS."
+
+This reverts commit 9b4cd03140a9bdcc2425da5f5a28d53f049588bb.
+---
+ dlls/ntdll/unix/virtual.c |  6 ------
+ loader/main.c             | 11 -----------
+ 2 files changed, 17 deletions(-)
+
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index a2d721ed792..cffadf96ef2 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -3471,13 +3471,7 @@ void virtual_init(void)
+     else if (is_win64)
+     {
+ #if defined(__APPLE__) && defined(__aarch64__)
+-        /* MetalSharp: the loader's zero-fill segment that keeps 4G-8G free of system frameworks' images and early
+-         * allocations, where 64-bit Windows images load (loader/main.c), goes for reserve_area() to take */
+-        const struct preload_info *reserve = dlsym( RTLD_DEFAULT, "wine_main_reserve" );
+-
+         release_low_pagezero();
+-        if (reserve && reserve->size && !munmap( reserve->addr, reserve->size ))
+-            TRACE( "released the loader's reserve %p-%p\n", reserve->addr, (char *)reserve->addr + reserve->size );
+ #endif
+         reserve_area( (void *)0x00010000, (void *)0x200000000 );
+     }
+diff --git a/loader/main.c b/loader/main.c
+index b2feb3e46a7..3402247d02c 100644
+--- a/loader/main.c
++++ b/loader/main.c
+@@ -75,17 +75,6 @@ static void init_reserved_areas(void)
+ /* the preloader will set this variable */
+ const __attribute((visibility("default"))) struct wine_preload_info *wine_main_preload_info = NULL;
+ 
+-#if defined(__APPLE__) && defined(__aarch64__)
+-/* MetalSharp: arm64 executables are position independent and their PAGEZERO is at most 4G, so system frameworks'
+- * images and allocations made before main() can land just above it, where 64-bit Windows images load
+- * (0x140000000, and a module that cannot be relocated fails to load, STATUS_CONFLICTING_ADDRESSES). This zero-fill
+- * segment follows the loader's image there and keeps that range free; ntdll unmaps it and reserves the low 8G
+- * (virtual_init). */
+-__asm__(".zerofill WINE_RESERVE,WINE_RESERVE");
+-static char __wine_reserve[0x100000000] __attribute__((section("WINE_RESERVE, WINE_RESERVE")));
+-const __attribute((visibility("default"))) struct wine_preload_info wine_main_reserve = { __wine_reserve, sizeof(__wine_reserve) };
+-#endif
+-
+ static void init_reserved_areas(void)
+ {
+ }
+-- 
+2.54.0 (Apple Git-157)
+

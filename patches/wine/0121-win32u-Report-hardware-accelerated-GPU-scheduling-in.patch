@@ -1,0 +1,59 @@
+From ed85def7e37a3b8feae2e675aba4d3b3cff75072 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Mon, 2 Nov 2026 17:38:01 -0700
+Subject: [PATCH 121/122] win32u: Report hardware-accelerated GPU scheduling in
+ D3DKMTQueryAdapterInfo's WDDM 2.7 and 2.9 caps.
+
+---
+ dlls/win32u/d3dkmt.c | 28 ++++++++++++++++++++++++++++
+ 1 file changed, 28 insertions(+)
+
+diff --git a/dlls/win32u/d3dkmt.c b/dlls/win32u/d3dkmt.c
+index 48017459ea8..c8f59d4df55 100644
+--- a/dlls/win32u/d3dkmt.c
++++ b/dlls/win32u/d3dkmt.c
+@@ -33,6 +33,7 @@
+ #include <d3d9types.h>
+ #include <dxgi.h>
+ #include <d3d10.h>
++#include "d3dkmdt.h"
+ #include <d3d11.h>
+ #include <d3d12.h>
+ 
+@@ -811,6 +812,33 @@ NTSTATUS WINAPI NtGdiDdDDIQueryAdapterInfo( D3DKMT_QUERYADAPTERINFO *desc )
+         *value = KMT_DRIVERVERSION_WDDM_3_1;
+         return STATUS_SUCCESS;
+     }
++    /* The GPU schedules its own work, as hardware-accelerated GPU scheduling does on Windows; what asks (NVIDIA's
++     * Streamline, for frame generation) refuses to start without it. */
++    case KMTQAITYPE_WDDM_2_7_CAPS:
++    {
++        D3DKMT_WDDM_2_7_CAPS *value = desc->pPrivateDriverData;
++
++        if (desc->PrivateDriverDataSize < sizeof(*value))
++            return STATUS_INVALID_PARAMETER;
++
++        value->Value = 0;
++        value->HwSchSupported = 1;
++        value->HwSchEnabled = 1;
++        value->HwSchEnabledByDefault = 1;
++        return STATUS_SUCCESS;
++    }
++    case KMTQAITYPE_WDDM_2_9_CAPS:
++    {
++        D3DKMT_WDDM_2_9_CAPS *value = desc->pPrivateDriverData;
++
++        if (desc->PrivateDriverDataSize < sizeof(*value))
++            return STATUS_INVALID_PARAMETER;
++
++        value->Value = 0;
++        value->HwSchSupportState = 2; /* stable */
++        value->HwSchEnabled = 1;
++        return STATUS_SUCCESS;
++    }
+     default:
+     {
+         FIXME( "type %d not handled.\n", desc->Type );
+-- 
+2.54.0 (Apple Git-157)
+

@@ -1,0 +1,64 @@
+From 0cf35b5cb431624d5319def9f204d04298b7345e Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Mon, 2 Nov 2026 15:57:40 -0700
+Subject: [PATCH 120/122] winemac.drv: Carry GCMouse's fractional deltas to the
+ next report instead of truncating each one.
+
+GCMouse reports fractions of a count at the mouse's polling rate; each was cut to an integer, so slow and steady
+movement came out as uneven steps (and none below a count), which made the camera jitter in every game using raw
+input. The NSEvent path already keeps its remainder.
+---
+ dlls/winemac.drv/cocoa_gcmouse.m | 25 ++++++++++++++++++++++---
+ 1 file changed, 22 insertions(+), 3 deletions(-)
+
+diff --git a/dlls/winemac.drv/cocoa_gcmouse.m b/dlls/winemac.drv/cocoa_gcmouse.m
+index 5096768e7af..3e4714360db 100644
+--- a/dlls/winemac.drv/cocoa_gcmouse.m
++++ b/dlls/winemac.drv/cocoa_gcmouse.m
+@@ -50,21 +50,40 @@ - (void) gcmouseDidDisconnect:(NSNotification *)notification;
+ @end
+ 
+ 
++/* GCMouse reports fractions of a count; the event carries whole ones. What truncation leaves is carried to the next
++ * report, as the NSEvent path does, or slow and steady movement comes out as uneven steps (and none below a count).
++ * Only gcmouse_queue, which is serial, touches these. */
++static float remainder_x, remainder_y;
++
++
+ static void post_mouse_movement(float delta_x, float delta_y)
+ {
+     WineApplicationController *controller;
+     WineWindow *window;
+     macdrv_event *event;
++    int x, y;
+ 
+     if (!macdrv_gcmouse_input_active() || !NSApp || (!delta_x && !delta_y)) return;
+ 
++    remainder_x += delta_x;
++    remainder_y -= delta_y;
++    x = (int)remainder_x;
++    y = (int)remainder_y;
++    if (!x && !y) return;
++
+     controller = [WineApplicationController sharedController];
+     window = [controller mouseCaptureWindow] ?: [controller frontWineWindow];
+-    if (!window) return;
++    if (!window)
++    {
++        remainder_x = remainder_y = 0;
++        return;
++    }
++    remainder_x -= x;
++    remainder_y -= y;
+ 
+     event = macdrv_create_event(MOUSE_MOVED_RAW, window);
+-    event->mouse_moved.x = delta_x;
+-    event->mouse_moved.y = -delta_y;
++    event->mouse_moved.x = x;
++    event->mouse_moved.y = y;
+     event->mouse_moved.time_ms = [controller ticksForEventTime:[[NSProcessInfo processInfo] systemUptime]];
+     [window.queue postEvent:event];
+     macdrv_release_event(event);
+-- 
+2.54.0 (Apple Git-157)
+

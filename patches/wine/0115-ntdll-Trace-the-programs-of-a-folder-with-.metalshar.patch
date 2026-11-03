@@ -1,0 +1,200 @@
+From f06c76f845f17e3ee5b9903f96dce026b6943b12 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Sun, 1 Nov 2026 20:45:46 -0700
+Subject: [PATCH 115/122] ntdll: Trace the programs of a folder with
+ .metalsharp/trace.
+
+A game Steam starts gets Steam's WINEDEBUG and a stderr of /dev/null, which
+turns all debug output off. <program folder>/.metalsharp/trace names the
+WINEDEBUG channels for the programs there; their stderr goes to
+.metalsharp/trace-logs/<program>-<pid>.log, rotated to <log>.1 past a size
+limit (limit=<MB>, default 4096) so the end of a long run is kept.
+---
+ dlls/ntdll/unix/debug.c            | 95 ++++++++++++++++++++++++++++--
+ dlls/ntdll/unix/saved_resolution.c |  2 +
+ dlls/ntdll/unix/unix_private.h     |  1 +
+ 3 files changed, 94 insertions(+), 4 deletions(-)
+
+diff --git a/dlls/ntdll/unix/debug.c b/dlls/ntdll/unix/debug.c
+index 53516b94d70..79d54ec222f 100644
+--- a/dlls/ntdll/unix/debug.c
++++ b/dlls/ntdll/unix/debug.c
+@@ -26,6 +26,7 @@
+ 
+ #include <assert.h>
+ #include <fcntl.h>
++#include <limits.h>
+ #include <stdarg.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+@@ -64,6 +65,38 @@ static struct __wine_debug_channel *debug_options;
+ static const char * const debug_classes[] = { "fixme", "err", "warn", "trace" };
+ 
+ /* get the debug info pointer for the current thread */
++/* MetalSharp: the trace log stderr goes to (metalsharp_init_trace), and its size limit; 0 without one */
++static char trace_path[PATH_MAX];
++static unsigned long long trace_limit, trace_written;
++static int trace_rotating;
++
++/* write debug output to stderr; a trace log past its limit is moved to <log>.1 and a new one started, so
++ * the end of a long run is kept in at most twice the limit */
++static ssize_t dbg_write( const void *buf, size_t len )
++{
++    ssize_t ret = write( 2, buf, len );
++    int fd;
++
++    if (!trace_limit || ret <= 0) return ret;
++    if (__atomic_add_fetch( &trace_written, ret, __ATOMIC_RELAXED ) < trace_limit) return ret;
++    if (__atomic_exchange_n( &trace_rotating, 1, __ATOMIC_ACQUIRE )) return ret;
++    if (__atomic_load_n( &trace_written, __ATOMIC_RELAXED ) >= trace_limit)
++    {
++        char old[PATH_MAX + 2];
++
++        snprintf( old, sizeof(old), "%s.1", trace_path );
++        rename( trace_path, old );
++        if ((fd = open( trace_path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644 )) != -1)
++        {
++            dup2( fd, 2 );
++            close( fd );
++        }
++        __atomic_store_n( &trace_written, 0, __ATOMIC_RELAXED );
++    }
++    __atomic_store_n( &trace_rotating, 0, __ATOMIC_RELEASE );
++    return ret;
++}
++
+ static inline struct debug_info *get_info( struct thread_data *data )
+ {
+     return data ? (struct debug_info *)data->debug_info : &initial_info;
+@@ -186,7 +219,7 @@ static void debug_usage(void)
+         "Example: WINEDEBUG=+relay,warn-heap\n"
+         "    turns on relay traces, disable heap warnings\n"
+         "Available message classes: err, warn, fixme, trace\n";
+-    write( 2, usage, sizeof(usage) - 1 );
++    dbg_write( usage, sizeof(usage) - 1 );
+     exit(1);
+ }
+ 
+@@ -275,7 +308,7 @@ NTSTATUS unixcall_wine_dbg_write( void *args )
+ {
+     struct wine_dbg_write_params *params = args;
+ 
+-    return write( 2, params->str, params->len );
++    return dbg_write( params->str, params->len );
+ }
+ 
+ #ifdef _WIN64
+@@ -290,7 +323,7 @@ NTSTATUS wow64_wine_dbg_write( void *args )
+         unsigned int len;
+     } const *params32 = args;
+ 
+-    return write( 2, ULongToPtr(params32->str), params32->len );
++    return dbg_write( ULongToPtr(params32->str), params32->len );
+ }
+ #endif
+ 
+@@ -306,7 +339,7 @@ int __cdecl __wine_dbg_output( const char *str )
+     if (end)
+     {
+         ret += append_output( info, str, end + 1 - str );
+-        write( 2, info->output, info->out_pos );
++        dbg_write( info->output, info->out_pos );
+         info->out_pos = 0;
+         str = end + 1;
+     }
+@@ -351,6 +384,60 @@ int __cdecl __wine_dbg_header( enum __wine_debug_class cls, struct __wine_debug_
+     return info->out_pos;
+ }
+ 
++/***********************************************************************
++ *		metalsharp_init_trace
++ *
++ * MetalSharp: <folder of the program>/.metalsharp/trace turns on Wine's debug channels for the programs in
++ * that folder, whoever starts them (a game Steam starts gets Steam's WINEDEBUG, and its stderr is /dev/null,
++ * which turns all debug output off). Its first line that is not empty or a # comment is the WINEDEBUG value
++ * (e.g. +loaddll,+seh,+syscall,+pid,+timestamp); a line limit=<MB> keeps each log under that size (default
++ * 4096; the older half goes to <log>.1). The output, and the rest of the program's stderr, goes to
++ * .metalsharp/trace-logs/<program>-<pid>.log. Called before dbg_init passes the options on.
++ */
++void metalsharp_init_trace( const char *exe )
++{
++    const char *slash = strrchr( exe, '/' );
++    char path[PATH_MAX], spec[1024] = "", line[1024], *p;
++    unsigned long long limit = 4096;
++    FILE *file;
++    int fd;
++
++    if (!slash || snprintf( path, sizeof(path), "%.*s/.metalsharp/trace", (int)(slash - exe), exe ) >= sizeof(path))
++        return;
++    if (!(file = fopen( path, "r" ))) return;
++    while (fgets( line, sizeof(line), file ))
++    {
++        for (p = line + strlen( line ); p > line && (p[-1] == '\n' || p[-1] == '\r' || p[-1] == ' '); p--) p[-1] = 0;
++        for (p = line; *p == ' ' || *p == '\t'; p++);
++        if (!*p || *p == '#') continue;
++        if (!strncmp( p, "limit=", 6 )) limit = strtoull( p + 6, NULL, 10 );
++        else if (!spec[0]) snprintf( spec, sizeof(spec), "%s", p );
++    }
++    fclose( file );
++    if (snprintf( path, sizeof(path), "%.*s/.metalsharp/trace-logs", (int)(slash - exe), exe ) >= sizeof(path))
++        return;
++    mkdir( path, 0755 );
++    if (snprintf( trace_path, sizeof(trace_path), "%s/%s-%d.log", path, slash + 1, (int)getpid() ) >= sizeof(trace_path) ||
++        (fd = open( trace_path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644 )) == -1)
++    {
++        trace_path[0] = 0;
++        return;
++    }
++    dup2( fd, 2 );
++    close( fd );
++    if (spec[0]) setenv( "WINEDEBUG", spec, 1 );
++    /* the options again, now that stderr is the log */
++    free( debug_options );
++    debug_options = NULL;
++    options_size = 0;
++    nb_debug_options = -1;
++    default_flags = (1 << __WINE_DBCL_ERR) | (1 << __WINE_DBCL_FIXME);
++    init_options();
++    trace_limit = limit ? limit << 20 : 0;
++    fprintf( stderr, "MetalSharp: tracing %s (pid %d) with WINEDEBUG=%s\n", exe, (int)getpid(), spec );
++}
++
++
+ /***********************************************************************
+  *		dbg_init
+  */
+diff --git a/dlls/ntdll/unix/saved_resolution.c b/dlls/ntdll/unix/saved_resolution.c
+index 9b7bb62dad6..393728de0e1 100644
+--- a/dlls/ntdll/unix/saved_resolution.c
++++ b/dlls/ntdll/unix/saved_resolution.c
+@@ -929,6 +929,7 @@ void fit_saved_resolution( const char *exe, const char *appdata, const char *loc
+     if (!slash || slash - exe >= sizeof(dir)) return;
+     memcpy( dir, exe, slash - exe );
+     dir[slash - exe] = 0;
++    metalsharp_init_trace( exe );
+     init_metalfx_scale( exe );
+     init_dlss_game( exe );
+     init_gpu_override( exe );
+@@ -968,6 +969,7 @@ void fit_saved_resolution( const char *exe, const char *appdata, const char *loc
+ 
+ void fit_saved_resolution( const char *exe, const char *appdata, const char *localappdata, const char *profile )
+ {
++    metalsharp_init_trace( exe );
+     init_metalfx_scale( exe );
+     init_dlss_game( exe );
+     init_gpu_override( exe );
+diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
+index a2edbf485c9..2d6259ec168 100644
+--- a/dlls/ntdll/unix/unix_private.h
++++ b/dlls/ntdll/unix/unix_private.h
+@@ -362,6 +362,7 @@ struct launcher_policy
+ };
+ 
+ extern void get_launcher_policy( const char *image_path, struct launcher_policy *policy );
++extern void metalsharp_init_trace( const char *exe );
+ extern void fit_saved_resolution( const char *exe, const char *appdata, const char *localappdata,
+                                   const char *profile );
+ extern int metalsharp_dlss_game(void);
+-- 
+2.54.0 (Apple Git-157)
+
