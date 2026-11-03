@@ -3032,34 +3032,57 @@ static void vulkan_driver_init(void)
     if (status == STATUS_NOT_IMPLEMENTED) driver_funcs = &nulldrv_funcs;
 }
 
+/* The thread running vulkan_init_once() or vulkan_driver_init(), which can come back to them: the display driver
+ * the Vulkan driver loads enumerates the Vulkan GPUs (get_vulkan_gpus(), when its display cache is out of date, as
+ * after the host Vulkan driver changed), through an instance of its own. pthread_once() would abort the process
+ * there; instead that instance gets the host functions, loaded by then, and the null driver's mappings (it asks for
+ * no surface extension). */
+static pthread_t vulkan_init_thread, vulkan_driver_init_thread;
+static volatile BOOL vulkan_init_running, vulkan_driver_init_running;
+
+static void vulkan_driver_init_tracked(void)
+{
+    vulkan_driver_init_thread = pthread_self();
+    vulkan_driver_init_running = TRUE;
+    vulkan_driver_init();
+    vulkan_driver_init_running = FALSE;
+}
+
 static void vulkan_driver_load(void)
 {
     static pthread_once_t init_once = PTHREAD_ONCE_INIT;
-    pthread_once( &init_once, vulkan_driver_init );
+
+    if (vulkan_driver_init_running && pthread_equal( vulkan_driver_init_thread, pthread_self() )) return;
+    pthread_once( &init_once, vulkan_driver_init_tracked );
+}
+
+static const struct vulkan_driver_funcs lazydrv_funcs;
+
+/* the driver's functions, or the null driver's while this thread is loading the driver */
+static const struct vulkan_driver_funcs *loaded_driver_funcs(void)
+{
+    vulkan_driver_load();
+    return driver_funcs == &lazydrv_funcs ? &nulldrv_funcs : driver_funcs;
 }
 
 static VkResult lazydrv_vulkan_surface_create( struct client_surface *client, const struct vulkan_instance *instance, VkSurfaceKHR *surface )
 {
-    vulkan_driver_load();
-    return driver_funcs->p_vulkan_surface_create( client, instance, surface );
+    return loaded_driver_funcs()->p_vulkan_surface_create( client, instance, surface );
 }
 
 static VkBool32 lazydrv_get_physical_device_presentation_support( struct vulkan_physical_device *physical_device, uint32_t queue )
 {
-    vulkan_driver_load();
-    return driver_funcs->p_get_physical_device_presentation_support( physical_device, queue );
+    return loaded_driver_funcs()->p_get_physical_device_presentation_support( physical_device, queue );
 }
 
 static void lazydrv_map_instance_extensions( struct vulkan_instance_extensions *extensions )
 {
-    vulkan_driver_load();
-    return driver_funcs->p_map_instance_extensions( extensions );
+    return loaded_driver_funcs()->p_map_instance_extensions( extensions );
 }
 
 static void lazydrv_map_device_extensions( struct vulkan_device_extensions *extensions )
 {
-    vulkan_driver_load();
-    return driver_funcs->p_map_device_extensions( extensions );
+    return loaded_driver_funcs()->p_map_device_extensions( extensions );
 }
 
 static const struct vulkan_driver_funcs lazydrv_funcs =
@@ -3145,6 +3168,14 @@ failed:
     free( properties );
 }
 
+static void vulkan_init_once_tracked(void)
+{
+    vulkan_init_thread = pthread_self();
+    vulkan_init_running = TRUE;
+    vulkan_init_once();
+    vulkan_init_running = FALSE;
+}
+
 /***********************************************************************
  *      __wine_get_vulkan_driver  (win32u.so)
  */
@@ -3158,7 +3189,9 @@ const struct vulkan_funcs *__wine_get_vulkan_driver( UINT version )
         return NULL;
     }
 
-    pthread_once( &init_once, vulkan_init_once );
+    if (vulkan_init_running && pthread_equal( vulkan_init_thread, pthread_self() ))
+        return vulkan_handle ? &vulkan_funcs : NULL;
+    pthread_once( &init_once, vulkan_init_once_tracked );
     if (!vulkan_handle) return NULL;
     return &vulkan_funcs;
 }
