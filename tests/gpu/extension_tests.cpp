@@ -176,3 +176,34 @@ void main() { gl_Position = vec4(v[gl_VertexID], 0.0, 1.0); })",
     glDeleteProgram(restored);
     CHECK_GL();
 }
+
+TEST(gpu_legacy_extension_string) {
+    // Issue #75: Jedi Academy printed GL_EXTENSIONS through a 4096-byte buffer
+    // and overran it. A context asked for as OpenGL 1.x keeps the string under
+    // 3900 bytes, oldest extensions first; glGetStringi still lists them all,
+    // and contexts asked for as 3.x or later get the whole string.
+    std::string legacy, last;
+    GLint legacyCount = 0;
+    {
+        gpu::Fixture fixture(64, 64, false, 10);
+        CHECK(fixture.ok);
+        if (!fixture.ok) return;
+        legacy = reinterpret_cast<const char*>(glGetString(GL_EXTENSIONS));
+        glGetIntegerv(GL_NUM_EXTENSIONS, &legacyCount);
+        last = reinterpret_cast<const char*>(glGetStringi(GL_EXTENSIONS, static_cast<GLuint>(legacyCount - 1)));
+    }
+    CHECK(legacy.size() <= 3900);
+    CHECK(legacy.find("GL_ARB_multitexture") != std::string::npos);
+    CHECK(legacy.back() != ' ');
+    gpu::Fixture fixture(64, 64, false, 46);
+    CHECK(fixture.ok);
+    if (!fixture.ok) return;
+    const std::string full = reinterpret_cast<const char*>(glGetString(GL_EXTENSIONS));
+    GLint count = 0;
+    glGetIntegerv(GL_NUM_EXTENSIONS, &count);
+    CHECK_EQ(count, legacyCount);
+    CHECK(full.size() > legacy.size());
+    CHECK(full.find(last) != std::string::npos);
+    CHECK(legacy.find(last) == std::string::npos);
+    CHECK_EQ(full.compare(0, legacy.size(), legacy), 0);
+}

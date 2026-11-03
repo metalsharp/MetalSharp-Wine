@@ -29,6 +29,9 @@ struct ContextConfig {
     bool debug = false;
     bool robustAccess = false;
     bool noError = false;
+    // Created as OpenGL 1.x or 2.x (legacy wglCreateContext asks for 1.0): an
+    // older program, whose GL_EXTENSIONS string is kept short (initStrings).
+    bool legacyRequest = false;
     GLenum resetNotification = GL_NO_RESET_NOTIFICATION;
     // An OpenGL ES context (WGL_CONTEXT_ES_PROFILE_BIT_EXT): ES esMajor.esMinor
     // on the desktop major.minor core profile underneath.
