@@ -337,6 +337,16 @@ static BOOL wined3d_dll_init(HINSTANCE hInstDLL)
         }
     }
 
+    /* MetalSharp hack: Crusader Kings II stalls while loading with the command stream thread,
+     * its loading threads all waiting on work that never comes; without it, it loads and draws
+     * correctly. The registry and WINE_D3D_CONFIG still override this. */
+    {
+        char app[MAX_PATH];
+
+        if (wined3d_get_app_name(app, ARRAY_SIZE(app)) && !stricmp(app, "CK2game.exe"))
+            wined3d_settings.cs_multithreaded = 0;
+    }
+
     /* Allow modifying settings using the WINE_D3D_CONFIG environment variable,
      * which takes precedence over registry keys. An example is as follows:
      *
