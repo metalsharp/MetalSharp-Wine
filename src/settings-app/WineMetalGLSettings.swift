@@ -1,6 +1,6 @@
 // WineMetalGL Settings: where WineMetalGL is installed (Installations.swift),
 // its updates (Updater.swift), the game fixes it applies (GamePatches.swift),
-// and UpscaleGL's preset, x87 acceleration and logging, for programs
+// and UpscaleGL's preset, the frame rate limit, x87 acceleration and logging, for programs
 // launched without a way to set their environment. They go to the settings
 // file the core reads when it loads (src/core/util/settings.h); the
 // environment still wins, and a change applies to games started afterwards.
@@ -53,11 +53,17 @@ enum Upscale: String, CaseIterable, Identifiable {
     }
 }
 
+/// The frame rate limits the app offers (WINEMETALGL_MAX_FRAME_RATE); 0 is off.
+let frameRateLimits = [0, 60, 45, 30]
+
 /// ~/Library/Application Support/WineMetalGL/settings.conf: NAME=value lines.
 /// Only the settings this app shows are rewritten; other lines stay.
 @MainActor
 final class SettingsStore: ObservableObject {
     @Published var upscale: Upscale = .off { didSet { if upscale != oldValue { save() } } }
+    /// WINEMETALGL_MAX_FRAME_RATE as the file has it ("" when off): one of
+    /// frameRateLimits, or a value set in the file by hand, which stays.
+    @Published var maxFrameRate = "" { didSet { if maxFrameRate != oldValue { save() } } }
     @Published var logging = false {
         didSet {
             guard logging != oldValue else { return }
@@ -92,7 +98,8 @@ final class SettingsStore: ObservableObject {
         load()
     }
 
-    private static let managed: Set<String> = ["WINEMETALGL_UPSCALE", "WINEMETALGL_LOG", "WINEMETALGL_LOG_FILE", "WINEMETALGL_X87"]
+    private static let managed: Set<String> = ["WINEMETALGL_UPSCALE", "WINEMETALGL_MAX_FRAME_RATE", "WINEMETALGL_LOG",
+                                               "WINEMETALGL_LOG_FILE", "WINEMETALGL_X87"]
 
     private static func entry(_ line: String) -> (name: String, value: String)? {
         let text = line.trimmingCharacters(in: .whitespaces)
@@ -110,6 +117,8 @@ final class SettingsStore: ObservableObject {
         var values: [String: String] = [:]
         for line in lines { if let e = Self.entry(line) { values[e.name] = e.value } }
         upscale = Upscale(rawValue: (values["WINEMETALGL_UPSCALE"] ?? "off").lowercased()) ?? .off
+        let rate = values["WINEMETALGL_MAX_FRAME_RATE"] ?? ""
+        maxFrameRate = (Double(rate) ?? 0) > 0 ? rate : ""
         let level = (values["WINEMETALGL_LOG"] ?? "").lowercased()
         loggingChosen = !level.isEmpty
         logging = !level.isEmpty && !["off", "none", "-1", "0", "1", "err", "error", "warn", "warning"].contains(level)
@@ -125,6 +134,7 @@ final class SettingsStore: ObservableObject {
         }
         if kept.isEmpty { kept = ["# WineMetalGL settings, written by WineMetalGL Settings.", "# The environment wins over these."] }
         if upscale != .off { kept.append("WINEMETALGL_UPSCALE=\(upscale.rawValue)") }
+        if !maxFrameRate.isEmpty { kept.append("WINEMETALGL_MAX_FRAME_RATE=\(maxFrameRate)") }
         if logging {
             kept.append("WINEMETALGL_LOG=2")
         } else if loggingChosen {
@@ -347,6 +357,38 @@ struct SettingsView: View {
                     }
                 }
                 Text(store.upscale.detail)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            CollapsibleCard("Frame Rate Limit", systemImage: "speedometer",
+                            summary: store.maxFrameRate.isEmpty ? "Off" : "\(store.maxFrameRate) fps") {
+                EmptyView()
+            } content: {
+                HStack(spacing: 6) {
+                    ForEach(frameRateLimits, id: \.self) { fps in
+                        let value = fps == 0 ? "" : String(fps)
+                        let selected = store.maxFrameRate == value
+                        Button {
+                            store.maxFrameRate = value
+                        } label: {
+                            let title = fps == 0 ? "Off" : "\(fps) fps"
+                            if selected {
+                                Label(title, systemImage: "checkmark").fontWeight(.semibold)
+                            } else {
+                                Text(title)
+                            }
+                        }
+                        .glassButton(prominent: selected)
+                        .tint(selected ? Color.accentColor : nil)
+                        .controlSize(.large)
+                        .accessibilityAddTraits(selected ? .isSelected : [])
+                    }
+                }
+                Text(store.maxFrameRate.isEmpty
+                     ? "Games run as fast as they draw, or at your display's refresh rate with vsync."
+                     : "Games show at most \(store.maxFrameRate) frames a second, with or without vsync. For older games whose speed follows the frame rate, or to save battery.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
