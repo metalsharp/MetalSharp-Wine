@@ -348,6 +348,21 @@ static RECT get_client_surface_rects( HWND toplevel, HWND hwnd, RECT *monitor_re
     get_win_monitor_dpi( hwnd, &raw_dpi );
     *monitor_rect = map_dpi_rect( rect, dpi, raw_dpi );
 
+    /* MetalSharp: a game shown a display divided by its MetalFX factor has its toplevel scaled to the physical
+     * display as in an emulated mode change, but the window's raw DPI can be back at the logical one, which left a
+     * Vulkan surface at the game's size in a corner of its window. Scale the surface as its toplevel's client area. */
+    if (ntdll_get_metalfx_scale() > 1.0 && rects.client.right > rects.client.left && rects.client.bottom > rects.client.top)
+    {
+        int width = rects.client.right - rects.client.left, height = rects.client.bottom - rects.client.top;
+        int raw_width = monitor_rects.client.right - monitor_rects.client.left;
+        int raw_height = monitor_rects.client.bottom - monitor_rects.client.top;
+
+        monitor_rect->left = muldiv( rect.left, raw_width, width );
+        monitor_rect->right = muldiv( rect.right, raw_width, width );
+        monitor_rect->top = muldiv( rect.top, raw_height, height );
+        monitor_rect->bottom = muldiv( rect.bottom, raw_height, height );
+    }
+
     /* use toplevel visible rect relative position, so drivers can then assume it */
     OffsetRect( monitor_rect, monitor_rects.client.left - monitor_rects.visible.left,
                 monitor_rects.client.top - monitor_rects.visible.top );
