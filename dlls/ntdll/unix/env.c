@@ -1160,6 +1160,46 @@ static void add_launch_environment_file( WCHAR **env, SIZE_T *pos, SIZE_T *size,
     free( data );
 }
 
+/* MetalSharp: a program whose ray tracing breaks it is shown none, on Mullion (MULLION_D3D12_RAYTRACING=0) and on
+ * VKD3D-Proton (nodxr in VKD3D_CONFIG), unless its launch environment already says. Hogwarts Legacy's ray tracing
+ * pipeline froze its startup and then crashed before the menu, as it does under D3DMetal too; shown no ray tracing it
+ * runs, and loses only its optional ray-traced effects */
+static void disable_launch_ray_tracing( WCHAR **env, SIZE_T *pos, SIZE_T *size, const WCHAR *image )
+{
+    static const WCHAR hogwartsW[] = {'H','o','g','w','a','r','t','s','L','e','g','a','c','y','.','e','x','e',0};
+    static const WCHAR * const programs[] = { hogwartsW };
+    static const WCHAR mullionW[] = {'M','U','L','L','I','O','N','_','D','3','D','1','2','_','R','A','Y','T','R','A','C','I','N','G'};
+    static const WCHAR vkd3dW[] = {'V','K','D','3','D','_','C','O','N','F','I','G'};
+    const WCHAR *name, *p;
+    WCHAR *value;
+    char config[256];
+    unsigned int i;
+
+    if (!image) return;
+    for (name = p = image; *p; p++) if (*p == '\\' || *p == '/') name = p + 1;
+    for (i = 0; i < ARRAY_SIZE(programs); i++) if (!ntdll_wcsicmp( name, programs[i] )) break;
+    if (i == ARRAY_SIZE(programs)) return;
+
+    if (!(value = get_env_var( *env, *pos, mullionW, ARRAY_SIZE(mullionW) )))
+        set_launch_var( env, pos, size, "MULLION_D3D12_RAYTRACING", "0" );
+    free( value );
+    /* VKD3D_CONFIG's flags are a comma-separated list: nodxr is added to them, unless they name DXR already */
+    value = get_env_var( *env, *pos, vkd3dW, ARRAY_SIZE(vkd3dW) );
+    if (value && *value)
+    {
+        int len = ntdll_wcstoumbs( value, wcslen( value ), config, sizeof(config) - sizeof(",nodxr"), FALSE );
+
+        config[len > 0 ? len : 0] = 0;
+        if (!strstr( config, "dxr" ))
+        {
+            strcat( config, ",nodxr" );
+            set_launch_var( env, pos, size, "VKD3D_CONFIG", config );
+        }
+    }
+    else set_launch_var( env, pos, size, "VKD3D_CONFIG", "nodxr" );
+    free( value );
+}
+
 /* launch.env, which MetalSharp writes at each launch, then launch.local.env, which it never writes: the user's own
  * variables for the programs of the folder (a debugging option, say), applied over it */
 static void add_launch_environment( WCHAR **env, SIZE_T *pos, SIZE_T *size, const WCHAR *image )
@@ -2155,6 +2195,7 @@ static RTL_USER_PROCESS_PARAMETERS *build_initial_params(void)
     if (main_argv[1] && !get_full_path( main_argv[1], curdir, &nt_name ))
     {
         add_launch_environment( &env, &env_pos, &env_size, nt_name.Buffer );
+        disable_launch_ray_tracing( &env, &env_pos, &env_size, nt_name.Buffer );
         fit_launch_resolution( &env, &env_pos, &env_size, nt_name.Buffer );
         free( nt_name.Buffer );
     }
@@ -2297,6 +2338,7 @@ void init_startup_info(void)
             memcpy( image, info + 1, info->imagepath_len );
             image[info->imagepath_len / sizeof(WCHAR)] = 0;
             add_launch_environment( &env, &env_pos, &env_size, image );
+            disable_launch_ray_tracing( &env, &env_pos, &env_size, image );
             fit_launch_resolution( &env, &env_pos, &env_size, image );
             free( image );
         }
