@@ -60,6 +60,7 @@ docs/release-notes/3.4.0.md
 docs/release-notes/3.5.0.md
 docs/release-notes/3.6.0.md
 docs/release-notes/3.7.0.md
+docs/release-notes/3.8.0.md
 docs/release.md
 docs/testing.md
 docs/unsupported.md
