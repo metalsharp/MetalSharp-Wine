@@ -448,8 +448,18 @@ static void notify_map_view_of_section( HANDLE handle, void *addr, SIZE_T size, 
     SECTION_IMAGE_INFORMATION info;
     NTSTATUS status;
 
+    if (NtQuerySection( handle, SectionImageInformation, &info, sizeof(info), NULL ))
+    {
+        /* MetalSharp: a data view mapped executable (MapViewOfFile with FILE_MAP_EXECUTE) is code the
+         * emulator runs and must track for changes, as memory allocated executable is */
+        if (pBTCpuNotifyMemoryAlloc && (protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)))
+        {
+            pBTCpuNotifyMemoryAlloc( addr, size, MEM_COMMIT, protect, FALSE, 0 );
+            pBTCpuNotifyMemoryAlloc( addr, size, MEM_COMMIT, protect, TRUE, STATUS_SUCCESS );
+        }
+        return;
+    }
     if (!NtCurrentTeb()->Tib.ArbitraryUserPointer) return;
-    if (NtQuerySection( handle, SectionImageInformation, &info, sizeof(info), NULL )) return;
     if (info.Machine != current_machine) return;
     init_image_mapping( addr );
     if (!pBTCpuNotifyMapViewOfSection) return;
