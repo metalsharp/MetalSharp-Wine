@@ -282,6 +282,13 @@ public:
 
   GuestToHostMap* Shared = nullptr;
 
+  // Whether any compiled block has code in the page at Address
+  bool HasCodeInPage(uint64_t Address) {
+    auto lk = Shared->AcquireReadLock();
+    auto It = Shared->CodePages.find(Address >> 12);
+    return It != Shared->CodePages.end() && !It->second.empty();
+  }
+
   // Appends a list of Block {Address} to CodePages [Start, Start + Length)
   // Returns true if new pages are marked as containing code
   bool AddBlockExecutableRange(FEXCore::Core::InternalThreadState* Thread, auto& Addresses, uint64_t Start, uint64_t Length) {

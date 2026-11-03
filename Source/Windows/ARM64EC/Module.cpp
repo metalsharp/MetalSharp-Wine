@@ -1006,7 +1006,14 @@ void BTCpu64NotifyReadFile(HANDLE Handle, void* Address, SIZE_T Size, BOOL After
     return;
   }
 
-  if (After && Status == STATUS_SUCCESS) {
+  if (!After) {
+    // MetalSharp: open the write-protected code pages of the buffer before the read, without holding the locks
+    // through it, or the kernel's write faults and the read fails (ERROR_NOACCESS). Code translated from the range
+    // during the read protects it again; that read then fails as before.
+    std::scoped_lock Lock(ThreadCreationMutex);
+    std::scoped_lock CodeLock(CTX->GetCodeInvalidationMutex());
+    InvalidationTracker->BeginUntrackedWriteLocked(reinterpret_cast<uint64_t>(Address), static_cast<uint64_t>(Size));
+  } else if (Status == STATUS_SUCCESS) {
     std::scoped_lock Lock(ThreadCreationMutex);
     InvalidationTracker->InvalidateAlignedInterval(reinterpret_cast<uint64_t>(Address), static_cast<uint64_t>(Size), false);
   }

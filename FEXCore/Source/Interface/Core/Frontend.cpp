@@ -1751,9 +1751,23 @@ void Decoder::SetupDecodeInstructionsAtEntry(FEXCore::Core::InternalThreadState*
     MaxInst = CTX->Config.MaxInstPerBlock;
   }
   this->MaxInst = MaxInst;
+  DecodedBuffer = PoolObject.ReownOrClaimBuffer();
+  ResetDecodeState(Thread, PC);
+}
+
+void Decoder::RestartDecodeInstructionsAtEntry(FEXCore::Core::InternalThreadState* Thread, uint64_t PC) {
+  BlockInfo.TotalInstructionCount = 0;
+  BlockInfo.Blocks.clear();
+  VisitedBlocks.clear();
+  Paused = false;
+  BlockResume = -1;
+  DecodedSize = 0;
+  ResetDecodeState(Thread, PC);
+}
+
+void Decoder::ResetDecodeState(FEXCore::Core::InternalThreadState* Thread, uint64_t PC) {
   MaxCondBranchForward = 0;
   MaxCondBranchBackwards = ~0ULL;
-  DecodedBuffer = PoolObject.ReownOrClaimBuffer();
 
   // Decode operating mode from thread's CS segment.
   const auto CSSegment = Core::CPUState::GetSegmentFromIndex(Thread->CurrentFrame->State, Thread->CurrentFrame->State.cs_idx);

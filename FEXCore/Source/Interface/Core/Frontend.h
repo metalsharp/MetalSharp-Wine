@@ -64,6 +64,8 @@ public:
   bool CheckIfCacheable(FEXCore::Core::InternalThreadState&, const uint8_t* InstStream, uint64_t PC, uint64_t MaxInst);
 
   void SetupDecodeInstructionsAtEntry(FEXCore::Core::InternalThreadState* Thread, uint64_t PC, uint64_t MaxInst);
+  // Decodes again from the same entry, into the buffer the setup claimed
+  void RestartDecodeInstructionsAtEntry(FEXCore::Core::InternalThreadState* Thread, uint64_t PC);
   void DecodeLoop(const uint8_t* InstStream, uint64_t GuestPause = 0);
 
   const DecodedBlockInformation* GetDecodedBlockInfo() const {
@@ -139,6 +141,7 @@ private:
   bool EntryBlock {};
   bool FinalInstruction {};
   uint64_t MaxInst {};
+  void ResetDecodeState(FEXCore::Core::InternalThreadState* Thread, uint64_t PC);
   bool Paused {};
   int64_t BlockResume = -1;
   uint64_t PCOffset {};

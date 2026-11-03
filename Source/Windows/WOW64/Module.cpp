@@ -905,7 +905,11 @@ void BTCpuNotifyReadFile(HANDLE Handle, void* Address, SIZE_T Size, BOOL After, 
   }
 
   // See arm64ec `BTCpu64NotifyReadFile` for why this like this.
-  if (After && Status == STATUS_SUCCESS) {
+  if (!After) {
+    std::scoped_lock Lock(ThreadCreationMutex);
+    std::scoped_lock CodeLock(CTX->GetCodeInvalidationMutex());
+    InvalidationTracker->BeginUntrackedWriteLocked(reinterpret_cast<uint64_t>(Address), static_cast<uint64_t>(Size));
+  } else if (Status == STATUS_SUCCESS) {
     std::scoped_lock Lock(ThreadCreationMutex);
     InvalidationTracker->InvalidateAlignedInterval(reinterpret_cast<uint64_t>(Address), static_cast<uint64_t>(Size), false);
   }

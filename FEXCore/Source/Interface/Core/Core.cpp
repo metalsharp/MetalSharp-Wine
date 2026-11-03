@@ -547,6 +547,32 @@ ContextImpl::GenerateIR(FEXCore::Core::InternalThreadState* Thread, uint64_t Gue
 
     Thread->FrontendDecoder->DecodeLoop(GuestCode);
 
+    // MetalSharp: writable pages without code are not write-protected yet (a write unprotects a page and invalidates its
+    // code), so a write that lands while they are decoded doesn't fault, and the block would keep the bytes from
+    // before it, protected as if they were current, until the next write: another thread patching code (a hook,
+    // an unpacker) left the old code running, or a half-written instruction. Protect them, then decode again: a
+    // write from then on faults and waits on CodeInvalidationMutex for this compile, then invalidates its block.
+    // Protecting a page twice (the frontend is told again when the block is added) is harmless.
+    if (!Thread->FrontendDecoder->GetDecodedBlockInfo()->Blocks.empty()) {
+      fextl::set<uint64_t> Protected;
+      for (;;) {
+        bool Fresh = false;
+        for (auto CodePage : Thread->FrontendDecoder->GetDecodedBlockInfo()->CodePages) {
+          if (!Protected.contains(CodePage) && !Thread->LookupCache->HasCodeInPage(CodePage) &&
+              SyscallHandler->QueryGuestExecutableRange(Thread, CodePage).Writable) {
+            SyscallHandler->MarkGuestExecutableRange(Thread, CodePage, FEXCore::Utils::FEX_PAGE_SIZE);
+            Protected.insert(CodePage);
+            Fresh = true;
+          }
+        }
+        if (!Fresh) {
+          break;
+        }
+        Thread->FrontendDecoder->RestartDecodeInstructionsAtEntry(Thread, GuestRIP);
+        Thread->FrontendDecoder->DecodeLoop(GuestCode);
+      }
+    }
+
     const auto* BlockInfo = Thread->FrontendDecoder->GetDecodedBlockInfo();
     const auto& CodeBlocks = BlockInfo->Blocks;
 
