@@ -1200,6 +1200,51 @@ static void disable_launch_ray_tracing( WCHAR **env, SIZE_T *pos, SIZE_T *size, 
     free( value );
 }
 
+/* MetalSharp: MoltenVK compiles each pipeline on the calling thread, not later on its own queue. Its deferred and
+ * parallel-stage compiles run on a GCD concurrent queue whose blocks each wait for Metal's completion handler; a game
+ * that creates pipelines from many threads (God of War Ragnarok's sixteen PSO builders) fills all 64 of the process's
+ * GCD worker threads with those waits, Metal's completion handlers then find no thread to run on, and every compile
+ * hangs until MVK_CONFIG_METAL_COMPILE_TIMEOUT fails it (a black screen, then a crash on the failed pipeline).
+ * Compiling on the caller blocks only the game's own threads. Hogwarts Legacy keeps the deferred compiles, set
+ * explicitly so it doesn't inherit 0 from Wine Steam. Applied before launch.env and launch.local.env, which can still
+ * set either variable for a game. */
+static void set_launch_moltenvk_compiles( WCHAR **env, SIZE_T *pos, SIZE_T *size, const WCHAR *image )
+{
+    static const WCHAR hogwartsW[] = {'H','o','g','w','a','r','t','s','L','e','g','a','c','y','.','e','x','e',0};
+    static const WCHAR * const deferred_programs[] = { hogwartsW };
+    static const WCHAR deferredW[] = {'M','V','K','_','C','O','N','F','I','G','_','D','E','F','E','R','R','E','D','_',
+                                      'P','I','P','E','L','I','N','E','S'};
+    static const WCHAR parallelW[] = {'M','V','K','_','C','O','N','F','I','G','_','P','A','R','A','L','L','E','L','_',
+                                      'S','T','A','G','E','_','C','O','M','P','I','L','E'};
+    static const struct { const char *name; const WCHAR *nameW; SIZE_T len; } vars[] =
+    {
+        { "MVK_CONFIG_DEFERRED_PIPELINES",     deferredW, ARRAY_SIZE(deferredW) },
+        { "MVK_CONFIG_PARALLEL_STAGE_COMPILE", parallelW, ARRAY_SIZE(parallelW) },
+    };
+    const WCHAR *name = NULL, *p;
+    WCHAR *value;
+    unsigned int i;
+    BOOL deferred = FALSE;
+
+    if (image)
+    {
+        for (name = p = image; *p; p++) if (*p == '\\' || *p == '/') name = p + 1;
+        for (i = 0; i < ARRAY_SIZE(deferred_programs); i++)
+            if (!ntdll_wcsicmp( name, deferred_programs[i] )) deferred = TRUE;
+    }
+    for (i = 0; i < ARRAY_SIZE(vars); i++)
+    {
+        if (deferred)
+        {
+            set_launch_var( env, pos, size, vars[i].name, "1" );
+            continue;
+        }
+        if (!(value = get_env_var( *env, *pos, vars[i].nameW, vars[i].len )))
+            set_launch_var( env, pos, size, vars[i].name, "0" );
+        free( value );
+    }
+}
+
 /* launch.env, which MetalSharp writes at each launch, then launch.local.env, which it never writes: the user's own
  * variables for the programs of the folder (a debugging option, say), applied over it */
 static void add_launch_environment( WCHAR **env, SIZE_T *pos, SIZE_T *size, const WCHAR *image )
@@ -2194,6 +2239,7 @@ static RTL_USER_PROCESS_PARAMETERS *build_initial_params(void)
     add_registry_environment( &env, &env_pos, &env_size );
     if (main_argv[1] && !get_full_path( main_argv[1], curdir, &nt_name ))
     {
+        set_launch_moltenvk_compiles( &env, &env_pos, &env_size, nt_name.Buffer );
         add_launch_environment( &env, &env_pos, &env_size, nt_name.Buffer );
         disable_launch_ray_tracing( &env, &env_pos, &env_size, nt_name.Buffer );
         fit_launch_resolution( &env, &env_pos, &env_size, nt_name.Buffer );
@@ -2337,6 +2383,7 @@ void init_startup_info(void)
         {
             memcpy( image, info + 1, info->imagepath_len );
             image[info->imagepath_len / sizeof(WCHAR)] = 0;
+            set_launch_moltenvk_compiles( &env, &env_pos, &env_size, image );
             add_launch_environment( &env, &env_pos, &env_size, image );
             disable_launch_ray_tracing( &env, &env_pos, &env_size, image );
             fit_launch_resolution( &env, &env_pos, &env_size, image );
