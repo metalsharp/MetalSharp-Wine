@@ -1221,6 +1221,7 @@ static void set_launch_moltenvk_compiles( WCHAR **env, SIZE_T *pos, SIZE_T *size
         { "MVK_CONFIG_DEFERRED_PIPELINES",     deferredW, ARRAY_SIZE(deferredW) },
         { "MVK_CONFIG_PARALLEL_STAGE_COMPILE", parallelW, ARRAY_SIZE(parallelW) },
     };
+    static const WCHAR oneW[] = {'1',0}, zeroW[] = {'0',0};
     const WCHAR *name = NULL, *p;
     WCHAR *value;
     unsigned int i;
@@ -1234,13 +1235,19 @@ static void set_launch_moltenvk_compiles( WCHAR **env, SIZE_T *pos, SIZE_T *size
     }
     for (i = 0; i < ARRAY_SIZE(vars); i++)
     {
+        /* set_env_var, not set_launch_var: append_envA copies the name into 32 characters, and
+         * MVK_CONFIG_PARALLEL_STAGE_COMPILE is 33 */
         if (deferred)
         {
-            set_launch_var( env, pos, size, vars[i].name, "1" );
+            set_env_var( env, pos, size, vars[i].nameW, vars[i].len, oneW );
+            setenv( vars[i].name, "1", 1 );
             continue;
         }
         if (!(value = get_env_var( *env, *pos, vars[i].nameW, vars[i].len )))
-            set_launch_var( env, pos, size, vars[i].name, "0" );
+        {
+            set_env_var( env, pos, size, vars[i].nameW, vars[i].len, zeroW );
+            setenv( vars[i].name, "0", 1 );
+        }
         free( value );
     }
 }
