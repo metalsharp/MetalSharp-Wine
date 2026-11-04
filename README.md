@@ -6,8 +6,11 @@
   <a href="https://github.com/metalsharp/WineMetalGL/actions/workflows/codeql.yml"><img alt="CodeQL" src="https://img.shields.io/github/actions/workflow/status/metalsharp/WineMetalGL/codeql.yml?branch=main&label=CodeQL&color=white"></a>
 </p>
 
-Github deleted all of my stars after temporarily privating the repo. Please help!
+___
 
+### Github deleted all of my stars after temporarily privating the repo. Please help!
+
+___
 
 ### What It Is: 
 
