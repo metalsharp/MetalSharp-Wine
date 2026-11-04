@@ -10,9 +10,9 @@
 
 </div>
 
-___
+### Github deleted all my stars after temporarily privating the repo. Please help!
 
-Github deleted all my stars after temporarily privating the repo. Please help!
+___
 
 **Early access.** MetalSharp Wine is under active development, and Direct3D 12 most of all. Where to report a problem:
 - **A game's rendering on Mullion (the default Direct3D lane):** [aaf2tbz/mullion](https://github.com/aaf2tbz/mullion).
