@@ -1,8 +1,9 @@
 #!/bin/zsh
-# VKD3D-Proton as GRAPHICS_BACKEND=vkd3d for x86_64 programs: D3D12 on Vulkan (MoltenVK, stage-moltenvk.sh),
-# from src/vkd3d-proton (the ARM64X build, scripts/build-vkd3d-proton-arm64x.sh: ARM64EC code for x86_64
-# programs under FEX), with DXVK 2.7.1's DXGI and D3D10/11 (scripts/build-dxvk.sh), which present its swap
-# chains and make D3D11 devices on D3D12 ones (D3D11On12CreateDevice). The loader takes those from here and
+# VKD3D-Proton as GRAPHICS_BACKEND=vkd3d for x86_64 and native ARM64 programs: D3D12 on Vulkan (MoltenVK,
+# stage-moltenvk.sh), from src/vkd3d-proton (the ARM64X build, scripts/build-vkd3d-proton-arm64x.sh: ARM64EC code for
+# x86_64 programs under FEX, ARM64 code for native ones), with DXVK 2.7.1's DXGI and D3D10/11, ARM64X too
+# (scripts/build-dxvk-arm64x.sh), which present its swap chains and make D3D11 devices on D3D12 ones
+# (D3D11On12CreateDevice). The loader takes those from here and
 # D3D9 from DXVK 1.10.3 (stage-dxvk.sh). Installed into install/lib/vkd3d-proton/x86_64-windows with the
 # Wine builtin signature, which the loader requires on its builtin path.
 #   stage-vkd3d-proton.sh [vkd3d-proton build dir] [dxvk build dir]
@@ -10,7 +11,7 @@ set -e
 source ${0:A:h}/env.sh
 WS=$ROOT/src/vkd3d-proton
 VKD3D=${1:-$WS/artifacts/build/vkd3d-proton/aarch64-windows}
-DXVK=${2:-$WS/artifacts/build/dxvk/x86_64-windows}
+DXVK=${2:-$WS/artifacts/build/dxvk-arm64x/x86_64-windows}
 for f in $VKD3D/d3d12.dll $VKD3D/d3d12core.dll $DXVK/dxgi.dll $DXVK/d3d11.dll $DXVK/d3d10core.dll; do
   [[ -f $f ]] || { echo "missing: $f (build it first)" >&2; exit 1; }
 done
@@ -35,7 +36,7 @@ done
 cp $ROOT/src/wine/COPYING.LIB $O/LICENSE
 {
   echo "VKD3D-Proton $(git -C $WS/sources/vkd3d-proton describe --always --tags 2>/dev/null) (ARM64X, src/vkd3d-proton)"
-  echo "DXVK $(git -C $WS/sources/dxvk describe --always --tags 2>/dev/null) dxgi/d3d10core/d3d11 (x86_64)"
+  echo "DXVK $(git -C $WS/sources/dxvk describe --always --tags 2>/dev/null) dxgi/d3d10core/d3d11 (ARM64X)"
   [[ -f $O/x86_64-windows/nvngx.dll ]] && echo "NGX core and NVAPI $(git -C $WS describe --always --dirty 2>/dev/null) (ARM64X, ngx/)"
 } > $O/VERSION
 echo "vkd3d-proton:"; cat $O/VERSION; ls $O/x86_64-windows
