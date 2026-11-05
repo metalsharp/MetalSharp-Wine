@@ -89,6 +89,7 @@ public:
 
   void ResetExecutableRangeCache() {
     ExecutableRangeBase = ExecutableRangeEnd = 0;
+    ExecutableRangeValidate = false;
   }
 
 private:
@@ -154,6 +155,7 @@ private:
   uint64_t ExecutableRangeBase {};
   uint64_t ExecutableRangeEnd {};
   bool ExecutableRangeWritable {};
+  bool ExecutableRangeValidate {};
   bool HitNonExecutableRange {};
   bool HitBadRelocation {};
 

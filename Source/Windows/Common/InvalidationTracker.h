@@ -6,6 +6,7 @@
 #include <mutex>
 #include <shared_mutex>
 #include <unordered_map>
+#include <vector>
 #include <string_view>
 
 namespace FEXCore::Core {
@@ -44,6 +45,12 @@ public:
   // in, or Rip itself when that isn't executable.
   uint64_t ExecuteFaultAddress(uint64_t Rip);
 
+  // Views of one data section share their pages, so a write through one view changes code translated from another
+  // without a fault or protection change FEX sees. FEX records the views and checks the bytes of code it runs from a
+  // view whose section has another view mapped before each instruction, so rewritten code is translated again.
+  void HandleDataSectionMap(HANDLE Section, uint64_t Address, uint64_t Size, uint64_t Offset);
+  void HandleDataSectionUnmap(uint64_t Address);
+
 private:
   void DetectMonoBackpatcherBlock(FEXCore::Core::InternalThreadState* Thread, uint64_t HostPC);
   void DisableSMCDetection();
@@ -69,6 +76,15 @@ private:
   bool SMCDetectionDisabled {false};                    // Protected by IntervalsLock
   bool DEPDisabled {false};                             // Protected by IntervalsLock
   FEXCore::IntervalList<uint64_t> DEPPromotedIntervals; // Protected by IntervalsLock
+
+  struct SectionView {
+    uint64_t Base;
+    uint64_t Size;
+    HANDLE Section;
+    uint64_t Group;
+  };
+  std::vector<SectionView> SectionViews; // Protected by IntervalsLock
+  uint64_t NextSectionGroup {1};         // Protected by IntervalsLock
 
   bool MonoBackpatcherDetectionPending {false};
   uint64_t MonoBase {0};

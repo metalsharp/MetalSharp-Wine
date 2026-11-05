@@ -916,7 +916,14 @@ NTSTATUS NotifyMapViewOfSection(void* Unk1, void* Address, void* Unk2, SIZE_T Si
 
   {
     std::scoped_lock Lock(ThreadCreationMutex);
-    HandleImageMap(reinterpret_cast<uint64_t>(Address));
+    if (Unk1) {
+      // MetalSharp: Wine passes the section handle and view offset for data sections, so views of one section can
+      // be told apart from other memory and kept coherent with the code translated from them.
+      InvalidationTracker->HandleDataSectionMap(Unk1, reinterpret_cast<uint64_t>(Address), static_cast<uint64_t>(Size),
+                                                reinterpret_cast<uint64_t>(Unk2));
+    } else {
+      HandleImageMap(reinterpret_cast<uint64_t>(Address));
+    }
   }
 
 
@@ -934,6 +941,7 @@ void NotifyUnmapViewOfSection(void* Address, BOOL After, NTSTATUS Status) {
     if (Size) {
       HandleImageUnmap(Start, Size);
     }
+    InvalidationTracker->HandleDataSectionUnmap(reinterpret_cast<uint64_t>(Address));
   } else {
     ThreadCreationMutex.unlock();
   }

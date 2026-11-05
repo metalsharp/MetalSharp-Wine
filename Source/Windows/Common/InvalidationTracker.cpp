@@ -10,6 +10,8 @@
 #include <windef.h>
 #include <winternl.h>
 
+extern "C" NTSTATUS WINAPI NtCompareObjects(HANDLE, HANDLE);
+
 namespace FEX::Windows {
 InvalidationTracker::InvalidationTracker(FEXCore::Context::Context& CTX, const std::unordered_map<DWORD, FEXCore::Core::InternalThreadState*>& Threads)
   : CTX {CTX}
@@ -270,13 +272,111 @@ FEXCore::HLE::ExecutableRangeInfo InvalidationTracker::QueryExecutableRange(uint
   if (!XResult.Enclosed) {
     return {};
   }
+  FEXCore::HLE::ExecutableRangeInfo Info;
   const auto RWXResult = RWXIntervals.Query(Address);
   if (RWXResult.Enclosed) {
-    return {RWXResult.Interval.Offset, RWXResult.Interval.End - RWXResult.Interval.Offset, true};
+    Info = {RWXResult.Interval.Offset, RWXResult.Interval.End - RWXResult.Interval.Offset, true};
   } else if (RWXResult.Size && RWXResult.Size < XResult.Size) {
-    return {XResult.Interval.Offset, RWXResult.Interval.Offset - XResult.Interval.Offset, false};
+    Info = {XResult.Interval.Offset, RWXResult.Interval.Offset - XResult.Interval.Offset, false};
+  } else {
+    Info = {XResult.Interval.Offset, XResult.Interval.End - XResult.Interval.Offset, false};
   }
-  return {XResult.Interval.Offset, XResult.Interval.End - XResult.Interval.Offset, false};
+
+  // Code in a view of a data section that has another view mapped: check its bytes as it runs, and keep the range
+  // to the view so code outside it isn't checked.
+  for (const auto& View : SectionViews) {
+    if (Address < View.Base || Address >= View.Base + View.Size) {
+      continue;
+    }
+    bool Shared = false;
+    for (const auto& Other : SectionViews) {
+      if (&Other != &View && Other.Group == View.Group) {
+        Shared = true;
+        break;
+      }
+    }
+    const auto Base = std::max(Info.Base, View.Base);
+    const auto End = std::min(Info.Base + Info.Size, View.Base + View.Size);
+    Info.Base = Base;
+    Info.Size = End - Base;
+    Info.Validate = Shared;
+    return Info;
+  }
+  // Keep a range that starts before a view from running into it unchecked.
+  for (const auto& View : SectionViews) {
+    if (View.Base > Address && View.Base < Info.Base + Info.Size) {
+      Info.Size = View.Base - Info.Base;
+    }
+  }
+  return Info;
+}
+
+void InvalidationTracker::HandleDataSectionMap(HANDLE Section, uint64_t Address, uint64_t Size, uint64_t Offset) {
+  if (!Section || !Address || !Size) {
+    return;
+  }
+  HANDLE Dup {};
+  if (NtDuplicateObject(NtCurrentProcess(), Section, NtCurrentProcess(), &Dup, 0, 0, DUPLICATE_SAME_ACCESS)) {
+    return;
+  }
+  const auto Base = Address & FEXCore::Utils::FEX_PAGE_MASK;
+  const auto AlignedSize = (Address - Base + Size + FEXCore::Utils::FEX_PAGE_SIZE - 1) & FEXCore::Utils::FEX_PAGE_MASK;
+
+  std::vector<HANDLE> Stale;
+  std::vector<std::pair<uint64_t, uint64_t>> Recheck;
+  {
+    std::unique_lock Lock(IntervalsLock);
+    // Views whose unmap wasn't seen can't overlap a new one.
+    for (auto It = SectionViews.begin(); It != SectionViews.end();) {
+      if (It->Base < Base + AlignedSize && Base < It->Base + It->Size) {
+        Stale.push_back(It->Section);
+        It = SectionViews.erase(It);
+      } else {
+        ++It;
+      }
+    }
+    uint64_t Group = 0;
+    for (const auto& View : SectionViews) {
+      if (NtCompareObjects(View.Section, Dup) == 0) {
+        Group = View.Group;
+        break;
+      }
+    }
+    if (Group) {
+      // Code already translated from the other views ran unchecked: translate it again with the checks.
+      for (const auto& View : SectionViews) {
+        if (View.Group == Group) {
+          Recheck.emplace_back(View.Base, View.Size);
+        }
+      }
+    } else {
+      Group = NextSectionGroup++;
+    }
+    SectionViews.push_back({Base, AlignedSize, Dup, Group});
+  }
+  for (auto Handle : Stale) {
+    NtClose(Handle);
+  }
+  for (auto [ViewBase, ViewSize] : Recheck) {
+    InvalidateIntervalInternal(ViewBase, ViewSize);
+  }
+}
+
+void InvalidationTracker::HandleDataSectionUnmap(uint64_t Address) {
+  HANDLE Section {};
+  {
+    std::unique_lock Lock(IntervalsLock);
+    for (auto It = SectionViews.begin(); It != SectionViews.end(); ++It) {
+      if (Address >= It->Base && Address < It->Base + It->Size) {
+        Section = It->Section;
+        SectionViews.erase(It);
+        break;
+      }
+    }
+  }
+  if (Section) {
+    NtClose(Section);
+  }
 }
 
 void InvalidationTracker::DetectMonoBackpatcherBlock(FEXCore::Core::InternalThreadState* Thread, uint64_t HostPc) {

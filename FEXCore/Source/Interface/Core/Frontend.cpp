@@ -99,6 +99,7 @@ bool Decoder::CheckRangeExecutable(uint64_t Address, uint64_t Size) {
     ExecutableRangeBase = RangeInfo.Base;
     ExecutableRangeEnd = RangeInfo.Base + RangeInfo.Size;
     ExecutableRangeWritable = RangeInfo.Writable;
+    ExecutableRangeValidate = RangeInfo.Validate;
 
     if (RangeInfo.Size == 0) {
       return false;
@@ -1629,6 +1630,10 @@ void Decoder::DecodeLoop(const uint8_t* _InstStream, uint64_t GuestSizePause) {
       ++DecodedSize;
       ++BlockIt->NumInstructions;
       BlockIt->Size += DecodeInst->InstSize;
+      if (ExecutableRangeValidate) {
+        // MetalSharp: code another view of its section can rewrite unseen; check it before each instruction.
+        BlockIt->ForceFullSMCDetection = true;
+      }
 
       // if we weren't provided relocations (guest JIT), try to detect what we can
       if (WantsDataMasks && BlockIt->BlockStatus == DecodedBlockStatus::SUCCESS && BlockInfo.Is64BitMode && !Relocations) {

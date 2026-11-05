@@ -21,6 +21,9 @@ struct ExecutableRangeInfo {
   uint64_t Base;
   uint64_t Size;
   bool Writable;
+  // MetalSharp: the range may change without a write FEX can trap (another view of its section is written), so its
+  // code is checked against its bytes before each instruction.
+  bool Validate {};
 };
 
 class SyscallHandler;
