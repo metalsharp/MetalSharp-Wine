@@ -44,6 +44,15 @@ public:
 
   virtual void PreCompile() {}
 
+  // MetalSharp: whether some thread has (or had) an instruction breakpoint on Address, so instructions there are
+  // compiled with a check of the running thread's breakpoints.
+  virtual bool IsGuestBreakpointAddress(uint64_t Address) {
+    return false;
+  }
+  virtual bool HasGuestBreakpoints() {
+    return false;
+  }
+
   virtual SourcecodeResolver* GetSourcecodeResolver() {
     return nullptr;
   }

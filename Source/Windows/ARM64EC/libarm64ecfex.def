@@ -10,6 +10,8 @@ EXPORTS
   ExitToX64 DATA
   BeginSimulation DATA
   FlushInstructionCacheHeavy
+  MetalSharpGetDebugRegisters
+  MetalSharpSetDebugRegisters
   NotifyMapViewOfSection
   NotifyMemoryAlloc
   NotifyMemoryFree

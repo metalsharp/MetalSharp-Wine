@@ -7,6 +7,9 @@ $end_info$
 */
 
 #include <FEXCore/fextl/fmt.h>
+#include <atomic>
+#include <set>
+#include <shared_mutex>
 #include <FEXCore/Core/X86Enums.h>
 #include <FEXCore/Core/SignalDelegator.h>
 #include <FEXCore/Core/Context.h>
@@ -154,6 +157,20 @@ std::optional<FEX::Windows::ImageTracker> ImageTracker;
 std::recursive_mutex ThreadCreationMutex;
 // Map of TIDs to their FEX thread state, `ThreadCreationMutex` must be locked when accessing
 std::unordered_map<DWORD, FEXCore::Core::InternalThreadState*> Threads;
+
+// MetalSharp: every address any thread has set an instruction breakpoint on. Code there is compiled with a check of
+// the running thread's debug registers. Addresses stay listed once added; checking an unused one costs little.
+alignas(16) std::shared_mutex BreakpointLock;
+alignas(16) std::set<uint64_t> BreakpointAddresses;
+alignas(16) std::atomic<uint64_t> AnyBreakpoints {0};
+struct DebugRegisters {
+  uint64_t Dr[FEXCore::Core::CPUState::NUM_DEBUG_ADDRESSES];
+  uint64_t Dr6;
+  uint64_t Dr7;
+};
+// Set on threads that haven't started in FEX yet (created suspended), applied in ThreadInit. `ThreadCreationMutex`.
+std::unordered_map<DWORD, DebugRegisters> PendingDebugRegisters;
+static void ApplyPendingDebugRegisters(FEXCore::Core::InternalThreadState* Thread, DWORD Tid);
 
 std::pair<NTSTATUS, ThreadCPUArea> GetThreadCPUArea(HANDLE Thread) {
   THREAD_BASIC_INFORMATION Info;
@@ -631,6 +648,15 @@ public:
   void PreCompile() override {
     ProcessPendingCrossProcessEmulatorWork();
   }
+
+  bool IsGuestBreakpointAddress(uint64_t Address) override {
+    std::shared_lock Lock(BreakpointLock);
+    return BreakpointAddresses.contains(Address);
+  }
+
+  bool HasGuestBreakpoints() override {
+    return AnyBreakpoints.load(std::memory_order_relaxed) != 0;
+  }
 };
 } // namespace Exception
 
@@ -847,6 +873,19 @@ NTSTATUS ResetToConsistentState(EXCEPTION_RECORD* Exception, CONTEXT* GuestConte
   const auto CPUArea = GetCPUArea();
   if (!CPUArea.ThreadState()) {
     return STATUS_SUCCESS;
+  }
+
+  if (GuestContext) {
+    // MetalSharp: handlers see the thread's debug registers (Dr6 says which breakpoint hit), and continuing with the
+    // context applies the ones they set.
+    const auto& State = CPUArea.ThreadState()->CurrentFrame->State;
+    GuestContext->Dr0 = State.Dr[0];
+    GuestContext->Dr1 = State.Dr[1];
+    GuestContext->Dr2 = State.Dr[2];
+    GuestContext->Dr3 = State.Dr[3];
+    GuestContext->Dr6 = State.Dr6;
+    GuestContext->Dr7 = State.Dr7;
+    GuestContext->ContextFlags |= CONTEXT_DEBUG_REGISTERS;
   }
 
   {
@@ -1093,6 +1132,7 @@ NTSTATUS ThreadInit() {
   {
     auto ThreadTID = GetCurrentThreadId();
     Threads.emplace(ThreadTID, Thread);
+    ApplyPendingDebugRegisters(Thread, ThreadTID);
     if (StatAllocHandler) {
       Thread->ThreadStats = StatAllocHandler->AllocateSlot(ThreadTID);
     }
@@ -1174,3 +1214,115 @@ BOOLEAN BTCpu64IsProcessorFeaturePresent(UINT Feature) {
 void UpdateProcessorInformation(SYSTEM_CPU_INFORMATION* Info) {
   CPUFeatures->UpdateInformation(Info);
 }
+
+// MetalSharp: x86 debug registers. Wine's ARM64EC context conversion has nowhere to keep them, so its NtContinue,
+// NtSetContextThread and NtGetContextThread pass the x64 context's debug registers here, and FEX keeps them in the
+// thread's state.
+
+// The thread's FEX state, or null with its TID in `Tid` when it is in this process but not running in FEX yet.
+static FEXCore::Core::InternalThreadState* DebugRegisterThread(HANDLE Thread, DWORD& Tid) {
+  Tid = 0;
+  if (Thread == NtCurrentThread()) {
+    return GetCPUArea().ThreadState();
+  }
+  THREAD_BASIC_INFORMATION Info;
+  if (NtQueryInformationThread(Thread, ThreadBasicInformation, &Info, sizeof(Info), nullptr) ||
+      reinterpret_cast<uintptr_t>(Info.ClientId.UniqueProcess) != GetCurrentProcessId()) {
+    return nullptr;
+  }
+  if (reinterpret_cast<uintptr_t>(Info.ClientId.UniqueThread) == GetCurrentThreadId()) {
+    return GetCPUArea().ThreadState();
+  }
+  Tid = static_cast<DWORD>(reinterpret_cast<uintptr_t>(Info.ClientId.UniqueThread));
+  const auto It = Threads.find(Tid);
+  return It == Threads.end() ? nullptr : It->second;
+}
+
+// NOTE: `ThreadCreationMutex` must be locked.
+static void ApplyDebugRegisters(FEXCore::Core::CPUState& State, const DebugRegisters& Regs, uint64_t Rip, uint64_t EFlags) {
+  uint64_t New[FEXCore::Core::CPUState::NUM_DEBUG_ADDRESSES] {};
+  bool Resume = false;
+  bool Added = false;
+  for (size_t i = 0; i < FEXCore::Core::CPUState::NUM_DEBUG_ADDRESSES; ++i) {
+    State.Dr[i] = Regs.Dr[i];
+    const uint64_t Address = FEXCore::Core::CPUState::IsInstructionBreakpointEnabled(i, Regs.Dr7) ? Regs.Dr[i] : 0;
+    State.BreakpointAddress[i] = Address;
+    if (!Address) {
+      continue;
+    }
+    // RF (EFLAGS bit 16): resume at a breakpoint without hitting it again.
+    Resume |= (EFlags & 0x10000) && Rip == Address;
+    std::unique_lock BPLock(BreakpointLock);
+    if (BreakpointAddresses.insert(Address).second) {
+      New[i] = Address;
+      Added = true;
+    }
+  }
+  State.Dr6 = Regs.Dr6;
+  State.Dr7 = Regs.Dr7;
+  State.BreakpointResumeRIP = Resume ? Rip : 0;
+
+  if (Added) {
+    AnyBreakpoints.store(1, std::memory_order_relaxed);
+    // Code translated before the breakpoint was set has no check.
+    for (auto Address : New) {
+      if (Address) {
+        InvalidationTracker->InvalidateAlignedInterval(Address, 1, false);
+      }
+    }
+  }
+}
+
+extern "C" void MetalSharpSetDebugRegisters(HANDLE Thread, const CONTEXT* Context) {
+  if (!Context || (Context->ContextFlags & CONTEXT_DEBUG_REGISTERS) != CONTEXT_DEBUG_REGISTERS || !InvalidationTracker) {
+    return;
+  }
+  const DebugRegisters Regs {{Context->Dr0, Context->Dr1, Context->Dr2, Context->Dr3}, Context->Dr6, Context->Dr7};
+  std::scoped_lock Lock(ThreadCreationMutex);
+  DWORD Tid;
+  auto* ThreadState = DebugRegisterThread(Thread, Tid);
+  if (ThreadState) {
+    ApplyDebugRegisters(ThreadState->CurrentFrame->State, Regs, Context->Rip, Context->EFlags);
+  } else if (Tid) {
+    PendingDebugRegisters[Tid] = Regs;
+  }
+}
+
+extern "C" void MetalSharpGetDebugRegisters(HANDLE Thread, CONTEXT* Context) {
+  if (!Context || (Context->ContextFlags & CONTEXT_DEBUG_REGISTERS) != CONTEXT_DEBUG_REGISTERS) {
+    return;
+  }
+  std::scoped_lock Lock(ThreadCreationMutex);
+  DWORD Tid;
+  auto* ThreadState = DebugRegisterThread(Thread, Tid);
+  if (!ThreadState) {
+    const auto It = PendingDebugRegisters.find(Tid);
+    if (Tid && It != PendingDebugRegisters.end()) {
+      Context->Dr0 = It->second.Dr[0];
+      Context->Dr1 = It->second.Dr[1];
+      Context->Dr2 = It->second.Dr[2];
+      Context->Dr3 = It->second.Dr[3];
+      Context->Dr6 = It->second.Dr6;
+      Context->Dr7 = It->second.Dr7;
+    }
+    return;
+  }
+  const auto& State = ThreadState->CurrentFrame->State;
+  Context->Dr0 = State.Dr[0];
+  Context->Dr1 = State.Dr[1];
+  Context->Dr2 = State.Dr[2];
+  Context->Dr3 = State.Dr[3];
+  Context->Dr6 = State.Dr6;
+  Context->Dr7 = State.Dr7;
+}
+
+namespace {
+static void ApplyPendingDebugRegisters(FEXCore::Core::InternalThreadState* Thread, DWORD Tid) {
+  const auto It = PendingDebugRegisters.find(Tid);
+  if (It == PendingDebugRegisters.end()) {
+    return;
+  }
+  ApplyDebugRegisters(Thread->CurrentFrame->State, It->second, 0, 0);
+  PendingDebugRegisters.erase(It);
+}
+} // namespace

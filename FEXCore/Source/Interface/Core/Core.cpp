@@ -701,6 +701,49 @@ ContextImpl::GenerateIR(FEXCore::Core::InternalThreadState* Thread, uint64_t Gue
           Thread->OpDispatcher->StartNewBlock();
         }
 
+        if (SyscallHandler->HasGuestBreakpoints() && SyscallHandler->IsGuestBreakpointAddress(InstAddress)) [[unlikely]] {
+          // MetalSharp: x86 instruction breakpoints. Debug registers belong to a thread while code is shared, so check
+          // the running thread's breakpoints here: a hit raises #DB (EXCEPTION_SINGLE_STEP) with its Dr6 bit before
+          // the instruction runs, unless RF let this instruction run once.
+          using FEXCore::Core::CPUState;
+          auto* OpD = Thread->OpDispatcher.get();
+          auto Here = OpD->_EntrypointOffset(GPRSize, InstAddress - GuestRIP);
+          auto Zero = OpD->Constant(0);
+          IR::Ref Hit = Zero;
+          IR::Ref Status = Zero;
+          for (int i = CPUState::NUM_DEBUG_ADDRESSES - 1; i >= 0; --i) {
+            auto Address = OpD->_LoadContextGPR(IR::OpSize::i64Bit, offsetof(CPUState, BreakpointAddress) + i * sizeof(uint64_t));
+            Hit = OpD->_Select(IR::OpSize::i64Bit, IR::OpSize::i64Bit, IR::CondClass::EQ, Address, Here, OpD->Constant(1), Hit);
+            Status = OpD->_Select(IR::OpSize::i64Bit, IR::OpSize::i64Bit, IR::CondClass::EQ, Address, Here,
+                                  OpD->Constant(0xFFFF0FF0ULL | (1ULL << i)), Status);
+          }
+          // RF is used up by the first instruction that runs.
+          auto Resume = OpD->_LoadContextGPR(IR::OpSize::i64Bit, offsetof(CPUState, BreakpointResumeRIP));
+          Hit = OpD->_Select(IR::OpSize::i64Bit, IR::OpSize::i64Bit, IR::CondClass::EQ, Resume, Here, Zero, Hit);
+          OpD->_StoreContextGPR(IR::OpSize::i64Bit, Zero, offsetof(CPUState, BreakpointResumeRIP));
+
+          auto HitCond = OpD->CondJump(Hit);
+          auto CurrentBlock = OpD->GetCurrentBlock();
+          auto HitBlock = OpD->CreateNewCodeBlockAfter(CurrentBlock);
+          OpD->SetTrueJumpTarget(HitCond, HitBlock);
+          OpD->SetCurrentCodeBlock(HitBlock);
+          OpD->StartNewBlock();
+          OpD->_StoreContextGPR(IR::OpSize::i64Bit, Status, offsetof(CPUState, Dr6));
+          OpD->_StoreContextGPR(GPRSize, OpD->_EntrypointOffset(GPRSize, InstAddress - GuestRIP), offsetof(CPUState, rip));
+          OpD->Break(FEXCore::IR::BreakDefinition {
+            .ErrorRegister = 0,
+            .Signal = FEXCore::Core::FAULT_SIGTRAP,
+            .TrapNumber = FEXCore::X86State::X86_TRAPNO_DB,
+            .si_code = 0x80,
+          });
+          OpD->ExitFunction(OpD->_EntrypointOffset(GPRSize, InstAddress - GuestRIP));
+
+          auto NextOpBlock = OpD->CreateNewCodeBlockAfter(HitBlock);
+          OpD->SetFalseJumpTarget(HitCond, NextOpBlock);
+          OpD->SetCurrentCodeBlock(NextOpBlock);
+          OpD->StartNewBlock();
+        }
+
         if (TableInfo && TableInfo->OpcodeDispatcher.OpDispatch) {
           auto Fn = TableInfo->OpcodeDispatcher.OpDispatch;
           Thread->OpDispatcher->ResetHandledLock();
@@ -910,7 +953,9 @@ uintptr_t ContextImpl::CompileBlock(FEXCore::Core::CpuStateFrame* Frame, uint64_
   std::optional<uint64_t> DiskCacheGuestCodeKey;
   {
     FEXCORE_PROFILE_ACCUMULATION(Thread, AccumulatedDiskCacheLookupTime);
-    Hit = DiskCache.Lookup(Thread, Region, GuestRIP, DiskCacheGuestCodeKey);
+    if (!SyscallHandler->HasGuestBreakpoints()) {
+      Hit = DiskCache.Lookup(Thread, Region, GuestRIP, DiskCacheGuestCodeKey);
+    }
     if (Hit && !DiskCache.IsValidating()) {
       auto LoadedCode = Thread->CPUBackend->LoadCachedCode(Hit->HostCode);
       if (LoadedCode.BlockBegin) {

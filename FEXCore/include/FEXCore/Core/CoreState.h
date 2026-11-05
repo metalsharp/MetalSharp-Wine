@@ -192,6 +192,22 @@ struct alignas(64) CPUState {
   uint8_t AbridgedFTW {};
 
   uint8_t _pad2[5];
+
+  // MetalSharp: the thread's x86 debug registers. Dr0-3 are addresses, Dr6 the status and Dr7 the control register.
+  static constexpr size_t NUM_DEBUG_ADDRESSES = 4;
+  uint64_t Dr[NUM_DEBUG_ADDRESSES] {};
+  uint64_t Dr6 {};
+  uint64_t Dr7 {};
+  // The address of each enabled instruction breakpoint (an address register with its Dr7 enable bits set and the
+  // execute type), or 0, checked before instructions at breakpoint addresses.
+  uint64_t BreakpointAddress[NUM_DEBUG_ADDRESSES] {};
+  // RF: the instruction at this address runs once without hitting its breakpoint, or 0.
+  uint64_t BreakpointResumeRIP {};
+
+  static bool IsInstructionBreakpointEnabled(unsigned Index, uint64_t Dr7) {
+    // Local or global enable, and read/write type 0 (instruction execution).
+    return (Dr7 & (0b11ULL << (2 * Index))) && ((Dr7 >> (16 + 4 * Index)) & 0b11) == 0;
+  }
   // PF/AF are statically mapped as-if they were r16/r17 (which do not exist in
   // x86 otherwise). This allows a straightforward mapping for SRA.
   static constexpr uint8_t PF_AS_GREG = 16;
