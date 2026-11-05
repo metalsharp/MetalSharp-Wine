@@ -742,7 +742,7 @@ NTSTATUS SYSCALL_API NtGetContextThread( HANDLE handle, CONTEXT *context )
 }
 
 static void notify_map_view_of_section( HANDLE handle, void *addr, SIZE_T size, ULONG alloc,
-                                        ULONG protect, NTSTATUS *ret_status )
+                                        ULONG protect, const LARGE_INTEGER *offset, NTSTATUS *ret_status )
 {
     SECTION_IMAGE_INFORMATION info;
     NTSTATUS status;
@@ -757,6 +757,9 @@ static void notify_map_view_of_section( HANDLE handle, void *addr, SIZE_T size, 
             pNotifyMemoryAlloc( addr, size, MEM_COMMIT, protect, FALSE, 0 );
             pNotifyMemoryAlloc( addr, size, MEM_COMMIT, protect, TRUE, STATUS_SUCCESS );
         }
+        /* MetalSharp: every view of a data section, with its section and offset, so the emulator sees when code it
+         * translated from one view is rewritten through another view of the same section */
+        pNotifyMapViewOfSection( handle, addr, (void *)(ULONG_PTR)(offset ? offset->QuadPart : 0), size, alloc, protect );
         return;
     }
     if (!NtCurrentTeb()->Tib.ArbitraryUserPointer) return;
@@ -776,7 +779,7 @@ NTSTATUS SYSCALL_API NtMapViewOfSection( HANDLE handle, HANDLE process, PVOID *a
 
     if (NT_SUCCESS(status) && RtlIsCurrentProcess( process ) && enter_syscall_callback())
     {
-        notify_map_view_of_section( handle, *addr_ptr, *size_ptr, alloc_type, protect, &status );
+        notify_map_view_of_section( handle, *addr_ptr, *size_ptr, alloc_type, protect, offset, &status );
         leave_syscall_callback();
     }
     return status;
@@ -791,7 +794,7 @@ NTSTATUS SYSCALL_API NtMapViewOfSectionEx( HANDLE handle, HANDLE process, PVOID 
 
     if (NT_SUCCESS(status) && RtlIsCurrentProcess( process ) && enter_syscall_callback())
     {
-        notify_map_view_of_section( handle, *addr_ptr, *size_ptr, alloc_type, protect, &status );
+        notify_map_view_of_section( handle, *addr_ptr, *size_ptr, alloc_type, protect, offset, &status );
         leave_syscall_callback();
     }
     return status;
