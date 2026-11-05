@@ -813,6 +813,11 @@ bool BTCpuResetToConsistentStateImpl(EXCEPTION_POINTERS* Ptrs) {
   BOOL FirstChance = TRUE;
   EXCEPTION_RECORD GuestException =
     FEX::Windows::HandleGuestException(Fault, *Exception, WowContext->Eip, WowContext->Eax, WowContext->Ecx, FirstChance);
+  if (GuestException.ExceptionCode == EXCEPTION_ACCESS_VIOLATION && GuestException.NumberParameters >= 2 &&
+      GuestException.ExceptionInformation[0] == EXCEPTION_EXECUTE_FAULT && GuestException.ExceptionInformation[1] == WowContext->Eip) {
+    // MetalSharp: report the first non-executable byte, as for x64 (see the ARM64EC frontend).
+    GuestException.ExceptionInformation[1] = InvalidationTracker->ExecuteFaultAddress(WowContext->Eip);
+  }
   if (GuestException.ExceptionCode == EXCEPTION_SINGLE_STEP) {
     WowContext->EFlags &= ~(1 << FEXCore::X86State::RFLAG_TF_RAW_LOC);
   }

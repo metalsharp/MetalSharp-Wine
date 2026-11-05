@@ -565,6 +565,13 @@ static void RethrowGuestException(const EXCEPTION_RECORD& Rec, ARM64_NT_CONTEXT&
 
   BOOL FirstChance = TRUE;
   EXCEPTION_RECORD GuestRec = FEX::Windows::HandleGuestException(Fault, Rec, GuestContext.Pc, GuestContext.X8, GuestContext.X0, FirstChance);
+  if (GuestRec.ExceptionCode == EXCEPTION_ACCESS_VIOLATION && GuestRec.NumberParameters >= 2 &&
+      GuestRec.ExceptionInformation[0] == EXCEPTION_EXECUTE_FAULT && GuestRec.ExceptionInformation[1] == GuestContext.Pc) {
+    // MetalSharp: an instruction that starts in executable memory and runs into memory that isn't faults there, as on
+    // Windows. Decrypt-on-execute protections unlock the page the fault names; naming RIP's own, already unlocked page
+    // makes them retry it forever.
+    GuestRec.ExceptionInformation[1] = InvalidationTracker->ExecuteFaultAddress(GuestContext.Pc);
+  }
   if (GuestRec.ExceptionCode == EXCEPTION_SINGLE_STEP) {
     GuestContext.Cpsr &= ~(1 << 21); // PSTATE.SS
   } else if (GuestRec.ExceptionCode == EXCEPTION_BREAKPOINT) {

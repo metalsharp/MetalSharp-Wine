@@ -40,6 +40,9 @@ public:
   bool BeginUntrackedWriteLocked(uint64_t Address, uint64_t Size);
 
   FEXCore::HLE::ExecutableRangeInfo QueryExecutableRange(uint64_t Address);
+  // The address an execute fault at Rip reports: the first byte past the executable memory the instruction starts
+  // in, or Rip itself when that isn't executable.
+  uint64_t ExecuteFaultAddress(uint64_t Rip);
 
 private:
   void DetectMonoBackpatcherBlock(FEXCore::Core::InternalThreadState* Thread, uint64_t HostPC);

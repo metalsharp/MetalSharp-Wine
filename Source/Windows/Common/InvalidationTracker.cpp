@@ -258,6 +258,12 @@ bool InvalidationTracker::BeginUntrackedWriteLocked(uint64_t Address, uint64_t S
   return ProtectRWXIntervalsInternal(Address, Size, true);
 }
 
+uint64_t InvalidationTracker::ExecuteFaultAddress(uint64_t Rip) {
+  std::shared_lock Lock(IntervalsLock);
+  const auto XResult = XIntervals.Query(Rip);
+  return XResult.Enclosed ? XResult.Interval.End : Rip;
+}
+
 FEXCore::HLE::ExecutableRangeInfo InvalidationTracker::QueryExecutableRange(uint64_t Address) {
   std::shared_lock Lock(IntervalsLock);
   const auto XResult = XIntervals.Query(Address);
