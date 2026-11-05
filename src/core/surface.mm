@@ -85,7 +85,9 @@ const std::vector<wmgl_pixel_format>& pixelFormats() {
                             f.draw_to_window = !pbuffer;
                             f.draw_to_pbuffer = pbuffer;
                             f.double_buffer = doubleBuffer;
-                            f.color_bits = 24;
+                            // RGBA8: 32 with its alpha, as Windows drivers count it (and WGL_COLOR_BITS_ARB 32,
+                            // which Minecraft asks for, matches).
+                            f.color_bits = 32;
                             f.red_bits = f.green_bits = f.blue_bits = f.alpha_bits = 8;
                             f.red_shift = 16; f.green_shift = 8; f.blue_shift = 0; f.alpha_shift = 24;
                             f.depth_bits = ds.depth;
