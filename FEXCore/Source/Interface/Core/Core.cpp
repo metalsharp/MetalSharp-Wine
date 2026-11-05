@@ -680,7 +680,9 @@ ContextImpl::GenerateIR(FEXCore::Core::InternalThreadState* Thread, uint64_t Gue
           auto InvalidateCodeCond = Thread->OpDispatcher->CondJump(CodeChanged);
 
           auto CurrentBlock = Thread->OpDispatcher->GetCurrentBlock();
-          auto CodeWasChangedBlock = Thread->OpDispatcher->CreateNewCodeBlockAtEnd();
+          // MetalSharp: place the block after the current one rather than at the end, which walks every block
+          // created so far: with a check per instruction that made a large block quadratic to compile.
+          auto CodeWasChangedBlock = Thread->OpDispatcher->CreateNewCodeBlockAfter(CurrentBlock);
           Thread->OpDispatcher->SetTrueJumpTarget(InvalidateCodeCond, CodeWasChangedBlock);
 
           Thread->OpDispatcher->SetCurrentCodeBlock(CodeWasChangedBlock);
@@ -692,7 +694,7 @@ ContextImpl::GenerateIR(FEXCore::Core::InternalThreadState* Thread, uint64_t Gue
           // Invalidate and exit the function
           Thread->OpDispatcher->_ThreadRemoveCodeEntry(EntryToInvalidate, NewRIP);
 
-          auto NextOpBlock = Thread->OpDispatcher->CreateNewCodeBlockAfter(CurrentBlock);
+          auto NextOpBlock = Thread->OpDispatcher->CreateNewCodeBlockAfter(CodeWasChangedBlock);
 
           Thread->OpDispatcher->SetFalseJumpTarget(InvalidateCodeCond, NextOpBlock);
           Thread->OpDispatcher->SetCurrentCodeBlock(NextOpBlock);
