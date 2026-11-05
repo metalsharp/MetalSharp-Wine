@@ -53,6 +53,9 @@ static void     (WINAPI *pNotifyUnmapViewOfSection)(void*,BOOL,NTSTATUS);
 static NTSTATUS (WINAPI *pProcessInit)(void);
 static void     (WINAPI *pProcessTerm)(HANDLE,BOOL,NTSTATUS);
 static void     (WINAPI *pResetToConsistentState)(EXCEPTION_RECORD*,CONTEXT*,ARM64_NT_CONTEXT*);
+/* MetalSharp: the ARM64 context has nowhere to keep x64 debug registers, so the emulator keeps them per thread */
+static void     (WINAPI *pMetalSharpSetDebugRegisters)(HANDLE,const CONTEXT*);
+static void     (WINAPI *pMetalSharpGetDebugRegisters)(HANDLE,CONTEXT*);
 static NTSTATUS (WINAPI *pThreadInit)(void);
 static void     (WINAPI *pThreadTerm)(HANDLE,LONG);
 static void     (WINAPI *pUpdateProcessorInformation)(SYSTEM_CPU_INFORMATION*);
@@ -211,6 +214,8 @@ NTSTATUS arm64ec_process_init( HMODULE module )
     GET_PTR( ProcessInit );
     GET_PTR( ProcessTerm );
     GET_PTR( ResetToConsistentState );
+    GET_PTR( MetalSharpSetDebugRegisters );
+    GET_PTR( MetalSharpGetDebugRegisters );
     GET_PTR( ThreadInit );
     GET_PTR( ThreadTerm );
     GET_PTR( UpdateProcessorInformation );
@@ -664,10 +669,30 @@ NTSTATUS SYSCALL_API NtAllocateVirtualMemoryEx( HANDLE process, PVOID *ret, SIZE
     return status;
 }
 
+static void set_debug_registers( HANDLE thread, const CONTEXT *context )
+{
+    if (!pMetalSharpSetDebugRegisters) return;
+    if ((context->ContextFlags & CONTEXT_DEBUG_REGISTERS) != CONTEXT_DEBUG_REGISTERS) return;
+    if (!enter_syscall_callback()) return;
+    pMetalSharpSetDebugRegisters( thread, context );
+    leave_syscall_callback();
+}
+
+static void get_debug_registers( HANDLE thread, CONTEXT *context, ULONG flags )
+{
+    if (!pMetalSharpGetDebugRegisters) return;
+    if ((flags & CONTEXT_DEBUG_REGISTERS) != CONTEXT_DEBUG_REGISTERS) return;
+    if (!enter_syscall_callback()) return;
+    context->ContextFlags |= CONTEXT_DEBUG_REGISTERS;
+    pMetalSharpGetDebugRegisters( thread, context );
+    leave_syscall_callback();
+}
+
 NTSTATUS SYSCALL_API NtContinue( CONTEXT *context, BOOLEAN alertable )
 {
     ARM64_NT_CONTEXT arm_ctx;
 
+    set_debug_registers( GetCurrentThread(), context );
     context_x64_to_arm( &arm_ctx, (ARM64EC_NT_CONTEXT *)context );
     return syscall_NtContinue( &arm_ctx, alertable );
 }
@@ -676,6 +701,7 @@ NTSTATUS SYSCALL_API NtContinueEx( CONTEXT *context, KCONTINUE_ARGUMENT *args )
 {
     ARM64_NT_CONTEXT arm_ctx;
 
+    set_debug_registers( GetCurrentThread(), context );
     context_x64_to_arm( &arm_ctx, (ARM64EC_NT_CONTEXT *)context );
     return syscall_NtContinueEx( &arm_ctx, args );
 }
@@ -734,10 +760,15 @@ NTSTATUS SYSCALL_API NtFreeVirtualMemory( HANDLE process, PVOID *addr_ptr, SIZE_
 
 NTSTATUS SYSCALL_API NtGetContextThread( HANDLE handle, CONTEXT *context )
 {
-    ARM64_NT_CONTEXT arm_ctx = { .ContextFlags = ctx_flags_x64_to_arm( context->ContextFlags ) };
+    ULONG flags = context->ContextFlags;
+    ARM64_NT_CONTEXT arm_ctx = { .ContextFlags = ctx_flags_x64_to_arm( flags ) };
     NTSTATUS status = syscall_NtGetContextThread( handle, &arm_ctx );
 
-    if (!status) context_arm_to_x64( (ARM64EC_NT_CONTEXT *)context, &arm_ctx );
+    if (!status)
+    {
+        context_arm_to_x64( (ARM64EC_NT_CONTEXT *)context, &arm_ctx );
+        get_debug_registers( handle, context, flags );
+    }
     return status;
 }
 
@@ -862,9 +893,12 @@ NTSTATUS SYSCALL_API NtReadFile( HANDLE handle, HANDLE event, PIO_APC_ROUTINE ap
 NTSTATUS SYSCALL_API NtSetContextThread( HANDLE handle, const CONTEXT *context )
 {
     ARM64_NT_CONTEXT arm_ctx;
+    NTSTATUS status;
 
     context_x64_to_arm( &arm_ctx, (ARM64EC_NT_CONTEXT *)context );
-    return syscall_NtSetContextThread( handle, &arm_ctx );
+    status = syscall_NtSetContextThread( handle, &arm_ctx );
+    if (!status) set_debug_registers( handle, context );
+    return status;
 }
 
 NTSTATUS SYSCALL_API NtTerminateProcess( HANDLE handle, LONG exit_code )
