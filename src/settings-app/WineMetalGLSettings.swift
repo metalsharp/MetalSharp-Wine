@@ -54,7 +54,7 @@ enum Upscale: String, CaseIterable, Identifiable {
 }
 
 /// The frame rate limits the app offers (WINEMETALGL_MAX_FRAME_RATE); 0 is off.
-let frameRateLimits = [0, 60, 45, 30]
+let frameRateLimits = [0, 30, 35, 40, 45, 50, 55, 60]
 
 /// ~/Library/Application Support/WineMetalGL/settings.conf: NAME=value lines.
 /// Only the settings this app shows are rewritten; other lines stay.
@@ -366,14 +366,15 @@ struct SettingsView: View {
                             summary: store.maxFrameRate.isEmpty ? "Off" : "\(store.maxFrameRate) fps") {
                 EmptyView()
             } content: {
-                HStack(spacing: 6) {
+                // Two rows of four: Off and 30 to 60 fps in steps of 5 (40 suits 120 Hz displays).
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 4), spacing: 6) {
                     ForEach(frameRateLimits, id: \.self) { fps in
                         let value = fps == 0 ? "" : String(fps)
                         let selected = store.maxFrameRate == value
                         Button {
                             store.maxFrameRate = value
                         } label: {
-                            let title = fps == 0 ? "Off" : "\(fps) fps"
+                            let title = fps == 0 ? "Off" : "\(fps)"
                             if selected {
                                 Label(title, systemImage: "checkmark").fontWeight(.semibold)
                             } else {
@@ -383,6 +384,8 @@ struct SettingsView: View {
                         .glassButton(prominent: selected)
                         .tint(selected ? Color.accentColor : nil)
                         .controlSize(.large)
+                        .frame(maxWidth: .infinity)
+                        .accessibilityLabel(fps == 0 ? "Off" : "\(fps) frames per second")
                         .accessibilityAddTraits(selected ? .isSelected : [])
                     }
                 }
