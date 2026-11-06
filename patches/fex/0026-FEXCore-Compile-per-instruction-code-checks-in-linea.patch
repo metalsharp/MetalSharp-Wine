@@ -1,0 +1,42 @@
+From 3273bbd6a022c17a247f10037044d087798c4117 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Wed, 4 Nov 2026 18:34:44 -0700
+Subject: [PATCH 26/27] FEXCore: Compile per-instruction code checks in linear
+ time
+
+Each instruction checked against its bytes (full SMC checks, and code from
+shared section views) added its code-changed block at the end of the block
+list, found by walking every block created so far. A large block compiled in
+quadratic time: a game whose code was checked spent minutes compiling. Place
+the block right after the current one instead.
+---
+ FEXCore/Source/Interface/Core/Core.cpp | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/FEXCore/Source/Interface/Core/Core.cpp b/FEXCore/Source/Interface/Core/Core.cpp
+index 6d16bfcef..7250c5bff 100644
+--- a/FEXCore/Source/Interface/Core/Core.cpp
++++ b/FEXCore/Source/Interface/Core/Core.cpp
+@@ -680,7 +680,9 @@ ContextImpl::GenerateIR(FEXCore::Core::InternalThreadState* Thread, uint64_t Gue
+           auto InvalidateCodeCond = Thread->OpDispatcher->CondJump(CodeChanged);
+ 
+           auto CurrentBlock = Thread->OpDispatcher->GetCurrentBlock();
+-          auto CodeWasChangedBlock = Thread->OpDispatcher->CreateNewCodeBlockAtEnd();
++          // MetalSharp: place the block after the current one rather than at the end, which walks every block
++          // created so far: with a check per instruction that made a large block quadratic to compile.
++          auto CodeWasChangedBlock = Thread->OpDispatcher->CreateNewCodeBlockAfter(CurrentBlock);
+           Thread->OpDispatcher->SetTrueJumpTarget(InvalidateCodeCond, CodeWasChangedBlock);
+ 
+           Thread->OpDispatcher->SetCurrentCodeBlock(CodeWasChangedBlock);
+@@ -692,7 +694,7 @@ ContextImpl::GenerateIR(FEXCore::Core::InternalThreadState* Thread, uint64_t Gue
+           // Invalidate and exit the function
+           Thread->OpDispatcher->_ThreadRemoveCodeEntry(EntryToInvalidate, NewRIP);
+ 
+-          auto NextOpBlock = Thread->OpDispatcher->CreateNewCodeBlockAfter(CurrentBlock);
++          auto NextOpBlock = Thread->OpDispatcher->CreateNewCodeBlockAfter(CodeWasChangedBlock);
+ 
+           Thread->OpDispatcher->SetFalseJumpTarget(InvalidateCodeCond, NextOpBlock);
+           Thread->OpDispatcher->SetCurrentCodeBlock(NextOpBlock);
+-- 
+2.54.0 (Apple Git-157)
+

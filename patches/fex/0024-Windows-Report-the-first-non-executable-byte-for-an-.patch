@@ -1,0 +1,88 @@
+From 6c03e59e8caac8527510a0b5ea8c59e6bba53b73 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Wed, 4 Nov 2026 17:19:56 -0700
+Subject: [PATCH 24/27] Windows: Report the first non-executable byte for an
+ execute fault
+
+An instruction that starts in executable memory and runs into memory
+that isn't raised an execute fault naming RIP. Windows names the address
+that couldn't be fetched, and decrypt-on-execute protections unlock the
+page the fault names: given RIP's own, already unlocked page, they
+unlocked it again and retried forever. Overwatch's Overwatch_loader.dll
+spun on one instruction 5 bytes before its next locked page; with the
+fault naming that page it gets through its protection and renders.
+---
+ Source/Windows/ARM64EC/Module.cpp             | 7 +++++++
+ Source/Windows/Common/InvalidationTracker.cpp | 6 ++++++
+ Source/Windows/Common/InvalidationTracker.h   | 3 +++
+ Source/Windows/WOW64/Module.cpp               | 5 +++++
+ 4 files changed, 21 insertions(+)
+
+diff --git a/Source/Windows/ARM64EC/Module.cpp b/Source/Windows/ARM64EC/Module.cpp
+index 56cb7e664..d8d640efc 100644
+--- a/Source/Windows/ARM64EC/Module.cpp
++++ b/Source/Windows/ARM64EC/Module.cpp
+@@ -565,6 +565,13 @@ static void RethrowGuestException(const EXCEPTION_RECORD& Rec, ARM64_NT_CONTEXT&
+ 
+   BOOL FirstChance = TRUE;
+   EXCEPTION_RECORD GuestRec = FEX::Windows::HandleGuestException(Fault, Rec, GuestContext.Pc, GuestContext.X8, GuestContext.X0, FirstChance);
++  if (GuestRec.ExceptionCode == EXCEPTION_ACCESS_VIOLATION && GuestRec.NumberParameters >= 2 &&
++      GuestRec.ExceptionInformation[0] == EXCEPTION_EXECUTE_FAULT && GuestRec.ExceptionInformation[1] == GuestContext.Pc) {
++    // MetalSharp: an instruction that starts in executable memory and runs into memory that isn't faults there, as on
++    // Windows. Decrypt-on-execute protections unlock the page the fault names; naming RIP's own, already unlocked page
++    // makes them retry it forever.
++    GuestRec.ExceptionInformation[1] = InvalidationTracker->ExecuteFaultAddress(GuestContext.Pc);
++  }
+   if (GuestRec.ExceptionCode == EXCEPTION_SINGLE_STEP) {
+     GuestContext.Cpsr &= ~(1 << 21); // PSTATE.SS
+   } else if (GuestRec.ExceptionCode == EXCEPTION_BREAKPOINT) {
+diff --git a/Source/Windows/Common/InvalidationTracker.cpp b/Source/Windows/Common/InvalidationTracker.cpp
+index a95fcd2db..58f3fb2a2 100644
+--- a/Source/Windows/Common/InvalidationTracker.cpp
++++ b/Source/Windows/Common/InvalidationTracker.cpp
+@@ -258,6 +258,12 @@ bool InvalidationTracker::BeginUntrackedWriteLocked(uint64_t Address, uint64_t S
+   return ProtectRWXIntervalsInternal(Address, Size, true);
+ }
+ 
++uint64_t InvalidationTracker::ExecuteFaultAddress(uint64_t Rip) {
++  std::shared_lock Lock(IntervalsLock);
++  const auto XResult = XIntervals.Query(Rip);
++  return XResult.Enclosed ? XResult.Interval.End : Rip;
++}
++
+ FEXCore::HLE::ExecutableRangeInfo InvalidationTracker::QueryExecutableRange(uint64_t Address) {
+   std::shared_lock Lock(IntervalsLock);
+   const auto XResult = XIntervals.Query(Address);
+diff --git a/Source/Windows/Common/InvalidationTracker.h b/Source/Windows/Common/InvalidationTracker.h
+index d2a80bcaa..82979c32d 100644
+--- a/Source/Windows/Common/InvalidationTracker.h
++++ b/Source/Windows/Common/InvalidationTracker.h
+@@ -40,6 +40,9 @@ public:
+   bool BeginUntrackedWriteLocked(uint64_t Address, uint64_t Size);
+ 
+   FEXCore::HLE::ExecutableRangeInfo QueryExecutableRange(uint64_t Address);
++  // The address an execute fault at Rip reports: the first byte past the executable memory the instruction starts
++  // in, or Rip itself when that isn't executable.
++  uint64_t ExecuteFaultAddress(uint64_t Rip);
+ 
+ private:
+   void DetectMonoBackpatcherBlock(FEXCore::Core::InternalThreadState* Thread, uint64_t HostPC);
+diff --git a/Source/Windows/WOW64/Module.cpp b/Source/Windows/WOW64/Module.cpp
+index 7feb5bf48..a45a87b2d 100644
+--- a/Source/Windows/WOW64/Module.cpp
++++ b/Source/Windows/WOW64/Module.cpp
+@@ -813,6 +813,11 @@ bool BTCpuResetToConsistentStateImpl(EXCEPTION_POINTERS* Ptrs) {
+   BOOL FirstChance = TRUE;
+   EXCEPTION_RECORD GuestException =
+     FEX::Windows::HandleGuestException(Fault, *Exception, WowContext->Eip, WowContext->Eax, WowContext->Ecx, FirstChance);
++  if (GuestException.ExceptionCode == EXCEPTION_ACCESS_VIOLATION && GuestException.NumberParameters >= 2 &&
++      GuestException.ExceptionInformation[0] == EXCEPTION_EXECUTE_FAULT && GuestException.ExceptionInformation[1] == WowContext->Eip) {
++    // MetalSharp: report the first non-executable byte, as for x64 (see the ARM64EC frontend).
++    GuestException.ExceptionInformation[1] = InvalidationTracker->ExecuteFaultAddress(WowContext->Eip);
++  }
+   if (GuestException.ExceptionCode == EXCEPTION_SINGLE_STEP) {
+     WowContext->EFlags &= ~(1 << FEXCore::X86State::RFLAG_TF_RAW_LOC);
+   }
+-- 
+2.54.0 (Apple Git-157)
+
