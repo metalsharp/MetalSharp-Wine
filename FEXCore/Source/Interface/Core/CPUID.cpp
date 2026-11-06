@@ -931,6 +931,34 @@ FEXCore::CPUID::FunctionResults CPUIDEmu::Function_15h(uint32_t Leaf) const {
   return Res;
 }
 
+uint64_t CPUIDEmu::GuestTSCFrequency() const {
+  return GetCycleCounterFrequency() << CTX->Config.TSCScale;
+}
+
+// Processor frequency information: the base and maximum frequency are the TSC's, as on Intel CPUs, whose TSC runs at
+// the base frequency. Software that compares the clock it measures with RDTSC to the one the CPU names (the brand
+// string, this leaf, the OS's processor information) finds them the same, as on hardware; without this leaf they
+// disagreed with every other report, which protectors and anti-cheat take for a VM.
+FEXCore::CPUID::FunctionResults CPUIDEmu::Function_16h(uint32_t Leaf) const {
+  FEXCore::CPUID::FunctionResults Res {};
+  const uint32_t MHz = GuestTSCFrequency() / 1'000'000;
+  Res.eax = MHz; // Base frequency
+  Res.ebx = MHz; // Maximum frequency
+  Res.ecx = 100; // Bus (reference) frequency
+  return Res;
+}
+
+void CPUIDEmu::BrandString(uint32_t CPU, char (&Out)[49]) const {
+  const uint64_t MHz = GuestTSCFrequency() / 1'000'000;
+  memset(Out, 0, sizeof(Out));
+  if (MHz) {
+    snprintf(Out, sizeof(Out), "%s @ %u.%02uGHz", PerCPUData[CPU].ProductName, uint32_t(MHz / 1000),
+             uint32_t((MHz % 1000 + 5) / 10 % 100));
+  } else {
+    snprintf(Out, sizeof(Out), "%s", PerCPUData[CPU].ProductName);
+  }
+}
+
 FEXCore::CPUID::FunctionResults CPUIDEmu::Function_1Ah(uint32_t Leaf) const {
   FEXCore::CPUID::FunctionResults Res {};
   if (Hybrid) {
@@ -1133,24 +1161,25 @@ FEXCore::CPUID::FunctionResults CPUIDEmu::Function_8000_0004h(uint32_t Leaf) con
 
 FEXCore::CPUID::FunctionResults CPUIDEmu::Function_8000_0002h(uint32_t Leaf, uint32_t CPU) const {
   FEXCore::CPUID::FunctionResults Res {};
-  auto& Data = PerCPUData[CPU];
-  memcpy(&Res, Data.ProductName, std::min(strlen(Data.ProductName), sizeof(FEXCore::CPUID::FunctionResults)));
+  char Brand[49];
+  BrandString(CPU, Brand);
+  memcpy(&Res, Brand + 0, sizeof(FEXCore::CPUID::FunctionResults));
   return Res;
 }
 
 FEXCore::CPUID::FunctionResults CPUIDEmu::Function_8000_0003h(uint32_t Leaf, uint32_t CPU) const {
   FEXCore::CPUID::FunctionResults Res {};
-  auto& Data = PerCPUData[CPU];
-  const auto RemainingStringSize = std::max<ssize_t>(0, strlen(Data.ProductName) - 16);
-  memcpy(&Res, Data.ProductName + 16, std::min<size_t>(RemainingStringSize, sizeof(FEXCore::CPUID::FunctionResults)));
+  char Brand[49];
+  BrandString(CPU, Brand);
+  memcpy(&Res, Brand + 16, sizeof(FEXCore::CPUID::FunctionResults));
   return Res;
 }
 
 FEXCore::CPUID::FunctionResults CPUIDEmu::Function_8000_0004h(uint32_t Leaf, uint32_t CPU) const {
   FEXCore::CPUID::FunctionResults Res {};
-  auto& Data = PerCPUData[CPU];
-  const auto RemainingStringSize = std::max<ssize_t>(0, strlen(Data.ProductName) - 32);
-  memcpy(&Res, Data.ProductName + 32, std::min<size_t>(RemainingStringSize, sizeof(FEXCore::CPUID::FunctionResults)));
+  char Brand[49];
+  BrandString(CPU, Brand);
+  memcpy(&Res, Brand + 32, sizeof(FEXCore::CPUID::FunctionResults));
   return Res;
 }
 

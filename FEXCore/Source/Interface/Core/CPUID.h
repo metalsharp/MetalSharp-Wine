@@ -175,6 +175,11 @@ private:
   FEXCore::CPUID::FunctionResults Function_07h(uint32_t Leaf) const;
   FEXCore::CPUID::FunctionResults Function_0Dh(uint32_t Leaf) const;
   FEXCore::CPUID::FunctionResults Function_15h(uint32_t Leaf) const;
+  FEXCore::CPUID::FunctionResults Function_16h(uint32_t Leaf) const;
+  // the brand string, with the frequency the guest's TSC runs at as Intel's "@ x.xxGHz"
+  void BrandString(uint32_t CPU, char (&Out)[49]) const;
+  // the frequency the guest's RDTSC counts at: the host counter scaled by TSCScale
+  uint64_t GuestTSCFrequency() const;
   FEXCore::CPUID::FunctionResults Function_1Ah(uint32_t Leaf) const;
   FEXCore::CPUID::FunctionResults Function_24h(uint32_t Leaf) const;
   FEXCore::CPUID::FunctionResults Function_4000_0000h(uint32_t Leaf) const;
@@ -259,7 +264,7 @@ private:
     &CPUIDEmu::Function_Reserved,
 #endif
     // 0x16: Processor frequency information
-    &CPUIDEmu::Function_Reserved,
+    &CPUIDEmu::Function_16h,
     // 0x17: SoC vendor attribute enumeration
     &CPUIDEmu::Function_Reserved,
     // 0x18: Reserved?

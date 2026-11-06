@@ -654,11 +654,12 @@
       },
       "HideHypervisorBit": {
         "Type": "bool",
-        "Default": "false",
+        "Default": "true",
         "AffectsCodeGen": "false",
         "Desc": [
-          "Hides the hypervisor CPUID bit when set.",
-          "Should only be used for applications that have issues with this set."
+          "Hides the hypervisor CPUID bit when set (the default).",
+          "x86 software reads the bit, and the FEXIFEXIEMU hypervisor leaf, as running in a VM: protectors and",
+          "anti-cheat refuse to run there. Rosetta 2 doesn't set it either. Set to 0 to show it."
         ]
       },
       "StartupSleep": {
