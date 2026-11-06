@@ -187,7 +187,8 @@ such SRVs stay on SPIR-V (section 5).
 - The shaders are DXIL, or DXBC (SM 4.x/5.x) unless `METALSHARP_MSC_DXBC=0`: DXBC blobs are flagged and MoltenVK
   converts them to DXIL with DirectXShaderCompiler's dxilconv (`libdxbcconverter.dylib`, next to `libMoltenVK.dylib`).
 - No shader declares a three-component 32-bit typed SRV (DXIL: dxil-spirv reports it; DXBC: by its RDEF reflection, or,
-  without one, any typed buffer SRV), uses 64-bit atomics, barycentrics or residency feedback, or may sample with
+  without one, any typed buffer SRV), writes `SV_CullDistance` (its output signature, OSG1, OSG5 or OSGN: the converter
+  drops cull distances), uses 64-bit atomics, barycentrics or residency feedback, or may sample with
   min/max filtering (a static sampler with it, or tables or the heap once the application made such a sampler):
   MoltenVK emulates that in SPIR-V shaders on GPUs without sampler reduction (Apple10 and macOS 26 have it).
 - Compute: `vkCreateComputePipelines` with the blob succeeds.
