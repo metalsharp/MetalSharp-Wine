@@ -28,7 +28,7 @@ else
   clone FEX $REPO source/fex
   clone winemetalgl $REPO source/winemetalgl
   clone wfdxcompat $REPO source/wfdxcompat
-  clone mullion https://github.com/aaf2tbz/mullion.git metalsharp-2.1
+  clone mullion https://github.com/aaf2tbz/mullion.git metalsharp-2.1-main
   clone vkd3d-proton https://github.com/metalsharp/VKD3D-Proton-MacOS.git main
   clone dxvk-macos https://github.com/metalsharp/DXVK-MacOS.git main
 fi

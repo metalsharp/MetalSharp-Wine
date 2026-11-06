@@ -60,7 +60,7 @@ Some macOS display, painting and wined3d fixes come from the Wine in CodeWeavers
 | [Wine](https://www.winehq.org/) | The Wine project | LGPL 2.1 or later | `source/wine` branch; `patches/wine/` against the upstream tag |
 | CrossOver macOS work | CodeWeavers | LGPL 2.1 or later (as part of Wine) | Same |
 | [FEX](https://github.com/FEX-Emu/FEX) | FEX-Emu contributors | MIT | `source/fex` branch; `patches/fex/` |
-| [Mullion](https://github.com/dttdrv/mullion), based on [DXMT](https://github.com/3Shain/dxmt) | Feifan He for CodeWeavers, Mullion contributors | LGPL 2.1 or later | aaf2tbz/mullion, branch `metalsharp-2.1` |
+| [Mullion](https://github.com/dttdrv/mullion), based on [DXMT](https://github.com/3Shain/dxmt) | Feifan He for CodeWeavers, Mullion contributors | LGPL 2.1 or later | aaf2tbz/mullion, branch `metalsharp-2.1-main` |
 | [VKD3D-Proton](https://github.com/HansKristian-Work/vkd3d-proton) | Hans-Kristian Arntzen and contributors | LGPL 2.1 | metalsharp/VKD3D-Proton-MacOS |
 | [MoltenVK](https://github.com/KhronosGroup/MoltenVK), SPIRV-Cross | The Khronos Group, Brenwill Workshop and contributors | Apache 2.0 | metalsharp/VKD3D-Proton-MacOS (`sources/MoltenVK`) |
 | [DXVK](https://github.com/doitsujin/dxvk) | Philip Rebohle and contributors | zlib | Unmodified release |
