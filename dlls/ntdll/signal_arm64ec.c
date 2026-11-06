@@ -1452,10 +1452,30 @@ __ASM_GLOBAL_FUNC( "#KiUserCallbackDispatcher",
 /**************************************************************************
  *              RtlIsEcCode (NTDLL.@)
  */
+/* the highest address of the user address space: the EC code map has a bit for each page up to it */
+static ULONG_PTR highest_user_address(void)
+{
+    static ULONG_PTR highest;
+
+    if (!highest)
+    {
+        SYSTEM_BASIC_INFORMATION info;
+        if (!NtQuerySystemInformation( SystemBasicInformation, &info, sizeof(info), NULL ))
+            highest = (ULONG_PTR)info.HighestUserAddress;
+        else
+            highest = 0x7ffffffeffff;
+    }
+    return highest;
+}
+
 BOOLEAN WINAPI RtlIsEcCode( ULONG_PTR ptr )
 {
     const UINT64 *map = (const UINT64 *)NtCurrentTeb()->Peb->EcCodeBitMap;
     ULONG_PTR page = ptr / page_size;
+
+    /* an address past the user address space (a stack walk reaching a frame whose return address is data, as
+     * Overwatch's does) is no EC code, as on Windows, not a read past the map */
+    if (ptr > highest_user_address()) return FALSE;
     return (map[page / 64] >> (page & 63)) & 1;
 }
 
@@ -1917,6 +1937,8 @@ ULONG WINAPI RtlWalkFrameChain( void **buffer, ULONG count, ULONG flags )
                                &data, &frame, NULL, NULL, NULL, &handler, 0 ))
             break;
         if (!context.Rip) break;
+        /* a return address that can't be user code ends the walk, as on Windows: past it the frames are data */
+        if (context.Rip < 0x10000 || context.Rip > highest_user_address()) break;
         if (!frame || !is_valid_frame( frame )) break;
         if (context.Rsp == (ULONG_PTR)NtCurrentTeb()->Tib.StackBase) break;
         if (i >= skip) buffer[num_entries++] = (void *)context.Rip;
