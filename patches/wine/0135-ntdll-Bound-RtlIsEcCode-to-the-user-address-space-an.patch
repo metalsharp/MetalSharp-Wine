@@ -1,0 +1,61 @@
+From 554d343543afa1b6d5635f2a1ed3ce64448ba0f9 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Thu, 5 Nov 2026 23:48:45 -0700
+Subject: [PATCH 135/135] ntdll: Bound RtlIsEcCode to the user address space,
+ and end a frame walk at a return address that isn't user code.
+
+RtlIsEcCode indexed the EC code bitmap with any address, and the map only covers the user address space: a stack
+walk that reached a frame whose return address was data above it (Overwatch's, 0x80e300a70070) read past the map
+and faulted inside ntdll, again and again. As on Windows, such an address is no EC code, and RtlWalkFrameChain ends
+the walk there instead of recording it and unwinding past it.
+---
+ dlls/ntdll/signal_arm64ec.c | 22 ++++++++++++++++++++++
+ 1 file changed, 22 insertions(+)
+
+diff --git a/dlls/ntdll/signal_arm64ec.c b/dlls/ntdll/signal_arm64ec.c
+index 4f13c09844d..470e064c239 100644
+--- a/dlls/ntdll/signal_arm64ec.c
++++ b/dlls/ntdll/signal_arm64ec.c
+@@ -1452,10 +1452,30 @@ __ASM_GLOBAL_FUNC( "#KiUserCallbackDispatcher",
+ /**************************************************************************
+  *              RtlIsEcCode (NTDLL.@)
+  */
++/* the highest address of the user address space: the EC code map has a bit for each page up to it */
++static ULONG_PTR highest_user_address(void)
++{
++    static ULONG_PTR highest;
++
++    if (!highest)
++    {
++        SYSTEM_BASIC_INFORMATION info;
++        if (!NtQuerySystemInformation( SystemBasicInformation, &info, sizeof(info), NULL ))
++            highest = (ULONG_PTR)info.HighestUserAddress;
++        else
++            highest = 0x7ffffffeffff;
++    }
++    return highest;
++}
++
+ BOOLEAN WINAPI RtlIsEcCode( ULONG_PTR ptr )
+ {
+     const UINT64 *map = (const UINT64 *)NtCurrentTeb()->Peb->EcCodeBitMap;
+     ULONG_PTR page = ptr / page_size;
++
++    /* an address past the user address space (a stack walk reaching a frame whose return address is data, as
++     * Overwatch's does) is no EC code, as on Windows, not a read past the map */
++    if (ptr > highest_user_address()) return FALSE;
+     return (map[page / 64] >> (page & 63)) & 1;
+ }
+ 
+@@ -1917,6 +1937,8 @@ ULONG WINAPI RtlWalkFrameChain( void **buffer, ULONG count, ULONG flags )
+                                &data, &frame, NULL, NULL, NULL, &handler, 0 ))
+             break;
+         if (!context.Rip) break;
++        /* a return address that can't be user code ends the walk, as on Windows: past it the frames are data */
++        if (context.Rip < 0x10000 || context.Rip > highest_user_address()) break;
+         if (!frame || !is_valid_frame( frame )) break;
+         if (context.Rsp == (ULONG_PTR)NtCurrentTeb()->Tib.StackBase) break;
+         if (i >= skip) buffer[num_entries++] = (void *)context.Rip;
+-- 
+2.54.0 (Apple Git-157)
+
