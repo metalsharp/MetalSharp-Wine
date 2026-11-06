@@ -303,6 +303,11 @@ static UINT64 read_tsc_frequency(void)
 {
     UINT64 tsc_frequency;
     __asm__ volatile( "mrs %[Res], CNTFRQ_EL0" : [Res] "=r" (tsc_frequency) );
+    /* The x86 code an emulator runs here reads RDTSC as this counter doubled until it reaches 1GHz (FEX's
+     * SmallTSCScale: 24MHz becomes 1536MHz), and the CPU it is shown names that frequency (CPUID 0x15, 0x16 and the
+     * brand string). ~MHz names the same one, as on x86 hardware, where it is the TSC's rate: the counter's own
+     * 24MHz disagreed with everything the program measured, which protectors take for a VM. */
+    if (tsc_frequency) while (tsc_frequency < 1000000000) tsc_frequency <<= 1;
     return tsc_frequency;
 }
 

@@ -4844,8 +4844,21 @@ NTSTATUS WINAPI NtPowerInformation( POWER_INFORMATION_LEVEL level, void *input, 
             valSize = sizeof(currentMhz);
             if (!sysctlbyname("hw.cpufrequency", &currentMhz, &valSize, NULL, 0))
                 currentMhz /= 1000000;
+#ifdef __aarch64__
+            else
+            {
+                /* Apple silicon has no hw.cpufrequency. The clock x86 code is shown here is its TSC's: the system
+                 * counter doubled until it reaches 1GHz, as the emulator scales RDTSC (FEX's SmallTSCScale) and as
+                 * CPUID and the registry's ~MHz name it (wineboot). A canned 1000MHz disagreed with all of them. */
+                UINT64 freq;
+                __asm__ volatile( "mrs %0, CNTFRQ_EL0" : "=r" (freq) );
+                if (freq) while (freq < 1000000000) freq <<= 1;
+                currentMhz = freq ? freq / 1000000 : cannedMHz;
+            }
+#else
             else
                 currentMhz = cannedMHz;
+#endif
 
             valSize = sizeof(maxMhz);
             if (!sysctlbyname("hw.cpufrequency_max", &maxMhz, &valSize, NULL, 0))
