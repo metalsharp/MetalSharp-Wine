@@ -1872,6 +1872,8 @@ static VkResult win32u_vkCreateSwapchainKHR( VkDevice client_device, const VkSwa
         physical_device->extensions.has_VK_KHR_swapchain_maintenance1)
     {
         scaling.scalingBehavior = VK_PRESENT_SCALING_STRETCH_BIT_EXT;
+        /* keep the application's chain (MetalSharp: MoltenVK's MetalFX swapchain upscaling is in it) */
+        scaling.pNext = create_info_host.pNext;
         create_info_host.pNext = &scaling;
     }
 
