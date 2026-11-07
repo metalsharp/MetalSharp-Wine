@@ -1,0 +1,27 @@
+From f4854a9ebbd21c5f3ce927212b7d2da9fb3bda16 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Sat, 7 Nov 2026 14:16:44 -0700
+Subject: [PATCH 56/59] win32u: Keep the application's chain when adding
+ swapchain present scaling.
+
+MoltenVK's MetalFX swapchain upscaling is chained there; replacing pNext dropped it.
+---
+ dlls/win32u/vulkan.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/dlls/win32u/vulkan.c b/dlls/win32u/vulkan.c
+index aef422bd..4a27036c 100644
+--- a/dlls/win32u/vulkan.c
++++ b/dlls/win32u/vulkan.c
+@@ -1872,6 +1872,8 @@ static VkResult win32u_vkCreateSwapchainKHR( VkDevice client_device, const VkSwa
+         physical_device->extensions.has_VK_KHR_swapchain_maintenance1)
+     {
+         scaling.scalingBehavior = VK_PRESENT_SCALING_STRETCH_BIT_EXT;
++        /* keep the application's chain (MetalSharp: MoltenVK's MetalFX swapchain upscaling is in it) */
++        scaling.pNext = create_info_host.pNext;
+         create_info_host.pNext = &scaling;
+     }
+ 
+-- 
+2.54.0 (Apple Git-157)
+

@@ -1,0 +1,79 @@
+From f0a1411089c5c75e284e1209d0fb8617a9aa83ef Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Sun, 1 Nov 2026 14:35:32 -0700
+Subject: [PATCH 40/59] ntdll: HideWineExports by default for The Witcher 3 and
+ God  of War Ragnarok, and MetalSharp's winemac.conf.
+
+The Witcher 3 starts NVIDIA Streamline (DLSS) only where ntdll has no wine_get_version, and God of War
+Ragnarok's PlayStation PC SDK quits on Wine's exports, so HideWineExports is on for witcher3.exe and GoWR.exe
+unless the registry says otherwise.
+
+Without $WINEMAC_CONFIG_FILE or a winemac.conf next to mullion.conf, the GPU a game is shown comes from the
+winemac.conf MetalSharp Wine comes with, share/metalsharp/assets/wine/etc/winemac.conf.
+---
+ dlls/ntdll/loader.c                | 13 +++++++++++++
+ dlls/ntdll/unix/saved_resolution.c | 10 ++++++++--
+ 2 files changed, 21 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/ntdll/loader.c b/dlls/ntdll/loader.c
+index 7c895bf6..0922336d 100644
+--- a/dlls/ntdll/loader.c
++++ b/dlls/ntdll/loader.c
+@@ -4327,6 +4327,7 @@ static void load_global_options(void)
+ static void load_hide_wine_exports(void)
+ {
+     static const WCHAR value_name[] = L"HideWineExports";
++    static const WCHAR * const default_apps[] = { L"witcher3.exe", L"GoWR.exe" };
+     const WCHAR *p, *appname = NtCurrentTeb()->Peb->ProcessParameters->ImagePathName.Buffer;
+     WCHAR app_key[MAX_PATH + 20], buffer[64];
+     KEY_VALUE_PARTIAL_INFORMATION *info = (KEY_VALUE_PARTIAL_INFORMATION *)buffer;
+@@ -4336,6 +4337,18 @@ static void load_hide_wine_exports(void)
+     ULONG size;
+     int i;
+ 
++    /* MetalSharp: on for the programs known to refuse what they need under Wine, unless the registry says
++     * otherwise: The Witcher 3 starts NVIDIA Streamline (DLSS) only without wine_get_version, and God of War
++     * Ragnarok's PlayStation PC SDK quits on Wine's exports */
++    if (appname)
++    {
++        const WCHAR *name = appname;
++        if ((p = wcsrchr( name, '/' ))) name = p + 1;
++        if ((p = wcsrchr( name, '\\' ))) name = p + 1;
++        for (i = 0; i < ARRAY_SIZE(default_apps); i++)
++            if (!wcsicmp( name, default_apps[i] )) hide_wine_exports = TRUE;
++    }
++
+     RtlOpenCurrentUser( KEY_READ, &root );
+     InitializeObjectAttributes( &attr, &nameW, OBJ_CASE_INSENSITIVE, root, NULL );
+     RtlInitUnicodeString( &nameW, L"Software\\Wine" );
+diff --git a/dlls/ntdll/unix/saved_resolution.c b/dlls/ntdll/unix/saved_resolution.c
+index 98668f26..462cdf28 100644
+--- a/dlls/ntdll/unix/saved_resolution.c
++++ b/dlls/ntdll/unix/saved_resolution.c
+@@ -218,7 +218,7 @@ static BOOL is_launched_game( const char *exe )
+ 
+ /* MetalSharp: the GPU a game is shown in Windows' device list (SetupAPI, WMI, the display adapter's registry
+  * keys), from its [program.exe] section of winemac.conf ($WINEMAC_CONFIG_FILE, or winemac.conf next to
+- * $MULLION_CONFIG_FILE):
++ * $MULLION_CONFIG_FILE, else the one MetalSharp Wine comes with, share/metalsharp/assets/wine/etc/winemac.conf):
+  *     gpu.vendorId = 10de                          PCI vendor and device, in hex
+  *     gpu.deviceId = 2704
+  *     gpu.description = "NVIDIA GeForce RTX 4080"
+@@ -286,7 +286,13 @@ static void init_gpu_override( const char *exe )
+     if (!is_launched_game( exe )) return;
+     gpu_override = 0;
+     if (!file && mullion && (slash = strrchr( mullion, '/' )) &&
+-        snprintf( path, sizeof(path), "%.*s/winemac.conf", (int)(slash - mullion), mullion ) < sizeof(path))
++        snprintf( path, sizeof(path), "%.*s/winemac.conf", (int)(slash - mullion), mullion ) < sizeof(path) &&
++        !access( path, R_OK ))
++        file = path;
++    /* else MetalSharp's own, which comes with MetalSharp Wine (share/metalsharp next to Wine's data) */
++    if (!file && data_dir && (slash = strrchr( data_dir, '/' )) &&
++        snprintf( path, sizeof(path), "%.*s/metalsharp/assets/wine/etc/winemac.conf", (int)(slash - data_dir),
++                  data_dir ) < sizeof(path))
+         file = path;
+     if (!file || !(text = read_file( file, &size ))) return;
+     for (line = text; *line; line = *end ? end + 1 : end)
+-- 
+2.54.0 (Apple Git-157)
+

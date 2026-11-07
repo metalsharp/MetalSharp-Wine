@@ -1,0 +1,48 @@
+From c7540b71dbe950a5f09fa734aac32137f22a2711 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Sun, 25 Oct 2026 20:11:41 -0600
+Subject: [PATCH 13/59] ntdll: a lock NtLockFile takes at once completes
+ through the file's completion port
+
+LockFileEx with an overlapped on a handle associated with an I/O completion port queues a
+completion packet when the lock is granted, also when it is granted at once, unless the handle
+skips completion on success (FILE_SKIP_COMPLETION_PORT_ON_SUCCESS, which the server's
+add_fd_completion already honours). Wine only set the event, so a program waiting for the lock in
+GetQueuedCompletionStatus waited forever: Red Dead Redemption 2's file streaming stopped loading.
+---
+ dlls/ntdll/unix/file.c | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/ntdll/unix/file.c b/dlls/ntdll/unix/file.c
+index 2a00ad5b..2ccc20ad 100644
+--- a/dlls/ntdll/unix/file.c
++++ b/dlls/ntdll/unix/file.c
+@@ -6989,7 +6989,6 @@ NTSTATUS WINAPI NtLockFile( HANDLE file, HANDLE event, PIO_APC_ROUTINE apc, void
+                             IO_STATUS_BLOCK *io_status, LARGE_INTEGER *offset,
+                             LARGE_INTEGER *count, ULONG *key, BOOLEAN dont_wait, BOOLEAN exclusive )
+ {
+-    static int warn;
+     unsigned int ret;
+     HANDLE handle;
+     BOOLEAN async;
+@@ -6999,7 +6998,6 @@ NTSTATUS WINAPI NtLockFile( HANDLE file, HANDLE event, PIO_APC_ROUTINE apc, void
+         FIXME("Unimplemented yet parameter\n");
+         return STATUS_NOT_IMPLEMENTED;
+     }
+-    if (apc_user && !warn++) FIXME("I/O completion on lock not implemented yet\n");
+ 
+     for (;;)
+     {
+@@ -7018,6 +7016,9 @@ NTSTATUS WINAPI NtLockFile( HANDLE file, HANDLE event, PIO_APC_ROUTINE apc, void
+         if (ret != STATUS_PENDING)
+         {
+             if (!ret && event) NtSetEvent( event, NULL );
++            /* a lock taken at once completes through the file's completion port too (LockFileEx with an
++             * overlapped whose event doesn't opt out), unless the port skips completions on success */
++            if (!ret && apc_user) add_completion( file, (ULONG_PTR)apc_user, STATUS_SUCCESS, 0, FALSE );
+             return ret;
+         }
+         if (async)
+-- 
+2.54.0 (Apple Git-157)
+

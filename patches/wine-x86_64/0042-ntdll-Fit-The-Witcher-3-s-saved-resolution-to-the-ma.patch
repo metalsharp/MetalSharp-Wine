@@ -1,0 +1,157 @@
+From 80e2dc5bb6f93a439e0b5513b215b8185f019283 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Sun, 1 Nov 2026 15:02:32 -0700
+Subject: [PATCH 42/59] ntdll: Fit The Witcher 3's saved resolution to the main
+  display and MetalFX.
+
+REDengine 3 takes its fullscreen and borderless resolution from Documents\The Witcher 3\dx12user.settings
+(user.settings for DirectX 11), [Viewport] Resolution="<width>x<height>", and not from the display. With
+MetalFX, the game kept rendering at the display's size, so MetalFX upscaled 1920x1080 to 1920x1080. The saved
+resolution now follows the main display and the MetalFX factor as Control's renderer.ini does; windowed sizes
+(FullScreenMode=0) are left alone. fit_saved_resolution() takes the user's profile folder for it.
+---
+ dlls/ntdll/unix/env.c              |  6 ++--
+ dlls/ntdll/unix/saved_resolution.c | 54 ++++++++++++++++++++++++++----
+ dlls/ntdll/unix/unix_private.h     |  3 +-
+ 3 files changed, 54 insertions(+), 9 deletions(-)
+
+diff --git a/dlls/ntdll/unix/env.c b/dlls/ntdll/unix/env.c
+index aacd8ca8..642c1474 100644
+--- a/dlls/ntdll/unix/env.c
++++ b/dlls/ntdll/unix/env.c
+@@ -1015,7 +1015,7 @@ static void fit_launch_resolution( WCHAR **env, SIZE_T *pos, SIZE_T *size, const
+     static const WCHAR ntprefixW[] = {'\\','?','?','\\'};
+     static const WCHAR configW[] = {'M','U','L','L','I','O','N','_','C','O','N','F','I','G'};
+     static const WCHAR nvextW[] = {'M','U','L','L','I','O','N','_','E','N','A','B','L','E','_','N','V','E','X','T'};
+-    char *unix_name = NULL, *appdata, *localappdata, config[512];
++    char *unix_name = NULL, *appdata, *localappdata, *profile, config[512];
+     const char *description, *driver_version;
+     unsigned int vendor, device;
+     WCHAR *value;
+@@ -1026,7 +1026,9 @@ static void fit_launch_resolution( WCHAR **env, SIZE_T *pos, SIZE_T *size, const
+     if (ntdll_get_unix_file_name( image, &unix_name, FILE_OPEN ) || !unix_name) return;
+     appdata = get_env_unix_path( *env, *pos, "APPDATA" );
+     localappdata = get_env_unix_path( *env, *pos, "LOCALAPPDATA" );
+-    fit_saved_resolution( unix_name, appdata, localappdata );
++    profile = get_env_unix_path( *env, *pos, "USERPROFILE" );
++    fit_saved_resolution( unix_name, appdata, localappdata, profile );
++    free( profile );
+     free( localappdata );
+     free( appdata );
+     free( unix_name );
+diff --git a/dlls/ntdll/unix/saved_resolution.c b/dlls/ntdll/unix/saved_resolution.c
+index ceed346d..90b15c27 100644
+--- a/dlls/ntdll/unix/saved_resolution.c
++++ b/dlls/ntdll/unix/saved_resolution.c
+@@ -25,9 +25,9 @@
+  * to the main display's before the game reads it. Without a record yet, a saved resolution is
+  * replaced if it fits only the built-in screen while a larger external display is the main one.
+  * Windowed sizes are left alone. Known settings: Unity (registry), Unreal Engine (GameUserSettings.ini),
+- * Remedy's Northlight (Control's renderer.ini) and ELDEN RING (GraphicsConfig.xml). With MetalFX, the main
+- * display's size is divided by the upscale factor, and a saved size of the whole display, or one larger than the
+- * divided one, is replaced even without a record. */
++ * Remedy's Northlight (Control's renderer.ini), REDengine 3 (The Witcher 3's user.settings) and ELDEN RING
++ * (GraphicsConfig.xml). With MetalFX, the main display's size is divided by the upscale factor, and a saved size
++ * of the whole display, or one larger than the divided one, is replaced even without a record. */
+ 
+ #if 0
+ #pragma makedep unix
+@@ -779,6 +779,46 @@ done:
+     return ret;
+ }
+ 
++/* CD Projekt RED's REDengine 3 (The Witcher 3): Documents\The Witcher 3\dx12user.settings (user.settings for
++ * DirectX 11), [Viewport] Resolution="<width>x<height>", FullScreenMode 0 windowed, 1 borderless, 2 fullscreen */
++static BOOL fit_redengine( const char *exe, const char *profile, const struct main_display *display,
++                           const char *record )
++{
++    static const char *const files[] = {"dx12user.settings", "user.settings"};
++    const char *name = strrchr( exe, '/' ) ? strrchr( exe, '/' ) + 1 : exe;
++    char path[PATH_MAX], number[32], *text, *key, *end, *out;
++    unsigned int width, height, mode, i;
++    size_t size, nlen;
++    BOOL ret = FALSE;
++
++    if (!profile || strcasecmp( name, "witcher3.exe" )) return FALSE;
++    for (i = 0; i < ARRAY_SIZE(files); i++)
++    {
++        if (snprintf( path, sizeof(path), "%s/Documents/The Witcher 3/%s", profile, files[i] ) >= sizeof(path))
++            continue;
++        if (!(text = read_file( path, &size ))) continue;
++        if ((key = strstr( text, "\nResolution=\"" )) && sscanf( key + 13, "%ux%u", &width, &height ) == 2 &&
++            (!get_number( text, "\nFullScreenMode=", &mode ) || mode) &&
++            needs_reset( display, record, width, height ) && (end = strchr( key + 13, '"' )) &&
++            (out = malloc( size + 32 )))
++        {
++            nlen = snprintf( number, sizeof(number), "%ux%u", display->width, display->height );
++            memcpy( out, text, key + 13 - text );
++            memcpy( out + (key + 13 - text), number, nlen );
++            memcpy( out + (key + 13 - text) + nlen, end, size - (end - text) + 1 );
++            if (write_file( path, out, size - (end - (key + 13)) + nlen ))
++            {
++                MESSAGE( "MetalSharp: the saved resolution %ux%u in %s is now %ux%u\n", width, height, path,
++                         display->width, display->height );
++                ret = TRUE;
++            }
++            free( out );
++        }
++        free( text );
++    }
++    return ret;
++}
++
+ /* Remedy's Northlight engine (Control): <game folder>/renderer.ini, a JSON rend::UserRendererSettings. The output
+  * resolution is the fullscreen one (windowed sizes are m_iLastWindowSize); the render resolution follows it where
+  * it was the output's or would be larger than the new one. */
+@@ -836,13 +876,14 @@ static BOOL is_game_folder( const char *dir, const char *exe )
+     struct stat st;
+ 
+     if (strstr( exe, "/Binaries/Win64/" )) return TRUE;
++    if (strrchr( exe, '/' ) && !strcasecmp( strrchr( exe, '/' ) + 1, "witcher3.exe" )) return TRUE;
+     if (dot && snprintf( path, sizeof(path), "%.*s_Data/app.info", (int)(dot - exe), exe ) < sizeof(path) &&
+         !stat( path, &st ))
+         return TRUE;
+     return is_elden_ring_folder( dir ) || is_remedy_folder( dir );
+ }
+ 
+-void fit_saved_resolution( const char *exe, const char *appdata, const char *localappdata )
++void fit_saved_resolution( const char *exe, const char *appdata, const char *localappdata, const char *profile )
+ {
+     struct main_display display;
+     char dir[PATH_MAX], record_path[PATH_MAX], *record, line[128];
+@@ -872,7 +913,8 @@ void fit_saved_resolution( const char *exe, const char *appdata, const char *loc
+     record = read_file( record_path, &size );
+ 
+     if (!fit_unity( exe, &display, record ) && !fit_unreal( exe, localappdata, &display, record ) &&
+-        !fit_remedy( dir, &display, record ) && is_elden_ring_folder( dir ))
++        !fit_remedy( dir, &display, record ) && !fit_redengine( exe, profile, &display, record ) &&
++        is_elden_ring_folder( dir ))
+         fit_elden_ring( appdata, &display, record );
+ 
+     len = snprintf( line, sizeof(line), "%s %ux%u\n", display.id, display.width, display.height );
+@@ -889,7 +931,7 @@ void fit_saved_resolution( const char *exe, const char *appdata, const char *loc
+ 
+ #else
+ 
+-void fit_saved_resolution( const char *exe, const char *appdata, const char *localappdata )
++void fit_saved_resolution( const char *exe, const char *appdata, const char *localappdata, const char *profile )
+ {
+     init_metalfx_scale( exe );
+     init_dlss_game( exe );
+diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
+index 6c7ad796..fe9ba1d4 100644
+--- a/dlls/ntdll/unix/unix_private.h
++++ b/dlls/ntdll/unix/unix_private.h
+@@ -343,7 +343,8 @@ struct launcher_policy
+ };
+ 
+ extern void get_launcher_policy( const char *image_path, struct launcher_policy *policy );
+-extern void fit_saved_resolution( const char *exe, const char *appdata, const char *localappdata );
++extern void fit_saved_resolution( const char *exe, const char *appdata, const char *localappdata,
++                                  const char *profile );
+ extern int metalsharp_dlss_game(void);
+ extern BOOL steam_cef_native_vulkan_loader( const UNICODE_STRING *nt_name, const char *module );
+ /* WineForge-Internal: graphics/process-backend-policy-v1. */
+-- 
+2.54.0 (Apple Git-157)
+

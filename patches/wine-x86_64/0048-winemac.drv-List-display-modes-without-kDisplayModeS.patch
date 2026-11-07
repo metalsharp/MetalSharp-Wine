@@ -1,0 +1,64 @@
+From c199f098060d439b7417664081e33791d9930645 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Sun, 1 Nov 2026 08:29:13 -0700
+Subject: [PATCH 48/59] winemac.drv: List display modes without
+ kDisplayModeSafeFlag on Apple silicon.
+
+Apple silicon Macs leave kDisplayModeSafeFlag off many valid modes, so
+Wine offered games only a few resolutions. CrossOver checks
+sysctl.proc_translated, which is true only under Rosetta; a native arm64
+build is always on Apple silicon.
+
+From CrossOver 26.3 (CodeWeavers, LGPL 2.1 or later), CrossOver Hack 18576.
+---
+ dlls/winemac.drv/display.c | 24 +++++++++++++++++++++++-
+ 1 file changed, 23 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/winemac.drv/display.c b/dlls/winemac.drv/display.c
+index 69e0a433..ee92b841 100644
+--- a/dlls/winemac.drv/display.c
++++ b/dlls/winemac.drv/display.c
+@@ -30,6 +30,7 @@
+ #include "winreg.h"
+ #include "ddrawi.h"
+ #include "winternl.h"
++#include <sys/sysctl.h>
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(display);
+ 
+@@ -89,10 +90,31 @@ static int display_mode_bits_per_pixel(CGDisplayModeRef display_mode)
+ }
+ 
+ 
++/* CrossOver Hack #18576: don't check for kDisplayModeSafeFlag on Apple Silicon. */
++static int is_apple_silicon(void)
++{
++#ifdef __aarch64__
++    return 1;
++#else
++    /* sysctl.proc_translated is 1 for a translated (Rosetta) process, 0 for a native one or on error */
++    static int translated = -1;
++    if (translated == -1)
++    {
++        int ret = 0;
++        size_t size = sizeof(ret);
++        if (sysctlbyname("sysctl.proc_translated", &ret, &size, NULL, 0) == -1) ret = 0;
++        translated = ret;
++    }
++    return translated;
++#endif
++}
++
+ static BOOL display_mode_is_supported(CGDisplayModeRef display_mode)
+ {
+     uint32_t io_flags = CGDisplayModeGetIOFlags(display_mode);
+-    return (io_flags & kDisplayModeValidFlag) && (io_flags & kDisplayModeSafeFlag);
++    /* CrossOver Hack #18576: don't check for kDisplayModeSafeFlag on Apple Silicon. */
++    return (io_flags & kDisplayModeValidFlag) &&
++            ((io_flags & kDisplayModeSafeFlag) || is_apple_silicon());
+ }
+ 
+ 
+-- 
+2.54.0 (Apple Git-157)
+

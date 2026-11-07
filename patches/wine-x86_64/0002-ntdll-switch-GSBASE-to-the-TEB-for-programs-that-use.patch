@@ -1,0 +1,126 @@
+From d1212924f92ddc812b6754cd56e1f7b0e3fea86e Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@Averys-MacBook-Air.local>
+Date: Sun, 18 Oct 2026 08:41:59 -0600
+Subject: [PATCH 02/59] ntdll: switch GSBASE to the TEB for programs that use
+ fibers
+
+Outside DXMT processes Windows code ran with GSBASE at the pthread TSD,
+where only the TEB fields mirrored into TSD slots (Self,
+ThreadLocalStoragePointer, Peb) read right. GetCurrentFiber reads gs:0x20,
+which is the thread's QoS slot there: Wolfenstein: The New Order's job
+fibers switched to SwitchToFiber(0x8ff) and crashed as the first level
+loaded.
+
+The switch is now on, besides DXMT processes, for processes whose main
+executable imports ConvertThreadToFiber[Ex] or CreateFiber[Ex] from kernel32
+or kernelbase, except D3DMetal ones (D3DMetal does not load with it).
+MS_GSBASE_SWITCH=0 or 1 overrides the choice.
+---
+ dlls/ntdll/unix/signal_x86_64.c | 77 ++++++++++++++++++++++++++++++---
+ 1 file changed, 72 insertions(+), 5 deletions(-)
+
+diff --git a/dlls/ntdll/unix/signal_x86_64.c b/dlls/ntdll/unix/signal_x86_64.c
+index d240f6d2..3e3adfa6 100644
+--- a/dlls/ntdll/unix/signal_x86_64.c
++++ b/dlls/ntdll/unix/signal_x86_64.c
+@@ -74,10 +74,14 @@
+  */
+ extern void _thread_set_tsd_base(uint64_t);
+ 
+-/* MetalSharp: in DXMT processes Windows code runs with GSBASE pointing at the
+- * TEB (so gs-relative TEB reads such as Mono's TlsSlots fast path work), and
+- * GSBASE is moved back to the pthread TSD whenever Unix code runs. Other
+- * processes (D3DMetal) keep Wine's default macOS TSD behavior. */
++/* MetalSharp: in DXMT processes, and in processes whose executable uses
++ * fibers, Windows code runs with GSBASE pointing at the TEB (so gs-relative
++ * TEB reads such as Mono's TlsSlots fast path, or GetCurrentFiber's gs:0x20,
++ * work), and GSBASE is moved back to the pthread TSD whenever Unix code runs.
++ * Other processes keep Wine's default macOS TSD behavior, where only the TEB
++ * fields mirrored into TSD slots (Self, ThreadLocalStoragePointer, Peb) can be
++ * read gs-relative; D3DMetal does not load with the switch.
++ * MS_GSBASE_SWITCH=0 or 1 overrides the choice. */
+ __attribute__((visibility("hidden"))) unsigned char ms_gsbase_switch = 0;
+ #endif
+ 
+@@ -2918,6 +2922,59 @@ static void *mac_thread_gsbase(void)
+ }
+ #endif
+ 
++#ifdef __APPLE__
++/**********************************************************************
++ *		main_image_uses_fibers
++ *
++ * Whether the main executable imports the fiber API from kernel32 or
++ * kernelbase. The current fiber lives in TEB->Tib.FiberData, which Windows
++ * code reads at gs:0x20 (GetCurrentFiber is an intrinsic); in the macOS TSD
++ * that is the thread's QoS slot, so a fiber switch to it crashes
++ * (Wolfenstein: The New Order's job fibers, SwitchToFiber(0x8ff)).
++ */
++static BOOL main_image_uses_fibers(void)
++{
++    static const char * const fiber_imports[] =
++        { "ConvertThreadToFiber", "ConvertThreadToFiberEx", "CreateFiber", "CreateFiberEx" };
++    const BYTE *base = peb ? peb->ImageBaseAddress : NULL;
++    const IMAGE_DOS_HEADER *dos = (const IMAGE_DOS_HEADER *)base;
++    const IMAGE_NT_HEADERS64 *nt;
++    const IMAGE_DATA_DIRECTORY *dir;
++    const IMAGE_IMPORT_DESCRIPTOR *imports;
++    DWORD size;
++    unsigned int i;
++
++    if (!dos || dos->e_magic != IMAGE_DOS_SIGNATURE) return FALSE;
++    nt = (const IMAGE_NT_HEADERS64 *)(base + dos->e_lfanew);
++    if (nt->Signature != IMAGE_NT_SIGNATURE || nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC) return FALSE;
++    size = nt->OptionalHeader.SizeOfImage;
++    if (nt->OptionalHeader.NumberOfRvaAndSizes <= IMAGE_DIRECTORY_ENTRY_IMPORT) return FALSE;
++    dir = &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
++    if (!dir->VirtualAddress || dir->VirtualAddress >= size) return FALSE;
++
++    for (imports = (const IMAGE_IMPORT_DESCRIPTOR *)(base + dir->VirtualAddress);
++         (const BYTE *)(imports + 1) <= base + size && imports->Name; imports++)
++    {
++        const char *dll = (const char *)base + imports->Name;
++        const ULONGLONG *thunk;
++
++        if (imports->Name >= size || (strcasecmp( dll, "kernel32.dll" ) && strcasecmp( dll, "kernelbase.dll" ))) continue;
++        if (!imports->OriginalFirstThunk || imports->OriginalFirstThunk >= size) continue;
++        for (thunk = (const ULONGLONG *)(base + imports->OriginalFirstThunk);
++             (const BYTE *)(thunk + 1) <= base + size && *thunk; thunk++)
++        {
++            const IMAGE_IMPORT_BY_NAME *import;
++
++            if (IMAGE_SNAP_BY_ORDINAL64( *thunk ) || *thunk >= size) continue;
++            import = (const IMAGE_IMPORT_BY_NAME *)(base + *thunk);
++            for (i = 0; i < ARRAY_SIZE(fiber_imports); i++)
++                if (!strcmp( (const char *)import->Name, fiber_imports[i] )) return TRUE;
++        }
++    }
++    return FALSE;
++}
++#endif
++
+ #ifdef __linux__
+ static uintptr_t libc_addr, libc_size;
+ 
+@@ -2949,7 +3006,17 @@ void signal_init_process( TEB *teb )
+     void *ptr;
+ 
+ #ifdef __APPLE__
+-    ms_gsbase_switch = dxmt_graphics_backend_enabled();
++    {
++        const char *forced = getenv( "MS_GSBASE_SWITCH" );
++
++        if (forced && (forced[0] == '0' || forced[0] == '1'))
++            ms_gsbase_switch = forced[0] == '1';
++        else if (dxmt_graphics_backend_enabled())
++            ms_gsbase_switch = 1;
++        else
++            ms_gsbase_switch = !d3dmetal_graphics_backend_enabled() && main_image_uses_fibers();
++        TRACE_(seh)( "GSBASE switch %s\n", ms_gsbase_switch ? "on" : "off" );
++    }
+ #endif
+     if (user_shared_data->XState.Size) xstate_size = user_shared_data->XState.Size - sizeof(XSAVE_FORMAT);
+     frame_size = offsetof( struct syscall_frame, xstate ) + xstate_size;
+-- 
+2.54.0 (Apple Git-157)
+

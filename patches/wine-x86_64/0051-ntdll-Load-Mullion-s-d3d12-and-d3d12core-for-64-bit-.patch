@@ -1,0 +1,119 @@
+From 8b284689e24e2de99c4b2ba508379224053040a1 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Fri, 6 Nov 2026 21:43:15 -0700
+Subject: [PATCH 51/59] ntdll: Load Mullion's d3d12 and d3d12core for 64-bit
+ programs on the DXMT route.
+
+Mullion now ships d3d12.dll and d3d12core.dll in x86_64-windows (none for
+i386). With GRAPHICS_BACKEND=dxmt the load order disabled d3d12 outright,
+since the runtime used to have no D3D12 and D3DMetal's must not be mixed in,
+so a 64-bit program on the Mullion route never got Mullion's D3D12.
+
+d3d12 and d3d12core are now DXMT modules: when $DXMT_RUNTIME_DIR has them
+for the program's machine they get a builtin load order and are loaded from
+the runtime like dxgi and d3d11. When it doesn't (an i386 program, or an
+older runtime) d3d12 stays disabled as before and d3d12core keeps its normal
+load order.
+---
+ dlls/ntdll/unix/dxmt_loader.c  | 24 ++++++++++++++++++++++--
+ dlls/ntdll/unix/loadorder.c    | 15 ++++++++-------
+ dlls/ntdll/unix/unix_private.h |  2 +-
+ 3 files changed, 31 insertions(+), 10 deletions(-)
+
+diff --git a/dlls/ntdll/unix/dxmt_loader.c b/dlls/ntdll/unix/dxmt_loader.c
+index 70242fcc..6cb322fc 100644
+--- a/dlls/ntdll/unix/dxmt_loader.c
++++ b/dlls/ntdll/unix/dxmt_loader.c
+@@ -49,8 +49,17 @@ static const char *const dxmt_module_names[] =
+     "nvapi64.dll",
+     "nvngx.dll",
+     "winemetal.dll",
++    /* Mullion ships these for x86_64 only; see is_dxmt_module_basename(). */
++    "d3d12.dll",
++    "d3d12core.dll",
+ };
+ 
++/* Modules that only some DXMT runtimes provide, and only for some machines. */
++static BOOL is_optional_dxmt_module( const char *name )
++{
++    return !strcasecmp( name, "d3d12.dll" ) || !strcasecmp( name, "d3d12core.dll" );
++}
++
+ BOOL dxmt_runtime_available(void)
+ {
+     static const char *const required_files[] =
+@@ -88,7 +97,10 @@ BOOL is_dxmt_module_name( const char *path )
+     return FALSE;
+ }
+ 
+-BOOL is_dxmt_module_basename( const WCHAR *name )
++/* Whether the DXMT runtime serves this module to a process of the given machine. An optional
++ * module counts only when the runtime has it for that machine (Mullion's D3D12 is x86_64 only),
++ * so that a 32-bit program keeps the previous behaviour instead of a forced builtin it can't get. */
++BOOL is_dxmt_module_basename( const WCHAR *name, USHORT machine )
+ {
+     unsigned int i;
+ 
+@@ -107,7 +119,15 @@ BOOL is_dxmt_module_basename( const WCHAR *name )
+             if (right >= 'A' && right <= 'Z') right += 'a' - 'A';
+             if (left != right) break;
+         }
+-        if (pos == len && !name[pos]) return TRUE;
++        if (pos == len && !name[pos])
++        {
++            char *path;
++
++            if (!is_optional_dxmt_module( module )) return TRUE;
++            if (!(path = resolve_dxmt_pe_path( module, machine ))) return FALSE;
++            free( path );
++            return TRUE;
++        }
+     }
+     return FALSE;
+ }
+diff --git a/dlls/ntdll/unix/loadorder.c b/dlls/ntdll/unix/loadorder.c
+index a115dbff..1af5f042 100644
+--- a/dlls/ntdll/unix/loadorder.c
++++ b/dlls/ntdll/unix/loadorder.c
+@@ -519,17 +519,18 @@ enum loadorder get_load_order( const UNICODE_STRING *nt_name, BOOL is_system_dir
+     basename = get_basename( module + 1 );
+ 
+ #if defined(__APPLE__) && defined(__x86_64__)
+-    /* WineForge-Internal: DXMT has no D3D12; do not mix in D3DMetal's DLL. */
+-    if (dxmt_graphics_backend_enabled() && !wcsicmp( basename, d3d12W ))
++    if (dxmt_graphics_backend_enabled() && is_dxmt_module_basename( basename, main_image_info.Machine ))
+     {
+-        ret = LO_DISABLED;
+-        TRACE( "disabling D3D12 for DXMT process %s\n", debugstr_us(nt_name) );
++        ret = LO_BUILTIN;
++        TRACE( "forcing builtin load order for DXMT module %s\n", debugstr_us(nt_name) );
+         goto done;
+     }
+-    if (dxmt_graphics_backend_enabled() && is_dxmt_module_basename( basename ))
++    /* WineForge-Internal: without the runtime's own D3D12 for this machine (Mullion has none
++     * for i386, older runtimes none at all), do not mix in D3DMetal's DLL. */
++    if (dxmt_graphics_backend_enabled() && !wcsicmp( basename, d3d12W ))
+     {
+-        ret = LO_BUILTIN;
+-        TRACE( "forcing builtin load order for DXMT module %s\n", debugstr_us(nt_name) );
++        ret = LO_DISABLED;
++        TRACE( "disabling D3D12 for DXMT process %s\n", debugstr_us(nt_name) );
+         goto done;
+     }
+ #endif
+diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
+index e8df390d..b1009a80 100644
+--- a/dlls/ntdll/unix/unix_private.h
++++ b/dlls/ntdll/unix/unix_private.h
+@@ -364,7 +364,7 @@ extern BOOL dxmt_runtime_available(void);
+ extern BOOL wfdxcompat_launcher_runtime_enabled(void);
+ extern BOOL battlenet_cef_cow_compat_enabled(void);
+ extern BOOL is_dxmt_module_name( const char *path );
+-extern BOOL is_dxmt_module_basename( const WCHAR *name );
++extern BOOL is_dxmt_module_basename( const WCHAR *name, USHORT machine );
+ extern char *resolve_dxmt_pe_path( const char *module, USHORT machine );
+ extern char *resolve_dxmt_unixlib_path( const char *path );
+ extern BOOL is_wfdxcompat_frontend_module_name( const char *path );
+-- 
+2.54.0 (Apple Git-157)
+

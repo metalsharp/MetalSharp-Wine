@@ -27,3 +27,8 @@
 	path = src/dxvk-macos
 	url = https://github.com/metalsharp/DXVK-MacOS.git
 	branch = main
+[submodule "src/wine-x86_64"]
+	path = src/wine-x86_64
+	url = https://github.com/metalsharp/MetalSharp-Wine.git
+	branch = source/wine-x86_64
+	shallow = true

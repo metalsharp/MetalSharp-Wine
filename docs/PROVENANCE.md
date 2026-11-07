@@ -33,6 +33,16 @@ Some WineForge notices were rebranded on the way into MetalSharp. In particular,
 
 [WFDXCompat](https://github.com/metalsharp/MetalSharp-Wine/tree/source/wfdxcompat), WineForge's DirectX compatibility companion by Radim Vesely, is carried with its LGPL 2.1 license. MetalSharp Wine's change to it (running the companion on Mullion as ARM64EC) is a separate commit on top.
 
+## WineForge's Wine 11.17 (the x86_64 build)
+
+MetalSharp Wine's x86_64 build ([X86_64.md](X86_64.md)) is built on Radim Vesely's own port of WineForge to Wine 11.17: [WineForge](https://github.com/Alien4042x/WineForge)'s `main` up to `a05564cf`, LGPL 2.1 or later. Branch `source/wine-x86_64` carries that history unchanged, with his authorship. MetalSharp's 59 commits sit on top of it (`patches/wine-x86_64/`, against `a05564cf`).
+
+- **0001, "MetalSharp runtime as shipped":** the source of the Wine in MetalSharp's `bundles` release.
+- **0002 to 0050, and 0052:** MetalSharp Wine's fixes, carried over from the arm64 build's patches. Two of them are by their original authors: 0043 (GCMouse raw input, Elvin Hayatov) and 0044 (native fullscreen, Radim Vesely).
+- **0051 and 0053 to 0059:** the x86_64 build's own work.
+
+The x86_64 build doesn't take CrossOver's source release separately. The CrossOver fixes listed below came over with MetalSharp Wine's patches: 0020 to 0028, 0048 and 0049.
+
 ## CrossOver
 
 Some macOS display, painting and wined3d fixes come from the Wine in CodeWeavers' CrossOver 26.3 source release, which is LGPL 2.1 or later like Wine. CrossOver marks them as hacks with its bug numbers, and the ports keep those markers. Where MetalSharp Wine changed the code, the source says "Modified for MetalSharp Wine" next to it.
@@ -59,6 +69,7 @@ Some macOS display, painting and wined3d fixes come from the Wine in CodeWeavers
 | --- | --- | --- | --- |
 | [Wine](https://www.winehq.org/) | The Wine project | LGPL 2.1 or later | `source/wine` branch; `patches/wine/` against the upstream tag |
 | CrossOver macOS work | CodeWeavers | LGPL 2.1 or later (as part of Wine) | Same |
+| Wine (x86_64 build), on [WineForge](https://github.com/Alien4042x/WineForge)'s Wine 11.17 | The Wine project, Radim Vesely | LGPL 2.1 or later | `source/wine-x86_64` branch; `patches/wine-x86_64/` against WineForge `a05564cf` |
 | [FEX](https://github.com/FEX-Emu/FEX) | FEX-Emu contributors | MIT | `source/fex` branch; `patches/fex/` |
 | [Mullion](https://github.com/dttdrv/mullion), based on [DXMT](https://github.com/3Shain/dxmt) | Feifan He for CodeWeavers, Mullion contributors | LGPL 2.1 or later | aaf2tbz/mullion, branch `metalsharp-2.1-main` |
 | [VKD3D-Proton](https://github.com/HansKristian-Work/vkd3d-proton) | Hans-Kristian Arntzen and contributors | LGPL 2.1 | metalsharp/VKD3D-Proton-MacOS |
@@ -68,6 +79,7 @@ Some macOS display, painting and wined3d fixes come from the Wine in CodeWeavers
 | GStreamer, FreeType, GnuTLS, SDL2, FFmpeg and the other libraries in `deps/` | Their authors | Their own licenses | Unmodified upstream releases |
 | DXC, d3dcompiler_47 | Microsoft | Microsoft redistribution terms | Unmodified redistributables |
 | Metal Shader Converter library (`libmetalirconverter.dylib`, 4.0 beta 3) | Apple Inc. | Apple's Software License Agreement for Metal Shader Converter (proprietary) | Unmodified and Apple-signed, from metalsharp/VKD3D-Proton-MacOS's `deps-metal-shaderconverter-4.0b3` release |
+| D3DMetal (Game Porting Toolkit 4.0 beta 3; x86_64 build only) | Apple Inc. | Apple's Game Porting Toolkit license (proprietary, non-commercial distribution) | Unmodified and Apple-signed, from Apple's Game Porting Toolkit |
 
 ### Apple's Metal Shader Converter
 
@@ -78,6 +90,19 @@ Apple's agreement, section 2B, allows installing, using, testing and distributin
 - **Apple hardware only, with its notices:** sections 2C and 2D limit it to Apple-branded systems, which is the only place MetalSharp Wine runs, and require its notices to be kept. Apple's agreement and acknowledgements ship in `share/licenses/metal-shaderconverter/`.
 
 Apple's agreement governs; the details are in VKD3D-Proton-MacOS's README, under third-party licenses.
+
+### Apple's D3DMetal (x86_64 build)
+
+`MetalSharp-Wine-x86_64.app` carries D3DMetal from Apple's Game Porting Toolkit 4.0 beta 3: `D3DMetal.framework` and its Wine modules (`d3d11`, `d3d12`, `dxgi`, `nvapi64`, `nvngx-on-metalfx` and the rest), in `share/metalsharp/runtime/d3dmetal-gptk4-beta3`. It is proprietary, runs the `GRAPHICS_BACKEND=d3dmetal` lane only, and is not in the arm64 build.
+
+Apple's Game Porting Toolkit license allows distributing it, with these conditions:
+- **Non-commercial only (section 2A(iii)):** MetalSharp Wine is free, and D3DMetal is shipped with it for nothing.
+- **Shipped whole (section 2C):** the framework may be distributed separately only in its entirety, and the redistributables individually. The app carries the framework whole.
+- **Apple hardware only (section 2C):** MetalSharp Wine runs only on Macs.
+- **Unmodified (section 2D):** the app doesn't modify or re-sign D3DMetal. It keeps Apple's signature, as `scripts/package-x86_64.sh` does for all Apple-signed code.
+- **Notices kept (section 2A):** Apple's license and acknowledgements ship next to it and in `share/licenses/d3dmetal/`.
+
+Apple's license governs.
 
 Every bundle carries these licenses in `share/licenses/` and next to each runtime in `lib/` (for example `lib/mullion/LICENSE` and `lib/wfdxcompat/LICENSE`).
 

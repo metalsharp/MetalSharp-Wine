@@ -1,0 +1,43 @@
+From 2324bcb0ffa9a324206761f5ae7a32c6d10cf9fa Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Sat, 7 Nov 2026 14:16:44 -0700
+Subject: [PATCH 55/59] winevulkan: Zero conversion context allocations.
+
+An output structure the driver leaves alone must read back as zero: MoltenVK doesn't fill
+VkPhysicalDeviceLayeredApiVulkanPropertiesKHR, whose host copy went back to the program as garbage (VKD3D-Proton
+took a driver ID of 1, AMD's, for MoltenVK's and capped shader model 6.0).
+---
+ dlls/winevulkan/vulkan_private.h | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/winevulkan/vulkan_private.h b/dlls/winevulkan/vulkan_private.h
+index bc8fe305..eba44e16 100644
+--- a/dlls/winevulkan/vulkan_private.h
++++ b/dlls/winevulkan/vulkan_private.h
+@@ -81,18 +81,22 @@ static inline void free_conversion_context(struct conversion_context *pool)
+         free(entry);
+ }
+ 
++/* MetalSharp: zeroed, as an output structure the driver leaves alone must read back as zero: MoltenVK (layered on
++ * Metal) does not fill VkPhysicalDeviceLayeredApiVulkanPropertiesKHR, whose host copy otherwise went back to the
++ * program as garbage (VKD3D-Proton took a driver ID of 1, AMD's, for MoltenVK's and capped shader model 6.0) */
+ static inline void *conversion_context_alloc(struct conversion_context *pool, size_t size)
+ {
+     if (pool->used + size <= sizeof(pool->buffer))
+     {
+         void *ret = pool->buffer + pool->used;
+         pool->used += (size + sizeof(UINT64) - 1) & ~(sizeof(UINT64) - 1);
++        memset(ret, 0, size);
+         return ret;
+     }
+     else
+     {
+         struct list *entry;
+-        if (!(entry = malloc(sizeof(*entry) + size)))
++        if (!(entry = calloc(1, sizeof(*entry) + size)))
+             return NULL;
+         list_add_tail(&pool->alloc_entries, entry);
+         return entry + 1;
+-- 
+2.54.0 (Apple Git-157)
+

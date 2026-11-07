@@ -1,15 +1,20 @@
 name: Notarize release
 
-# The app is built and signed (Developer ID, hardened runtime) on a Mac with the provisioning
-# profile, then uploaded to a draft release as MetalSharp-Wine-<version>-arm64.zip. This
-# notarizes that zip with Apple, staples the ticket into the app, and replaces the asset and
-# its line in SHA256SUMS.
+# The app is built and signed (Developer ID, hardened runtime) on a Mac, then uploaded to a draft
+# release as MetalSharp-Wine-<version>-<arch>.zip: arm64 (MetalSharp-Wine.app, with the provisioning
+# profile) or x86_64 (MetalSharp-Wine-x86_64.app, scripts/package-x86_64.sh). This notarizes that zip
+# with Apple, staples the ticket into the app, and replaces the asset and its line in SHA256SUMS.
 on:
   workflow_dispatch:
     inputs:
       tag:
         description: Release tag (e.g. v2.0)
         required: true
+      arch:
+        description: Which app to notarize
+        type: choice
+        options: [arm64, x86_64]
+        default: arm64
 
 permissions:
   contents: write
@@ -20,18 +25,20 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       TAG: ${{ inputs.tag }}
+      ARCH: ${{ inputs.arch }}
     steps:
       - name: Download the signed app
         run: |
-          gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p 'MetalSharp-Wine-*-arm64.zip' -p SHA256SUMS
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p "MetalSharp-Wine-*-$ARCH.zip" -p SHA256SUMS
           ls -l
-          echo "ZIP=$(ls MetalSharp-Wine-*-arm64.zip)" >> "$GITHUB_ENV"
+          echo "ZIP=$(ls MetalSharp-Wine-*-"$ARCH".zip)" >> "$GITHUB_ENV"
+          if [ "$ARCH" = x86_64 ]; then echo "APP=MetalSharp-Wine-x86_64.app" >> "$GITHUB_ENV"; else echo "APP=MetalSharp-Wine.app" >> "$GITHUB_ENV"; fi
 
       - name: Check the signature
         run: |
           ditto -x -k "$ZIP" app
-          codesign --verify --deep --strict app/MetalSharp-Wine.app
-          codesign -dv app/MetalSharp-Wine.app 2>&1 | grep -E 'Authority=Developer ID|flags'
+          codesign --verify --deep --strict "app/$APP"
+          codesign -dv "app/$APP" 2>&1 | grep -E 'Authority=Developer ID|flags'
 
       - name: Notarize
         env:
@@ -50,11 +57,11 @@ jobs:
       - name: Staple and repackage
         run: |
           # Apple's ticket service (CloudKit) sometimes drops the connection right after acceptance
-          for i in 1 2 3 4 5 6; do xcrun stapler staple app/MetalSharp-Wine.app && break; [ $i = 6 ] && exit 1; sleep 30; done
-          xcrun stapler validate app/MetalSharp-Wine.app
-          spctl -a -vv app/MetalSharp-Wine.app
+          for i in 1 2 3 4 5 6; do xcrun stapler staple "app/$APP" && break; [ $i = 6 ] && exit 1; sleep 30; done
+          xcrun stapler validate "app/$APP"
+          spctl -a -vv "app/$APP"
           rm "$ZIP"
-          ditto -c -k --keepParent app/MetalSharp-Wine.app "$ZIP"
+          ditto -c -k --keepParent "app/$APP" "$ZIP"
           grep -v " $ZIP\$" SHA256SUMS > SHA256SUMS.new || true
           shasum -a 256 "$ZIP" >> SHA256SUMS.new
           mv SHA256SUMS.new SHA256SUMS

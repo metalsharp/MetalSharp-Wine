@@ -1,0 +1,56 @@
+From 5f93a50d0d2c6913f84805287f63974fd7c749ab Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Sat, 7 Nov 2026 14:16:44 -0700
+Subject: [PATCH 54/59] winemac.drv: Show MetalSharp Wine's icon in the Dock
+ when Wine runs outside an app bundle.
+
+A program without an icon of its own shows the bundle's; MetalSharp's x86_64 runtime (~/.metalsharp/runtime/wine/bin/wine)
+has none, so share/wine/MetalSharp-Wine.icns next to its bin is shown.
+---
+ dlls/winemac.drv/cocoa_app.m | 27 ++++++++++++++++++++++++++-
+ 1 file changed, 26 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/winemac.drv/cocoa_app.m b/dlls/winemac.drv/cocoa_app.m
+index 03b0269f..0fc957e4 100644
+--- a/dlls/winemac.drv/cocoa_app.m
++++ b/dlls/winemac.drv/cocoa_app.m
+@@ -305,10 +305,35 @@ - (void) transformProcessToForeground:(BOOL)activateIfTransformed
+             [NSApp setMainMenu:mainMenu];
+             [NSApp setWindowsMenu:submenu];
+ 
+-            [NSApp setApplicationIconImage:self.applicationIcon];
++            [NSApp setApplicationIconImage:self.applicationIcon ? self.applicationIcon : [self defaultApplicationIcon]];
+         }
+     }
+ 
++    /* MetalSharp: a program without an icon of its own shows the bundle's icon in the Dock, and a Wine run from
++     * outside an app bundle (MetalSharp's x86_64 runtime, ~/.metalsharp/runtime/wine/bin/wine) has none: it shows
++     * MetalSharp Wine's, share/wine/MetalSharp-Wine.icns next to its bin. */
++    - (NSImage*) defaultApplicationIcon
++    {
++        static NSImage* icon;
++        static BOOL looked;
++
++        if (!looked)
++        {
++            NSBundle* bundle = [NSBundle mainBundle];
++
++            looked = TRUE;
++            if (![bundle objectForInfoDictionaryKey:@"CFBundleIconFile"] &&
++                ![bundle objectForInfoDictionaryKey:@"CFBundleIconName"])
++            {
++                NSString* bin = [[bundle executablePath] stringByResolvingSymlinksInPath];
++                NSString* path = [[[bin stringByDeletingLastPathComponent] stringByDeletingLastPathComponent]
++                                  stringByAppendingPathComponent:@"share/wine/MetalSharp-Wine.icns"];
++                icon = [[NSImage alloc] initWithContentsOfFile:path];
++            }
++        }
++        return icon;
++    }
++
+     - (BOOL) waitUntilQueryDone:(bool*)done timeout:(NSDate*)timeout processEvents:(BOOL)processEvents
+     {
+         PerformRequest(NULL);
+-- 
+2.54.0 (Apple Git-157)
+

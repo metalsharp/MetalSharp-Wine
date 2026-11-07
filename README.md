@@ -46,6 +46,7 @@ It runs ARM64, x86_64 and 32-bit x86 Windows programs, with Direct3D 9 through 1
 [Releases](https://github.com/metalsharp/MetalSharp-Wine/releases) has:
 - `MetalSharp-Wine-<version>-arm64.zip`: the signed and notarized `MetalSharp-Wine.app`. Use this one; i386 and 4K pages need it.
 - `metalsharp-wine-<version>-arm64.tar.xz`: the same Wine as a relocatable folder (`bin/wine`). It is ad-hoc signed, so x86_64 and ARM64 only, with 16K pages.
+- `MetalSharp-Wine-<version>-x86_64.zip`: **the x86_64 build**, `MetalSharp-Wine-x86_64.app`. It's an x86_64 Wine 11.17 that runs under Rosetta 2, with the same graphics lanes plus Apple's D3DMetal. MetalSharp uses it as its x86_64 runtime. See [`docs/X86_64.md`](docs/X86_64.md).
 
 ## Use It: 
 
@@ -127,6 +128,7 @@ The modified sources are kept in this repository as branches, and `main` links t
 | Submodule | Branch | Contents |
 |---|---|---|
 | `src/wine` | [`source/wine`](../../tree/source/wine) | Wine 11.20 + WineForge + MetalSharp (`wine-11.20` tag plus 131 commits) |
+| `src/wine-x86_64` | [`source/wine-x86_64`](../../tree/source/wine-x86_64) | **x86_64 build:** Wine 11.17 as ported by WineForge, plus 59 MetalSharp commits. `scripts/fetch-sources.sh x86_64` fetches it ([`docs/X86_64.md`](docs/X86_64.md)) |
 | `src/FEX` | [`source/fex`](../../tree/source/fex) | FEX-2610 + MetalSharp (23 commits). It is not upstreamed |
 | `src/winemetalgl` | [`source/winemetalgl`](../../tree/source/winemetalgl) | WineMetalGL's arm64 Wine module |
 | `src/wfdxcompat` | [`source/wfdxcompat`](../../tree/source/wfdxcompat) | WineForge DXCompat, built ARM64EC for Mullion: the Rockstar launcher companion |
@@ -141,7 +143,7 @@ The same changes are in `patches/` as git patches against the upstream tags. `pa
 | Path | Contents |
 |---|---|
 | `scripts/` | Build, staging, test, audit, benchmark, packaging and signing scripts |
-| `patches/` | `wine/`, `fex/`, `mullion/`, `winemetalgl/` |
+| `patches/` | `wine/`, `fex/`, `mullion/`, `winemetalgl/`, and `wine-x86_64/` (the x86_64 build, against WineForge `a05564cf`) |
 | `resources/` | The app icon (`MetalSharp-Wine.icon`, an Icon Composer document) |
 | `tests/src/` | Smoke tests and benchmarks (native ARM64, x86_64 and i386) |
 | `docs/` | Status, testing, performance, the WineForge port plan, and provenance and licenses (`PROVENANCE.md`) |
@@ -183,6 +185,8 @@ The add-ons have their own scripts:
 - `fetch-addons.sh` (Mono and Gecko) and `fetch-fonts.sh`
 - `build-innoextract.sh` and `build-cabextract.sh`
 - `stage-metalsharp-assets.sh` and `stage-metalsharp-redist.sh`
+
+**The x86_64 build** (`MetalSharp-Wine-x86_64.app`) has its own scripts, all named `*-x86_64.sh`: `build-wine-x86_64.sh`, `build-deps-x86_64.sh`, `build-mullion-x86_64.sh`, `build-winemetalgl-x86_64.sh` and `package-x86_64.sh`. The steps are in [`docs/X86_64.md`](docs/X86_64.md).
 
 `sign-app.sh` builds `MetalSharp-Wine.app` with the hardened runtime and compiles the icon (`actool`, from Xcode). It needs a Developer ID certificate and a provisioning profile with the cross-architecture entitlement.
 

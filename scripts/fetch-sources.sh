@@ -11,12 +11,15 @@
 #                    sources it patches, for stage-vkd3d-proton.sh and stage-moltenvk.sh
 #   src/dxvk-macos   DXVK-MacOS 3.1 (metalsharp/DXVK-MacOS, branch main): the GRAPHICS_BACKEND=dxvk lane, built as
 #                    ARM64X by build-dxvk-macos.sh, with its own submodules (dxbc-spirv, Vulkan and SPIR-V headers)
+#   src/wine-x86_64  with `fetch-sources.sh x86_64` only: the x86_64 Wine (Wine 11.17 + WineForge + MetalSharp,
+#                    branch source/wine-x86_64) that MetalSharp-Wine-x86_64.app is built from (docs/X86_64.md)
 # Outside a git checkout, the branches are cloned instead. patches/ has the same changes as git
 # patches against the upstream tags.
 set -e
 source ${0:A:h}/env.sh
 if [[ -f $ROOT/.gitmodules ]] && git -C $ROOT rev-parse --git-dir >/dev/null 2>&1; then
   git -C $ROOT submodule update --init src/wine src/FEX src/winemetalgl src/mullion src/wfdxcompat src/vkd3d-proton src/dxvk-macos
+  [[ ${1:-} = x86_64 ]] && git -C $ROOT submodule update --init src/wine-x86_64
 else
   REPO=${METALSHARP_WINE_REPO:-https://github.com/metalsharp/MetalSharp-Wine.git}
   clone() {  # clone <dir> <url> <branch>
@@ -31,6 +34,7 @@ else
   clone mullion https://github.com/aaf2tbz/mullion.git metalsharp-2.1-main
   clone vkd3d-proton https://github.com/metalsharp/VKD3D-Proton-MacOS.git main
   clone dxvk-macos https://github.com/metalsharp/DXVK-MacOS.git main
+  [[ ${1:-} = x86_64 ]] && clone wine-x86_64 $REPO source/wine-x86_64
 fi
 git -C $ROOT/src/dxvk-macos submodule update --init --recursive
 git -C $ROOT/src/FEX submodule update --init --recursive

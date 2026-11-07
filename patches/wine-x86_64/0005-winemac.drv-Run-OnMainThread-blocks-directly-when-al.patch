@@ -1,0 +1,36 @@
+From 810ccfe147e8274261212372fe28ebb601a50901 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Thu, 22 Oct 2026 05:13:46 -0600
+Subject: [PATCH 05/59] winemac.drv: Run OnMainThread() blocks directly when
+ already on the main thread.
+
+-[WineContentView viewWillDraw] runs on the main thread inside a Core Animation
+flush and can reach OnMainThread() through macdrv_update_opengl_context(); the
+main thread then waited for a request only it could service. Fixes OpenGL and
+d3d9 (wined3d) hangs.
+---
+ dlls/winemac.drv/cocoa_event.m | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/dlls/winemac.drv/cocoa_event.m b/dlls/winemac.drv/cocoa_event.m
+index d3fc4e8f..56ab22d5 100644
+--- a/dlls/winemac.drv/cocoa_event.m
++++ b/dlls/winemac.drv/cocoa_event.m
+@@ -494,6 +494,14 @@ void OnMainThread(dispatch_block_t block)
+     dispatch_semaphore_t semaphore = NULL;
+     __block BOOL finished;
+ 
++    /* Already on the main thread (e.g. -[WineContentView viewWillDraw] updating a GL
++     * context): the request queue is serviced by this thread, so waiting would deadlock. */
++    if ([NSThread isMainThread])
++    {
++        block();
++        return;
++    }
++
+     if (!queue)
+     {
+         semaphore = dispatch_semaphore_create(0);
+-- 
+2.54.0 (Apple Git-157)
+
