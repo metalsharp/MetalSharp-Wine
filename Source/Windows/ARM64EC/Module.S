@@ -78,7 +78,7 @@ ExitFunctionSuspendResumePoint:
   movk w16, #0xd63f, lsl 16 // blr x16
   ldursw x23, [x17, #-0x4] // Load either the entry thunk offset or the calling instruction.
   cmp w23, w16
-  beq ret_sp_aligned
+  beq ret_to_exit_thunk
 
   and x23, x23, #-0x4
   add x17, x17, x23 // Resolve entry thunk address.
@@ -90,6 +90,12 @@ ExitFunctionSuspendResumePoint:
 
 ret_sp_aligned:
   br x17
+
+ret_to_exit_thunk:
+  // A return to the exit thunk whose 'blr x16' called into x86 code: return with ret so the return is predicted from
+  // the return stack, where that blr left it (the dispatcher's native-call entry keeps the stack balanced in between).
+  // A br here was mispredicted on every return from an x86 callback (qsort comparators, window procedures).
+  ret x17
 
 ret_sp_misaligned:
   // In the case of the x64 caller leaving sp only 8-byte aligned, leave the return address on the stack to keep 16-byte

@@ -127,14 +127,39 @@ void Dispatcher::EmitDispatcher() {
 
   // As ARM64EC uses this as an entrypoint for both guest calls and host returns, opportunistically try to return
   // using the call-ret stack to avoid unbalancing it.
+  ARMEmitter::ForwardLabel l_NotReturn;
+  ARMEmitter::ForwardLabel l_ReturnToNative;
   ldp<ARMEmitter::IndexType::OFFSET>(TMP1, TMP2, REG_CALLRET_SP);
   // EC_CALL_CHECKER_PC_REG is REG_PF which isn't touched by any of the above
   sub(ARMEmitter::Size::i64Bit, TMP1, EC_CALL_CHECKER_PC_REG, TMP1);
-  (void)cbnz(ARMEmitter::Size::i64Bit, TMP1, &LoopTop);
+  (void)cbnz(ARMEmitter::Size::i64Bit, TMP1, &l_NotReturn);
 
   // If the entry at the TOS is for the target address, pop it and return to the JIT code
   add(ARMEmitter::Size::i64Bit, REG_CALLRET_SP, REG_CALLRET_SP, 0x10);
   ret(TMP2);
+
+  // Native code calling guest code (qsort comparators, window procedures, enumeration callbacks) comes through
+  // ExitToX64, which pushes the native return address (LR, still in x30) as the guest's return address. Push a
+  // matching call-ret entry so the guest's ret pops it: the stack stays balanced (each such return used to miss and
+  // move it up by an entry until it hit the guard page) and the return goes straight to the native exit check below
+  // instead of through the L1 cache and an indirect call to the dispatcher. Any other entry (a jump into guest code
+  // with something else on the stack) pushes nothing.
+  (void)Bind(&l_NotReturn);
+  ldr(TMP1, StaticRegisters[X86State::REG_RSP], 0);
+  sub(ARMEmitter::Size::i64Bit, TMP1, TMP1, ARMEmitter::XReg::x30);
+  (void)cbnz(ARMEmitter::Size::i64Bit, TMP1, &LoopTop);
+  (void)adr(TMP2, &l_ReturnToNative);
+  stp<ARMEmitter::IndexType::PRE>(ARMEmitter::XReg::x30, TMP2, REG_CALLRET_SP, -0x10);
+  // bl, not b: the guest's ret returns through the entry with a host ret, which predicts from the return stack, so
+  // put l_ReturnToNative (the next instruction) on it. With b every such return was mispredicted.
+  (void)bl(&LoopTop);
+
+  // A guest return through such an entry: the entry it just popped holds the return address. The top of the loop
+  // then exits to it if it's native code, as it does for any RIP, or looks it up like any other.
+  (void)Bind(&l_ReturnToNative);
+  ldur(TMP1, REG_CALLRET_SP, -0x10);
+  str(TMP1, STATE_PTR(CpuStateFrame, State.rip));
+  (void)b(&LoopTop);
 
   // Enter JIT
 #endif
