@@ -294,13 +294,81 @@ static WORD get_alt_machine( WORD machine )
     }
 }
 
+#if defined(__APPLE__) && defined(__x86_64__)
+/* MetalSharp: the first of a runtime's candidate directories, relative to Wine's own lib/wine, that has <check> */
+static char *metalsharp_runtime_dir( const char *const *candidates, const char *check )
+{
+    char *dir, *file;
+    BOOL found;
+
+    for (; *candidates; candidates++)
+    {
+        if (asprintf( &dir, "%s/%s", dll_dir, *candidates ) == -1) continue;
+        if (asprintf( &file, "%s/%s", dir, check ) == -1) file = NULL;
+        found = file && !access( file, R_OK );
+        free( file );
+        if (found)
+        {
+            char *real = realpath( dir, NULL );
+            if (real)
+            {
+                free( dir );
+                dir = real;
+            }
+            return dir;
+        }
+        free( dir );
+    }
+    return NULL;
+}
+
+/* MetalSharp: as on MetalSharp Wine, every process finds Mullion (lib/dxmt), WFDXCompat (the launcher companion the
+ * Rockstar Games Launcher and SocialClubHelper run with) and D3DMetal by itself, in a new prefix or one Steam started,
+ * not only when the backend's route names them: the runtimes installed next to Wine (~/.metalsharp/runtime/...) or
+ * inside MetalSharp-Wine-x86_64.app (share/metalsharp/runtime/...). The environment still chooses first. */
+static void set_metalsharp_runtime_defaults(void)
+{
+    static const char *const wfdxcompat[] = { "../../../wfdxcompat", "../../share/metalsharp/runtime/wfdxcompat", NULL };
+    static const char *const dxmt[] = { "../dxmt", NULL };
+    static const char *const d3dmetal[] = { "../../../d3dmetal-gptk4-beta3", "../../../d3dmetal-gptk4-beta2",
+                                            "../../share/metalsharp/runtime/d3dmetal-gptk4-beta3", NULL };
+    char *dir;
+
+    if (!dll_dir) return;
+    if ((!getenv( "WFDXCOMPAT_RUNTIME_DIR" ) || !getenv( "WFDXCOMPAT_RUNTIME_DIR" )[0]) &&
+        (dir = metalsharp_runtime_dir( wfdxcompat, "x86_64-windows/wfdx-launchers-v1.dll" )))
+    {
+        setenv( "WFDXCOMPAT_RUNTIME_DIR", dir, 1 );
+        free( dir );
+    }
+    if ((!getenv( "DXMT_RUNTIME_DIR" ) || !getenv( "DXMT_RUNTIME_DIR" )[0]) &&
+        (dir = metalsharp_runtime_dir( dxmt, "x86_64-unix/winemetal.so" )))
+    {
+        setenv( "DXMT_RUNTIME_DIR", dir, 1 );
+        free( dir );
+    }
+    if ((!getenv( "D3DMETAL_RUNTIME_DIR" ) || !getenv( "D3DMETAL_RUNTIME_DIR" )[0]) &&
+        (dir = metalsharp_runtime_dir( d3dmetal, "external/D3DMetal.framework/D3DMetal" )))
+    {
+        setenv( "D3DMETAL_RUNTIME_DIR", dir, 1 );
+        free( dir );
+    }
+}
+#endif
+
 static void set_dll_path(void)
 {
     char *p, *path = getenv( "WINEDLLPATH" );
 #if defined(__APPLE__) && defined(__x86_64__)
-    char *d3dmetal_path = get_d3dmetal_dll_path();
+    char *d3dmetal_path;
 #endif
+    BOOL lane_first = FALSE;
     int i, count = 0;
+
+#if defined(__APPLE__) && defined(__x86_64__)
+    set_metalsharp_runtime_defaults();
+    d3dmetal_path = get_d3dmetal_dll_path();
+#endif
 
     if (path) for (p = path, count = 1; *p; p++) if (*p == ':') count++;
 #if defined(__APPLE__) && defined(__x86_64__)
@@ -312,15 +380,43 @@ static void set_dll_path(void)
 
 #if defined(__APPLE__) && defined(__x86_64__)
     if (d3dmetal_path) dll_paths[count++] = d3dmetal_path;
+    /* MetalSharp: the VKD3D lane (GRAPHICS_BACKEND vulkan, or vkd3d-proton from the backend's other route) loads its
+     * own NGX core and NVAPI, builtins in its WINEDLLPATH, in place of Mullion's builtins of those names in Wine's
+     * own directory: its directories first */
+    {
+        const char *backend = getenv( "GRAPHICS_BACKEND" );
+        lane_first = backend && (!strcmp( backend, "vkd3d" ) || !strcmp( backend, "vulkan" ) ||
+                                 !strcmp( backend, "vkd3d-proton" ) || !strcmp( backend, "dxvk" ));
+    }
 #endif
-    if (!build_dir) dll_paths[count++] = dll_dir;
+    if (!build_dir && !lane_first) dll_paths[count++] = dll_dir;
 
     if (path)
     {
         path = strdup(path);
-        for (p = strtok( path, ":" ); p; p = strtok( NULL, ":" )) dll_paths[count++] = strdup( p );
+        char *wine_dir = lane_first && dll_dir ? realpath( dll_dir, NULL ) : NULL;
+
+        for (p = strtok( path, ":" ); p; p = strtok( NULL, ":" ))
+        {
+            /* MetalSharp: the lane's directories go first, but not Wine's own x86_64-windows and i386-windows, which
+             * the metalsharp-wine wrapper puts in the WINEDLLPATH the Steam client (and every game it starts)
+             * inherits: a builtin found there as a flat WINEDLLPATH entry looks for its Unix library beside it, not
+             * in x86_64-unix, and crypt32's and win32u's then fail (c0000142). Wine's directory, last, has them. */
+            if (wine_dir)
+            {
+                char *real = realpath( p, NULL ), *slash = real ? strrchr( real, '/' ) : NULL;
+                BOOL own;
+
+                own = slash && (size_t)(slash - real) == strlen( wine_dir ) && !strncmp( real, wine_dir, slash - real );
+                free( real );
+                if (own) continue;
+            }
+            dll_paths[count++] = strdup( p );
+        }
+        free( wine_dir );
         free( path );
     }
+    if (!build_dir && lane_first) dll_paths[count++] = dll_dir;
 
     for (i = 0; i < count; i++) dll_path_maxlen = max( dll_path_maxlen, strlen(dll_paths[i]) );
     dll_paths[count] = NULL;
@@ -1286,6 +1382,80 @@ static NTSTATUS open_builtin_pe_file( const char *name, OBJECT_ATTRIBUTES *attr,
 /***********************************************************************
  *           find_builtin_dll
  */
+#if defined(__APPLE__) && defined(__x86_64__)
+/* MetalSharp: the VKD3D lane (GRAPHICS_BACKEND=vkd3d; vulkan and vkd3d-proton from the backend's older routes), D3D12
+ * to D3D8 on MoltenVK, which Wine loads by itself as MetalSharp Wine does: VKD3D-Proton's d3d12/d3d12core with the
+ * DXVK DXGI and D3D10/11 they present through, the lane's NGX core and NVAPI (vkd3d/vkd3d-proton), and DXVK's D3D9/D3D8
+ * and 32-bit DLLs (vkd3d/dxvk). The lane is installed next to Wine (~/.metalsharp/vkd3d) or inside
+ * MetalSharp-Wine-x86_64.app (share/metalsharp/vkd3d); its DLLs carry Wine's builtin marker. */
+static BOOL vkd3d_lane_enabled(void)
+{
+    const char *backend = getenv( "GRAPHICS_BACKEND" );
+
+    return backend && (!strcmp( backend, "vkd3d" ) || !strcmp( backend, "vulkan" ) ||
+                       !strcmp( backend, "vkd3d-proton" ) || !strcmp( backend, "dxvk" ));
+}
+
+static char *vkd3d_lane_pe_path( const char *lane, const char *pe_dir, const char *name )
+{
+    static const char *const roots[] = { "../../../../vkd3d", "../../share/metalsharp/vkd3d" };
+    unsigned int i;
+    char *path;
+
+    if (!dll_dir) return NULL;
+    for (i = 0; i < ARRAY_SIZE(roots); i++)
+    {
+        if (asprintf( &path, "%s/%s/%s/%s/%s", dll_dir, roots[i], lane, pe_dir, name ) == -1) continue;
+        if (!access( path, R_OK )) return path;
+        free( path );
+    }
+    return NULL;
+}
+
+/* MetalSharp: WineMetalGL (OpenGL 1.0-4.6 on Metal) is the default OpenGL, as on MetalSharp Wine: opengl32.dll is its
+ * forwarder from <dll_dir>/../winemetalgl (Wine's own with OPENGL_BACKEND=wine or WINEMETALGL=0) */
+static char *winemetalgl_opengl32_path( USHORT machine )
+{
+    const char *backend = getenv( "OPENGL_BACKEND" ), *enabled = getenv( "WINEMETALGL" ), *pe_dir;
+    char *path;
+
+    if (backend && !strcmp( backend, "wine" )) return NULL;
+    if (enabled && !strcmp( enabled, "0" )) return NULL;
+    if (machine == IMAGE_FILE_MACHINE_AMD64) pe_dir = "x86_64-windows";
+    else if (machine == IMAGE_FILE_MACHINE_I386) pe_dir = "i386-windows";
+    else return NULL;
+    if (!dll_dir || asprintf( &path, "%s/../winemetalgl/%s/opengl32.dll", dll_dir, pe_dir ) == -1) return NULL;
+    if (!access( path, R_OK )) return path;
+    free( path );
+    return NULL;
+}
+
+static char *resolve_vkd3d_lane_pe_path( const char *module, USHORT machine )
+{
+    static const char *const vkd3d_names[] = { "d3d12.dll", "d3d12core.dll", "dxgi.dll", "d3d11.dll", "d3d10core.dll",
+                                               "nvngx.dll", "nvapi64.dll" };
+    static const char *const dxvk_names[] = { "d3d9.dll", "d3d8.dll", "d3d11.dll", "d3d10core.dll", "dxgi.dll" };
+    const char *name = strrchr( module, '/' );
+    unsigned int i;
+
+    if (!vkd3d_lane_enabled()) return NULL;
+    name = name ? name + 1 : module;
+    if (machine == IMAGE_FILE_MACHINE_AMD64)
+    {
+        for (i = 0; i < ARRAY_SIZE(vkd3d_names); i++)
+            if (!strcasecmp( name, vkd3d_names[i] )) return vkd3d_lane_pe_path( "vkd3d-proton", "x86_64-windows", name );
+        for (i = 0; i < ARRAY_SIZE(dxvk_names); i++)
+            if (!strcasecmp( name, dxvk_names[i] )) return vkd3d_lane_pe_path( "dxvk", "x86_64-windows", name );
+    }
+    else if (machine == IMAGE_FILE_MACHINE_I386)
+    {
+        for (i = 0; i < ARRAY_SIZE(dxvk_names); i++)
+            if (!strcasecmp( name, dxvk_names[i] )) return vkd3d_lane_pe_path( "dxvk", "i386-windows", name );
+    }
+    return NULL;
+}
+#endif
+
 static NTSTATUS find_builtin_dll( UNICODE_STRING *nt_name, ANSI_STRING *exp_name, void **module,
                                   SIZE_T *size_ptr, SECTION_IMAGE_INFORMATION *image_info,
                                   ULONG_PTR limit_low, ULONG_PTR limit_high, USHORT search_machine,
@@ -1304,6 +1474,7 @@ static NTSTATUS find_builtin_dll( UNICODE_STRING *nt_name, ANSI_STRING *exp_name
     BOOL dxmt_runtime_pe = FALSE;
     BOOL wfdxcompat_runtime_pe = FALSE;
     BOOL wfdxcompat_backend_pe = FALSE;
+    BOOL vkd3d_lane_pe = FALSE;
 #endif
 
     InitializeObjectAttributes( &attr, nt_name, 0, 0, NULL );
@@ -1426,6 +1597,46 @@ static NTSTATUS find_builtin_dll( UNICODE_STRING *nt_name, ANSI_STRING *exp_name
             free( dxmt_pe );
         }
     }
+
+    /* MetalSharp: WineMetalGL's opengl32 forwarder, no unix side */
+    if (!strcmp( file + pos + 1, "opengl32.dll" ))
+    {
+        char *forwarder = winemetalgl_opengl32_path( search_machine );
+
+        if (forwarder)
+        {
+            status = open_builtin_pe_file( forwarder, &attr, module, size_ptr, image_info,
+                                           limit_low, limit_high, load_machine, prefer_native, offset );
+            TRACE( "WineMetalGL opengl32 %s for %s -> %#lx\n",
+                   debugstr_a(forwarder), debugstr_us(nt_name), (long)status );
+            free( forwarder );
+            if (status != STATUS_DLL_NOT_FOUND)
+            {
+                ptr = file + pos;
+                vkd3d_lane_pe = TRUE;
+                goto done;
+            }
+        }
+    }
+
+    /* MetalSharp: the VKD3D lane's PE modules, no unix side */
+    {
+        char *lane_pe = resolve_vkd3d_lane_pe_path( file + pos + 1, search_machine );
+
+        if (lane_pe)
+        {
+            status = open_builtin_pe_file( lane_pe, &attr, module, size_ptr, image_info,
+                                           limit_low, limit_high, load_machine, prefer_native, offset );
+            TRACE( "VKD3D lane PE %s for %s -> %#lx\n", debugstr_a(lane_pe), debugstr_us(nt_name), (long)status );
+            free( lane_pe );
+            if (status != STATUS_DLL_NOT_FOUND)
+            {
+                ptr = file + pos;
+                vkd3d_lane_pe = TRUE;
+                goto done;
+            }
+        }
+    }
 #endif
 
     if (build_dir)
@@ -1526,7 +1737,7 @@ done:
         if (dxmt_unixlib) unixlib_path = dxmt_unixlib;
 #endif
 #if defined(__APPLE__) && defined(__x86_64__)
-        if ((!d3dmetal_runtime_pe && !dxmt_runtime_pe && !wfdxcompat_runtime_pe) ||
+        if ((!d3dmetal_runtime_pe && !dxmt_runtime_pe && !wfdxcompat_runtime_pe && !vkd3d_lane_pe) ||
             d3dmetal_unixlib || dxmt_unixlib)
 #endif
             set_builtin_unixlib_name( *module, unixlib_path );
@@ -2234,6 +2445,14 @@ static void start_main_thread(void)
     set_load_order_app_name( main_wargv[0] );
 #if defined(__APPLE__) && defined(__x86_64__)
     init_process_graphics_backend( main_wargv[0] );
+    /* MetalSharp: the DLL path again, for the lane the program's launch.env chose (init_startup_info applied it):
+     * the first one followed the environment inherited from the program that started it, such as a Steam client
+     * started on D3DMetal, whose lane would otherwise be every game's */
+    set_dll_path();
+    /* MetalSharp: Apple's Metal HUD throws an Objective-C exception (a nil dictionary key) in a 32-bit program's
+     * MoltenVK device, which ends the program (DXVK's D3D9 for Portal 2): the VKD3D / DXVK lane's 32-bit programs run
+     * without it. Mullion's keep it. */
+    if (vkd3d_lane_enabled() && !is_machine_64bit( main_image_info.Machine )) unsetenv( "MTL_HUD_ENABLED" );
 #endif
     init_thread_stack( teb, 0, 0, 0 );
     NtCreateKeyedEvent( &keyed_event, GENERIC_READ | GENERIC_WRITE, NULL, 0 );

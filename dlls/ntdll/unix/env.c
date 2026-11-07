@@ -1007,16 +1007,20 @@ static void set_launch_var( WCHAR **env, SIZE_T *pos, SIZE_T *size, const char *
 }
 
 /* MetalSharp: a game's saved resolution follows the main display, and a DLSS game is set up for it
- * (saved_resolution.c): a game shown an NVIDIA GPU is shown one by Mullion as well (its NVIDIA extension on,
+ * (saved_resolution.c): a game shown an NVIDIA GPU is shown one by Mullion, or DXVK's DXGI on VKD3D-Proton's lane,
+ * as well (their NVIDIA extension on,
  * unless MULLION_ENABLE_NVEXT says otherwise), and a Streamline game is hidden Wine's exports
  * (METALSHARP_HIDE_WINE_EXPORTS, read by the loader; removed for programs it does not apply to) */
 static void fit_launch_resolution( WCHAR **env, SIZE_T *pos, SIZE_T *size, const WCHAR *image )
 {
     static const WCHAR ntprefixW[] = {'\\','?','?','\\'};
-    static const WCHAR configW[] = {'M','U','L','L','I','O','N','_','C','O','N','F','I','G'};
+    static const WCHAR mullion_configW[] = {'M','U','L','L','I','O','N','_','C','O','N','F','I','G'};
+    static const WCHAR dxvk_configW[] = {'D','X','V','K','_','C','O','N','F','I','G'};
     static const WCHAR nvextW[] = {'M','U','L','L','I','O','N','_','E','N','A','B','L','E','_','N','V','E','X','T'};
     char *unix_name = NULL, *appdata, *localappdata, *profile, config[512];
-    const char *description, *driver_version;
+    const char *description, *driver_version, *backend = getenv( "GRAPHICS_BACKEND" ), *config_name;
+    const WCHAR *configW;
+    SIZE_T config_len;
     unsigned int vendor, device;
     WCHAR *value;
     int len;
@@ -1037,11 +1041,43 @@ static void fit_launch_resolution( WCHAR **env, SIZE_T *pos, SIZE_T *size, const
     if (!metalsharp_dlss_game() ||
         ntdll_get_gpu_override( &vendor, &device, &description, &driver_version ) != 1 || vendor != 0x10de)
         return;
+    /* D3DMetal shows its own GPU ("AMD Compatibility Mode") unless told one: the NVIDIA one, so a game offers DLSS,
+     * which D3DMetal's nvngx-on-metalfx runs on MetalFX */
+    if (backend && !strcasecmp( backend, "d3dmetal" ))
+    {
+        static const WCHAR d3dm_vendorW[] = {'D','3','D','M','_','V','E','N','D','O','R','_','I','D'};
+        char id[16];
+
+        if ((value = get_env_var( *env, *pos, d3dm_vendorW, ARRAY_SIZE(d3dm_vendorW) )))
+        {
+            free( value );
+            return;
+        }
+        set_launch_var( env, pos, size, "D3DM_VENDOR_ID", "0x10DE" );
+        snprintf( id, sizeof(id), "0x%04X", device );
+        set_launch_var( env, pos, size, "D3DM_DEVICE_ID", id );
+        set_launch_var( env, pos, size, "D3DM_DEVICE_DESCRIPTION",
+                        description[0] ? description : "NVIDIA GeForce RTX 4080" );
+        return;
+    }
     if (!(value = get_env_var( *env, *pos, nvextW, ARRAY_SIZE(nvextW) )))
         set_launch_var( env, pos, size, "MULLION_ENABLE_NVEXT", "1" );
     free( value );
+    /* Mullion's configuration, or DXVK's DXGI's on VKD3D-Proton's and DXVK's lanes */
+    if (backend && (!strcasecmp( backend, "vkd3d" ) || !strcasecmp( backend, "dxvk" )))
+    {
+        configW = dxvk_configW;
+        config_len = ARRAY_SIZE(dxvk_configW);
+        config_name = "DXVK_CONFIG";
+    }
+    else
+    {
+        configW = mullion_configW;
+        config_len = ARRAY_SIZE(mullion_configW);
+        config_name = "MULLION_CONFIG";
+    }
     len = 0;
-    if ((value = get_env_var( *env, *pos, configW, ARRAY_SIZE(configW) )))
+    if ((value = get_env_var( *env, *pos, configW, config_len )))
     {
         len = ntdll_wcstoumbs( value, wcslen( value ), config, sizeof(config) - 160, FALSE );
         if (len < 0) len = 0;
@@ -1052,7 +1088,7 @@ static void fit_launch_resolution( WCHAR **env, SIZE_T *pos, SIZE_T *size, const
     snprintf( config + len, sizeof(config) - len,
               "%sdxgi.customVendorId=10de;dxgi.customDeviceId=%04x;dxgi.customDeviceDesc=\"%s\"",
               len ? ";" : "", device, description[0] ? description : "NVIDIA GeForce RTX 4080" );
-    set_launch_var( env, pos, size, "MULLION_CONFIG", config );
+    set_launch_var( env, pos, size, config_name, config );
 }
 
 static void add_launch_environment( WCHAR **env, SIZE_T *pos, SIZE_T *size, const WCHAR *image )
@@ -2283,7 +2319,9 @@ void init_startup_info(void)
 
         if (image)
         {
-            memcpy( image, info + 1, info->imagepath_len );
+            /* the strings follow the structure as curdir, dllpath, imagepath, ... (as init_startup_info reads
+             * them below): the image path is past the other two */
+            memcpy( image, (char *)(info + 1) + info->curdir_len + info->dllpath_len, info->imagepath_len );
             image[info->imagepath_len / sizeof(WCHAR)] = 0;
             add_launch_environment( &env, &env_pos, &env_size, image );
             fit_launch_resolution( &env, &env_pos, &env_size, image );

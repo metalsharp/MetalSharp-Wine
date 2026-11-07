@@ -126,6 +126,9 @@ char *resolve_d3dmetal_unixlib_path( const char *path )
     if (!d3dmetal_graphics_backend_enabled()) return NULL;
     name = name ? name + 1 : path;
     if (!strcmp( name, "nvapi.so" )) name = "nvapi64.so";
+    /* MetalSharp: nvngx.dll is nvngx-on-metalfx.dll here (resolve_d3dmetal_pe_path); its Unix side is that one's too,
+     * without which its DllMain fails (ERROR_DLL_INIT_FAILED) and a game finds no NGX */
+    else if (!strcmp( name, "nvngx.so" )) name = "nvngx-on-metalfx.so";
     if ((resolved = try_d3dmetal_unixlib_path( dir, name ))) return resolved;
 
     runtime_dir = getenv( "D3DMETAL_RUNTIME_DIR" );
