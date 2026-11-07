@@ -305,8 +305,33 @@ static NSString* WineLocalizedString(unsigned int stringID)
             [NSApp setMainMenu:mainMenu];
             [NSApp setWindowsMenu:submenu];
 
-            [NSApp setApplicationIconImage:self.applicationIcon];
+            [NSApp setApplicationIconImage:self.applicationIcon ? self.applicationIcon : [self defaultApplicationIcon]];
         }
+    }
+
+    /* MetalSharp: a program without an icon of its own shows the bundle's icon in the Dock, and a Wine run from
+     * outside an app bundle (MetalSharp's x86_64 runtime, ~/.metalsharp/runtime/wine/bin/wine) has none: it shows
+     * MetalSharp Wine's, share/wine/MetalSharp-Wine.icns next to its bin. */
+    - (NSImage*) defaultApplicationIcon
+    {
+        static NSImage* icon;
+        static BOOL looked;
+
+        if (!looked)
+        {
+            NSBundle* bundle = [NSBundle mainBundle];
+
+            looked = TRUE;
+            if (![bundle objectForInfoDictionaryKey:@"CFBundleIconFile"] &&
+                ![bundle objectForInfoDictionaryKey:@"CFBundleIconName"])
+            {
+                NSString* bin = [[bundle executablePath] stringByResolvingSymlinksInPath];
+                NSString* path = [[[bin stringByDeletingLastPathComponent] stringByDeletingLastPathComponent]
+                                  stringByAppendingPathComponent:@"share/wine/MetalSharp-Wine.icns"];
+                icon = [[NSImage alloc] initWithContentsOfFile:path];
+            }
+        }
+        return icon;
     }
 
     - (BOOL) waitUntilQueryDone:(bool*)done timeout:(NSDate*)timeout processEvents:(BOOL)processEvents
