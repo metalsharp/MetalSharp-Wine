@@ -1,0 +1,57 @@
+From 10fc93bee07cc127b8155409982215a2ebd52502 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Sat, 7 Nov 2026 04:35:30 -0700
+Subject: [PATCH] win32u: Create HKLM\Software\Wine as a lasting key before the
+ volatile MetalSharp key.
+
+HKLM\Software\Wine\MetalSharp (RegisteredGpu, from the GPU a game is shown in winemac.conf) is volatile, and the
+server makes every key it creates on the way to a volatile key volatile too. In a new prefix win32u registers the
+display devices before wine.inf has created Software\Wine, which then became volatile and took no lasting key:
+wineboot's [LicenseInformation] failed with STATUS_CHILD_MUST_BE_VOLATILE ("could not create key ...
+Software\Wine\LicenseInformation"). Software\Wine is now created as a lasting key first.
+---
+ dlls/win32u/sysparams.c | 14 ++++++++++++--
+ 1 file changed, 12 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/win32u/sysparams.c b/dlls/win32u/sysparams.c
+index bed506aeb17..d9f5f124d9d 100644
+--- a/dlls/win32u/sysparams.c
++++ b/dlls/win32u/sysparams.c
+@@ -1209,6 +1209,16 @@ static BOOL read_gpu_from_registry( struct gpu *gpu )
+  * says which, and a game whose GPU differs registers the devices again (lock_display_devices). */
+ static const char metalsharp_gpu_keyA[] = "\\Registry\\Machine\\Software\\Wine\\MetalSharp";
+ 
++/* HKLM\Software\Wine\MetalSharp is volatile, and the server makes every key it creates on the way volatile too: a
++ * Software\Wine created so (in a new prefix, before wine.inf) would take no lasting key under it, and wineboot's
++ * LicenseInformation fails with STATUS_CHILD_MUST_BE_VOLATILE. So Software\Wine is made a lasting key first. */
++static HKEY create_metalsharp_gpu_key(void)
++{
++    HKEY parent = reg_create_ascii_key( NULL, "\\Registry\\Machine\\Software\\Wine", 0, NULL );
++    if (parent) NtClose( parent );
++    return reg_create_ascii_key( NULL, metalsharp_gpu_keyA, REG_OPTION_VOLATILE, NULL );
++}
++
+ static int get_gpu_override( unsigned int *vendor, unsigned int *device, const char **description,
+                              const char **driver_version )
+ {
+@@ -1240,7 +1250,7 @@ static void write_registered_gpu_identity(void)
+     char identity[16];
+     HKEY hkey;
+ 
+-    if (!(hkey = reg_create_ascii_key( NULL, metalsharp_gpu_keyA, REG_OPTION_VOLATILE, NULL ))) return;
++    if (!(hkey = create_metalsharp_gpu_key())) return;
+     gpu_override_identity( identity, sizeof(identity) );
+     set_reg_ascii_value( hkey, "RegisteredGpu", identity );
+     NtClose( hkey );
+@@ -1271,7 +1281,7 @@ static void set_primary_gpu_luid( const LUID *luid )
+     HKEY hkey;
+     WCHAR nameW[16];
+ 
+-    if (!(hkey = reg_create_ascii_key( NULL, metalsharp_gpu_keyA, REG_OPTION_VOLATILE, NULL ))) return;
++    if (!(hkey = create_metalsharp_gpu_key())) return;
+     asciiz_to_unicode( nameW, "PrimaryGpuLuid" );
+     set_reg_value( hkey, nameW, REG_QWORD, luid, sizeof(*luid) );
+     NtClose( hkey );
+-- 
+2.54.0 (Apple Git-157)
+
