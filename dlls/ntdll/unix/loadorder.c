@@ -519,17 +519,18 @@ enum loadorder get_load_order( const UNICODE_STRING *nt_name, BOOL is_system_dir
     basename = get_basename( module + 1 );
 
 #if defined(__APPLE__) && defined(__x86_64__)
-    /* WineForge-Internal: DXMT has no D3D12; do not mix in D3DMetal's DLL. */
+    if (dxmt_graphics_backend_enabled() && is_dxmt_module_basename( basename, main_image_info.Machine ))
+    {
+        ret = LO_BUILTIN;
+        TRACE( "forcing builtin load order for DXMT module %s\n", debugstr_us(nt_name) );
+        goto done;
+    }
+    /* WineForge-Internal: without the runtime's own D3D12 for this machine (Mullion has none
+     * for i386, older runtimes none at all), do not mix in D3DMetal's DLL. */
     if (dxmt_graphics_backend_enabled() && !wcsicmp( basename, d3d12W ))
     {
         ret = LO_DISABLED;
         TRACE( "disabling D3D12 for DXMT process %s\n", debugstr_us(nt_name) );
-        goto done;
-    }
-    if (dxmt_graphics_backend_enabled() && is_dxmt_module_basename( basename ))
-    {
-        ret = LO_BUILTIN;
-        TRACE( "forcing builtin load order for DXMT module %s\n", debugstr_us(nt_name) );
         goto done;
     }
 #endif

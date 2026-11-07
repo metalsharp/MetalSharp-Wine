@@ -49,7 +49,16 @@ static const char *const dxmt_module_names[] =
     "nvapi64.dll",
     "nvngx.dll",
     "winemetal.dll",
+    /* Mullion ships these for x86_64 only; see is_dxmt_module_basename(). */
+    "d3d12.dll",
+    "d3d12core.dll",
 };
+
+/* Modules that only some DXMT runtimes provide, and only for some machines. */
+static BOOL is_optional_dxmt_module( const char *name )
+{
+    return !strcasecmp( name, "d3d12.dll" ) || !strcasecmp( name, "d3d12core.dll" );
+}
 
 BOOL dxmt_runtime_available(void)
 {
@@ -88,7 +97,10 @@ BOOL is_dxmt_module_name( const char *path )
     return FALSE;
 }
 
-BOOL is_dxmt_module_basename( const WCHAR *name )
+/* Whether the DXMT runtime serves this module to a process of the given machine. An optional
+ * module counts only when the runtime has it for that machine (Mullion's D3D12 is x86_64 only),
+ * so that a 32-bit program keeps the previous behaviour instead of a forced builtin it can't get. */
+BOOL is_dxmt_module_basename( const WCHAR *name, USHORT machine )
 {
     unsigned int i;
 
@@ -107,7 +119,15 @@ BOOL is_dxmt_module_basename( const WCHAR *name )
             if (right >= 'A' && right <= 'Z') right += 'a' - 'A';
             if (left != right) break;
         }
-        if (pos == len && !name[pos]) return TRUE;
+        if (pos == len && !name[pos])
+        {
+            char *path;
+
+            if (!is_optional_dxmt_module( module )) return TRUE;
+            if (!(path = resolve_dxmt_pe_path( module, machine ))) return FALSE;
+            free( path );
+            return TRUE;
+        }
     }
     return FALSE;
 }
