@@ -148,20 +148,22 @@ descriptor write path, the null template and every copy update it:
 |---|---|---|---|
 | Texture SRV | 0 | handle of its `VkImageView` | min LOD clamp, as float bits in the low 32 bits |
 | Texture UAV | 0 | handle of its `VkImageView` | 0 |
-| Buffer SRV/UAV (raw, structured, typed) | exact VA of the first byte | handle of its texel `VkBufferView`, or 0 if none | `range` (low 32 bits) \| `(element_offset & 0xff) << 32` \| `1 << 63` if typed |
+| Buffer SRV/UAV (raw, structured, typed) | exact VA of the first byte | handle of a texel `VkBufferView` of exactly the D3D12 view (from its first element, as many elements), or 0 if none | `range` (low 32 bits) \| `1 << 63` if typed |
 | Raw or structured buffer UAV without a counter | exact VA of the first byte | 0 (`IncrementCounter()` must not reach the data) | `range` (low 32 bits) |
 | Buffer UAV **with a counter** (append/consume) | exact VA of the first byte | handle of an `R32_UINT` storage texel `VkBufferView` over the counter resource, starting at `CounterOffsetInBytes` aligned down to 16 | `range` (low 32 bits) \| `((CounterOffsetInBytes % 16) / 4) << 32`; typed bit 0 (as Apple's `IRRuntimeCreateAppendBufferView` does) |
 | CBV | exact VA | 0 | `SizeInBytes` (low 32 bits) |
 | Sampler | handle of its `VkSampler` (**in gpuVA**, as Apple's `IRDescriptorTableSetSampler` does) | 0 | 0 (MoltenVK already applies the LOD bias in the sampler) |
 | Null | 0 | 0 | 0 |
 
-**Typed buffers can't go through the bridge.** Measured with converter 4.0 beta 3 (MetalSharp-Wine's native
-bridge test): a typed buffer (`Buffer<T>`, `RWBuffer<T>`, SRV or UAV) is read and written only through its texel view,
-from element 0, and `GetDimensions` returns the view's width. The metadata's texel offset and size are ignored,
-whatever the encoding, with or without bounds checks. Metal texel views must start 16-byte aligned, so a D3D12 typed
-view whose first element is not 16-byte aligned can't be expressed, and a descriptor can change after a command list
-is recorded. So VKD3D-Proton keeps every PSO whose shaders reach a typed buffer (from a table or the heap) on SPIR-V
-(section 5); typed entries in the shadow heaps are written as the table says but no bridge shader reads them.
+**Typed buffers read through views of exactly the D3D12 view.** Measured with converter 4.0 beta 3: a typed buffer
+(`Buffer<T>`, `RWBuffer<T>`, SRV or UAV) is read and written only through its texel view, from element 0, and
+`GetDimensions` returns the view's width; the metadata's texel offset is ignored. Metal texel views start at any
+multiple of the texel size (`minimumTextureBufferAlignmentForPixelFormat`: 4 bytes for R32, 16 for RGBA32), so each
+buffer SRV and typed UAV entry gets a texel view of exactly the D3D12 view: the resource's own view when its view map
+has that range, otherwise one made for the entry, which the entry owns (released when the entry is written again,
+copied over or its heap goes; copies take references). Raw and structured SRVs get one too, for typed loads through
+them. Three-component 32-bit formats have no Metal texel format: their entries have no view, and shaders that declare
+such SRVs stay on SPIR-V (section 5).
 
 ## 4. Handles: `vkGetImageViewHandle64NVX` (MoltenVK implements `VK_NVX_image_view_handle`)
 
@@ -182,17 +184,24 @@ is recorded. So VKD3D-Proton keeps every PSO whose shaders reach a typed buffer 
 
 - `METALSHARP_MSC` is not `0`, the device enabled `VK_NVX_image_view_handle`, and buffer device address is available.
 - The root signature isn't a local one, and its top-level buffer plus heap addresses fit in 4096 bytes.
-- No shader of the PSO reaches a typed buffer (`VKD3D_SHADER_META_FLAG_USES_TYPED_BUFFER`, set by the DXIL to
-  SPIR-V compile from the resource kinds dxil-spirv reports, heap-indexed ones included). Compute PSOs therefore
-  compile their SPIR-V first, cached like any other.
-- Compute: the shader is DXIL (not DXBC), and `vkCreateComputePipelines` with the blob succeeds.
-- Graphics: exactly a vertex and a pixel shader, both DXIL; no stream output, dual-source blending or view
-  instancing; every vertex input's semantic fits the table; the PSO's pipeline is created up front (not a pipeline
-  library, known topology), and creating it with the blobs succeeds. Otherwise the PSO is created with SPIR-V as
-  before.
+- The shaders are DXIL, or DXBC (SM 4.x/5.x) unless `METALSHARP_MSC_DXBC=0`: DXBC blobs are flagged and MoltenVK
+  converts them to DXIL with DirectXShaderCompiler's dxilconv (`libdxbcconverter.dylib`, next to `libMoltenVK.dylib`).
+- No shader declares a three-component 32-bit typed SRV (DXIL: dxil-spirv reports it; DXBC: by its RDEF reflection, or,
+  without one, any typed buffer SRV), writes `SV_CullDistance` (its output signature, OSG1, OSG5 or OSGN: the converter
+  drops cull distances), uses 64-bit atomics, barycentrics or residency feedback, or may sample with
+  min/max filtering (a static sampler with it, or tables or the heap once the application made such a sampler):
+  MoltenVK emulates that in SPIR-V shaders on GPUs without sampler reduction (Apple10 and macOS 26 have it).
+- Compute: `vkCreateComputePipelines` with the blob succeeds.
+- Graphics: a vertex shader, or a mesh shader with or without an amplification shader, and a pixel shader or none;
+  no stream output, view instancing, depth bounds test, logic operation or conservative rasterization; dual-source
+  blending is converted (blob flag); every vertex input's semantic fits the table; the PSO's pipeline is created up
+  front (not a pipeline library, known topology), and creating it with the blobs succeeds.
 - MoltenVK fails a bridge pipeline (any error) when the converter can't be loaded, conversion fails, the device
   has no residency set, or (graphics) the pipeline needs what only SPIR-V shaders can emulate: multiview, the
-  emulated depth bounds test, emulated reversed depth, draw parameters, or vertex buffers at Metal indexes 0 to 5.
+  emulated depth bounds test, emulated reversed depth, or vertex buffers at Metal indexes 0 to 5.
+
+Blob version 3 adds a flags word after the vertex input table's (`0x1` dual-source blending, `0x2` DXBC), and stages
+3 (mesh) and 4 (amplification).
 
 ExecuteIndirect (`EXT_dgc`) writes push constants on the GPU in VKD3D-Proton's own layout, so it can't feed a
 bridge pipeline. For indirect command signatures with a bridge PSO, VKD3D-Proton uses a SPIR-V pipeline for the
@@ -213,7 +222,14 @@ variant needs.
 - `MVKGraphicsPipeline`: a converted vertex module and an optional converted fragment module make a render pipeline
   (`newMSCRenderPipelineDescriptor`) from the converter's libraries, with the vertex descriptor built as for SPIR-V
   and then moved to the stage-in attributes, and the usual fragment outputs.
+- `MVKGraphicsPipeline` also makes mesh pipelines (`newMSCMeshRenderPipelineDescriptor`): the mesh shader as the mesh
+  function, the amplification shader as the object function (or the grid helper on GPUs without indirect mesh draws).
 - Dispatch: in `prepareComputeDispatch`, a bridge pipeline binds the push-constant bytes at index 2, and the heaps
-  at 0 and 1, instead of running `bindVulkanComputeToMetalCompute`. Draws do the same for both stages
-  (`bindMSCArguments`), and bind vertex buffers.
+  at 0 and 1, instead of running `bindVulkanComputeToMetalCompute`. Draws do the same for every stage
+  (`bindMSCArguments`: vertex and fragment, or object, mesh and fragment), and bind vertex buffers. A vertex shader
+  that reads draw parameters gets the draw's arguments at vertex buffer 4 and the index type at 5, as Apple's runtime
+  binds them. Heap buffers are resolved once per command buffer.
+- Conversions are cached by blob, Metal device and options (at most 4096 libraries).
+- VKD3D-Proton flushes no SPIR-V bindings for bridge draws and dispatches, and pushes no argument buffer identical to
+  the last one pushed.
 - `METALSHARP_TRACE=shader` logs each conversion with its time; failures are errors with the converter's message.

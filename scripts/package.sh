@@ -26,6 +26,17 @@ if [[ -f $MSC/libmetalirconverter.dylib ]]; then
   mkdir -p $D/share/licenses/metal-shaderconverter
   cp $MSC/LICENSE.metal-shaderconverter.rtf $MSC/ACKNOWLEDGEMENTS.metal-shaderconverter.rtf $D/share/licenses/metal-shaderconverter/
 fi
+# DirectXShaderCompiler's DXBC to DXIL converter (dxilconv, NCSA), which MoltenVK loads to hand VKD3D-Proton's DXBC
+# shaders to Metal Shader Converter: VKD3D-Proton-MacOS scripts/build-dxbcconverter.sh (after fetch-sources.sh dxc),
+# arm64 slice. Without it, DXBC shaders stay on SPIR-V.
+DXBC=$ROOT/src/vkd3d-proton/artifacts/dxbcconverter
+if [[ ! -f $DXBC/libdxbcconverter.dylib && -f $ROOT/src/vkd3d-proton/scripts/build-dxbcconverter.sh ]]; then
+  (cd $ROOT/src/vkd3d-proton && bash scripts/fetch-sources.sh dxc && bash scripts/build-dxbcconverter.sh) || true
+fi
+if [[ -f $DXBC/libdxbcconverter.dylib ]]; then
+  lipo $DXBC/libdxbcconverter.dylib -thin arm64 -output $D/lib/libdxbcconverter.dylib 2>/dev/null || cp $DXBC/libdxbcconverter.dylib $D/lib/
+  mkdir -p $D/share/licenses/dxc; cp $DXBC/LICENSE.dxc.txt $D/share/licenses/dxc/LICENSE.dxilconv.txt
+fi
 # innoextract (scripts/build-innoextract.sh), for unpacking Inno Setup installers
 if [[ -x $ROOT/deps/innoextract/innoextract ]]; then
   cp $ROOT/deps/innoextract/innoextract $D/bin/
