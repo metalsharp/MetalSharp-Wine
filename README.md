@@ -6,6 +6,12 @@
   <a href="https://github.com/metalsharp/WineMetalGL/actions/workflows/codeql.yml"><img alt="CodeQL" src="https://img.shields.io/github/actions/workflow/status/metalsharp/WineMetalGL/codeql.yml?branch=main&label=CodeQL&color=white"></a>
 </p>
 
+___
+
+### Github deleted all of my stars after temporarily privating the repo. Please help!
+
+___
+
 ### What It Is: 
 
 WineMetalGL is a replacement to Apple's own OpenGL.Framework (Deprecated in 2018), which allows both native Arm64 applications and Wine Apps to receive and use OpenGL 1.0 -> OpenGL 4.6. It is fully conformant with the Khronos GL-CTS Test Suite, and also supports GLES 2 through 3.2. WineMetalGL is OpenGL -> Metal. 
