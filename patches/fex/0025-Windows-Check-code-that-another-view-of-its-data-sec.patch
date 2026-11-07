@@ -1,0 +1,285 @@
+From 5231ec04656d8307579107f12982a02b11f8e292 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Wed, 4 Nov 2026 17:42:44 -0700
+Subject: [PATCH 25/27] Windows: Check code that another view of its data
+ section can rewrite
+
+Views of one data section share their pages, so a write through a writable
+view changes the code FEX translated from an executable view of the same
+section, without a fault or a protection change that FEX would see. The stale
+translation kept running: a protector that decrypts its code into one view of
+a section and runs it from another ran old code and crashed.
+
+Wine now reports every data section view with its section handle and offset.
+FEX groups views of the same section (NtCompareObjects), and code it runs from
+a view whose section has another view mapped is checked against its bytes
+before each instruction, as with full SMC checks, and translated again when
+they changed. Code translated before a second view was mapped is dropped.
+Only these views pay for the checks, and no memory is write-protected, so
+system calls writing to the views work as before.
+---
+ FEXCore/Source/Interface/Core/Frontend.cpp    |   5 +
+ FEXCore/Source/Interface/Core/Frontend.h      |   2 +
+ FEXCore/include/FEXCore/HLE/SyscallHandler.h  |   3 +
+ Source/Windows/ARM64EC/Module.cpp             |  10 +-
+ Source/Windows/Common/InvalidationTracker.cpp | 106 +++++++++++++++++-
+ Source/Windows/Common/InvalidationTracker.h   |  16 +++
+ 6 files changed, 138 insertions(+), 4 deletions(-)
+
+diff --git a/FEXCore/Source/Interface/Core/Frontend.cpp b/FEXCore/Source/Interface/Core/Frontend.cpp
+index 2cc24a348..57b1ab3f6 100644
+--- a/FEXCore/Source/Interface/Core/Frontend.cpp
++++ b/FEXCore/Source/Interface/Core/Frontend.cpp
+@@ -99,6 +99,7 @@ bool Decoder::CheckRangeExecutable(uint64_t Address, uint64_t Size) {
+     ExecutableRangeBase = RangeInfo.Base;
+     ExecutableRangeEnd = RangeInfo.Base + RangeInfo.Size;
+     ExecutableRangeWritable = RangeInfo.Writable;
++    ExecutableRangeValidate = RangeInfo.Validate;
+ 
+     if (RangeInfo.Size == 0) {
+       return false;
+@@ -1629,6 +1630,10 @@ void Decoder::DecodeLoop(const uint8_t* _InstStream, uint64_t GuestSizePause) {
+       ++DecodedSize;
+       ++BlockIt->NumInstructions;
+       BlockIt->Size += DecodeInst->InstSize;
++      if (ExecutableRangeValidate) {
++        // MetalSharp: code another view of its section can rewrite unseen; check it before each instruction.
++        BlockIt->ForceFullSMCDetection = true;
++      }
+ 
+       // if we weren't provided relocations (guest JIT), try to detect what we can
+       if (WantsDataMasks && BlockIt->BlockStatus == DecodedBlockStatus::SUCCESS && BlockInfo.Is64BitMode && !Relocations) {
+diff --git a/FEXCore/Source/Interface/Core/Frontend.h b/FEXCore/Source/Interface/Core/Frontend.h
+index 40977ffb1..da6562bfc 100644
+--- a/FEXCore/Source/Interface/Core/Frontend.h
++++ b/FEXCore/Source/Interface/Core/Frontend.h
+@@ -89,6 +89,7 @@ public:
+ 
+   void ResetExecutableRangeCache() {
+     ExecutableRangeBase = ExecutableRangeEnd = 0;
++    ExecutableRangeValidate = false;
+   }
+ 
+ private:
+@@ -154,6 +155,7 @@ private:
+   uint64_t ExecutableRangeBase {};
+   uint64_t ExecutableRangeEnd {};
+   bool ExecutableRangeWritable {};
++  bool ExecutableRangeValidate {};
+   bool HitNonExecutableRange {};
+   bool HitBadRelocation {};
+ 
+diff --git a/FEXCore/include/FEXCore/HLE/SyscallHandler.h b/FEXCore/include/FEXCore/HLE/SyscallHandler.h
+index 0ba0218e3..b343616d7 100644
+--- a/FEXCore/include/FEXCore/HLE/SyscallHandler.h
++++ b/FEXCore/include/FEXCore/HLE/SyscallHandler.h
+@@ -21,6 +21,9 @@ struct ExecutableRangeInfo {
+   uint64_t Base;
+   uint64_t Size;
+   bool Writable;
++  // MetalSharp: the range may change without a write FEX can trap (another view of its section is written), so its
++  // code is checked against its bytes before each instruction.
++  bool Validate {};
+ };
+ 
+ class SyscallHandler;
+diff --git a/Source/Windows/ARM64EC/Module.cpp b/Source/Windows/ARM64EC/Module.cpp
+index d8d640efc..e1c601f86 100644
+--- a/Source/Windows/ARM64EC/Module.cpp
++++ b/Source/Windows/ARM64EC/Module.cpp
+@@ -916,7 +916,14 @@ NTSTATUS NotifyMapViewOfSection(void* Unk1, void* Address, void* Unk2, SIZE_T Si
+ 
+   {
+     std::scoped_lock Lock(ThreadCreationMutex);
+-    HandleImageMap(reinterpret_cast<uint64_t>(Address));
++    if (Unk1) {
++      // MetalSharp: Wine passes the section handle and view offset for data sections, so views of one section can
++      // be told apart from other memory and kept coherent with the code translated from them.
++      InvalidationTracker->HandleDataSectionMap(Unk1, reinterpret_cast<uint64_t>(Address), static_cast<uint64_t>(Size),
++                                                reinterpret_cast<uint64_t>(Unk2));
++    } else {
++      HandleImageMap(reinterpret_cast<uint64_t>(Address));
++    }
+   }
+ 
+ 
+@@ -934,6 +941,7 @@ void NotifyUnmapViewOfSection(void* Address, BOOL After, NTSTATUS Status) {
+     if (Size) {
+       HandleImageUnmap(Start, Size);
+     }
++    InvalidationTracker->HandleDataSectionUnmap(reinterpret_cast<uint64_t>(Address));
+   } else {
+     ThreadCreationMutex.unlock();
+   }
+diff --git a/Source/Windows/Common/InvalidationTracker.cpp b/Source/Windows/Common/InvalidationTracker.cpp
+index 58f3fb2a2..e5e0cd889 100644
+--- a/Source/Windows/Common/InvalidationTracker.cpp
++++ b/Source/Windows/Common/InvalidationTracker.cpp
+@@ -10,6 +10,8 @@
+ #include <windef.h>
+ #include <winternl.h>
+ 
++extern "C" NTSTATUS WINAPI NtCompareObjects(HANDLE, HANDLE);
++
+ namespace FEX::Windows {
+ InvalidationTracker::InvalidationTracker(FEXCore::Context::Context& CTX, const std::unordered_map<DWORD, FEXCore::Core::InternalThreadState*>& Threads)
+   : CTX {CTX}
+@@ -270,13 +272,111 @@ FEXCore::HLE::ExecutableRangeInfo InvalidationTracker::QueryExecutableRange(uint
+   if (!XResult.Enclosed) {
+     return {};
+   }
++  FEXCore::HLE::ExecutableRangeInfo Info;
+   const auto RWXResult = RWXIntervals.Query(Address);
+   if (RWXResult.Enclosed) {
+-    return {RWXResult.Interval.Offset, RWXResult.Interval.End - RWXResult.Interval.Offset, true};
++    Info = {RWXResult.Interval.Offset, RWXResult.Interval.End - RWXResult.Interval.Offset, true};
+   } else if (RWXResult.Size && RWXResult.Size < XResult.Size) {
+-    return {XResult.Interval.Offset, RWXResult.Interval.Offset - XResult.Interval.Offset, false};
++    Info = {XResult.Interval.Offset, RWXResult.Interval.Offset - XResult.Interval.Offset, false};
++  } else {
++    Info = {XResult.Interval.Offset, XResult.Interval.End - XResult.Interval.Offset, false};
++  }
++
++  // Code in a view of a data section that has another view mapped: check its bytes as it runs, and keep the range
++  // to the view so code outside it isn't checked.
++  for (const auto& View : SectionViews) {
++    if (Address < View.Base || Address >= View.Base + View.Size) {
++      continue;
++    }
++    bool Shared = false;
++    for (const auto& Other : SectionViews) {
++      if (&Other != &View && Other.Group == View.Group) {
++        Shared = true;
++        break;
++      }
++    }
++    const auto Base = std::max(Info.Base, View.Base);
++    const auto End = std::min(Info.Base + Info.Size, View.Base + View.Size);
++    Info.Base = Base;
++    Info.Size = End - Base;
++    Info.Validate = Shared;
++    return Info;
++  }
++  // Keep a range that starts before a view from running into it unchecked.
++  for (const auto& View : SectionViews) {
++    if (View.Base > Address && View.Base < Info.Base + Info.Size) {
++      Info.Size = View.Base - Info.Base;
++    }
++  }
++  return Info;
++}
++
++void InvalidationTracker::HandleDataSectionMap(HANDLE Section, uint64_t Address, uint64_t Size, uint64_t Offset) {
++  if (!Section || !Address || !Size) {
++    return;
++  }
++  HANDLE Dup {};
++  if (NtDuplicateObject(NtCurrentProcess(), Section, NtCurrentProcess(), &Dup, 0, 0, DUPLICATE_SAME_ACCESS)) {
++    return;
++  }
++  const auto Base = Address & FEXCore::Utils::FEX_PAGE_MASK;
++  const auto AlignedSize = (Address - Base + Size + FEXCore::Utils::FEX_PAGE_SIZE - 1) & FEXCore::Utils::FEX_PAGE_MASK;
++
++  std::vector<HANDLE> Stale;
++  std::vector<std::pair<uint64_t, uint64_t>> Recheck;
++  {
++    std::unique_lock Lock(IntervalsLock);
++    // Views whose unmap wasn't seen can't overlap a new one.
++    for (auto It = SectionViews.begin(); It != SectionViews.end();) {
++      if (It->Base < Base + AlignedSize && Base < It->Base + It->Size) {
++        Stale.push_back(It->Section);
++        It = SectionViews.erase(It);
++      } else {
++        ++It;
++      }
++    }
++    uint64_t Group = 0;
++    for (const auto& View : SectionViews) {
++      if (NtCompareObjects(View.Section, Dup) == 0) {
++        Group = View.Group;
++        break;
++      }
++    }
++    if (Group) {
++      // Code already translated from the other views ran unchecked: translate it again with the checks.
++      for (const auto& View : SectionViews) {
++        if (View.Group == Group) {
++          Recheck.emplace_back(View.Base, View.Size);
++        }
++      }
++    } else {
++      Group = NextSectionGroup++;
++    }
++    SectionViews.push_back({Base, AlignedSize, Dup, Group});
++  }
++  for (auto Handle : Stale) {
++    NtClose(Handle);
++  }
++  for (auto [ViewBase, ViewSize] : Recheck) {
++    InvalidateIntervalInternal(ViewBase, ViewSize);
++  }
++}
++
++void InvalidationTracker::HandleDataSectionUnmap(uint64_t Address) {
++  HANDLE Section {};
++  {
++    std::unique_lock Lock(IntervalsLock);
++    for (auto It = SectionViews.begin(); It != SectionViews.end(); ++It) {
++      if (Address >= It->Base && Address < It->Base + It->Size) {
++        Section = It->Section;
++        SectionViews.erase(It);
++        break;
++      }
++    }
++  }
++  if (Section) {
++    NtClose(Section);
+   }
+-  return {XResult.Interval.Offset, XResult.Interval.End - XResult.Interval.Offset, false};
+ }
+ 
+ void InvalidationTracker::DetectMonoBackpatcherBlock(FEXCore::Core::InternalThreadState* Thread, uint64_t HostPc) {
+diff --git a/Source/Windows/Common/InvalidationTracker.h b/Source/Windows/Common/InvalidationTracker.h
+index 82979c32d..8a7bb0eab 100644
+--- a/Source/Windows/Common/InvalidationTracker.h
++++ b/Source/Windows/Common/InvalidationTracker.h
+@@ -6,6 +6,7 @@
+ #include <mutex>
+ #include <shared_mutex>
+ #include <unordered_map>
++#include <vector>
+ #include <string_view>
+ 
+ namespace FEXCore::Core {
+@@ -44,6 +45,12 @@ public:
+   // in, or Rip itself when that isn't executable.
+   uint64_t ExecuteFaultAddress(uint64_t Rip);
+ 
++  // Views of one data section share their pages, so a write through one view changes code translated from another
++  // without a fault or protection change FEX sees. FEX records the views and checks the bytes of code it runs from a
++  // view whose section has another view mapped before each instruction, so rewritten code is translated again.
++  void HandleDataSectionMap(HANDLE Section, uint64_t Address, uint64_t Size, uint64_t Offset);
++  void HandleDataSectionUnmap(uint64_t Address);
++
+ private:
+   void DetectMonoBackpatcherBlock(FEXCore::Core::InternalThreadState* Thread, uint64_t HostPC);
+   void DisableSMCDetection();
+@@ -70,6 +77,15 @@ private:
+   bool DEPDisabled {false};                             // Protected by IntervalsLock
+   FEXCore::IntervalList<uint64_t> DEPPromotedIntervals; // Protected by IntervalsLock
+ 
++  struct SectionView {
++    uint64_t Base;
++    uint64_t Size;
++    HANDLE Section;
++    uint64_t Group;
++  };
++  std::vector<SectionView> SectionViews; // Protected by IntervalsLock
++  uint64_t NextSectionGroup {1};         // Protected by IntervalsLock
++
+   bool MonoBackpatcherDetectionPending {false};
+   uint64_t MonoBase {0};
+   uint64_t MonoEnd {0};
+-- 
+2.54.0 (Apple Git-157)
+

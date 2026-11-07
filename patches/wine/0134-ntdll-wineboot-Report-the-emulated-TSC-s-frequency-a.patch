@@ -1,0 +1,62 @@
+From c18d3ee112fa1f43b95b813a5c48af5a55917cf9 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Thu, 5 Nov 2026 23:48:45 -0700
+Subject: [PATCH 134/135] ntdll, wineboot: Report the emulated TSC's frequency
+ as the CPU clock on ARM64.
+
+On Apple silicon there is no hw.cpufrequency, so ProcessorInformation reported a canned 1000MHz, and wineboot set
+the processors' ~MHz to the system counter's 24MHz. x86 code running under the emulator reads RDTSC as that counter
+doubled until it reaches 1GHz (FEX's SmallTSCScale: 1536MHz), and CPUID names the same frequency. Software that
+compares them (protectors and anti-cheat, Overwatch's loader) saw three different clocks and took it for a VM.
+
+Both now report the counter scaled the same way, computed on each machine.
+---
+ dlls/ntdll/unix/system.c     | 13 +++++++++++++
+ programs/wineboot/wineboot.c |  5 +++++
+ 2 files changed, 18 insertions(+)
+
+diff --git a/dlls/ntdll/unix/system.c b/dlls/ntdll/unix/system.c
+index b96f6169d87..717705582ab 100644
+--- a/dlls/ntdll/unix/system.c
++++ b/dlls/ntdll/unix/system.c
+@@ -4844,8 +4844,21 @@ NTSTATUS WINAPI NtPowerInformation( POWER_INFORMATION_LEVEL level, void *input,
+             valSize = sizeof(currentMhz);
+             if (!sysctlbyname("hw.cpufrequency", &currentMhz, &valSize, NULL, 0))
+                 currentMhz /= 1000000;
++#ifdef __aarch64__
++            else
++            {
++                /* Apple silicon has no hw.cpufrequency. The clock x86 code is shown here is its TSC's: the system
++                 * counter doubled until it reaches 1GHz, as the emulator scales RDTSC (FEX's SmallTSCScale) and as
++                 * CPUID and the registry's ~MHz name it (wineboot). A canned 1000MHz disagreed with all of them. */
++                UINT64 freq;
++                __asm__ volatile( "mrs %0, CNTFRQ_EL0" : "=r" (freq) );
++                if (freq) while (freq < 1000000000) freq <<= 1;
++                currentMhz = freq ? freq / 1000000 : cannedMHz;
++            }
++#else
+             else
+                 currentMhz = cannedMHz;
++#endif
+ 
+             valSize = sizeof(maxMhz);
+             if (!sysctlbyname("hw.cpufrequency_max", &maxMhz, &valSize, NULL, 0))
+diff --git a/programs/wineboot/wineboot.c b/programs/wineboot/wineboot.c
+index 7dda9ec3cfa..1b1e4068df7 100644
+--- a/programs/wineboot/wineboot.c
++++ b/programs/wineboot/wineboot.c
+@@ -303,6 +303,11 @@ static UINT64 read_tsc_frequency(void)
+ {
+     UINT64 tsc_frequency;
+     __asm__ volatile( "mrs %[Res], CNTFRQ_EL0" : [Res] "=r" (tsc_frequency) );
++    /* The x86 code an emulator runs here reads RDTSC as this counter doubled until it reaches 1GHz (FEX's
++     * SmallTSCScale: 24MHz becomes 1536MHz), and the CPU it is shown names that frequency (CPUID 0x15, 0x16 and the
++     * brand string). ~MHz names the same one, as on x86 hardware, where it is the TSC's rate: the counter's own
++     * 24MHz disagreed with everything the program measured, which protectors take for a VM. */
++    if (tsc_frequency) while (tsc_frequency < 1000000000) tsc_frequency <<= 1;
+     return tsc_frequency;
+ }
+ 
+-- 
+2.54.0 (Apple Git-157)
+

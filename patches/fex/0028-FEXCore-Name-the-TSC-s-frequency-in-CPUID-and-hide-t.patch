@@ -1,0 +1,145 @@
+From e7bf9d705ede3a971961a41d2c0197ab9b99d65c Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Thu, 5 Nov 2026 23:48:45 -0700
+Subject: [PATCH] FEXCore: Name the TSC's frequency in CPUID, and hide the
+ hypervisor bit by default
+
+x86 software cross-checks the clock it measures with RDTSC against the one the CPU names, and treats a mismatch,
+or a hypervisor, as a VM: Overwatch's loader stopped right after querying the processor's clock. FEX's RDTSC runs
+at the host counter doubled until it reaches 1GHz (SmallTSCScale: 24MHz becomes 1536MHz on Apple silicon), and
+leaf 0x15 described that, but leaf 0x16 (base and maximum frequency) returned zero and the brand string named no
+frequency.
+
+Leaf 0x16 now reports the TSC's frequency as the base and maximum frequency, with a 100MHz bus, as on Intel CPUs,
+whose TSC runs at the base frequency, and the brand string ends in "@ x.xxGHz" with the same frequency. Both come
+from the host counter at run time, so each machine reports its own.
+
+HideHypervisorBit now defaults to true: the bit, and leaf 0x40000000's FEXIFEXIEMU, read as running in a VM, which
+protectors and anti-cheat refuse. Rosetta 2 doesn't set it either. HideHypervisorBit=0 shows it.
+---
+ .../Source/Interface/Config/Config.json.in    |  7 +--
+ FEXCore/Source/Interface/Core/CPUID.cpp       | 45 +++++++++++++++----
+ FEXCore/Source/Interface/Core/CPUID.h         |  7 ++-
+ 3 files changed, 47 insertions(+), 12 deletions(-)
+
+diff --git a/FEXCore/Source/Interface/Config/Config.json.in b/FEXCore/Source/Interface/Config/Config.json.in
+index 938377f32..3f4fdf8db 100644
+--- a/FEXCore/Source/Interface/Config/Config.json.in
++++ b/FEXCore/Source/Interface/Config/Config.json.in
+@@ -654,11 +654,12 @@
+       },
+       "HideHypervisorBit": {
+         "Type": "bool",
+-        "Default": "false",
++        "Default": "true",
+         "AffectsCodeGen": "false",
+         "Desc": [
+-          "Hides the hypervisor CPUID bit when set.",
+-          "Should only be used for applications that have issues with this set."
++          "Hides the hypervisor CPUID bit when set (the default).",
++          "x86 software reads the bit, and the FEXIFEXIEMU hypervisor leaf, as running in a VM: protectors and",
++          "anti-cheat refuse to run there. Rosetta 2 doesn't set it either. Set to 0 to show it."
+         ]
+       },
+       "StartupSleep": {
+diff --git a/FEXCore/Source/Interface/Core/CPUID.cpp b/FEXCore/Source/Interface/Core/CPUID.cpp
+index ddce98d66..0b08aab34 100644
+--- a/FEXCore/Source/Interface/Core/CPUID.cpp
++++ b/FEXCore/Source/Interface/Core/CPUID.cpp
+@@ -931,6 +931,34 @@ FEXCore::CPUID::FunctionResults CPUIDEmu::Function_15h(uint32_t Leaf) const {
+   return Res;
+ }
+ 
++uint64_t CPUIDEmu::GuestTSCFrequency() const {
++  return GetCycleCounterFrequency() << CTX->Config.TSCScale;
++}
++
++// Processor frequency information: the base and maximum frequency are the TSC's, as on Intel CPUs, whose TSC runs at
++// the base frequency. Software that compares the clock it measures with RDTSC to the one the CPU names (the brand
++// string, this leaf, the OS's processor information) finds them the same, as on hardware; without this leaf they
++// disagreed with every other report, which protectors and anti-cheat take for a VM.
++FEXCore::CPUID::FunctionResults CPUIDEmu::Function_16h(uint32_t Leaf) const {
++  FEXCore::CPUID::FunctionResults Res {};
++  const uint32_t MHz = GuestTSCFrequency() / 1'000'000;
++  Res.eax = MHz; // Base frequency
++  Res.ebx = MHz; // Maximum frequency
++  Res.ecx = 100; // Bus (reference) frequency
++  return Res;
++}
++
++void CPUIDEmu::BrandString(uint32_t CPU, char (&Out)[49]) const {
++  const uint64_t MHz = GuestTSCFrequency() / 1'000'000;
++  memset(Out, 0, sizeof(Out));
++  if (MHz) {
++    snprintf(Out, sizeof(Out), "%s @ %u.%02uGHz", PerCPUData[CPU].ProductName, uint32_t(MHz / 1000),
++             uint32_t((MHz % 1000 + 5) / 10 % 100));
++  } else {
++    snprintf(Out, sizeof(Out), "%s", PerCPUData[CPU].ProductName);
++  }
++}
++
+ FEXCore::CPUID::FunctionResults CPUIDEmu::Function_1Ah(uint32_t Leaf) const {
+   FEXCore::CPUID::FunctionResults Res {};
+   if (Hybrid) {
+@@ -1133,24 +1161,25 @@ FEXCore::CPUID::FunctionResults CPUIDEmu::Function_8000_0004h(uint32_t Leaf) con
+ 
+ FEXCore::CPUID::FunctionResults CPUIDEmu::Function_8000_0002h(uint32_t Leaf, uint32_t CPU) const {
+   FEXCore::CPUID::FunctionResults Res {};
+-  auto& Data = PerCPUData[CPU];
+-  memcpy(&Res, Data.ProductName, std::min(strlen(Data.ProductName), sizeof(FEXCore::CPUID::FunctionResults)));
++  char Brand[49];
++  BrandString(CPU, Brand);
++  memcpy(&Res, Brand + 0, sizeof(FEXCore::CPUID::FunctionResults));
+   return Res;
+ }
+ 
+ FEXCore::CPUID::FunctionResults CPUIDEmu::Function_8000_0003h(uint32_t Leaf, uint32_t CPU) const {
+   FEXCore::CPUID::FunctionResults Res {};
+-  auto& Data = PerCPUData[CPU];
+-  const auto RemainingStringSize = std::max<ssize_t>(0, strlen(Data.ProductName) - 16);
+-  memcpy(&Res, Data.ProductName + 16, std::min<size_t>(RemainingStringSize, sizeof(FEXCore::CPUID::FunctionResults)));
++  char Brand[49];
++  BrandString(CPU, Brand);
++  memcpy(&Res, Brand + 16, sizeof(FEXCore::CPUID::FunctionResults));
+   return Res;
+ }
+ 
+ FEXCore::CPUID::FunctionResults CPUIDEmu::Function_8000_0004h(uint32_t Leaf, uint32_t CPU) const {
+   FEXCore::CPUID::FunctionResults Res {};
+-  auto& Data = PerCPUData[CPU];
+-  const auto RemainingStringSize = std::max<ssize_t>(0, strlen(Data.ProductName) - 32);
+-  memcpy(&Res, Data.ProductName + 32, std::min<size_t>(RemainingStringSize, sizeof(FEXCore::CPUID::FunctionResults)));
++  char Brand[49];
++  BrandString(CPU, Brand);
++  memcpy(&Res, Brand + 32, sizeof(FEXCore::CPUID::FunctionResults));
+   return Res;
+ }
+ 
+diff --git a/FEXCore/Source/Interface/Core/CPUID.h b/FEXCore/Source/Interface/Core/CPUID.h
+index f7f32571b..a79685058 100644
+--- a/FEXCore/Source/Interface/Core/CPUID.h
++++ b/FEXCore/Source/Interface/Core/CPUID.h
+@@ -175,6 +175,11 @@ private:
+   FEXCore::CPUID::FunctionResults Function_07h(uint32_t Leaf) const;
+   FEXCore::CPUID::FunctionResults Function_0Dh(uint32_t Leaf) const;
+   FEXCore::CPUID::FunctionResults Function_15h(uint32_t Leaf) const;
++  FEXCore::CPUID::FunctionResults Function_16h(uint32_t Leaf) const;
++  // the brand string, with the frequency the guest's TSC runs at as Intel's "@ x.xxGHz"
++  void BrandString(uint32_t CPU, char (&Out)[49]) const;
++  // the frequency the guest's RDTSC counts at: the host counter scaled by TSCScale
++  uint64_t GuestTSCFrequency() const;
+   FEXCore::CPUID::FunctionResults Function_1Ah(uint32_t Leaf) const;
+   FEXCore::CPUID::FunctionResults Function_24h(uint32_t Leaf) const;
+   FEXCore::CPUID::FunctionResults Function_4000_0000h(uint32_t Leaf) const;
+@@ -259,7 +264,7 @@ private:
+     &CPUIDEmu::Function_Reserved,
+ #endif
+     // 0x16: Processor frequency information
+-    &CPUIDEmu::Function_Reserved,
++    &CPUIDEmu::Function_16h,
+     // 0x17: SoC vendor attribute enumeration
+     &CPUIDEmu::Function_Reserved,
+     // 0x18: Reserved?
+-- 
+2.54.0 (Apple Git-157)
+
