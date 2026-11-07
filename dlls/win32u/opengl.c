@@ -3589,6 +3589,12 @@ BOOL get_opengl_gpus( struct list *gpus )
 {
     struct egl_platform *egl;
 
+#ifndef SONAME_LIBEGL
+    /* Only EGL devices are listed, and without EGL there are none. Initializing the driver's OpenGL for nothing
+     * enumerated every pixel format (CGLChoosePixelFormat, about 0.4 s on macOS) in the first process of a session,
+     * explorer, while every program starting into that session waited for its desktop. */
+    return TRUE;
+#endif
     if (!__wine_get_opengl_driver( WINE_OPENGL_DRIVER_VERSION )) return FALSE;
 
     LIST_FOR_EACH_ENTRY( egl, &devices_egl, struct egl_platform, entry )
