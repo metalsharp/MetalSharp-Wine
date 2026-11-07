@@ -33,6 +33,7 @@
 #include <d3d9types.h>
 #include <dxgi.h>
 #include <d3d10.h>
+#include "d3dkmdt.h"
 #include <d3d11.h>
 #include <d3d12.h>
 
@@ -615,6 +616,33 @@ NTSTATUS WINAPI NtGdiDdDDIQueryAdapterInfo( D3DKMT_QUERYADAPTERINFO *desc )
             return STATUS_INVALID_PARAMETER;
 
         *value = KMT_DRIVERVERSION_WDDM_3_1;
+        return STATUS_SUCCESS;
+    }
+    /* The GPU schedules its own work, as hardware-accelerated GPU scheduling does on Windows; what asks (NVIDIA's
+     * Streamline, for frame generation) refuses to start without it. */
+    case KMTQAITYPE_WDDM_2_7_CAPS:
+    {
+        D3DKMT_WDDM_2_7_CAPS *value = desc->pPrivateDriverData;
+
+        if (desc->PrivateDriverDataSize < sizeof(*value))
+            return STATUS_INVALID_PARAMETER;
+
+        value->Value = 0;
+        value->HwSchSupported = 1;
+        value->HwSchEnabled = 1;
+        value->HwSchEnabledByDefault = 1;
+        return STATUS_SUCCESS;
+    }
+    case KMTQAITYPE_WDDM_2_9_CAPS:
+    {
+        D3DKMT_WDDM_2_9_CAPS *value = desc->pPrivateDriverData;
+
+        if (desc->PrivateDriverDataSize < sizeof(*value))
+            return STATUS_INVALID_PARAMETER;
+
+        value->Value = 0;
+        value->HwSchSupportState = 2; /* stable */
+        value->HwSchEnabled = 1;
         return STATUS_SUCCESS;
     }
     default:
