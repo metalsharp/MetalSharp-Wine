@@ -26,7 +26,8 @@ struct wmgl_pixel_format
     int draw_to_pbuffer;
     int double_buffer;
     int stereo;
-    int color_bits;        /* red + green + blue */
+    int color_bits;        /* cColorBits, WGL_COLOR_BITS_ARB: red + green + blue, and alpha where the format
+                              has it, as Windows drivers count them (32 for RGBA8) */
     int red_bits, green_bits, blue_bits, alpha_bits;
     int red_shift, green_shift, blue_shift, alpha_shift;
     int depth_bits;

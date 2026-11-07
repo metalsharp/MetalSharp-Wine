@@ -207,8 +207,16 @@ echo "Installed winemetalgl into $LIB"
 # winemetalgl.dll first. A lib/wine entry lets Wine pick the DLL of the
 # program's architecture and find winemetalgl.so in x86_64-unix (aarch64-unix in an arm64 bottle).
 conf="$BOTTLE/cxbottle.conf"
+# A 32-bit bottle is one whose system32 is i386: CrossOver writes "WineArch" = "win64" only for an
+# x86_64 bottle, and a bottle of its arm64 Wine says arm64 there (issue #75: such a bottle was taken for a
+# 32-bit one and got the i386 opengl32.dll in system32, which 64-bit programs can't load). Without a
+# readable ntdll.dll, only "WineArch" = "win32" makes it 32-bit.
 win32=0
-grep -q '^"WineArch" *= *"win64"' "$conf" || win32=1
+case "$(pe_machine "$BOTTLE/drive_c/windows/system32/ntdll.dll" 2>/dev/null)" in
+014c) win32=1 ;;
+aa64|8664) ;;
+*) grep -q '^"WineArch" *= *"win32"' "$conf" && win32=1 ;;
+esac
 # shellcheck disable=SC2016 # ${CX_ROOT} is expanded by CrossOver
 if test "$win32" = 1; then
     default='${CX_ROOT}/lib/wine/i386-windows:${CX_ROOT}/lib/wine'

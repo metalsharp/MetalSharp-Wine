@@ -24,6 +24,16 @@
  * Steam's own processes are left alone.
  * A module that reads the display before this DLL loads (a program loading
  * opengl32.dll late) sees the real one.
+ *
+ * Without a preset it emulates display mode changes alone (WINEMETALGL_EMULATE_MODES,
+ * on unless 0 or off): the program sees the real display and its modes, and
+ * a mode it changes to is the one it sees, its window covering the real
+ * screen and its frames scaled to it, as with a preset. Until it changes the
+ * mode, nothing is scaled. A real mode change has Wine's macOS driver change
+ * the display: that can deadlock (winemac handles a window's resize while it
+ * holds the display lock to change the mode, and the resize takes that lock
+ * again), and the mode may not take, the program drawing its mode's size in a
+ * corner of a screen that kept its size (issue #86: EDuke32 fullscreen).
  */
 
 #include "wmgl_pe.h"
@@ -57,12 +67,13 @@ static HMONITOR primary_monitor;
 static LONG real_width, real_height;        /* the real primary display mode */
 static LONG desktop_width, desktop_height;  /* what the program sees of it */
 static LONG mode_width, mode_height;        /* the mode it set, else the desktop */
+static BOOL native;                         /* no preset: mode changes emulated, the display seen as it is */
 /* The modes listed: the preset's size alone, at the refresh rates of the
  * real screen's size. The preset is the resolution: with smaller modes
  * listed, a program that does not find its saved one takes the first it
  * accepts (DOOM (2016) passes over those under 640x480 and took 668x501, a
  * 4:3 frame, where Balanced's 1114x626 was meant). */
-static struct mode modes[64];
+static struct mode modes[1024];  /* emulating mode changes alone, every real mode: sizes x depths x rates */
 static unsigned int mode_count;
 
 /* Real coordinates to the program's (the mode it set) and back. */
@@ -342,6 +353,8 @@ static void scale_window( HWND hwnd )
     struct program_window *window;
     BOOL now = FALSE;
 
+    /* Emulating mode changes alone: nothing to scale until the program sets a mode other than the real one. */
+    if (native && mode_width == real_width && mode_height == real_height) return;
     subclass_window( hwnd );
     AcquireSRWLockExclusive( &lock );
     if ((window = find_window( hwnd )) && !window->covers)
@@ -1197,7 +1210,14 @@ void upscalegl_init( HMODULE module, const char *setting )
     if (setting && *setting && _stricmp( setting, "off" ) && _stricmp( setting, "0" ) && ratio <= 0)
         WMGL_WARN( "UpscaleGL: WINEMETALGL_UPSCALE=%s is not off, quality, balanced, performance, ultra or a "
                    "percentage from 25 to 99; off\n", setting );
-    if (ratio <= 0) return;
+    if (ratio <= 0)
+    {
+        char emulate[16] = "";
+        GetEnvironmentVariableA( "WINEMETALGL_EMULATE_MODES", emulate, sizeof(emulate) );
+        if (!_stricmp( emulate, "0" ) || !_stricmp( emulate, "off" )) return;
+        ratio = 1.0;
+        native = TRUE;
+    }
     if (is_steam_process())
     {
         WMGL_INFO( "UpscaleGL: off in Steam's own processes\n" );
@@ -1226,7 +1246,10 @@ void upscalegl_init( HMODULE module, const char *setting )
         memset( &other, 0, sizeof(other) );
         other.dmSize = sizeof(other);
         if (!EnumDisplaySettingsW( NULL, i, &other )) break;
-        if (other.dmPelsWidth == (DWORD)real_width && other.dmPelsHeight == (DWORD)real_height)
+        /* Emulating mode changes alone, every real mode; with a preset, its size alone. */
+        if (native)
+            add_mode( other.dmPelsWidth, other.dmPelsHeight, other.dmBitsPerPel, other.dmDisplayFrequency );
+        else if (other.dmPelsWidth == (DWORD)real_width && other.dmPelsHeight == (DWORD)real_height)
             add_mode( desktop_width, desktop_height, other.dmBitsPerPel, other.dmDisplayFrequency );
     }
     if (!has_mode( desktop_width, desktop_height ))
@@ -1245,8 +1268,12 @@ void upscalegl_init( HMODULE module, const char *setting )
         if (!register_notification || register_notification( 0, (void *)dll_loaded, NULL, &cookie ))
             WMGL_WARN( "UpscaleGL: no DLL load notifications: DLLs the program loads later see the real display\n" );
     }
-    WMGL_INFO( "UpscaleGL: %s (%.0f%%): the %ldx%ld display is shown to programs as %ldx%ld, %u modes\n", setting,
-               ratio * 100.0, real_width, real_height, desktop_width, desktop_height, mode_count );
+    if (native)
+        WMGL_INFO( "UpscaleGL: display mode changes emulated on the %ldx%ld display (%u modes); "
+                   "WINEMETALGL_EMULATE_MODES=0 leaves them to Wine\n", real_width, real_height, mode_count );
+    else
+        WMGL_INFO( "UpscaleGL: %s (%.0f%%): the %ldx%ld display is shown to programs as %ldx%ld, %u modes\n", setting,
+                   ratio * 100.0, real_width, real_height, desktop_width, desktop_height, mode_count );
 }
 
 BOOL upscalegl_render_size( HWND hwnd, int width, int height, int *render_width, int *render_height )
