@@ -13,24 +13,29 @@ struct CallRetStackInfo {
   uint64_t DefaultLocation;
 };
 
+// The guards on both sides of the stack span the allocation granularity, not one page: on a host with 16K pages, Wine
+// commits whole host pages, so a 4K guard next to the committed stack stays readable and the first access that faults
+// lands past it, where HandleAccessViolation doesn't recognise it (a native qsort calling back into x86 code then
+// faulted on the same pop forever).
+constexpr uint64_t GuardSize = 0x10000;
+
 CallRetStackInfo GetInfoThread(FEXCore::Core::InternalThreadState* Thread) {
   uint64_t Base = reinterpret_cast<uint64_t>(Thread->CallRetStackBase);
   // Leave some room from the base for the default location to allow for underflows without constant exceptions
-  return {Base - FEXCore::Utils::FEX_PAGE_SIZE, Base + FEXCore::Core::InternalThreadState::CALLRET_STACK_SIZE + FEXCore::Utils::FEX_PAGE_SIZE,
+  return {Base - GuardSize, Base + FEXCore::Core::InternalThreadState::CALLRET_STACK_SIZE + GuardSize,
           Base + FEXCore::Core::InternalThreadState::CALLRET_STACK_SIZE / 4};
 }
 
 void InitializeThread(FEXCore::Core::InternalThreadState* Thread) {
   // Allocate the call-ret stack with guard pages on both sides
-  const void* CallRetStackAlloc = ::VirtualAlloc(nullptr, FEXCore::Core::InternalThreadState::CALLRET_STACK_SIZE + 2 * FEXCore::Utils::FEX_PAGE_SIZE,
+  const void* CallRetStackAlloc = ::VirtualAlloc(nullptr, FEXCore::Core::InternalThreadState::CALLRET_STACK_SIZE + 2 * GuardSize,
                                                  MEM_RESERVE | MEM_TOP_DOWN, PAGE_NOACCESS);
 
-  FEXCore::Allocator::VirtualName("FEXMem_CallRetStacks", CallRetStackAlloc,
-                                  FEXCore::Core::InternalThreadState::CALLRET_STACK_SIZE + 2 * FEXCore::Utils::FEX_PAGE_SIZE);
-  FEXCore::Allocator::VirtualTHPControl(CallRetStackAlloc, FEXCore::Core::InternalThreadState::CALLRET_STACK_SIZE + 2 * FEXCore::Utils::FEX_PAGE_SIZE,
+  FEXCore::Allocator::VirtualName("FEXMem_CallRetStacks", CallRetStackAlloc, FEXCore::Core::InternalThreadState::CALLRET_STACK_SIZE + 2 * GuardSize);
+  FEXCore::Allocator::VirtualTHPControl(CallRetStackAlloc, FEXCore::Core::InternalThreadState::CALLRET_STACK_SIZE + 2 * GuardSize,
                                         FEXCore::Allocator::THPControl::Disable);
 
-  Thread->CallRetStackBase = reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(CallRetStackAlloc) + FEXCore::Utils::FEX_PAGE_SIZE);
+  Thread->CallRetStackBase = reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(CallRetStackAlloc) + GuardSize);
   ::VirtualAlloc(Thread->CallRetStackBase, FEXCore::Core::InternalThreadState::CALLRET_STACK_SIZE, MEM_COMMIT, PAGE_READWRITE);
 
   Thread->CurrentFrame->State.callret_sp = GetInfoThread(Thread).DefaultLocation;
