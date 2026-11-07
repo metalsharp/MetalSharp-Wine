@@ -26,6 +26,7 @@
 
 #include <assert.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -60,6 +61,8 @@ static struct debug_info initial_info;  /* debug info for initial thread */
 static unsigned char default_flags = (1 << __WINE_DBCL_ERR) | (1 << __WINE_DBCL_FIXME);
 static int nb_debug_options = -1;
 static int options_size;
+/* MetalSharp: the trace log stderr goes to (metalsharp_init_trace) */
+static char trace_path[PATH_MAX];
 static struct __wine_debug_channel *debug_options;
 
 static const char * const debug_classes[] = { "fixme", "err", "warn", "trace" };
@@ -344,6 +347,74 @@ int __cdecl __wine_dbg_header( enum __wine_debug_class cls, struct __wine_debug_
     info->out_pos = pos - info->output;
     return info->out_pos;
 }
+
+/***********************************************************************
+ *		metalsharp_init_trace
+ *
+ * MetalSharp: <folder of the program>/.metalsharp/trace turns on Wine's debug channels for the programs in
+ * that folder, whoever starts them (a game Steam starts gets Steam's WINEDEBUG, and its stderr is /dev/null,
+ * which turns all debug output off). Its first line that is not empty or a # comment is the WINEDEBUG value
+ * (e.g. +loaddll,+seh,+syscall,+pid,+timestamp); a line limit=<MB> keeps each log under that size (default
+ * 4096; the older half goes to <log>.1). The output, and the rest of the program's stderr, goes to
+ * .metalsharp/trace-logs/<program>-<pid>.log. Called before dbg_init passes the options on.
+ */
+void metalsharp_init_trace( const char *exe )
+{
+    const char *slash = strrchr( exe, '/' );
+    char path[PATH_MAX], spec[1024] = "", line[1024], *p;
+    unsigned long long limit = 4096;
+    FILE *file;
+    int fd;
+
+    if (!slash || snprintf( path, sizeof(path), "%.*s/.metalsharp/trace", (int)(slash - exe), exe ) >= sizeof(path))
+        return;
+    if (!(file = fopen( path, "r" ))) return;
+    while (fgets( line, sizeof(line), file ))
+    {
+        for (p = line + strlen( line ); p > line && (p[-1] == '\n' || p[-1] == '\r' || p[-1] == ' '); p--) p[-1] = 0;
+        for (p = line; *p == ' ' || *p == '\t'; p++);
+        if (!*p || *p == '#') continue;
+        if (!strncmp( p, "limit=", 6 )) limit = strtoull( p + 6, NULL, 10 );
+        else if (!spec[0]) snprintf( spec, sizeof(spec), "%s", p );
+    }
+    fclose( file );
+    if (snprintf( path, sizeof(path), "%.*s/.metalsharp/trace-logs", (int)(slash - exe), exe ) >= sizeof(path))
+        return;
+    mkdir( path, 0755 );
+    if (snprintf( trace_path, sizeof(trace_path), "%s/%s-%d.log", path, slash + 1, (int)getpid() ) >= sizeof(trace_path) ||
+        (fd = open( trace_path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644 )) == -1)
+    {
+        trace_path[0] = 0;
+        return;
+    }
+    {
+        char fds[96];
+        int i, n = 0;
+        for (i = 0; i <= 2; i++)
+        {
+            char link[PATH_MAX] = "";
+            if (i != fd && fcntl( i, F_GETPATH, link ) == -1) snprintf( link, sizeof(link), "%s", fcntl( i, F_GETFD ) == -1 ? "closed" : "?" );
+            n += snprintf( fds + n, sizeof(fds) - n, " %d=%.20s", i, i == fd ? "(the log)" : link );
+        }
+        if (fd != 2)
+        {
+            dup2( fd, 2 );
+            close( fd );
+        }
+        fprintf( stderr, "MetalSharp: std fds at start:%s\n", fds );
+    }
+    if (spec[0]) setenv( "WINEDEBUG", spec, 1 );
+    /* the options again, now that stderr is the log */
+    free( debug_options );
+    debug_options = NULL;
+    options_size = 0;
+    nb_debug_options = -1;
+    default_flags = (1 << __WINE_DBCL_ERR) | (1 << __WINE_DBCL_FIXME);
+    init_options();
+    (void)limit;
+    fprintf( stderr, "MetalSharp: tracing %s (pid %d) with WINEDEBUG=%s\n", exe, (int)getpid(), spec );
+}
+
 
 /***********************************************************************
  *		dbg_init

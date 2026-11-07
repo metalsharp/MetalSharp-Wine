@@ -894,6 +894,7 @@ void fit_saved_resolution( const char *exe, const char *appdata, const char *loc
     if (!slash || slash - exe >= sizeof(dir)) return;
     memcpy( dir, exe, slash - exe );
     dir[slash - exe] = 0;
+    metalsharp_init_trace( exe );
     init_metalfx_scale( exe );
     init_dlss_game( exe );
     init_gpu_override( exe );
@@ -933,6 +934,7 @@ void fit_saved_resolution( const char *exe, const char *appdata, const char *loc
 
 void fit_saved_resolution( const char *exe, const char *appdata, const char *localappdata, const char *profile )
 {
+    metalsharp_init_trace( exe );
     init_metalfx_scale( exe );
     init_dlss_game( exe );
     init_gpu_override( exe );

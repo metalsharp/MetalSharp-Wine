@@ -346,6 +346,7 @@ struct launcher_policy
 };
 
 extern void get_launcher_policy( const char *image_path, struct launcher_policy *policy );
+extern void metalsharp_init_trace( const char *exe );
 extern void fit_saved_resolution( const char *exe, const char *appdata, const char *localappdata,
                                   const char *profile );
 extern int metalsharp_dlss_game(void);
