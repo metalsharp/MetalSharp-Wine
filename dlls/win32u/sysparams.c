@@ -1209,6 +1209,16 @@ static BOOL read_gpu_from_registry( struct gpu *gpu )
  * says which, and a game whose GPU differs registers the devices again (lock_display_devices). */
 static const char metalsharp_gpu_keyA[] = "\\Registry\\Machine\\Software\\Wine\\MetalSharp";
 
+/* HKLM\Software\Wine\MetalSharp is volatile, and the server makes every key it creates on the way volatile too: a
+ * Software\Wine created so (in a new prefix, before wine.inf) would take no lasting key under it, and wineboot's
+ * LicenseInformation fails with STATUS_CHILD_MUST_BE_VOLATILE. So Software\Wine is made a lasting key first. */
+static HKEY create_metalsharp_gpu_key(void)
+{
+    HKEY parent = reg_create_ascii_key( NULL, "\\Registry\\Machine\\Software\\Wine", 0, NULL );
+    if (parent) NtClose( parent );
+    return reg_create_ascii_key( NULL, metalsharp_gpu_keyA, REG_OPTION_VOLATILE, NULL );
+}
+
 static int get_gpu_override( unsigned int *vendor, unsigned int *device, const char **description,
                              const char **driver_version )
 {
@@ -1240,7 +1250,7 @@ static void write_registered_gpu_identity(void)
     char identity[16];
     HKEY hkey;
 
-    if (!(hkey = reg_create_ascii_key( NULL, metalsharp_gpu_keyA, REG_OPTION_VOLATILE, NULL ))) return;
+    if (!(hkey = create_metalsharp_gpu_key())) return;
     gpu_override_identity( identity, sizeof(identity) );
     set_reg_ascii_value( hkey, "RegisteredGpu", identity );
     NtClose( hkey );
@@ -1271,7 +1281,7 @@ static void set_primary_gpu_luid( const LUID *luid )
     HKEY hkey;
     WCHAR nameW[16];
 
-    if (!(hkey = reg_create_ascii_key( NULL, metalsharp_gpu_keyA, REG_OPTION_VOLATILE, NULL ))) return;
+    if (!(hkey = create_metalsharp_gpu_key())) return;
     asciiz_to_unicode( nameW, "PrimaryGpuLuid" );
     set_reg_value( hkey, nameW, REG_QWORD, luid, sizeof(*luid) );
     NtClose( hkey );
