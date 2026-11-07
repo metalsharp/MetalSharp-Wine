@@ -81,18 +81,22 @@ static inline void free_conversion_context(struct conversion_context *pool)
         free(entry);
 }
 
+/* MetalSharp: zeroed, as an output structure the driver leaves alone must read back as zero: MoltenVK (layered on
+ * Metal) does not fill VkPhysicalDeviceLayeredApiVulkanPropertiesKHR, whose host copy otherwise went back to the
+ * program as garbage (VKD3D-Proton took a driver ID of 1, AMD's, for MoltenVK's and capped shader model 6.0) */
 static inline void *conversion_context_alloc(struct conversion_context *pool, size_t size)
 {
     if (pool->used + size <= sizeof(pool->buffer))
     {
         void *ret = pool->buffer + pool->used;
         pool->used += (size + sizeof(UINT64) - 1) & ~(sizeof(UINT64) - 1);
+        memset(ret, 0, size);
         return ret;
     }
     else
     {
         struct list *entry;
-        if (!(entry = malloc(sizeof(*entry) + size)))
+        if (!(entry = calloc(1, sizeof(*entry) + size)))
             return NULL;
         list_add_tail(&pool->alloc_entries, entry);
         return entry + 1;
