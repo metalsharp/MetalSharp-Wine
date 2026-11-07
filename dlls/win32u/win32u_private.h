@@ -55,9 +55,6 @@ extern void move_window_bits_surface( HWND hwnd, const RECT *window_rect, struct
                                       const RECT *old_visible_rect, const RECT *valid_rects );
 extern void register_window_surface( struct window_surface *old,
                                      struct window_surface *new );
-extern struct window_surface *create_shm_surface( HWND hwnd, HWND parent, const RECT *visible_rect,
-                                                  struct window_surface *old_surface );
-extern void process_surface_message( struct flush_shm_surface_params *params );
 
 extern void window_surface_lock( struct window_surface *surface );
 extern void window_surface_unlock( struct window_surface *surface );
