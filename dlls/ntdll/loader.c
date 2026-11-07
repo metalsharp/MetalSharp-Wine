@@ -3230,7 +3230,8 @@ static NTSTATUS open_wfdxcompat_runtime_alias( const WCHAR *name, UNICODE_STRING
  */
 static NTSTATUS find_builtin_without_file( const WCHAR *name, UNICODE_STRING *new_name,
                                            WINE_MODREF **pwm, HANDLE *mapping,
-                                           SECTION_IMAGE_INFORMATION *image_info, struct file_id *id )
+                                           SECTION_IMAGE_INFORMATION *image_info, struct file_id *id,
+                                           BOOL foreign_file )
 {
     const WCHAR *ext;
     WCHAR dllpath[32];
@@ -3240,7 +3241,7 @@ static NTSTATUS find_builtin_without_file( const WCHAR *name, UNICODE_STRING *ne
 
     if (contains_path( name )) return status;
 
-    if (!is_prefix_bootstrap)
+    if (!is_prefix_bootstrap && !foreign_file)
     {
         /* 16-bit files can't be loaded from the prefix */
         if (!name[1] || wcscmp( name + wcslen(name) - 2, L"16" )) return status;
@@ -3410,10 +3411,14 @@ static NTSTATUS find_dll_file( const WCHAR *load_path, const WCHAR *libname, UNI
         {
         case STATUS_NOT_SUPPORTED:
         case STATUS_INVALID_IMAGE_FORMAT:
-            if (!is_prefix_bootstrap) break;
-            /* fall through */
+            /* MetalSharp: only a DLL for another machine was found. A prefix shared with MetalSharp Wine (Arm64, FEX)
+             * holds ARM64X DLLs that installers put in under FEX (the VC++ 2015-2022 runtime), which this Wine
+             * cannot run: Wine's own builtin of that name takes their place, as it does for a missing one. */
+            status = find_builtin_without_file( libname, nt_name, pwm, mapping, image_info, id, TRUE );
+            if (status == STATUS_DLL_NOT_FOUND) status = STATUS_INVALID_IMAGE_FORMAT;
+            break;
         case STATUS_DLL_NOT_FOUND:
-            status = find_builtin_without_file( libname, nt_name, pwm, mapping, image_info, id );
+            status = find_builtin_without_file( libname, nt_name, pwm, mapping, image_info, id, FALSE );
             break;
         }
     }

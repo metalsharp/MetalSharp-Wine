@@ -921,6 +921,9 @@ static const WCHAR *get_cpu_dll_name(void)
     case IMAGE_FILE_MACHINE_I386:
         RtlInitUnicodeString( &nameW, L"\\Registry\\Machine\\Software\\Microsoft\\Wow64\\x86" );
         ret = (native_machine == IMAGE_FILE_MACHINE_ARM64 ? L"xtajit.dll" : L"wow64cpu.dll");
+        /* MetalSharp: an x86_64 host runs 32-bit code itself (wow64cpu). A prefix shared with MetalSharp Wine
+         * names FEX's ARM64 emulator (libwow64fex.dll) here, which only an ARM64 host loads. */
+        if (native_machine != IMAGE_FILE_MACHINE_ARM64) return ret;
         break;
     case IMAGE_FILE_MACHINE_ARMNT:
         RtlInitUnicodeString( &nameW, L"\\Registry\\Machine\\Software\\Microsoft\\Wow64\\arm" );
