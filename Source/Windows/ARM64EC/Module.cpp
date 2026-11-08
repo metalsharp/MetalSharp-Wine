@@ -673,7 +673,26 @@ extern "C" void SyncThreadContext(CONTEXT* Context) {
 
   uint32_t StateEFlags = CTX->ReconstructCompactedEFLAGS(Thread, false, nullptr, 0);
   Context->EFlags = (Context->EFlags & ECValidEFlagsMask) | (StateEFlags & ~ECValidEFlagsMask);
+
+  // The x87 control, status and tag words are lost the same way: an ARM64EC context has no room for them, so a context
+  // converted from one (every exception a guest handler continues from, through NtContinue) carries zeros. Loading those
+  // set the guest's FCW to 0 after each handled exception, which protection code that faults on purpose and checks its
+  // x87 state then caught (Age of Empires II: Definitive Edition quit before its menu). Keep the JIT state's.
+  auto& State = Thread->CurrentFrame->State;
+  const auto FCW = State.FCW;
+  const auto FTW = State.AbridgedFTW;
+  const uint8_t X87Flags[] = {State.flags[FEXCore::X86State::X87FLAG_IE_LOC], State.flags[FEXCore::X86State::X87FLAG_C0_LOC],
+                              State.flags[FEXCore::X86State::X87FLAG_C1_LOC], State.flags[FEXCore::X86State::X87FLAG_C2_LOC],
+                              State.flags[FEXCore::X86State::X87FLAG_C3_LOC], State.flags[FEXCore::X86State::X87FLAG_TOP_LOC]};
   Exception::LoadStateFromECContext(Thread, *Context);
+  State.FCW = FCW;
+  State.AbridgedFTW = FTW;
+  State.flags[FEXCore::X86State::X87FLAG_IE_LOC] = X87Flags[0];
+  State.flags[FEXCore::X86State::X87FLAG_C0_LOC] = X87Flags[1];
+  State.flags[FEXCore::X86State::X87FLAG_C1_LOC] = X87Flags[2];
+  State.flags[FEXCore::X86State::X87FLAG_C2_LOC] = X87Flags[3];
+  State.flags[FEXCore::X86State::X87FLAG_C3_LOC] = X87Flags[4];
+  State.flags[FEXCore::X86State::X87FLAG_TOP_LOC] = X87Flags[5];
 }
 
 NTSTATUS ProcessInit() {
