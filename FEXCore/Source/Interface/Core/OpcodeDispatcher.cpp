@@ -1030,7 +1030,7 @@ void OpDispatchBuilder::TESTOp(OpcodeArgs, uint32_t SrcIndex, bool DestRAX) {
     CalculatePF(_AndWithFlags(Size, Dest, Src));
   }
 
-  InvalidateAF();
+  ZeroAF();
 }
 
 void OpDispatchBuilder::ARPLOp(OpcodeArgs) {
@@ -1763,9 +1763,11 @@ void OpDispatchBuilder::BEXTRBMIOp(OpcodeArgs) {
   StoreResultGPR(Op, Dest);
 
   // ZF is set properly. CF and OF are defined as being set to zero. SF, PF, and
-  // AF are undefined.
+  // AF are undefined: Intel hardware and Rosetta 2 give the result's parity and
+  // a clear AF.
   SetNZ_ZeroCV(GetOpSize(Dest), Dest);
-  InvalidatePF_AF();
+  CalculatePF(Dest);
+  ZeroAF();
 }
 
 void OpDispatchBuilder::BLSIBMIOp(OpcodeArgs) {
@@ -1785,7 +1787,10 @@ void OpDispatchBuilder::BLSIBMIOp(OpcodeArgs) {
   //
   // ZF/SF/OF set as usual.
   SetNZ_ZeroCV(Size, Result);
-  InvalidatePF_AF();
+  // PF and AF are undefined: Intel hardware and Rosetta 2 give the result's
+  // parity and a clear AF.
+  CalculatePF(Result);
+  ZeroAF();
   SetCFInverted(GetRFLAG(X86State::RFLAG_ZF_RAW_LOC));
 }
 
@@ -1798,7 +1803,10 @@ void OpDispatchBuilder::BLSMSKBMIOp(OpcodeArgs) {
   auto Result = _Xor(Size, Sub(Size, Src, 1), Src);
 
   StoreResultGPR(Op, Result);
-  InvalidatePF_AF();
+  // PF and AF are undefined: Intel hardware and Rosetta 2 give the result's
+  // parity and a clear AF.
+  CalculatePF(Result);
+  ZeroAF();
 
   // CF set according to the Src
   auto CFInv = To01(Size, Src);
@@ -1823,7 +1831,10 @@ void OpDispatchBuilder::BLSRBMIOp(OpcodeArgs) {
 
   SetNZ_ZeroCV(Size, Result);
   SetCFInverted(CFInv);
-  InvalidatePF_AF();
+  // PF and AF are undefined: Intel hardware and Rosetta 2 give the result's
+  // parity and a clear AF.
+  CalculatePF(Result);
+  ZeroAF();
 }
 
 // Handles SARX, SHLX, and SHRX
@@ -1880,7 +1891,10 @@ void OpDispatchBuilder::BZHI(OpcodeArgs) {
 
   auto CFInv = _NZCVSelect01(CondClass::EQ);
 
-  InvalidatePF_AF();
+  // PF and AF are undefined: Intel hardware and Rosetta 2 give the result's
+  // parity and a clear AF.
+  CalculatePF(Result);
+  ZeroAF();
   SetNZ_ZeroCV(Size, Result);
   SetCFInverted(CFInv);
 }
@@ -3854,6 +3868,10 @@ void OpDispatchBuilder::BSFOp(OpcodeArgs) {
   // ZF is set to 1 if the source was zero
   SetZ_InvalidateNCV(OpSizeFromSrc(Op), Src);
 
+  // Intel hardware and Rosetta 2 give the source's parity and a clear AF.
+  CalculatePF(Src);
+  ZeroAF();
+
   // If Src was zero then the destination doesn't get modified.
   //
   // Although Intel does not guarantee that semantic, AMD does and Intel
@@ -3875,6 +3893,10 @@ void OpDispatchBuilder::BSROp(OpcodeArgs) {
   // OF, SF, AF, PF, CF all undefined
   // ZF is set to 1 if the source was zero
   SetZ_InvalidateNCV(OpSizeFromSrc(Op), Src);
+
+  // Intel hardware and Rosetta 2 give the source's parity and a clear AF.
+  CalculatePF(Src);
+  ZeroAF();
 
   // If Src was zero then the destination doesn't get modified
   auto SelectOp = NZCVSelect(GPRSize, CondClass::EQ, Dest, Result);
@@ -4751,8 +4773,8 @@ void OpDispatchBuilder::ALUOp(OpcodeArgs, FEXCore::IR::IROps ALUIROp, FEXCore::I
     // encodable. This is optimal and works regardless of the opsize.
     auto Zero = LoadGPR(Op->Dest.Data.GPR.GPR);
     HandleNZ00Write();
-    InvalidateAF();
     CalculatePF(SubWithFlags(OpSize::i32Bit, Zero, Zero));
+    ZeroAF();
     CFInverted = true;
     FlushRegisterCache();
 
@@ -4835,7 +4857,7 @@ void OpDispatchBuilder::ALUOp(OpcodeArgs, FEXCore::IR::IROps ALUIROp, FEXCore::I
   case FEXCore::IR::IROps::OP_ANDWITHFLAGS: {
     HandleNZ00Write();
     CalculatePF(Result);
-    InvalidateAF();
+    ZeroAF();
     break;
   }
   default: break;

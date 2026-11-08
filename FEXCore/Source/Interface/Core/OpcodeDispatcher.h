@@ -1893,6 +1893,14 @@ private:
 
   void ZeroPF_AF();
 
+  // AF where x86 leaves it undefined: Intel hardware (and Rosetta 2) clear it,
+  // and protected code that hashes pushfq results depends on that, so we do
+  // the same. AF reads as AF[4] ^ PF[4], so copying PF's raw value zeroes it.
+  // Call after PF is set.
+  void ZeroAF() {
+    SetRFLAG<FEXCore::X86State::RFLAG_AF_RAW_LOC>(GetRFLAG(FEXCore::X86State::RFLAG_PF_RAW_LOC));
+  }
+
   void InvalidateAF() {
     _InvalidateFlags((1u << X86State::RFLAG_AF_RAW_LOC));
     InvalidateReg(Core::CPUState::AF_AS_GREG);
@@ -2264,9 +2272,23 @@ private:
   void HandleShift(X86Tables::DecodedOp Op, Ref Result, Ref Dest, ShiftType Shift, Ref Src) {
 
     auto OldPF = GetRFLAG(X86State::RFLAG_PF_RAW_LOC);
+    auto OldAF = GetRFLAG(X86State::RFLAG_AF_RAW_LOC);
 
     HandleNZCV_RMW();
-    CalculatePF(_ShiftFlags(OpSizeFromSrc(Op), Result, Dest, Shift, Src, OldPF, CFInverted));
+    auto NewPF = _ShiftFlags(OpSizeFromSrc(Op), Result, Dest, Shift, Src, OldPF, CFInverted);
+    CalculatePF(NewPF);
+
+    // AF is cleared as on Intel (see ZeroAF) unless the masked count is zero,
+    // which leaves every flag alone. Without a compare, as NZCV is live:
+    // bit 4 of (count + 63) >> 2 is set exactly when count (<= 63) is nonzero,
+    // and AF reads as AF[4] ^ PF[4], so AF = OldAF ^ ((OldAF ^ NewPF) & that).
+    {
+      const auto Size = OpSizeFromSrc(Op);
+      auto Count = _And(OpSize::i32Bit, Src, Constant(Size == OpSize::i64Bit ? 0x3f : 0x1f));
+      auto NonZero4 = _And(OpSize::i32Bit, _Lshr(OpSize::i32Bit, Add(OpSize::i32Bit, Count, 63), Constant(2)), Constant(0x10));
+      auto Diff = _Xor(OpSize::i64Bit, OldAF, NewPF);
+      SetRFLAG<X86State::RFLAG_AF_RAW_LOC>(_Xor(OpSize::i64Bit, OldAF, _And(OpSize::i64Bit, Diff, NonZero4)));
+    }
     StoreResultGPR(Op, Result);
   }
 

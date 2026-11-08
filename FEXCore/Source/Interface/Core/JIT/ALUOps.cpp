@@ -636,16 +636,29 @@ DEF_OP(ShiftFlags) {
       lsrv(EmitSize, CFWord, Src1, CFWord);
     }
 
+    bool SetOF = Op->Shift != IR::ShiftType::ASR;
+    if (SetOF) {
+      // Only defined when Shift is 1 else undefined. For right shifts, a sign
+      // change: MSB(src) ^ MSB(result), as Intel hardware and Rosetta 2 give
+      // for any count. For left shifts they give MSB(result) ^ CF, which for
+      // a count of 1 is the same thing. Computed before CF is inverted.
+      if (Op->Shift == IR::ShiftType::LSL) {
+        const unsigned TopBit = IR::OpSizeToSize(OpSize) * 8 - 1;
+        if (CFBit != 0) {
+          // CF is Dst[TopBit + 1].
+          eor(ARMEmitter::Size::i64Bit, TMP3, Dst.X(), Dst.X(), ARMEmitter::ShiftType::LSR, 1);
+        } else {
+          // CF is CFWord[0].
+          eor(EmitSize, TMP3, Dst, CFWord, ARMEmitter::ShiftType::LSL, TopBit);
+        }
+      } else {
+        eor(EmitSize, TMP3, Src1, Dst);
+      }
+    }
+
     if (Op->InvertCF) {
       mvn(ARMEmitter::Size::i64Bit, TMP1, CFWord);
       CFWord = TMP1;
-    }
-
-    bool SetOF = Op->Shift != IR::ShiftType::ASR;
-    if (SetOF) {
-      // Only defined when Shift is 1 else undefined
-      // OF flag is set if a sign change occurred
-      eor(EmitSize, TMP3, Src1, Dst);
     }
 
     if (CTX->HostFeatures.SupportsFlagM) {
