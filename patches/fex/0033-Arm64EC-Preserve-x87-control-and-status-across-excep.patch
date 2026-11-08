@@ -1,0 +1,47 @@
+From c61472d359da9c498e6b6c8ee1b58f31cf5058ec Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Sat, 7 Nov 2026 19:19:40 -0700
+Subject: [PATCH 33/34] Arm64EC: Preserve x87 control and status across
+ exceptions
+
+SyncThreadContext dropped the JIT's x87 control word, abridged tag word and status flags (IE, C0-C3,
+TOP) when loading the EC context, so x87 state read after an exception differed from what the guest
+set. Carry those fields across the reload.
+---
+ Source/Windows/ARM64EC/Module.cpp | 19 +++++++++++++++++++
+ 1 file changed, 19 insertions(+)
+
+diff --git a/Source/Windows/ARM64EC/Module.cpp b/Source/Windows/ARM64EC/Module.cpp
+index 7f88fe71d..5ccc17401 100644
+--- a/Source/Windows/ARM64EC/Module.cpp
++++ b/Source/Windows/ARM64EC/Module.cpp
+@@ -673,7 +673,26 @@ extern "C" void SyncThreadContext(CONTEXT* Context) {
+ 
+   uint32_t StateEFlags = CTX->ReconstructCompactedEFLAGS(Thread, false, nullptr, 0);
+   Context->EFlags = (Context->EFlags & ECValidEFlagsMask) | (StateEFlags & ~ECValidEFlagsMask);
++
++  // The x87 control, status and tag words are lost the same way: an ARM64EC context has no room for them, so a context
++  // converted from one (every exception a guest handler continues from, through NtContinue) carries zeros. Loading those
++  // set the guest's FCW to 0 after each handled exception, which protection code that faults on purpose and checks its
++  // x87 state then caught (Age of Empires II: Definitive Edition quit before its menu). Keep the JIT state's.
++  auto& State = Thread->CurrentFrame->State;
++  const auto FCW = State.FCW;
++  const auto FTW = State.AbridgedFTW;
++  const uint8_t X87Flags[] = {State.flags[FEXCore::X86State::X87FLAG_IE_LOC], State.flags[FEXCore::X86State::X87FLAG_C0_LOC],
++                              State.flags[FEXCore::X86State::X87FLAG_C1_LOC], State.flags[FEXCore::X86State::X87FLAG_C2_LOC],
++                              State.flags[FEXCore::X86State::X87FLAG_C3_LOC], State.flags[FEXCore::X86State::X87FLAG_TOP_LOC]};
+   Exception::LoadStateFromECContext(Thread, *Context);
++  State.FCW = FCW;
++  State.AbridgedFTW = FTW;
++  State.flags[FEXCore::X86State::X87FLAG_IE_LOC] = X87Flags[0];
++  State.flags[FEXCore::X86State::X87FLAG_C0_LOC] = X87Flags[1];
++  State.flags[FEXCore::X86State::X87FLAG_C1_LOC] = X87Flags[2];
++  State.flags[FEXCore::X86State::X87FLAG_C2_LOC] = X87Flags[3];
++  State.flags[FEXCore::X86State::X87FLAG_C3_LOC] = X87Flags[4];
++  State.flags[FEXCore::X86State::X87FLAG_TOP_LOC] = X87Flags[5];
+ }
+ 
+ NTSTATUS ProcessInit() {
+-- 
+2.54.0 (Apple Git-157)
+
