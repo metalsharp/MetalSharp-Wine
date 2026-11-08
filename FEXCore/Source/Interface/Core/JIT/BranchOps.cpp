@@ -250,6 +250,15 @@ DEF_OP(CondJump) {
 
   auto TrueTargetLabel = JumpTarget(Op->TrueBlock);
 
+  // A loop whose back edge is this conditional branch has to poll the suspend doorbell, as the unconditional
+  // branches below do: without it a loop that never leaves the JIT (a spin on a flag, a wait with no syscall)
+  // never notices a suspend request, so SuspendThread and GetThreadContext on it hang. The check leaves NZCV and
+  // the compare register alone, so it is safe to emit before the branch, and the false path's own check is
+  // emitted with its pending branch.
+  if (TrueTargetLabel->Backward.Location) {
+    EmitSuspendInterruptCheck();
+  }
+
   if (Op->FromNZCV) {
     b_OrRestart(MapCC(Op->Cond), TrueTargetLabel);
   } else {
