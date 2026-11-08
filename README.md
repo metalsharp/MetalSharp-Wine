@@ -10,7 +10,11 @@
 
 </div>
 
-### Github deleted all my stars after temporarily privating the repo. Please help!
+<div align="center">
+
+### The Official Open-Source Wine of [MetalSharp](https://github.com/metalsharp/MetalSharp)
+
+</div>
 
 ___
 
