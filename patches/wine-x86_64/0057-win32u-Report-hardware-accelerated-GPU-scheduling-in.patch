@@ -1,0 +1,61 @@
+From 0606f62d7bdabe76c09270261f449d398652cee4 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Sat, 7 Nov 2026 14:16:44 -0700
+Subject: [PATCH 57/59] win32u: Report hardware-accelerated GPU scheduling in
+ D3DKMTQueryAdapterInfo's WDDM 2.7 and 2.9 caps.
+
+NVIDIA's Streamline refuses frame generation without it (God of War Ragnarok's DLSS Frame Generation stayed greyed
+out). As MetalSharp Wine (ed85def7e37).
+---
+ dlls/win32u/d3dkmt.c | 28 ++++++++++++++++++++++++++++
+ 1 file changed, 28 insertions(+)
+
+diff --git a/dlls/win32u/d3dkmt.c b/dlls/win32u/d3dkmt.c
+index ae82a769..d24d219d 100644
+--- a/dlls/win32u/d3dkmt.c
++++ b/dlls/win32u/d3dkmt.c
+@@ -33,6 +33,7 @@
+ #include <d3d9types.h>
+ #include <dxgi.h>
+ #include <d3d10.h>
++#include "d3dkmdt.h"
+ #include <d3d11.h>
+ #include <d3d12.h>
+ 
+@@ -617,6 +618,33 @@ NTSTATUS WINAPI NtGdiDdDDIQueryAdapterInfo( D3DKMT_QUERYADAPTERINFO *desc )
+         *value = KMT_DRIVERVERSION_WDDM_3_1;
+         return STATUS_SUCCESS;
+     }
++    /* The GPU schedules its own work, as hardware-accelerated GPU scheduling does on Windows; what asks (NVIDIA's
++     * Streamline, for frame generation) refuses to start without it. */
++    case KMTQAITYPE_WDDM_2_7_CAPS:
++    {
++        D3DKMT_WDDM_2_7_CAPS *value = desc->pPrivateDriverData;
++
++        if (desc->PrivateDriverDataSize < sizeof(*value))
++            return STATUS_INVALID_PARAMETER;
++
++        value->Value = 0;
++        value->HwSchSupported = 1;
++        value->HwSchEnabled = 1;
++        value->HwSchEnabledByDefault = 1;
++        return STATUS_SUCCESS;
++    }
++    case KMTQAITYPE_WDDM_2_9_CAPS:
++    {
++        D3DKMT_WDDM_2_9_CAPS *value = desc->pPrivateDriverData;
++
++        if (desc->PrivateDriverDataSize < sizeof(*value))
++            return STATUS_INVALID_PARAMETER;
++
++        value->Value = 0;
++        value->HwSchSupportState = 2; /* stable */
++        value->HwSchEnabled = 1;
++        return STATUS_SUCCESS;
++    }
+     default:
+     {
+         FIXME( "type %d not handled.\n", desc->Type );
+-- 
+2.54.0 (Apple Git-157)
+

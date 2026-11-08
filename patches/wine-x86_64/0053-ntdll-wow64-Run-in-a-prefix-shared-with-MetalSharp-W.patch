@@ -1,0 +1,72 @@
+From b06f9ae60e7dae5e73ed0bbf7189e07de06c81cd Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Sat, 7 Nov 2026 14:16:44 -0700
+Subject: [PATCH 53/59] ntdll, wow64: Run in a prefix shared with MetalSharp
+ Wine (Arm64, FEX).
+
+A DLL found only for another machine (the ARM64X VC++ 2015-2022 runtime an installer put in under FEX) gives way
+to Wine's own builtin of that name, as a missing one does. On an x86_64 host 32-bit code runs on wow64cpu, whatever
+emulator the prefix's Wow64 key names (MetalSharp Wine's libwow64fex.dll loads only on ARM64).
+---
+ dlls/ntdll/loader.c  | 15 ++++++++++-----
+ dlls/wow64/syscall.c |  3 +++
+ 2 files changed, 13 insertions(+), 5 deletions(-)
+
+diff --git a/dlls/ntdll/loader.c b/dlls/ntdll/loader.c
+index d9b0896c..2b799d06 100644
+--- a/dlls/ntdll/loader.c
++++ b/dlls/ntdll/loader.c
+@@ -3230,7 +3230,8 @@ static NTSTATUS open_wfdxcompat_runtime_alias( const WCHAR *name, UNICODE_STRING
+  */
+ static NTSTATUS find_builtin_without_file( const WCHAR *name, UNICODE_STRING *new_name,
+                                            WINE_MODREF **pwm, HANDLE *mapping,
+-                                           SECTION_IMAGE_INFORMATION *image_info, struct file_id *id )
++                                           SECTION_IMAGE_INFORMATION *image_info, struct file_id *id,
++                                           BOOL foreign_file )
+ {
+     const WCHAR *ext;
+     WCHAR dllpath[32];
+@@ -3240,7 +3241,7 @@ static NTSTATUS find_builtin_without_file( const WCHAR *name, UNICODE_STRING *ne
+ 
+     if (contains_path( name )) return status;
+ 
+-    if (!is_prefix_bootstrap)
++    if (!is_prefix_bootstrap && !foreign_file)
+     {
+         /* 16-bit files can't be loaded from the prefix */
+         if (!name[1] || wcscmp( name + wcslen(name) - 2, L"16" )) return status;
+@@ -3410,10 +3411,14 @@ static NTSTATUS find_dll_file( const WCHAR *load_path, const WCHAR *libname, UNI
+         {
+         case STATUS_NOT_SUPPORTED:
+         case STATUS_INVALID_IMAGE_FORMAT:
+-            if (!is_prefix_bootstrap) break;
+-            /* fall through */
++            /* MetalSharp: only a DLL for another machine was found. A prefix shared with MetalSharp Wine (Arm64, FEX)
++             * holds ARM64X DLLs that installers put in under FEX (the VC++ 2015-2022 runtime), which this Wine
++             * cannot run: Wine's own builtin of that name takes their place, as it does for a missing one. */
++            status = find_builtin_without_file( libname, nt_name, pwm, mapping, image_info, id, TRUE );
++            if (status == STATUS_DLL_NOT_FOUND) status = STATUS_INVALID_IMAGE_FORMAT;
++            break;
+         case STATUS_DLL_NOT_FOUND:
+-            status = find_builtin_without_file( libname, nt_name, pwm, mapping, image_info, id );
++            status = find_builtin_without_file( libname, nt_name, pwm, mapping, image_info, id, FALSE );
+             break;
+         }
+     }
+diff --git a/dlls/wow64/syscall.c b/dlls/wow64/syscall.c
+index d6fea09c..9a685631 100644
+--- a/dlls/wow64/syscall.c
++++ b/dlls/wow64/syscall.c
+@@ -921,6 +921,9 @@ static const WCHAR *get_cpu_dll_name(void)
+     case IMAGE_FILE_MACHINE_I386:
+         RtlInitUnicodeString( &nameW, L"\\Registry\\Machine\\Software\\Microsoft\\Wow64\\x86" );
+         ret = (native_machine == IMAGE_FILE_MACHINE_ARM64 ? L"xtajit.dll" : L"wow64cpu.dll");
++        /* MetalSharp: an x86_64 host runs 32-bit code itself (wow64cpu). A prefix shared with MetalSharp Wine
++         * names FEX's ARM64 emulator (libwow64fex.dll) here, which only an ARM64 host loads. */
++        if (native_machine != IMAGE_FILE_MACHINE_ARM64) return ret;
+         break;
+     case IMAGE_FILE_MACHINE_ARMNT:
+         RtlInitUnicodeString( &nameW, L"\\Registry\\Machine\\Software\\Microsoft\\Wow64\\arm" );
+-- 
+2.54.0 (Apple Git-157)
+

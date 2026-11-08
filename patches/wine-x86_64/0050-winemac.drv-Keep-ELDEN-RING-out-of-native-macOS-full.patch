@@ -1,0 +1,75 @@
+From 7d8e1e08d9a7a6356960ad8d6ec9f37af7702469 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Sun, 1 Nov 2026 09:50:56 -0700
+Subject: [PATCH 50/59] winemac.drv: Keep ELDEN RING out of native macOS
+ fullscreen.
+
+MetalSharp: in native fullscreen macOS sizes the window to the screen, and
+the frame it reports is written back to the Win32 window, so ELDEN RING's
+resolution and screen mode changes were undone and it reverted them. A new
+NativeFullscreen Mac Driver option (default on, per app under
+AppDefaults\<app.exe>\Mac Driver) turns the native fullscreen of WineForge's
+patch off, and is off by default for eldenring.exe.
+---
+ dlls/winemac.drv/cocoa_fullscreen.m |  1 +
+ dlls/winemac.drv/macdrv_cocoa.h     |  1 +
+ dlls/winemac.drv/macdrv_main.c      | 12 ++++++++++++
+ 3 files changed, 14 insertions(+)
+
+diff --git a/dlls/winemac.drv/cocoa_fullscreen.m b/dlls/winemac.drv/cocoa_fullscreen.m
+index 7cdde6b5..5f700a1c 100644
+--- a/dlls/winemac.drv/cocoa_fullscreen.m
++++ b/dlls/winemac.drv/cocoa_fullscreen.m
+@@ -53,6 +53,7 @@ - (void) update;
+ 
+ int macdrv_cocoa_fullscreen_available(void)
+ {
++    if (!native_fullscreen) return FALSE;
+ #ifdef MAC_OS_VERSION_27_0
+     if (@available(macOS 27.0, *)) return TRUE;
+ #endif
+diff --git a/dlls/winemac.drv/macdrv_cocoa.h b/dlls/winemac.drv/macdrv_cocoa.h
+index c213ae5f..a7ba3f4d 100644
+--- a/dlls/winemac.drv/macdrv_cocoa.h
++++ b/dlls/winemac.drv/macdrv_cocoa.h
+@@ -124,6 +124,7 @@
+ extern bool use_confinement_cursor_clipping;
+ extern bool cursor_clipping_locks_windows;
+ extern bool use_precise_scrolling;
++extern bool native_fullscreen;  /* MetalSharp: "NativeFullscreen" Mac Driver option */
+ extern bool use_gcmouse;
+ extern int gl_surface_mode;
+ extern CFDictionaryRef localized_strings;
+diff --git a/dlls/winemac.drv/macdrv_main.c b/dlls/winemac.drv/macdrv_main.c
+index 8732f559..a63ee1bd 100644
+--- a/dlls/winemac.drv/macdrv_main.c
++++ b/dlls/winemac.drv/macdrv_main.c
+@@ -54,6 +54,7 @@ bool allow_immovable_windows = true;
+ bool use_confinement_cursor_clipping = true;
+ bool cursor_clipping_locks_windows = true;
+ bool use_precise_scrolling = true;
++bool native_fullscreen = true;
+ bool use_gcmouse = true;
+ int gl_surface_mode = GL_SURFACE_IN_FRONT_OPAQUE;
+ bool retina_enabled = false;
+@@ -361,6 +362,17 @@ static void setup_options(void)
+     if (!get_config_key(hkey, appkey, "UsePreciseScrolling", buffer, sizeof(buffer)))
+         use_precise_scrolling = IS_OPTION_TRUE(buffer[0]);
+ 
++    /* MetalSharp hack: ELDEN RING can't change its resolution or screen mode
++     * in native macOS fullscreen, which keeps resizing its window back to the
++     * screen, so it reverts every change. The NativeFullscreen option still
++     * overrides this. */
++    {
++        static const WCHAR eldenringW[] = {'e','l','d','e','n','r','i','n','g','.','e','x','e',0};
++        if (!wcsicmp(appname, eldenringW)) native_fullscreen = false;
++    }
++    if (!get_config_key(hkey, appkey, "NativeFullscreen", buffer, sizeof(buffer)))
++        native_fullscreen = IS_OPTION_TRUE(buffer[0]);
++
+     if (!get_config_key(hkey, appkey, "UseGCMouse", buffer, sizeof(buffer)))
+         use_gcmouse = IS_OPTION_TRUE(buffer[0]);
+ 
+-- 
+2.54.0 (Apple Git-157)
+

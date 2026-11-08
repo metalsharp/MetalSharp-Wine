@@ -1,0 +1,37 @@
+From ac7ee556b42f912f37113e91336e472d2a9d83d4 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Tue, 3 Nov 2026 08:15:55 -0700
+Subject: [PATCH 33/59] wined3d: Run Crusader Kings II without the command
+ stream thread.
+
+It stalls while loading with it, its loading threads all waiting on work that
+never comes; without it, it loads and draws correctly. The registry and
+WINE_D3D_CONFIG still override this.
+---
+ dlls/wined3d/wined3d_main.c | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/dlls/wined3d/wined3d_main.c b/dlls/wined3d/wined3d_main.c
+index 8dff23e9..4d8c301b 100644
+--- a/dlls/wined3d/wined3d_main.c
++++ b/dlls/wined3d/wined3d_main.c
+@@ -336,6 +336,16 @@ static BOOL wined3d_dll_init(HINSTANCE hInstDLL)
+         }
+     }
+ 
++    /* MetalSharp hack: Crusader Kings II stalls while loading with the command stream thread,
++     * its loading threads all waiting on work that never comes; without it, it loads and draws
++     * correctly. The registry and WINE_D3D_CONFIG still override this. */
++    {
++        char app[MAX_PATH];
++
++        if (wined3d_get_app_name(app, ARRAY_SIZE(app)) && !stricmp(app, "CK2game.exe"))
++            wined3d_settings.cs_multithreaded = 0;
++    }
++
+     /* Allow modifying settings using the WINE_D3D_CONFIG environment variable,
+      * which takes precedence over registry keys. An example is as follows:
+      *
+-- 
+2.54.0 (Apple Git-157)
+

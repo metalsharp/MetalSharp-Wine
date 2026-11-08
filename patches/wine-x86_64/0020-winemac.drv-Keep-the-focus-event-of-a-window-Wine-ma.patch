@@ -1,0 +1,43 @@
+From 58e4e36442291ceae98d5e24f91cf8a51b707a0c Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Sun, 1 Nov 2026 08:29:26 -0700
+Subject: [PATCH 20/59] winemac.drv: Keep the focus event of a window Wine
+ makes key itself.
+
+Making a window key from Wine's side (SetForegroundWindow, a window shown
+active) discarded the window's WINDOW_GOT_FOCUS event and skipped
+windowGotFocus:, so the Win32 side never learned that the window had the
+keyboard: it stayed unfocused until clicked.
+
+From CrossOver 26.3 (CodeWeavers, LGPL 2.1 or later), CrossOver Hack 18896.
+---
+ dlls/winemac.drv/cocoa_window.m | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/dlls/winemac.drv/cocoa_window.m b/dlls/winemac.drv/cocoa_window.m
+index 2d8f9e2b..6b7a86a3 100644
+--- a/dlls/winemac.drv/cocoa_window.m
++++ b/dlls/winemac.drv/cocoa_window.m
+@@ -2110,8 +2110,8 @@ - (void) makeFocused:(BOOL)activate
+         [self makeKeyWindow];
+         causing_becomeKeyWindow = nil;
+ 
+-        [queue discardEventsMatchingMask:event_mask_for_type(WINDOW_GOT_FOCUS) |
+-                                         event_mask_for_type(WINDOW_LOST_FOCUS)
++        /* CrossOver Hack #18896: don't discard WINDOW_GOT_FOCUS events */
++        [queue discardEventsMatchingMask:event_mask_for_type(WINDOW_LOST_FOCUS)
+                                forWindow:self];
+     }
+ 
+@@ -2830,7 +2830,7 @@ held to switch away (Command-Tab) stays down, as Alt, and letters
+         if (event)
+             [self flagsChanged:event];
+ 
+-        if (causing_becomeKeyWindow == self) return;
++        /* CrossOver Hack #18896: don't return here based on causing_becomeKeyWindow */
+ 
+         [controller windowGotFocus:self];
+     }
+-- 
+2.54.0 (Apple Git-157)
+

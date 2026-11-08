@@ -10,7 +10,7 @@
 set -e
 S=${0:A:h}
 source $S/env.sh
-D=$ROOT/dist/metalsharp-wine-5.0-arm64
+D=$ROOT/dist/metalsharp-wine-6.0-arm64
 APP=$ROOT/dist/MetalSharp-Wine.app
 BUNDLE_ID=${BUNDLE_ID:-com.metalsharp.wine}
 IDENTITY=${SIGN_IDENTITY:--}
@@ -51,6 +51,8 @@ sed -e "s/org\.winehq\.wine/$BUNDLE_ID/" -e 's/@PACKAGE_VERSION@/11.20/' \
 # icon) and an icns for older systems. The loader bundle shows it in the Dock for Windows programs.
 ICON=MetalSharp-Wine
 mkdir -p $APP/Contents/Resources $LOADER_APP/Contents/Resources
+# actool comes with Xcode, not the command line tools
+xcrun -f actool >/dev/null 2>&1 || export DEVELOPER_DIR=${DEVELOPER_DIR:-$HOME/Downloads/Xcode-beta.app/Contents/Developer}
 xcrun actool $ROOT/resources/$ICON.icon --compile $APP/Contents/Resources --app-icon $ICON \
     --platform macosx --minimum-deployment-target 15.0 \
     --output-partial-info-plist $ROOT/dist/icon-partial.plist > /dev/null
@@ -69,9 +71,9 @@ cat > $APP/Contents/Info.plist <<EOF
   <key>CFBundleName</key><string>MetalSharp Wine</string>
   <key>CFBundleDisplayName</key><string>MetalSharp Wine</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>5.0</string>
-  <key>CFBundleVersion</key><string>5.0</string>
-  <key>CFBundleGetInfoString</key><string>MetalSharp Wine 5.0 (Wine 11.20, arm64, FEX)</string>
+  <key>CFBundleShortVersionString</key><string>6.0</string>
+  <key>CFBundleVersion</key><string>6.0</string>
+  <key>CFBundleGetInfoString</key><string>MetalSharp Wine 6.0 (Wine 11.20, arm64, FEX)</string>
   <key>LSMinimumSystemVersion</key><string>15.0</string>
   <key>LSApplicationCategoryType</key><string>public.app-category.games</string>
 </dict></plist>
@@ -128,3 +130,5 @@ codesign $opts --entitlements $ENT $LOADER_APP
 codesign $opts --entitlements $ENT $APP/Contents/MacOS/wine
 codesign $opts --entitlements $ENT $APP
 codesign --verify --strict --deep $APP && echo "signed: $APP ($IDENTITY)"
+# Still held to macOS 15 after signing (package.sh relabelled what needed it)
+[[ -n $MACOS15_SDK ]] && python3 -I $S/macos-floor.py --sdk $MACOS15_SDK $APP
