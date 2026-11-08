@@ -1,0 +1,43 @@
+From 3152c62e9fb114d9cb38a8e32f5eec055f4dd2d9 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Sat, 7 Nov 2026 19:19:40 -0700
+Subject: [PATCH 32/34] FEXCore: Return a zeroed hypervisor CPUID leaf when the
+ hypervisor bit is hidden
+
+With HideHypervisorBit set, leaf 1 ECX bit 31 is clear, so the hypervisor leaves at 0x40000000/
+0x40000001 should not report a hypervisor either. Return zero for them, as a bare-metal CPU and
+Rosetta 2 do, so guests don't see an inconsistent 'no hypervisor bit, but a hypervisor leaf' state.
+---
+ FEXCore/Source/Interface/Core/CPUID.cpp | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/FEXCore/Source/Interface/Core/CPUID.cpp b/FEXCore/Source/Interface/Core/CPUID.cpp
+index 0b08aab34..e3326510e 100644
+--- a/FEXCore/Source/Interface/Core/CPUID.cpp
++++ b/FEXCore/Source/Interface/Core/CPUID.cpp
+@@ -995,6 +995,12 @@ FEXCore::CPUID::FunctionResults CPUIDEmu::Function_24h(uint32_t Leaf) const {
+ // Hypervisor CPUID information leaf
+ FEXCore::CPUID::FunctionResults CPUIDEmu::Function_4000_0000h(uint32_t Leaf) const {
+   FEXCore::CPUID::FunctionResults Res {};
++  // With the hypervisor bit hidden (HideHypervisorBit), there is no hypervisor leaf either: protectors that read
++  // 4000_0000h find FEXIFEXIEMU and refuse to run, as in a VM (Age of Empires II: Definitive Edition quit before
++  // its menu). Zero, as Rosetta 2 and a CPU without a hypervisor answer.
++  if (HideHypervisorBit()) {
++    return Res;
++  }
+   // Maximum supported hypervisor leafs
+   // We only expose the information leaf
+   //
+@@ -1020,6 +1026,9 @@ static_assert(GitString.size() < 32);
+ // Hypervisor CPUID information leaf
+ FEXCore::CPUID::FunctionResults CPUIDEmu::Function_4000_0001h(uint32_t Leaf) const {
+   FEXCore::CPUID::FunctionResults Res {};
++  if (HideHypervisorBit()) {
++    return Res;
++  }
+   constexpr uint32_t MaximumSubLeafNumber = 2;
+   if (Leaf == 0) {
+     // EAX[3:0] Is the host architecture that FEX is running under
+-- 
+2.54.0 (Apple Git-157)
+
