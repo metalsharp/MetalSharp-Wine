@@ -1,0 +1,75 @@
+From d100ac4215413f094ad3722fcd55f50e447b2c1a Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Sat, 7 Nov 2026 19:19:49 -0700
+Subject: [PATCH] ntdll: Give an x64 exception context its segment registers
+ and x87 control word, and recognise hot-patchable export prologues
+
+context_arm_to_x64 left the segment selectors and the x87 control word zeroed, where x64 Windows
+reports CS/DS/ES/SS and a 0x27f control word; fill them in so code that inspects the context it is
+handed sees what it would on x64. The ARM64EC call checker also now accepts an export whose x64 entry
+begins with the hot-patch prologue (lea 0x0(%rsp),%rsp) and a following jmp, as x64 Windows and
+x86_64 Wine emit, in addition to the linker's fast-forward sequence.
+---
+ dlls/ntdll/signal_arm64ec.c | 21 ++++++++++++++++++---
+ dlls/ntdll/unwind.h         |  5 +++++
+ 2 files changed, 23 insertions(+), 3 deletions(-)
+
+diff --git a/dlls/ntdll/signal_arm64ec.c b/dlls/ntdll/signal_arm64ec.c
+index 470e064c239..2ba2530be9c 100644
+--- a/dlls/ntdll/signal_arm64ec.c
++++ b/dlls/ntdll/signal_arm64ec.c
+@@ -2026,10 +2026,23 @@ static void __attribute__((naked)) arm64x_check_call(void)
+          "adr x11, arm64ec_syscalls\n\t"
+          "ldr x11, [x11, x9, lsl #3]\n\t"
+          "ret\n"
+-         /* check for jmp sequence */
++         /* check for jmp sequence, after an optional hot-patch lea 0x0(%rsp),%rsp: MetalSharp gives the
++          * x64-visible entry points of system DLLs that prologue and a plain jump, as x86_64 Windows and
++          * x86_64 Wine have, in place of the linker's fast-forward sequence */
+          ".Ljmp:\n\t"
+-         "ldrb w16, [x11]\n\t"
+-         "cmp w16, #0xff\n\t"
++         "ldr x16, [x11]\n\t"
++         "ldr x17, .Lhotpatch_seq\n\t"
++         "cmp x16, x17\n\t"
++         "b.ne 1f\n\t"
++         "add x11, x11, #8\n"
++         "1:\tldrb w16, [x11]\n\t"
++         "cmp w16, #0xe9\n\t"             /* e9 jmp rel32 */
++         "b.ne 2f\n\t"
++         "ldrsw x9, [x11, #1]\n\t"
++         "add x11, x11, #5\n\t"           /* address after jump */
++         "add x11, x11, x9\n\t"
++         "b \"#arm64x_check_call\"\n"     /* restart checks with jump destination */
++         "2:\tcmp w16, #0xff\n\t"
+          "b.ne .Lexit\n\t"
+          "ldrb w16, [x11, #1]\n\t"
+          "cmp w16, #0x25\n\t"               /* ff 25 jmp *xxx(%rip) */
+@@ -2046,6 +2059,8 @@ static void __attribute__((naked)) arm64x_check_call(void)
+          "ret\n"
+          ".seh_endproc\n\t"
+ 
++         ".Lhotpatch_seq:\n\t"
++         ".byte 0x48, 0x8d, 0xa4, 0x24, 0, 0, 0, 0\n\t" /* lea 0x0(%rsp),%rsp */
+          ".Lffwd_seq:\n\t"
+          ".byte 0x48, 0x8b, 0xc4\n\t"       /* mov  %rsp,%rax */
+          ".byte 0x48, 0x89, 0x58, 0x20\n\t" /* mov  %rbx,0x20(%rax) */
+diff --git a/dlls/ntdll/unwind.h b/dlls/ntdll/unwind.h
+index a57a081d075..b4aca06cede 100644
+--- a/dlls/ntdll/unwind.h
++++ b/dlls/ntdll/unwind.h
+@@ -180,6 +180,11 @@ static inline void context_arm_to_x64( ARM64EC_NT_CONTEXT *ec_ctx, const ARM64_N
+ {
+     memset( ec_ctx, 0, sizeof(*ec_ctx) );
+     ec_ctx->ContextFlags = ctx_flags_arm_to_x64( arm_ctx->ContextFlags );
++    /* MetalSharp: the segment registers below are filled in, as an x64 context has them (CONTEXT_FULL plus segments),
++     * and x87's control word is Windows' default rather than 0: an ARM64 context carries neither, and protection code
++     * that reads the context its exception handler gets compares them with what x64 Windows gives it */
++    if (ec_ctx->ContextFlags & CONTEXT_AMD64_CONTROL) ec_ctx->ContextFlags |= CONTEXT_AMD64_SEGMENTS;
++    ec_ctx->AMD64_ControlWord = 0x27f;
+     ec_ctx->AMD64_SegCs  = 0x33;
+     ec_ctx->AMD64_SegDs  = 0x2b;
+     ec_ctx->AMD64_SegEs  = 0x2b;
+-- 
+2.54.0 (Apple Git-157)
+

@@ -1,0 +1,319 @@
+From 14062147078cfd44010a07078e95fde552065696 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Sat, 7 Nov 2026 19:19:40 -0700
+Subject: [PATCH 31/34] FEXCore: Match x86 results for flags left undefined by
+ the ISA
+
+Where x86 documents a flag as undefined after an operation, real Intel hardware (and Rosetta 2)
+still leave it in a predictable state, and some software depends on that. Match it: clear AF after
+logical ops, shifts, TEST, BT-family and BMI; clear SF/ZF/AF/PF after MUL/IMUL; give the result's
+parity and a cleared AF after BSF/BSR/LZCNT/TZCNT/BEXTR/BLSR; and compute the shift OF for counts
+other than one the way the hardware does (MSB(result) ^ last-bit-shifted-out).
+---
+ FEXCore/Source/Interface/Core/JIT/ALUOps.cpp  | 27 +++++++++----
+ .../Interface/Core/OpcodeDispatcher.cpp       | 40 ++++++++++++++-----
+ .../Source/Interface/Core/OpcodeDispatcher.h  | 24 ++++++++++-
+ .../Interface/Core/OpcodeDispatcher/Flags.cpp | 28 ++++++++++---
+ 4 files changed, 96 insertions(+), 23 deletions(-)
+
+diff --git a/FEXCore/Source/Interface/Core/JIT/ALUOps.cpp b/FEXCore/Source/Interface/Core/JIT/ALUOps.cpp
+index b65bf80fc..9417a9c6f 100644
+--- a/FEXCore/Source/Interface/Core/JIT/ALUOps.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/ALUOps.cpp
+@@ -636,18 +636,31 @@ DEF_OP(ShiftFlags) {
+       lsrv(EmitSize, CFWord, Src1, CFWord);
+     }
+ 
++    bool SetOF = Op->Shift != IR::ShiftType::ASR;
++    if (SetOF) {
++      // Only defined when Shift is 1 else undefined. For right shifts, a sign
++      // change: MSB(src) ^ MSB(result), as Intel hardware and Rosetta 2 give
++      // for any count. For left shifts they give MSB(result) ^ CF, which for
++      // a count of 1 is the same thing. Computed before CF is inverted.
++      if (Op->Shift == IR::ShiftType::LSL) {
++        const unsigned TopBit = IR::OpSizeToSize(OpSize) * 8 - 1;
++        if (CFBit != 0) {
++          // CF is Dst[TopBit + 1].
++          eor(ARMEmitter::Size::i64Bit, TMP3, Dst.X(), Dst.X(), ARMEmitter::ShiftType::LSR, 1);
++        } else {
++          // CF is CFWord[0].
++          eor(EmitSize, TMP3, Dst, CFWord, ARMEmitter::ShiftType::LSL, TopBit);
++        }
++      } else {
++        eor(EmitSize, TMP3, Src1, Dst);
++      }
++    }
++
+     if (Op->InvertCF) {
+       mvn(ARMEmitter::Size::i64Bit, TMP1, CFWord);
+       CFWord = TMP1;
+     }
+ 
+-    bool SetOF = Op->Shift != IR::ShiftType::ASR;
+-    if (SetOF) {
+-      // Only defined when Shift is 1 else undefined
+-      // OF flag is set if a sign change occurred
+-      eor(EmitSize, TMP3, Src1, Dst);
+-    }
+-
+     if (CTX->HostFeatures.SupportsFlagM) {
+       rmif(CFWord, (CFBit - 1) % 64, (1 << 1) /* C */);
+ 
+diff --git a/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp b/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
+index 25dc78cd5..43572b8d2 100644
+--- a/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
++++ b/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
+@@ -1030,7 +1030,7 @@ void OpDispatchBuilder::TESTOp(OpcodeArgs, uint32_t SrcIndex, bool DestRAX) {
+     CalculatePF(_AndWithFlags(Size, Dest, Src));
+   }
+ 
+-  InvalidateAF();
++  ZeroAF();
+ }
+ 
+ void OpDispatchBuilder::ARPLOp(OpcodeArgs) {
+@@ -1763,9 +1763,11 @@ void OpDispatchBuilder::BEXTRBMIOp(OpcodeArgs) {
+   StoreResultGPR(Op, Dest);
+ 
+   // ZF is set properly. CF and OF are defined as being set to zero. SF, PF, and
+-  // AF are undefined.
++  // AF are undefined: Intel hardware and Rosetta 2 give the result's parity and
++  // a clear AF.
+   SetNZ_ZeroCV(GetOpSize(Dest), Dest);
+-  InvalidatePF_AF();
++  CalculatePF(Dest);
++  ZeroAF();
+ }
+ 
+ void OpDispatchBuilder::BLSIBMIOp(OpcodeArgs) {
+@@ -1785,7 +1787,10 @@ void OpDispatchBuilder::BLSIBMIOp(OpcodeArgs) {
+   //
+   // ZF/SF/OF set as usual.
+   SetNZ_ZeroCV(Size, Result);
+-  InvalidatePF_AF();
++  // PF and AF are undefined: Intel hardware and Rosetta 2 give the result's
++  // parity and a clear AF.
++  CalculatePF(Result);
++  ZeroAF();
+   SetCFInverted(GetRFLAG(X86State::RFLAG_ZF_RAW_LOC));
+ }
+ 
+@@ -1798,7 +1803,10 @@ void OpDispatchBuilder::BLSMSKBMIOp(OpcodeArgs) {
+   auto Result = _Xor(Size, Sub(Size, Src, 1), Src);
+ 
+   StoreResultGPR(Op, Result);
+-  InvalidatePF_AF();
++  // PF and AF are undefined: Intel hardware and Rosetta 2 give the result's
++  // parity and a clear AF.
++  CalculatePF(Result);
++  ZeroAF();
+ 
+   // CF set according to the Src
+   auto CFInv = To01(Size, Src);
+@@ -1823,7 +1831,10 @@ void OpDispatchBuilder::BLSRBMIOp(OpcodeArgs) {
+ 
+   SetNZ_ZeroCV(Size, Result);
+   SetCFInverted(CFInv);
+-  InvalidatePF_AF();
++  // PF and AF are undefined: Intel hardware and Rosetta 2 give the result's
++  // parity and a clear AF.
++  CalculatePF(Result);
++  ZeroAF();
+ }
+ 
+ // Handles SARX, SHLX, and SHRX
+@@ -1880,7 +1891,10 @@ void OpDispatchBuilder::BZHI(OpcodeArgs) {
+ 
+   auto CFInv = _NZCVSelect01(CondClass::EQ);
+ 
+-  InvalidatePF_AF();
++  // PF and AF are undefined: Intel hardware and Rosetta 2 give the result's
++  // parity and a clear AF.
++  CalculatePF(Result);
++  ZeroAF();
+   SetNZ_ZeroCV(Size, Result);
+   SetCFInverted(CFInv);
+ }
+@@ -3854,6 +3868,10 @@ void OpDispatchBuilder::BSFOp(OpcodeArgs) {
+   // ZF is set to 1 if the source was zero
+   SetZ_InvalidateNCV(OpSizeFromSrc(Op), Src);
+ 
++  // Intel hardware and Rosetta 2 give the source's parity and a clear AF.
++  CalculatePF(Src);
++  ZeroAF();
++
+   // If Src was zero then the destination doesn't get modified.
+   //
+   // Although Intel does not guarantee that semantic, AMD does and Intel
+@@ -3876,6 +3894,10 @@ void OpDispatchBuilder::BSROp(OpcodeArgs) {
+   // ZF is set to 1 if the source was zero
+   SetZ_InvalidateNCV(OpSizeFromSrc(Op), Src);
+ 
++  // Intel hardware and Rosetta 2 give the source's parity and a clear AF.
++  CalculatePF(Src);
++  ZeroAF();
++
+   // If Src was zero then the destination doesn't get modified
+   auto SelectOp = NZCVSelect(GPRSize, CondClass::EQ, Dest, Result);
+   StoreResultGPR_WithOpSize(Op, Op->Dest, SelectOp, DstSize);
+@@ -4751,8 +4773,8 @@ void OpDispatchBuilder::ALUOp(OpcodeArgs, FEXCore::IR::IROps ALUIROp, FEXCore::I
+     // encodable. This is optimal and works regardless of the opsize.
+     auto Zero = LoadGPR(Op->Dest.Data.GPR.GPR);
+     HandleNZ00Write();
+-    InvalidateAF();
+     CalculatePF(SubWithFlags(OpSize::i32Bit, Zero, Zero));
++    ZeroAF();
+     CFInverted = true;
+     FlushRegisterCache();
+ 
+@@ -4835,7 +4857,7 @@ void OpDispatchBuilder::ALUOp(OpcodeArgs, FEXCore::IR::IROps ALUIROp, FEXCore::I
+   case FEXCore::IR::IROps::OP_ANDWITHFLAGS: {
+     HandleNZ00Write();
+     CalculatePF(Result);
+-    InvalidateAF();
++    ZeroAF();
+     break;
+   }
+   default: break;
+diff --git a/FEXCore/Source/Interface/Core/OpcodeDispatcher.h b/FEXCore/Source/Interface/Core/OpcodeDispatcher.h
+index 47c16a5eb..86901682d 100644
+--- a/FEXCore/Source/Interface/Core/OpcodeDispatcher.h
++++ b/FEXCore/Source/Interface/Core/OpcodeDispatcher.h
+@@ -1893,6 +1893,14 @@ private:
+ 
+   void ZeroPF_AF();
+ 
++  // AF where x86 leaves it undefined: Intel hardware (and Rosetta 2) clear it,
++  // and protected code that hashes pushfq results depends on that, so we do
++  // the same. AF reads as AF[4] ^ PF[4], so copying PF's raw value zeroes it.
++  // Call after PF is set.
++  void ZeroAF() {
++    SetRFLAG<FEXCore::X86State::RFLAG_AF_RAW_LOC>(GetRFLAG(FEXCore::X86State::RFLAG_PF_RAW_LOC));
++  }
++
+   void InvalidateAF() {
+     _InvalidateFlags((1u << X86State::RFLAG_AF_RAW_LOC));
+     InvalidateReg(Core::CPUState::AF_AS_GREG);
+@@ -2264,9 +2272,23 @@ private:
+   void HandleShift(X86Tables::DecodedOp Op, Ref Result, Ref Dest, ShiftType Shift, Ref Src) {
+ 
+     auto OldPF = GetRFLAG(X86State::RFLAG_PF_RAW_LOC);
++    auto OldAF = GetRFLAG(X86State::RFLAG_AF_RAW_LOC);
+ 
+     HandleNZCV_RMW();
+-    CalculatePF(_ShiftFlags(OpSizeFromSrc(Op), Result, Dest, Shift, Src, OldPF, CFInverted));
++    auto NewPF = _ShiftFlags(OpSizeFromSrc(Op), Result, Dest, Shift, Src, OldPF, CFInverted);
++    CalculatePF(NewPF);
++
++    // AF is cleared as on Intel (see ZeroAF) unless the masked count is zero,
++    // which leaves every flag alone. Without a compare, as NZCV is live:
++    // bit 4 of (count + 63) >> 2 is set exactly when count (<= 63) is nonzero,
++    // and AF reads as AF[4] ^ PF[4], so AF = OldAF ^ ((OldAF ^ NewPF) & that).
++    {
++      const auto Size = OpSizeFromSrc(Op);
++      auto Count = _And(OpSize::i32Bit, Src, Constant(Size == OpSize::i64Bit ? 0x3f : 0x1f));
++      auto NonZero4 = _And(OpSize::i32Bit, _Lshr(OpSize::i32Bit, Add(OpSize::i32Bit, Count, 63), Constant(2)), Constant(0x10));
++      auto Diff = _Xor(OpSize::i64Bit, OldAF, NewPF);
++      SetRFLAG<X86State::RFLAG_AF_RAW_LOC>(_Xor(OpSize::i64Bit, OldAF, _And(OpSize::i64Bit, Diff, NonZero4)));
++    }
+     StoreResultGPR(Op, Result);
+   }
+ 
+diff --git a/FEXCore/Source/Interface/Core/OpcodeDispatcher/Flags.cpp b/FEXCore/Source/Interface/Core/OpcodeDispatcher/Flags.cpp
+index 858e7a4ae..97ae63749 100644
+--- a/FEXCore/Source/Interface/Core/OpcodeDispatcher/Flags.cpp
++++ b/FEXCore/Source/Interface/Core/OpcodeDispatcher/Flags.cpp
+@@ -396,7 +396,9 @@ Ref OpDispatchBuilder::CalculateFlags_ADD(IR::OpSize SrcSize, Ref Src1, Ref Src2
+ 
+ void OpDispatchBuilder::CalculateFlags_MUL(IR::OpSize SrcSize, Ref Res, Ref High) {
+   HandleNZCVWrite();
+-  InvalidatePF_AF();
++  // SF, ZF, AF and PF are undefined. Intel hardware and Rosetta 2 clear them;
++  // so do we (SF is clear below already).
++  ZeroPF_AF();
+ 
+   // CF and OF are set if the result of the operation can't be fit in to the destination register
+   // If the value can fit then the top bits will be zero
+@@ -408,11 +410,13 @@ void OpDispatchBuilder::CalculateFlags_MUL(IR::OpSize SrcSize, Ref Res, Ref High
+   auto Zero = _InlineConstant(0);
+   _CondSubNZCV(OpSize::i64Bit, Zero, Zero, CondClass::EQ, 0x1 /* nzcV */);
+   CFInverted = true;
++  SetRFLAG<FEXCore::X86State::RFLAG_ZF_RAW_LOC>(Constant(0));
+ }
+ 
+ void OpDispatchBuilder::CalculateFlags_UMUL(Ref High) {
+   HandleNZCVWrite();
+-  InvalidatePF_AF();
++  // As CalculateFlags_MUL: SF, ZF, AF and PF cleared.
++  ZeroPF_AF();
+ 
+   auto Zero = _InlineConstant(0);
+   const auto Size = GetOpSize(High);
+@@ -425,11 +429,12 @@ void OpDispatchBuilder::CalculateFlags_UMUL(Ref High) {
+   // this does what we need.
+   _CondSubNZCV(Size, Zero, Zero, CondClass::EQ, 0x1 /* nzcV */);
+   CFInverted = true;
++  SetRFLAG<FEXCore::X86State::RFLAG_ZF_RAW_LOC>(Constant(0));
+ }
+ 
+ void OpDispatchBuilder::CalculateFlags_Logical(IR::OpSize SrcSize, Ref Res) {
+-  InvalidateAF();
+   SetNZP_ZeroCV(SrcSize, Res);
++  ZeroAF();
+ }
+ 
+ void OpDispatchBuilder::CalculateFlags_ShiftLeftImmediate(IR::OpSize SrcSize, Ref UnmaskedRes, Ref Src1, uint64_t Shift, bool DoubleWide) {
+@@ -458,13 +463,19 @@ void OpDispatchBuilder::CalculateFlags_ShiftLeftImmediate(IR::OpSize SrcSize, Re
+   }
+ 
+   CalculatePF(UnmaskedRes);
+-  InvalidateAF();
++  ZeroAF();
+ 
+   // OF
+   // In the case of left shift. OF is only set from the result of <Top Source Bit> XOR <Top Result Bit>
+   if (Shift == 1) {
+     auto Xor = _Xor(OpSize, UnmaskedRes, Src1);
+     SetRFLAG<FEXCore::X86State::RFLAG_OF_RAW_LOC>(Xor, IR::OpSizeAsBits(SrcSize) - 1, true);
++  } else if (!DoubleWide) {
++    // Undefined. Intel hardware and Rosetta 2 give MSB(result) ^ CF, which is
++    // the count-1 rule applied to the last step: CF is the bit that the
++    // (Shift - 1)-bit shift of the source has at the top.
++    auto Xor = _Xor(OpSize, UnmaskedRes, _Lshl(OpSize, Src1, Constant(Shift - 1)));
++    SetRFLAG<FEXCore::X86State::RFLAG_OF_RAW_LOC>(Xor, IR::OpSizeAsBits(SrcSize) - 1, true);
+   } else {
+     // Undefined, we choose to zero as part of SetNZ_ZeroCV
+   }
+@@ -482,7 +493,7 @@ void OpDispatchBuilder::CalculateFlags_SignShiftRightImmediate(IR::OpSize SrcSiz
+   SetCFDirect(Src1, Shift - 1, true);
+ 
+   CalculatePF(Res);
+-  InvalidateAF();
++  ZeroAF();
+ 
+   // OF
+   // Only defined when Shift is 1 else undefined. Only is set if the top bit was set to 1 when
+@@ -499,7 +510,7 @@ void OpDispatchBuilder::CalculateFlags_ShiftRightImmediateCommon(IR::OpSize SrcS
+   SetCFDirect(Src1, Shift - 1, true);
+ 
+   CalculatePF(Res);
+-  InvalidateAF();
++  ZeroAF();
+ }
+ 
+ void OpDispatchBuilder::CalculateFlags_ShiftRightImmediate(IR::OpSize SrcSize, Ref Res, Ref Src1, uint64_t Shift) {
+@@ -551,6 +562,11 @@ void OpDispatchBuilder::CalculateFlags_ZCNT(IR::OpSize SrcSize, Ref Result) {
+   // bit is set. No masking is needed because no higher bits could be set.
+   unsigned CarryBit = FEXCore::ilog2(IR::OpSizeAsBits(SrcSize));
+   SetCFDirect(Result, CarryBit);
++
++  // PF and AF are undefined: Intel hardware and Rosetta 2 give the result's
++  // parity and a clear AF.
++  CalculatePF(Result);
++  ZeroAF();
+ }
+ 
+ } // namespace FEXCore::IR
+-- 
+2.54.0 (Apple Git-157)
+

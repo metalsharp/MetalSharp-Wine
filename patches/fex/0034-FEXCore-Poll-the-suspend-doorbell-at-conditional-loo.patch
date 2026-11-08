@@ -1,0 +1,37 @@
+From f7e653decfbdc8e3e69a4792ca23454b734eb8d3 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Sat, 7 Nov 2026 19:19:40 -0700
+Subject: [PATCH 34/34] FEXCore: Poll the suspend doorbell at conditional loop
+ back-edges
+
+Only unconditional branches emitted the suspend-doorbell check, so a loop whose back-edge is a
+conditional branch never polled it. A thread spinning in such a loop (a wait on a flag, with no
+syscall) never noticed a suspend request, so SuspendThread and GetThreadContext on it blocked
+forever. Emit the check before a conditional branch to a backward target too.
+---
+ FEXCore/Source/Interface/Core/JIT/BranchOps.cpp | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/FEXCore/Source/Interface/Core/JIT/BranchOps.cpp b/FEXCore/Source/Interface/Core/JIT/BranchOps.cpp
+index c2b1d8e28..466bd4154 100644
+--- a/FEXCore/Source/Interface/Core/JIT/BranchOps.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/BranchOps.cpp
+@@ -250,6 +250,15 @@ DEF_OP(CondJump) {
+ 
+   auto TrueTargetLabel = JumpTarget(Op->TrueBlock);
+ 
++  // A loop whose back edge is this conditional branch has to poll the suspend doorbell, as the unconditional
++  // branches below do: without it a loop that never leaves the JIT (a spin on a flag, a wait with no syscall)
++  // never notices a suspend request, so SuspendThread and GetThreadContext on it hang. The check leaves NZCV and
++  // the compare register alone, so it is safe to emit before the branch, and the false path's own check is
++  // emitted with its pending branch.
++  if (TrueTargetLabel->Backward.Location) {
++    EmitSuspendInterruptCheck();
++  }
++
+   if (Op->FromNZCV) {
+     b_OrRestart(MapCC(Op->Cond), TrueTargetLabel);
+   } else {
+-- 
+2.54.0 (Apple Git-157)
+
