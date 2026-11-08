@@ -245,6 +245,9 @@ cp -Rp "$GX/d3dmetal" "$GX/external" "$M/graphics/"
 
 # --- relocatable: libraries named by their build machines' paths are found next to their users ----------------------
 python3 -I "$HERE/x86_64/relocate-macho.py" "$C"
+# The oldest macOS the release supports is 15.0: payloads linked on a newer macOS without a deployment target are held
+# to it once the macOS 15 SDK shows they need nothing newer (macos-floor.py; signing below)
+python3 -I "$HERE/macos-floor.py" --sdk "${MACOS15_SDK:?set MACOS15_SDK to a macOS 15 SDK (MacOSX15.x.sdk)}" --fix "$C"
 
 # The app's main executable is Contents/MacOS/wine, whose signature is bound to the app's Info.plist; outside the app
 # (the x86_64 install's runtime/wine/bin, laid out from it) that copy does not run. A copy signed on its own goes in
@@ -422,5 +425,6 @@ SIGN_ID="$IDENTITY" SIGN_FLAGS="${opts[*]:3}" xargs -0 -P "$(sysctl -n hw.ncpu)"
 codesign "${opts[@]}" --entitlements "$ENT" "$C/MacOS/wine"
 codesign "${opts[@]}" --entitlements "$ENT" "$APP"
 codesign --verify --deep --strict "$APP"
+python3 -I "$HERE/macos-floor.py" --sdk "$MACOS15_SDK" "$APP"
 rm -rf "$WORK"
 echo "built: $APP ($(du -sh "$APP" | cut -f1), signed by $IDENTITY)"

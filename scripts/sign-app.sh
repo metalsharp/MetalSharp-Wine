@@ -51,6 +51,8 @@ sed -e "s/org\.winehq\.wine/$BUNDLE_ID/" -e 's/@PACKAGE_VERSION@/11.20/' \
 # icon) and an icns for older systems. The loader bundle shows it in the Dock for Windows programs.
 ICON=MetalSharp-Wine
 mkdir -p $APP/Contents/Resources $LOADER_APP/Contents/Resources
+# actool comes with Xcode, not the command line tools
+xcrun -f actool >/dev/null 2>&1 || export DEVELOPER_DIR=${DEVELOPER_DIR:-$HOME/Downloads/Xcode-beta.app/Contents/Developer}
 xcrun actool $ROOT/resources/$ICON.icon --compile $APP/Contents/Resources --app-icon $ICON \
     --platform macosx --minimum-deployment-target 15.0 \
     --output-partial-info-plist $ROOT/dist/icon-partial.plist > /dev/null
@@ -128,3 +130,5 @@ codesign $opts --entitlements $ENT $LOADER_APP
 codesign $opts --entitlements $ENT $APP/Contents/MacOS/wine
 codesign $opts --entitlements $ENT $APP
 codesign --verify --strict --deep $APP && echo "signed: $APP ($IDENTITY)"
+# Still held to macOS 15 after signing (package.sh relabelled what needed it)
+[[ -n $MACOS15_SDK ]] && python3 -I $S/macos-floor.py --sdk $MACOS15_SDK $APP

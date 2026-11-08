@@ -175,6 +175,8 @@ That builds:
 
 It then audits the Mach-O files and packages `dist/metalsharp-wine-<version>-arm64`.
 
+Packaging needs a macOS 15 SDK (`MACOS15_SDK=<path>/MacOSX15.x.sdk`). Some of the bundles' payloads were linked on a newer macOS without a deployment target. `scripts/macos-floor.py` uses the SDK to check that each one needs nothing macOS 15 lacks, then holds it to macOS 15. Both packagers run it.
+
 The add-ons have their own scripts:
 - `build-llvm15.sh` and `build-mullion.sh`
 - `build-winemetalgl.sh`

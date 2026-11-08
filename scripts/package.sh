@@ -64,6 +64,10 @@ rpath_for() {
   esac
 }
 
+# The oldest macOS the release supports is 15.0: payloads linked on a newer macOS without a deployment target are
+# held to it once the macOS 15 SDK shows they need nothing newer (scripts/macos-floor.py; the loop below signs them)
+python3 -I ${0:A:h}/macos-floor.py --sdk ${MACOS15_SDK:?set MACOS15_SDK to a macOS 15 SDK (MacOSX15.x.sdk)} --fix $D
+
 for f in $(find $D -type f \( -name '*.dylib' -o -name '*.so' -o -perm -u+x \)); do
   file -b $f | grep -q Mach-O || continue
   # Apple's converter library ships unmodified (its license forbids changes); it links system libraries only.
@@ -71,7 +75,10 @@ for f in $(find $D -type f \( -name '*.dylib' -o -name '*.so' -o -perm -u+x \));
   args=()
   # dylib ids
   id=$(otool -D $f | sed -n 2p)
-  [[ $id == $PREFIX/lib/* ]] && args+=(-id @rpath/${id#$PREFIX/lib/})
+  if [[ $id == $PREFIX/lib/* ]]; then args+=(-id @rpath/${id#$PREFIX/lib/})
+  # any other id that names a build machine's path (the build tree, Homebrew, /tmp) is its own name under @rpath
+  elif [[ $id == /* && $id != /usr/lib/* && $id != /System/* ]]; then args+=(-id @rpath/${id:t})
+  fi
   # dependencies
   for dep in $(otool -L $f | tail -n +2 | awk '{print $1}' | grep "^$PREFIX/lib/"); do
     args+=(-change $dep @rpath/${dep#$PREFIX/lib/})
