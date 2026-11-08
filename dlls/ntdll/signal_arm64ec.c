@@ -2026,10 +2026,23 @@ static void __attribute__((naked)) arm64x_check_call(void)
          "adr x11, arm64ec_syscalls\n\t"
          "ldr x11, [x11, x9, lsl #3]\n\t"
          "ret\n"
-         /* check for jmp sequence */
+         /* check for jmp sequence, after an optional hot-patch lea 0x0(%rsp),%rsp: MetalSharp gives the
+          * x64-visible entry points of system DLLs that prologue and a plain jump, as x86_64 Windows and
+          * x86_64 Wine have, in place of the linker's fast-forward sequence */
          ".Ljmp:\n\t"
-         "ldrb w16, [x11]\n\t"
-         "cmp w16, #0xff\n\t"
+         "ldr x16, [x11]\n\t"
+         "ldr x17, .Lhotpatch_seq\n\t"
+         "cmp x16, x17\n\t"
+         "b.ne 1f\n\t"
+         "add x11, x11, #8\n"
+         "1:\tldrb w16, [x11]\n\t"
+         "cmp w16, #0xe9\n\t"             /* e9 jmp rel32 */
+         "b.ne 2f\n\t"
+         "ldrsw x9, [x11, #1]\n\t"
+         "add x11, x11, #5\n\t"           /* address after jump */
+         "add x11, x11, x9\n\t"
+         "b \"#arm64x_check_call\"\n"     /* restart checks with jump destination */
+         "2:\tcmp w16, #0xff\n\t"
          "b.ne .Lexit\n\t"
          "ldrb w16, [x11, #1]\n\t"
          "cmp w16, #0x25\n\t"               /* ff 25 jmp *xxx(%rip) */
@@ -2046,6 +2059,8 @@ static void __attribute__((naked)) arm64x_check_call(void)
          "ret\n"
          ".seh_endproc\n\t"
 
+         ".Lhotpatch_seq:\n\t"
+         ".byte 0x48, 0x8d, 0xa4, 0x24, 0, 0, 0, 0\n\t" /* lea 0x0(%rsp),%rsp */
          ".Lffwd_seq:\n\t"
          ".byte 0x48, 0x8b, 0xc4\n\t"       /* mov  %rsp,%rax */
          ".byte 0x48, 0x89, 0x58, 0x20\n\t" /* mov  %rbx,0x20(%rax) */

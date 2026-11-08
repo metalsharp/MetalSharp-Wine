@@ -180,6 +180,11 @@ static inline void context_arm_to_x64( ARM64EC_NT_CONTEXT *ec_ctx, const ARM64_N
 {
     memset( ec_ctx, 0, sizeof(*ec_ctx) );
     ec_ctx->ContextFlags = ctx_flags_arm_to_x64( arm_ctx->ContextFlags );
+    /* MetalSharp: the segment registers below are filled in, as an x64 context has them (CONTEXT_FULL plus segments),
+     * and x87's control word is Windows' default rather than 0: an ARM64 context carries neither, and protection code
+     * that reads the context its exception handler gets compares them with what x64 Windows gives it */
+    if (ec_ctx->ContextFlags & CONTEXT_AMD64_CONTROL) ec_ctx->ContextFlags |= CONTEXT_AMD64_SEGMENTS;
+    ec_ctx->AMD64_ControlWord = 0x27f;
     ec_ctx->AMD64_SegCs  = 0x33;
     ec_ctx->AMD64_SegDs  = 0x2b;
     ec_ctx->AMD64_SegEs  = 0x2b;
