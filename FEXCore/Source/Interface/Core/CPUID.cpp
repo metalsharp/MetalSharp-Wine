@@ -995,6 +995,12 @@ FEXCore::CPUID::FunctionResults CPUIDEmu::Function_24h(uint32_t Leaf) const {
 // Hypervisor CPUID information leaf
 FEXCore::CPUID::FunctionResults CPUIDEmu::Function_4000_0000h(uint32_t Leaf) const {
   FEXCore::CPUID::FunctionResults Res {};
+  // With the hypervisor bit hidden (HideHypervisorBit), there is no hypervisor leaf either: protectors that read
+  // 4000_0000h find FEXIFEXIEMU and refuse to run, as in a VM (Age of Empires II: Definitive Edition quit before
+  // its menu). Zero, as Rosetta 2 and a CPU without a hypervisor answer.
+  if (HideHypervisorBit()) {
+    return Res;
+  }
   // Maximum supported hypervisor leafs
   // We only expose the information leaf
   //
@@ -1020,6 +1026,9 @@ static_assert(GitString.size() < 32);
 // Hypervisor CPUID information leaf
 FEXCore::CPUID::FunctionResults CPUIDEmu::Function_4000_0001h(uint32_t Leaf) const {
   FEXCore::CPUID::FunctionResults Res {};
+  if (HideHypervisorBit()) {
+    return Res;
+  }
   constexpr uint32_t MaximumSubLeafNumber = 2;
   if (Leaf == 0) {
     // EAX[3:0] Is the host architecture that FEX is running under
