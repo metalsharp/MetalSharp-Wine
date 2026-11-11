@@ -2918,6 +2918,22 @@ static void sock_ioctl( struct fd *fd, ioctl_code_t code, struct async *async )
             ret = connect( unix_fd, &unix_addr.addr, unix_len );
         }
 
+#ifdef __APPLE__
+        if (ret < 0 && (errno == EISCONN || errno == EINVAL) && sock->state == SOCK_UNCONNECTED &&
+            is_tcp_socket( sock ))
+        {
+            /* BSD does not take a TCP socket whose connect() failed for another connect(); Linux
+             * and Windows do. Give it a new kernel socket with the same options and binding. */
+            int bound = sock->bound;
+
+            drop_kernel_binding( sock, unix_fd );
+            if (!bound) sock->dropped_addr_len = 0;
+            if ((unix_fd = get_unix_fd( sock->fd )) == -1) return;
+            if (!restore_kernel_binding( sock, unix_fd )) return;
+            ret = connect( unix_fd, &unix_addr.addr, unix_len );
+        }
+#endif
+
         if (ret < 0 && errno == EACCES && sock->state == SOCK_CONNECTIONLESS && unix_addr.addr.sa_family == AF_INET)
         {
             int broadcast, saved_errno;
