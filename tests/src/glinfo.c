@@ -1,3 +1,4 @@
+/* libs: opengl32 gdi32 */
 /* OpenGL (WGL) smoke test: legacy and core contexts on a window, renderer strings, clear and
  * swap 30 frames, read a pixel back. Run with WineMetalGL (opengl32=native) or Wine's own. */
 #include <windows.h>

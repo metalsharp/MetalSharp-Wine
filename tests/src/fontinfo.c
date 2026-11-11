@@ -1,4 +1,5 @@
 /* archs: x86_64 */
+/* libs: gdi32 */
 /* Font smoke test: check that the core Windows font families resolve to real fonts (macOS ships
  * them in /System/Library/Fonts/Supplemental; Wine loads the system fonts), plus a CJK family. */
 #include <windows.h>

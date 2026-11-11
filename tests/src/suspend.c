@@ -1,3 +1,4 @@
+/* archs: x86_64 i686 */
 /* Suspends and resumes a thread that runs translated code, as Mono's and Unity's garbage collectors do to stop the
  * world: thousands of SuspendThread/GetThreadContext/ResumeThread rounds against a worker in a loop of calls and
  * indirect branches. The worker must keep running, each stop must give a context inside the worker's code with its

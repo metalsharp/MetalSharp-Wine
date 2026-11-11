@@ -4,6 +4,8 @@
 #   libwow64fex.dll    i386 emulation through WoW64
 # No offline telemetry: the Windows frontends never write it out, but 32-bit string ops would still count into it.
 # Generic armv8 host code (-mcpu=apple-m1 trips an LLVM ARM64EC SEH unwind bug); the JIT targets the detected CPU. No unix library: hardware TSO is never used.
+# No C++ modules: with CMake 3.28 or later the bundled fmt builds itself as a module too and CMake scans sources for
+# modules, but that scan runs clang-scan-deps without llvm-mingw's target wrapper, which finds no headers.
 # Usage: build-fex.sh [arm64ec|wow64]...   (default: both)
 set -e
 source ${0:A:h}/env.sh
@@ -18,6 +20,7 @@ build() {  # build <name> <mingw triple> <lto>
     -DCMAKE_BUILD_TYPE=Release -DENABLE_LTO=$3 -DENABLE_CCACHE=FALSE \
     -DBUILD_TESTING=FALSE -DBUILD_FEXCONFIG=FALSE -DENABLE_JEMALLOC_GLIBC_ALLOC=FALSE \
     -DENABLE_OFFLINE_TELEMETRY=FALSE \
+    -DFMT_MODULE=OFF -DCMAKE_CXX_SCAN_FOR_MODULES=OFF \
     -DTUNE_ARCH=generic -DTUNE_CPU=none -DRANGES_NATIVE=OFF -DCMAKE_INSTALL_PREFIX=$ROOT/build/fex-install \
     > $ROOT/logs/fex-$1-cmake.log 2>&1
   ninja -C $B -j$JOBS > $ROOT/logs/fex-$1-build.log 2>&1

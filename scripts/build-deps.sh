@@ -102,7 +102,8 @@ build() {
     vkheaders) cm ;;
     vkloader) cm -DVULKAN_HEADERS_INSTALL_DIR=$PREFIX -DBUILD_TESTS=OFF -DUPDATE_DEPS=OFF ;;
     moltenvk) mkdir -p $PREFIX/lib $PREFIX/share/vulkan/icd.d
-              cp $S/MoltenVK/dynamic/dylib/macOS/libMoltenVK.dylib $PREFIX/lib/
+              # Khronos' release is universal; this Wine is arm64 only, and audit-macho.sh rejects other slices
+              lipo $S/MoltenVK/dynamic/dylib/macOS/libMoltenVK.dylib -thin arm64 -output $PREFIX/lib/libMoltenVK.dylib
               install_name_tool -id $PREFIX/lib/libMoltenVK.dylib $PREFIX/lib/libMoltenVK.dylib
               sed 's#"library_path": *"[^"]*"#"library_path": "../../../lib/libMoltenVK.dylib"#' \
                   $S/MoltenVK/dynamic/dylib/macOS/MoltenVK_icd.json > $PREFIX/share/vulkan/icd.d/MoltenVK_icd.json ;;
