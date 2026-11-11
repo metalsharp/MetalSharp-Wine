@@ -29,8 +29,15 @@ struct elf_stats
 /* path: a Windows path, or a Unix path starting with '/'. Returns NULL and fills err on failure. */
 struct elf_module *elf_load( const char *path, elf_resolver resolve, void *context, char *err, size_t err_size );
 
+/* the same, from an image already in memory; path is the name it is known by */
+struct elf_module *elf_load_buffer( const char *path, const uint8_t *data, size_t size, elf_resolver resolve,
+                                    void *context, char *err, size_t err_size );
+
 /* runs DT_INIT and the DT_INIT_ARRAY constructors, once */
 void elf_run_constructors( struct elf_module *module );
+
+/* whether an exported symbol is a function */
+int elf_symbol_is_function( struct elf_module *module, const char *name );
 
 /* an exported symbol's address, or NULL */
 void *elf_symbol( struct elf_module *module, const char *name );
@@ -42,6 +49,9 @@ void elf_get_range( const struct elf_module *module, void **base, size_t *size )
 /* thread-local storage of a module for the calling thread (the general-dynamic model, __tls_get_addr) */
 void *elf_tls_block( struct elf_module *module );
 struct elf_module *elf_module_by_tls_id( unsigned long id );
+
+/* the loaded module containing an address, or NULL */
+struct elf_module *elf_find_address( const void *addr );
 
 /* a loaded module by file name or soname, or NULL */
 struct elf_module *elf_find( const char *name );

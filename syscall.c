@@ -13,6 +13,8 @@
 #include <stdio.h>
 
 #include "elfload.h"
+#include "libc.h"
+#include "process.h"
 #include "syscall.h"
 
 #define LX_ENOSYS 38
@@ -28,7 +30,24 @@ long long linux_syscall( struct linux_registers *regs )
 
     switch (regs->nr)
     {
+    case 0:   /* read */
+        return linuxhost_read( regs->rdi, (void *)regs->rsi, regs->rdx );
+    case 2:   /* open */
+        return linuxhost_open( (const char *)regs->rdi, regs->rsi );
+    case 257: /* openat: absolute paths only */
+        return linuxhost_open( (const char *)regs->rsi, regs->rdx );
+    case 3:   /* close */
+        return linuxhost_close( regs->rdi );
+    case 5:   /* fstat */
+        return linuxhost_fstat( regs->rdi, (void *)regs->rsi );
+    case 8:   /* lseek */
+        return linuxhost_lseek( regs->rdi, regs->rsi, regs->rdx );
+    case 87:  /* unlink */
+        return linuxhost_unlink( (const char *)regs->rdi );
+    case 319: /* memfd_create */
+        return linuxhost_memfd_create( (const char *)regs->rdi, regs->rsi );
     case 1:   /* write */
+        if (regs->rdi > 2) return linuxhost_write( regs->rdi, (void *)regs->rsi, regs->rdx );
         if (regs->rdi != 1 && regs->rdi != 2) return -LX_EBADF;
         if (!WriteFile( GetStdHandle( regs->rdi == 1 ? STD_OUTPUT_HANDLE : STD_ERROR_HANDLE ), (void *)regs->rsi,
                         regs->rdx, &written, NULL )) return -LX_EBADF;
@@ -50,6 +69,14 @@ long long linux_syscall( struct linux_registers *regs )
         return -LX_ENOSYS;
     }
     }
+}
+
+long long linuxhost_syscall( long long number, long long a1, long long a2, long long a3, long long a4, long long a5,
+                             long long a6 )
+{
+    struct linux_registers regs = { number, a1, a2, a3, a4, a5, a6 };
+
+    return linux_syscall( &regs );
 }
 
 /* Entered by a jump, with the library's stack pointer untouched. The 128 bytes below it are the library's own (the
@@ -109,6 +136,15 @@ int linuxhost_register_syscalls( struct elf_module *module )
     if (!reg) return 0;  /* not this Wine: direct system calls of the library go to Windows */
     elf_get_range( module, &base, &size );
     return !reg( base, size, linux_syscall_entry );
+}
+
+/* system calls from code anywhere in [start, start + size): Linux code a Windows program put there itself */
+int linuxhost_register_syscall_range( void *start, size_t size )
+{
+    typedef LONG (__cdecl *register_fn)( void *start, SIZE_T size, void *handler );
+    register_fn reg = (register_fn)GetProcAddress( GetModuleHandleA( "ntdll.dll" ), "__wine_register_linux_syscalls" );
+
+    return reg && !reg( start, size, linux_syscall_entry );
 }
 
 unsigned int linuxhost_unimplemented_syscalls(void)

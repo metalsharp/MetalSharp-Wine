@@ -48,14 +48,55 @@ static void set_error( char *err, size_t size, const char *format, const char *a
     if (err && size) snprintf( err, size, format, arg );
 }
 
-/* a call through an import nobody provides ends here */
-static SYSV void unresolved_import(void)
-{
-    static const char msg[] = "linuxhost: call to an unresolved import\n";
-    DWORD written;
+/* A call through an import nobody provides ends here, with the import's number in rax (the stub puts it there). */
+static const char **stub_names;
+static unsigned int stub_count;
 
-    WriteFile( GetStdHandle( STD_ERROR_HANDLE ), msg, sizeof(msg) - 1, &written, NULL );
+void unresolved_report( unsigned long long index )
+{
+    char msg[256];
+    DWORD written;
+    int len = snprintf( msg, sizeof(msg), "linuxhost: call to the unresolved import %s\n",
+                        index < stub_count ? stub_names[index] : "?" );
+
+    WriteFile( GetStdHandle( STD_ERROR_HANDLE ), msg, len, &written, NULL );
     ExitProcess( 70 );
+}
+
+__asm__( ".text\n"
+         "unresolved_entry:\n"
+         "    andq $-16, %rsp\n"
+         "    subq $32, %rsp\n"
+         "    movq %rax, %rcx\n"
+         "    call unresolved_report\n"
+         "    int3\n" );
+extern void unresolved_entry(void);
+
+/* movabs $index, %rax; jmp *0(%rip); .quad unresolved_entry */
+static void *unresolved_import( const char *name )
+{
+    static uint8_t *page;
+    static size_t used;
+    void *entry = unresolved_entry;
+    uint8_t *code;
+    const char **names;
+
+    if (!(names = realloc( stub_names, (stub_count + 1) * sizeof(*names) ))) return NULL;
+    stub_names = names;
+    if (!page || used + 32 > 0x10000)
+    {
+        if (!(page = VirtualAlloc( NULL, 0x10000, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE ))) return NULL;
+        used = 0;
+    }
+    code = page + used;
+    used += 32;
+    stub_names[stub_count] = _strdup( name );
+    code[0] = 0x48; code[1] = 0xb8;
+    { unsigned long long index = stub_count; memcpy( code + 2, &index, 8 ); }
+    code[10] = 0xff; code[11] = 0x25; memset( code + 12, 0, 4 );
+    memcpy( code + 16, &entry, 8 );
+    stub_count++;
+    return code;
 }
 
 static unsigned int count_symbols( const struct elf_module *module, uint64_t hash, uint64_t gnu_hash )
@@ -97,6 +138,29 @@ struct elf_module *elf_find( const char *name )
     return NULL;
 }
 
+struct elf_module *elf_find_address( const void *addr )
+{
+    struct elf_module *module;
+
+    for (module = modules; module; module = module->next)
+        if ((const uint8_t *)addr >= module->mapping && (const uint8_t *)addr < module->mapping + module->size)
+            return module;
+    return NULL;
+}
+
+int elf_symbol_is_function( struct elf_module *module, const char *name )
+{
+    unsigned int i;
+
+    for (i = 1; i < module->nsyms; i++)
+    {
+        const Elf64_Sym *sym = &module->symtab[i];
+
+        if (sym->shndx && (sym->info >> 4) && !strcmp( module->strtab + sym->name, name )) return (sym->info & 0xf) == 2;
+    }
+    return 0;
+}
+
 void *elf_symbol( struct elf_module *module, const char *name )
 {
     unsigned int i;
@@ -111,6 +175,89 @@ void *elf_symbol( struct elf_module *module, const char *name )
     return NULL;
 }
 
+/* LINUXHOST_TRACE_CALLS: every call a library makes to an import is logged with its name, through a stub:
+ * movabs $function, %r11; movabs $name, %r10; jmp *0(%rip); .quad call_trace_entry. Functions only: an imported
+ * variable (stderr) keeps its address. */
+void call_trace_report( const char *name )
+{
+    char msg[160];
+    DWORD written;
+    int len = snprintf( msg, sizeof(msg), "linuxhost:%04lx: call %s\n", GetCurrentThreadId(), name );
+
+    WriteFile( GetStdHandle( STD_ERROR_HANDLE ), msg, len, &written, NULL );
+}
+
+__asm__( ".text\n"
+         "call_trace_entry:\n"
+         "    pushq %rbp\n"
+         "    movq %rsp, %rbp\n"
+         "    andq $-16, %rsp\n"
+         "    subq $0xe0, %rsp\n"
+         "    movq %rdi, 0x20(%rsp)\n"
+         "    movq %rsi, 0x28(%rsp)\n"
+         "    movq %rdx, 0x30(%rsp)\n"
+         "    movq %rcx, 0x38(%rsp)\n"
+         "    movq %r8, 0x40(%rsp)\n"
+         "    movq %r9, 0x48(%rsp)\n"
+         "    movq %rax, 0x50(%rsp)\n"
+         "    movq %r11, 0x58(%rsp)\n"
+         "    movdqu %xmm0, 0x60(%rsp)\n"
+         "    movdqu %xmm1, 0x70(%rsp)\n"
+         "    movdqu %xmm2, 0x80(%rsp)\n"
+         "    movdqu %xmm3, 0x90(%rsp)\n"
+         "    movdqu %xmm4, 0xa0(%rsp)\n"
+         "    movdqu %xmm5, 0xb0(%rsp)\n"
+         "    movdqu %xmm6, 0xc0(%rsp)\n"
+         "    movdqu %xmm7, 0xd0(%rsp)\n"
+         "    movq %r10, %rcx\n"
+         "    call call_trace_report\n"
+         "    movq 0x20(%rsp), %rdi\n"
+         "    movq 0x28(%rsp), %rsi\n"
+         "    movq 0x30(%rsp), %rdx\n"
+         "    movq 0x38(%rsp), %rcx\n"
+         "    movq 0x40(%rsp), %r8\n"
+         "    movq 0x48(%rsp), %r9\n"
+         "    movq 0x50(%rsp), %rax\n"
+         "    movq 0x58(%rsp), %r11\n"
+         "    movdqu 0x60(%rsp), %xmm0\n"
+         "    movdqu 0x70(%rsp), %xmm1\n"
+         "    movdqu 0x80(%rsp), %xmm2\n"
+         "    movdqu 0x90(%rsp), %xmm3\n"
+         "    movdqu 0xa0(%rsp), %xmm4\n"
+         "    movdqu 0xb0(%rsp), %xmm5\n"
+         "    movdqu 0xc0(%rsp), %xmm6\n"
+         "    movdqu 0xd0(%rsp), %xmm7\n"
+         "    movq %rbp, %rsp\n"
+         "    popq %rbp\n"
+         "    jmp *%r11\n" );
+extern void call_trace_entry(void);
+
+static void *trace_stub( const char *name, void *function )
+{
+    static uint8_t *page;
+    static size_t used;
+    static int enabled = -1;
+    void *entry = call_trace_entry;
+    char *saved;
+    uint8_t *code;
+
+    if (enabled == -1) enabled = GetEnvironmentVariableA( "LINUXHOST_TRACE_CALLS", NULL, 0 ) > 0;
+    if (!enabled || !function) return function;
+    if (!page || used + 40 > 0x10000)
+    {
+        if (!(page = VirtualAlloc( NULL, 0x10000, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE ))) return function;
+        used = 0;
+    }
+    code = page + used;
+    used += 40;
+    saved = _strdup( name );
+    code[0] = 0x49; code[1] = 0xbb; memcpy( code + 2, &function, 8 );   /* movabs $function, %r11 */
+    code[10] = 0x49; code[11] = 0xba; memcpy( code + 12, &saved, 8 );   /* movabs $name, %r10 */
+    code[20] = 0xff; code[21] = 0x25; memset( code + 22, 0, 4 );        /* jmp *0(%rip) */
+    memcpy( code + 26, &entry, 8 );                                    /* .quad call_trace_entry */
+    return code;
+}
+
 static uint64_t resolve_symbol( struct elf_module *module, uint32_t index, elf_resolver resolve, void *context )
 {
     const Elf64_Sym *sym = &module->symtab[index];
@@ -122,6 +269,7 @@ static uint64_t resolve_symbol( struct elf_module *module, uint32_t index, elf_r
     if (resolve && (addr = resolve( name, context )))
     {
         module->stats.imports++;
+        if ((sym->info & 0xf) == 2) addr = trace_stub( name, addr );  /* STT_FUNC */
         return (uint64_t)addr;
     }
     if ((sym->info >> 4) == STB_WEAK)
@@ -136,7 +284,7 @@ static uint64_t resolve_symbol( struct elf_module *module, uint32_t index, elf_r
         strcat( module->stats.unresolved_names, name );
         strcat( module->stats.unresolved_names, " " );
     }
-    return (uint64_t)unresolved_import;
+    return (uint64_t)unresolved_import( name );
 }
 
 static void apply_rela( struct elf_module *module, uint64_t table, uint64_t size, elf_resolver resolve, void *context )
@@ -207,6 +355,35 @@ static void apply_relr( struct elf_module *module, uint64_t table, uint64_t size
 
 struct elf_module *elf_load( const char *path, elf_resolver resolve, void *context, char *err, size_t err_size )
 {
+    struct elf_module *module;
+    LARGE_INTEGER file_size;
+    uint8_t *file = NULL;
+    DWORD got;
+    HANDLE handle;
+
+    if ((handle = open_library( path )) == INVALID_HANDLE_VALUE)
+    {
+        set_error( err, err_size, "cannot open %s", path );
+        return NULL;
+    }
+    if (!GetFileSizeEx( handle, &file_size ) || file_size.QuadPart < 64 || file_size.QuadPart > 0x40000000 ||
+        !(file = malloc( file_size.QuadPart )) || !ReadFile( handle, file, file_size.QuadPart, &got, NULL ) ||
+        got != file_size.QuadPart)
+    {
+        set_error( err, err_size, "cannot read %s", path );
+        CloseHandle( handle );
+        free( file );
+        return NULL;
+    }
+    CloseHandle( handle );
+    module = elf_load_buffer( path, file, file_size.QuadPart, resolve, context, err, err_size );
+    free( file );
+    return module;
+}
+
+struct elf_module *elf_load_buffer( const char *path, const uint8_t *file, size_t file_len, elf_resolver resolve,
+                                    void *context, char *err, size_t err_size )
+{
     uint64_t low = ~0ull, high = 0, dynamic = 0, dynamic_size = 0, strtab = 0, symtab = 0, hash = 0, gnu_hash = 0;
     uint64_t rela = 0, relasz = 0, jmprel = 0, pltrelsz = 0, relr = 0, relrsz = 0, soname = 0;
     struct elf_module *module = NULL;
@@ -214,26 +391,8 @@ struct elf_module *elf_load( const char *path, elf_resolver resolve, void *conte
     const Elf64_Phdr *phdr;
     const Elf64_Dyn *dyn;
     const char *file_name;
-    uint8_t *file = NULL;
-    LARGE_INTEGER file_size;
-    DWORD got;
-    HANDLE handle;
     unsigned int i;
-
-    if ((handle = open_library( path )) == INVALID_HANDLE_VALUE)
-    {
-        set_error( err, err_size, "cannot open %s", path );
-        return NULL;
-    }
-    if (!GetFileSizeEx( handle, &file_size ) || file_size.QuadPart < sizeof(*ehdr) || file_size.QuadPart > 0x40000000 ||
-        !(file = malloc( file_size.QuadPart )) || !ReadFile( handle, file, file_size.QuadPart, &got, NULL ) ||
-        got != file_size.QuadPart)
-    {
-        set_error( err, err_size, "cannot read %s", path );
-        goto failed;
-    }
-    CloseHandle( handle );
-    handle = INVALID_HANDLE_VALUE;
+    struct { LONGLONG QuadPart; } file_size = { (LONGLONG)file_len };
 
     ehdr = (const Elf64_Ehdr *)file;
     if (memcmp( ehdr->ident, "\177ELF", 4 ) || ehdr->ident[4] != 2 || ehdr->ident[5] != 1 || ehdr->machine != 62 ||
@@ -293,9 +452,6 @@ struct elf_module *elf_load( const char *path, elf_resolver resolve, void *conte
             break;
         }
     }
-    free( file );
-    file = NULL;
-
     if (!dynamic)
     {
         set_error( err, err_size, "%s has no dynamic section", path );
@@ -342,10 +498,8 @@ struct elf_module *elf_load( const char *path, elf_resolver resolve, void *conte
     return module;
 
 failed:
-    if (handle != INVALID_HANDLE_VALUE) CloseHandle( handle );
     if (module && module->mapping) VirtualFree( module->mapping, 0, MEM_RELEASE );
     free( module );
-    free( file );
     return NULL;
 }
 

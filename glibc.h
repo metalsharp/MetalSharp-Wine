@@ -7,4 +7,7 @@ void *linuxhost_resolve( const char *name, void *context );
 
 unsigned int linuxhost_function_count(void);
 
+struct libc_export;
+const struct libc_export *linuxhost_libc_exports( unsigned int *count );
+
 #endif

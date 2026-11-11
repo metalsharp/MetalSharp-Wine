@@ -14,6 +14,9 @@
 
 #include "elfload.h"
 #include "glibc.h"
+#include "libc.h"
+#include "process.h"
+#include "syscall.h"
 
 typedef unsigned long long lx_size_t;      /* size_t and unsigned long of the Linux ABI */
 typedef long long lx_long;
@@ -51,16 +54,35 @@ static SYSV void lx_free( void *ptr ) { free( ptr ); }
 static SYSV void *lx_memcpy( void *dst, const void *src, lx_size_t n ) { return memcpy( dst, src, n ); }
 static SYSV void *lx_memmove( void *dst, const void *src, lx_size_t n ) { return memmove( dst, src, n ); }
 static SYSV void *lx_memset( void *dst, int c, lx_size_t n ) { return memset( dst, c, n ); }
-static SYSV int lx_memcmp( const void *a, const void *b, lx_size_t n ) { return memcmp( a, b, n ); }
+static SYSV int lx_memcmp( const void *a, const void *b, lx_size_t n )
+{
+    int ret = memcmp( a, b, n );
+
+    linuxhost_trace( "memcmp \"%.*s\" \"%.*s\" %llu: %d\n", (int)min( n, 64 ), (const char *)a, (int)min( n, 64 ),
+                     (const char *)b, n, ret );
+    return ret;
+}
 static SYSV lx_size_t lx_strlen( const char *s ) { return strlen( s ); }
 static SYSV char *lx_strcpy( char *dst, const char *src ) { return strcpy( dst, src ); }
 static SYSV char *lx_strncpy( char *dst, const char *src, lx_size_t n ) { return strncpy( dst, src, n ); }
 static SYSV char *lx_strcat( char *dst, const char *src ) { return strcat( dst, src ); }
-static SYSV int lx_strcmp( const char *a, const char *b ) { return strcmp( a, b ); }
+static SYSV int lx_strcmp( const char *a, const char *b )
+{
+    int ret = strcmp( a, b );
+
+    linuxhost_trace( "strcmp \"%.80s\" \"%.80s\": %d\n", a, b, ret );
+    return ret;
+}
 static SYSV int lx_strncmp( const char *a, const char *b, lx_size_t n ) { return strncmp( a, b, n ); }
 static SYSV char *lx_strchr( const char *s, int c ) { return strchr( s, c ); }
 static SYSV char *lx_strrchr( const char *s, int c ) { return strrchr( s, c ); }
-static SYSV char *lx_strstr( const char *s, const char *sub ) { return strstr( s, sub ); }
+static SYSV char *lx_strstr( const char *s, const char *sub )
+{
+    char *ret = strstr( s, sub );
+
+    linuxhost_trace( "strstr \"%.80s\" \"%.80s\": %s\n", s, sub, ret ? "found" : "no" );
+    return ret;
+}
 
 static SYSV char *lx_strdup( const char *s )
 {
@@ -201,13 +223,53 @@ static char dl_error[256];
 static SYSV void *lx_dlopen( const char *path, int flags )
 {
     struct elf_module *module;
+    const void *data;
+    size_t size;
+    int fd;
 
+    linuxhost_trace( "dlopen %s %#x\n", path ? path : "(null)", flags );
+    linuxhost_thread_init();
     if (!path) return NULL;
-    if (!(module = elf_find( path )))
+    if ((module = elf_find( path ))) return module;
+    /* an in-memory file, as EAC's bootstrapper passes the module */
+    if (sscanf( path, "/proc/self/fd/%d", &fd ) == 1)
     {
-        if (!(module = elf_load( path, linuxhost_resolve, NULL, dl_error, sizeof(dl_error) ))) return NULL;
-        elf_run_constructors( module );
+        if (!linuxhost_fd_contents( fd, &data, &size ))
+        {
+            snprintf( dl_error, sizeof(dl_error), "%s: no such file", path );
+            return NULL;
+        }
+        {
+            /* LINUXHOST_DUMP=<path>: keep a copy of what was handed over, to look at */
+            char dump[MAX_PATH];
+            HANDLE file;
+            DWORD written;
+
+            if (GetEnvironmentVariableA( "LINUXHOST_DUMP", dump, sizeof(dump) ) &&
+                (file = CreateFileA( dump, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL )) != INVALID_HANDLE_VALUE)
+            {
+                WriteFile( file, data, size, &written, NULL );
+                CloseHandle( file );
+                linuxhost_trace( "saved %s to %s\n", path, dump );
+            }
+        }
+        module = elf_load_buffer( path, data, size, linuxhost_resolve, NULL, dl_error, sizeof(dl_error) );
     }
+    else module = elf_load( path, linuxhost_resolve, NULL, dl_error, sizeof(dl_error) );
+    if (!module)
+    {
+        linuxhost_trace( "dlopen %s failed: %s\n", path, dl_error );
+        return NULL;
+    }
+    {
+        const struct elf_stats *stats = elf_get_stats( module );
+
+        linuxhost_trace( "loaded %s: %u relocations, %u imports, %u unresolved (%s), %u unsupported\n", path,
+                         stats->relocations, stats->imports, stats->unresolved, stats->unresolved_names,
+                         stats->unsupported );
+    }
+    linuxhost_register_syscalls( module );
+    elf_run_constructors( module );
     return module;
 }
 
@@ -215,6 +277,8 @@ static SYSV void *lx_dlsym( void *handle, const char *name )
 {
     void *addr = handle ? elf_symbol( handle, name ) : NULL;
 
+    if (addr && elf_symbol_is_function( handle, name )) addr = linuxhost_entry_stub( addr, name );
+    linuxhost_trace( "dlsym %p %s: %p\n", handle, name, addr );
     if (!addr) snprintf( dl_error, sizeof(dl_error), "undefined symbol: %s", name );
     return addr;
 }
@@ -255,10 +319,35 @@ static const struct { const char *name; void *function; } functions[] =
     { "__wine_dbg_header", lx_wine_dbg_header }, { "__wine_dbg_output", lx_wine_dbg_output },
 };
 
-void *linuxhost_resolve( const char *name, void *context )
+void *linuxhost_glibc_function( const char *name )
 {
     unsigned int i;
 
+    for (i = 0; i < sizeof(functions) / sizeof(functions[0]); i++)
+        if (!strcmp( functions[i].name, name )) return functions[i].function;
+    return NULL;
+}
+
+/* what the made-up libc.so.6 exports (process.c) */
+const struct libc_export *linuxhost_libc_exports( unsigned int *count )
+{
+    static const struct libc_export exports[] =
+    {
+        { "dlopen", lx_dlopen }, { "__libc_dlopen_mode", lx_dlopen }, { "dlsym", lx_dlsym },
+        { "__libc_dlsym", lx_dlsym }, { "dlclose", lx_dlclose }, { "dlerror", lx_dlerror },
+    };
+
+    *count = sizeof(exports) / sizeof(exports[0]);
+    return exports;
+}
+
+void *linuxhost_resolve( const char *name, void *context )
+{
+    const struct libc_function *f;
+    unsigned int i;
+
+    for (f = linuxhost_libc_functions; f->name; f++) if (!strcmp( f->name, name )) return f->function;
+    for (f = linuxhost_libc_io_functions; f->name; f++) if (!strcmp( f->name, name )) return f->function;
     for (i = 0; i < sizeof(functions) / sizeof(functions[0]); i++)
         if (!strcmp( functions[i].name, name )) return functions[i].function;
     return NULL;
