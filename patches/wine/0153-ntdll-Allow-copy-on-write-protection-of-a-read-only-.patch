@@ -1,0 +1,84 @@
+From 21a532c49bf654d6249a481fb5892452dca55178 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Wed, 11 Nov 2026 02:30:01 -0700
+Subject: [PATCH 153/158] ntdll: Allow copy-on-write protection of a read-only
+ file view outside Linux.
+
+Outside Linux a read-only view of a file is mapped shared, because there
+a private mapping does not see later changes to the file. The host then
+refuses write access to it when the file was opened read-only, so
+VirtualProtect(PAGE_WRITECOPY) on such a view failed with
+ERROR_ACCESS_DENIED, which Windows allows. The pages concerned are now
+replaced by private copies of their contents first.
+
+kernel32:virtual had 40 failures in test_mapping() for a read-only file.
+---
+ dlls/ntdll/unix/virtual.c | 45 ++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 44 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index cffadf96ef2..6de0799946a 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -1792,6 +1792,38 @@ static BOOL set_vprot( struct file_view *view, void *base, size_t size, BYTE vpr
+ }
+ 
+ 
++#ifndef __linux__
++/***********************************************************************
++ *           make_pages_private
++ *
++ * Replace the host pages of a range of a shared, read-only file view with private
++ * copies of their contents, so that they can be made writable without writing to the
++ * file. map_file_into_view() maps read-only views shared outside Linux, because there
++ * a private file mapping does not see later changes to the file; the host refuses
++ * write access to a shared mapping of a file opened read-only.
++ */
++static BOOL make_pages_private( void *base, size_t size )
++{
++    char *addr = ROUND_ADDR( base, host_page_mask );
++    void *copy;
++
++    size = ROUND_SIZE( base, size, host_page_mask );
++    if ((copy = mmap( NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0 )) == MAP_FAILED)
++        return FALSE;
++    if (mprotect( addr, size, PROT_READ ) ||
++        (memcpy( copy, addr, size ),
++         anon_mmap_fixed( addr, size, PROT_READ | PROT_WRITE, 0 ) != addr))
++    {
++        munmap( copy, size );
++        return FALSE;
++    }
++    memcpy( addr, copy, size );
++    munmap( copy, size );
++    return TRUE;
++}
++#endif
++
++
+ /***********************************************************************
+  *           set_protection
+  *
+@@ -1813,7 +1845,18 @@ static NTSTATUS set_protection( struct file_view *view, void *base, SIZE_T size,
+         if ((view->protect & access) != access) return STATUS_INVALID_PAGE_PROTECTION;
+     }
+ 
+-    if (!set_vprot( view, base, size, vprot | VPROT_COMMITTED )) return STATUS_ACCESS_DENIED;
++    if (!set_vprot( view, base, size, vprot | VPROT_COMMITTED ))
++    {
++#ifndef __linux__
++        /* copy-on-write asked of a read-only view, which is a shared mapping here */
++        if ((vprot & VPROT_WRITECOPY) && !is_view_valloc( view ) &&
++            !(view->protect & (SEC_IMAGE | VPROT_WRITE | VPROT_WRITECOPY)) &&
++            make_pages_private( base, size ) &&
++            set_vprot( view, base, size, vprot | VPROT_COMMITTED ))
++            return STATUS_SUCCESS;
++#endif
++        return STATUS_ACCESS_DENIED;
++    }
+     return STATUS_SUCCESS;
+ }
+ 
+-- 
+2.54.0 (Apple Git-157)
+

@@ -1,0 +1,102 @@
+From 3a320ba30f5805fd9efc8943857f2e6499f84c65 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Tue, 10 Nov 2026 23:04:43 -0700
+Subject: [PATCH 149/158] ws2_32: Resolve the computer's own name, and report
+ an unknown service as one, on macOS.
+
+macOS resolves <name>.local but not the bare <name> that Windows programs
+are given as the computer name, so a program looking up the host it runs
+on, as LAN games do to find their address, got WSAHOST_NOT_FOUND.
+getaddrinfo and gethostbyname now try the full host name when the name
+asked for is its first part.
+
+An unknown service name with no host was reported as an unknown host.
+
+Fixes 23 failures in ws2_32:protocol.
+---
+ dlls/ws2_32/unixlib.c | 48 +++++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 46 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/ws2_32/unixlib.c b/dlls/ws2_32/unixlib.c
+index d16107be1af..f7b06a00d75 100644
+--- a/dlls/ws2_32/unixlib.c
++++ b/dlls/ws2_32/unixlib.c
+@@ -693,6 +693,23 @@ static BOOL addrinfo_in_list( const struct WS_addrinfo *list, const struct WS_ad
+     return FALSE;
+ }
+ 
++/* MetalSharp: Windows resolves the computer's own name to its addresses, and programs rely on that to find them
++ * (a LAN game looking up the host it runs on). macOS knows the machine as <name>.local and resolves that name
++ * through multicast DNS, but not the bare <name>, which is the computer name Windows programs are given. Returns
++ * the full host name when name is its first part, in any case, or NULL. */
++static const char *own_host_name_for( const char *name )
++{
++    static char host[256];
++    size_t len;
++
++    if (!name || !name[0] || strchr( name, '.' )) return NULL;
++    if (gethostname( host, sizeof(host) )) return NULL;
++    host[sizeof(host) - 1] = 0;
++    len = strlen( name );
++    if (strncasecmp( host, name, len ) || host[len] != '.') return NULL;
++    return host;
++}
++
+ static NTSTATUS unix_getaddrinfo( void *args )
+ {
+ #ifdef HAVE_GETADDRINFO
+@@ -752,7 +769,18 @@ static NTSTATUS unix_getaddrinfo( void *args )
+ 
+     ret = getaddrinfo( params->node, service, hints ? &unix_hints : NULL, &unix_info );
+     if (ret)
+-        return addrinfo_err_from_unix( ret );
++    {
++        /* the machine's own name without its domain, when the system resolver only knows the full one */
++        const char *own = own_host_name_for( params->node );
++
++        if (!own || getaddrinfo( own, service, hints ? &unix_hints : NULL, &unix_info ))
++        {
++            /* macOS reports a service name it does not know as an unknown name; with no host asked for,
++             * the service is what was not found */
++            if (ret == EAI_NONAME && !params->node && service) ret = EAI_SERVICE;
++            return addrinfo_err_from_unix( ret );
++        }
++    }
+ 
+     for (src = unix_info; src != NULL; src = src->ai_next)
+     {
+@@ -1000,6 +1028,20 @@ static NTSTATUS unix_gethostbyname( void *args )
+         }
+         unix_buffer = new_buffer;
+     }
++    if (!unix_host && own_host_name_for( params->name ))
++    {
++        while (gethostbyname_r( own_host_name_for( params->name ), &stack_host, unix_buffer, unix_size,
++                                &unix_host, &locerr ) == ERANGE)
++        {
++            unix_size *= 2;
++            if (!(new_buffer = realloc( unix_buffer, unix_size )))
++            {
++                free( unix_buffer );
++                return WSAENOBUFS;
++            }
++            unix_buffer = new_buffer;
++        }
++    }
+ 
+     if (!unix_host)
+     {
+@@ -1023,7 +1065,9 @@ static NTSTATUS unix_gethostbyname( void *args )
+ 
+     pthread_mutex_lock( &host_mutex );
+ 
+-    if (!(unix_host = gethostbyname( params->name )))
++    if (!(unix_host = gethostbyname( params->name )) && own_host_name_for( params->name ))
++        unix_host = gethostbyname( own_host_name_for( params->name ) );
++    if (!unix_host)
+     {
+         ret = (h_errno < 0 ? errno_from_unix( errno ) : host_errno_from_unix( h_errno ));
+         pthread_mutex_unlock( &host_mutex );
+-- 
+2.54.0 (Apple Git-157)
+

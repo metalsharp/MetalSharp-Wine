@@ -1,0 +1,686 @@
+From cc96e49a6119d6a2b8bb45a05751879b304a8088 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Tue, 10 Nov 2026 22:14:58 -0700
+Subject: [PATCH 142/158] Proton's EasyAntiCheat and BattlEye support, from
+ Valve's Wine.
+
+The final state of Valve's anti-cheat commits (proton_11.0), carried
+over to this tree:
+
+- kernelbase: a program whose product name is "BattlEye Launcher" is
+  replaced by the builtin belauncher.exe, and the "EasyAntiCheat
+  Launcher" is marked with PROTON_EAC_LAUNCHER_PROCESS.
+- programs/belauncher: Valve's launcher, unchanged.
+- ntdll: PROTON_BATTLEYE_RUNTIME and PROTON_EAC_RUNTIME add the runtimes'
+  directories to the builtin DLL path. The EasyAntiCheat bridge is
+  loaded only when the game ships the native client library next to the
+  Windows one; the EAC launcher always gets the Windows library.
+- ws2_32: one game does not resolve EasyAntiCheat's alternative download
+  host.
+
+Not carried over: the EOS bootstrapper's environment sync and its forced
+en-US locale, which need __wine_set_unix_env, and the x86_64 exception
+dispatcher's instruction sequence, which this ARM64EC build does not
+have.
+---
+ configure                       |   1 +
+ configure.ac                    |   1 +
+ dlls/kernelbase/process.c       | 133 ++++++++++++++++++-
+ dlls/ntdll/unix/loader.c        |  17 +++
+ dlls/ntdll/unix/loadorder.c     |  63 +++++++++
+ dlls/ws2_32/protocol.c          |  33 +++++
+ programs/belauncher/Makefile.in |   7 +
+ programs/belauncher/main.c      | 220 ++++++++++++++++++++++++++++++++
+ 8 files changed, 474 insertions(+), 1 deletion(-)
+ create mode 100644 programs/belauncher/Makefile.in
+ create mode 100644 programs/belauncher/main.c
+
+diff --git a/configure b/configure
+index f2aed53dfa1..47a863348f9 100755
+--- a/configure
++++ b/configure
+@@ -22981,6 +22981,7 @@ wine_fn_config_makefile po enable_po
+ wine_fn_config_makefile programs/arp enable_arp
+ wine_fn_config_makefile programs/aspnet_regiis enable_aspnet_regiis
+ wine_fn_config_makefile programs/attrib enable_attrib
++wine_fn_config_makefile programs/belauncher enable_belauncher
+ wine_fn_config_makefile programs/cabarc enable_cabarc
+ wine_fn_config_makefile programs/cacls enable_cacls
+ wine_fn_config_makefile programs/certutil enable_certutil
+diff --git a/configure.ac b/configure.ac
+index 4179a283084..e1f768b2a0c 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -3514,6 +3514,7 @@ WINE_CONFIG_MAKEFILE(po)
+ WINE_CONFIG_MAKEFILE(programs/arp)
+ WINE_CONFIG_MAKEFILE(programs/aspnet_regiis)
+ WINE_CONFIG_MAKEFILE(programs/attrib)
++WINE_CONFIG_MAKEFILE(programs/belauncher)
+ WINE_CONFIG_MAKEFILE(programs/cabarc)
+ WINE_CONFIG_MAKEFILE(programs/cacls)
+ WINE_CONFIG_MAKEFILE(programs/certutil)
+diff --git a/dlls/kernelbase/process.c b/dlls/kernelbase/process.c
+index c804ca1c9b3..1c00a2bb534 100644
+--- a/dlls/kernelbase/process.c
++++ b/dlls/kernelbase/process.c
+@@ -19,6 +19,7 @@
+  */
+ 
+ #include <stdarg.h>
++#include <stdio.h>
+ #include <string.h>
+ 
+ #include "ntstatus.h"
+@@ -27,6 +28,7 @@
+ #include "winnls.h"
+ #include "wincontypes.h"
+ #include "winternl.h"
++#include "winver.h"
+ #include "processsnapshot.h"
+ 
+ #include "kernelbase.h"
+@@ -589,6 +591,89 @@ static BOOL get_metalsharp_launch( const WCHAR *app_name, WCHAR *chosen, DWORD s
+     return chosen[0] || args[0];
+ }
+ 
++/* Proton: the ProductName of a program's version resource, which names the anti-cheat launchers
++ * whatever their file names are. The caller frees it. */
++static char *get_product_name( const WCHAR *app_name )
++{
++    WCHAR full_path[MAX_PATH];
++    char *product_name, *ret;
++    DWORD *translation;
++    char buf[100];
++    void *block;
++    UINT size;
++
++    if (!GetLongPathNameW( app_name, full_path, MAX_PATH )) lstrcpynW( full_path, app_name, MAX_PATH );
++    if (!GetFullPathNameW( full_path, MAX_PATH, full_path, NULL )) lstrcpynW( full_path, app_name, MAX_PATH );
++
++    size = GetFileVersionInfoSizeExW(0, full_path, NULL);
++    if (!size)
++        return NULL;
++
++    block = HeapAlloc( GetProcessHeap(), 0, size );
++
++    if (!GetFileVersionInfoExW(0, full_path, 0, size, block))
++    {
++        HeapFree( GetProcessHeap(), 0, block );
++        return NULL;
++    }
++
++    if (!VerQueryValueA(block, "\\VarFileInfo\\Translation", (void **) &translation, &size) || size != 4)
++    {
++        HeapFree( GetProcessHeap(), 0, block );
++        return NULL;
++    }
++
++    sprintf(buf, "\\StringFileInfo\\%08lx\\ProductName", MAKELONG(HIWORD(*translation), LOWORD(*translation)));
++
++    if (!VerQueryValueA(block, buf, (void **) &product_name, &size))
++    {
++        HeapFree( GetProcessHeap(), 0, block );
++        return NULL;
++    }
++
++    ret = HeapAlloc( GetProcessHeap(), 0, strlen( product_name ) + 1 );
++    strcpy( ret, product_name );
++    HeapFree( GetProcessHeap(), 0, block );
++    return ret;
++}
++
++/* Proton: BattlEye's launcher is replaced by the builtin belauncher.exe, which starts the game with
++ * BattlEye's arguments and then the original launcher */
++static int battleye_launcher_redirect_hack( const WCHAR *app_name, WCHAR *new_name, DWORD new_name_len,
++                                            WCHAR **orig_app_name, const char *product_name )
++{
++    static const WCHAR belauncherW[] = L"c:\\windows\\system32\\belauncher.exe";
++    unsigned int len;
++
++    if (GetEnvironmentVariableW(L"PROTON_ORIG_LAUNCHER_NAME", NULL, 0))
++    {
++        /* run from builtin belauncher. */
++        return 0;
++    }
++
++    /* We detect the BattlEye launcher executable through the product name property, as the executable name varies */
++    if (!product_name || strcmp( product_name, "BattlEye Launcher" ))
++        return 0;
++
++    TRACE( "Detected launch of a BattlEye Launcher, redirecting to Proton version.\n" );
++
++    if (new_name_len < wcslen( belauncherW ) + 1)
++    {
++        ERR( "Game executable path doesn't fit in buffer.\n" );
++        return 0;
++    }
++
++    len = (wcslen( app_name ) + 1) * sizeof(*app_name);
++    if (!(*orig_app_name = HeapAlloc( GetProcessHeap(), 0, len )))
++    {
++        ERR( "No memory.\n" );
++        return 0;
++    }
++    memcpy( *orig_app_name, app_name, len );
++    wcscpy( new_name, belauncherW );
++    return 1;
++}
++
+ /**********************************************************************
+  *           CreateProcessInternalW   (kernelbase.@)
+  */
+@@ -601,11 +686,12 @@ BOOL WINAPI DECLSPEC_HOTPATCH CreateProcessInternalW( HANDLE token, const WCHAR
+ {
+     const struct proc_thread_attr *handle_list = NULL, *job_list = NULL;
+     WCHAR name[MAX_PATH], chosen[MAX_PATH], launch_args[MAX_PATH * 3];
+-    WCHAR *p, *tidy_cmdline = cmd_line;
++    WCHAR *p, *tidy_cmdline = cmd_line, *orig_app_name = NULL;
+     RTL_USER_PROCESS_PARAMETERS *params = NULL;
+     RTL_USER_PROCESS_INFORMATION rtl_info = { 0 };
+     HANDLE parent = 0, debug = 0;
+     const WCHAR *append_args;
++    char *product_name = NULL;
+     ULONG nt_flags = 0;
+     USHORT machine = 0;
+     NTSTATUS status;
+@@ -675,6 +761,10 @@ BOOL WINAPI DECLSPEC_HOTPATCH CreateProcessInternalW( HANDLE token, const WCHAR
+         }
+     }
+ 
++    product_name = get_product_name( app_name );
++    if (battleye_launcher_redirect_hack( app_name, name, ARRAY_SIZE(name), &orig_app_name, product_name ))
++        app_name = name;
++
+     /* Warn if unsupported features are used */
+ 
+     if (flags & (IDLE_PRIORITY_CLASS | HIGH_PRIORITY_CLASS | REALTIME_PRIORITY_CLASS |
+@@ -700,6 +790,45 @@ BOOL WINAPI DECLSPEC_HOTPATCH CreateProcessInternalW( HANDLE token, const WCHAR
+         goto done;
+     }
+ 
++    /* Set PROTON_EAC_LAUNCHER_PROCESS when launching the EAC launcher to let ntdll know to load the native EAC client library.
++      - We don't do this check in ntdll itself because it's harder to get the product name there
++      - we don't overwrite WINEDLLOVERRIDES because it's fetched from the unix environment */
++    if (orig_app_name || (product_name && !strcmp( product_name, "EasyAntiCheat Launcher" )) ||
++        GetEnvironmentVariableW( L"PROTON_EAC_LAUNCHER_PROCESS", NULL, 0 ))
++    {
++        UNICODE_STRING var, value;
++        WCHAR *new_env = RtlAllocateHeap( GetProcessHeap(), 0, params->EnvironmentSize );
++
++        if (!new_env)
++        {
++            status = STATUS_NO_MEMORY;
++            goto done;
++        }
++        memcpy( new_env, params->Environment, params->EnvironmentSize );
++        RtlDestroyProcessParameters( params );
++
++        RtlInitUnicodeString( &var, L"PROTON_EAC_LAUNCHER_PROCESS" );
++        RtlInitUnicodeString( &value, L"1" );
++        RtlSetEnvironmentVariable( &new_env, &var,
++                                   product_name && !strcmp( product_name, "EasyAntiCheat Launcher" ) ? &value : NULL );
++
++        if (orig_app_name)
++        {
++            RtlInitUnicodeString( &var, L"PROTON_ORIG_LAUNCHER_NAME" );
++            RtlInitUnicodeString( &value, orig_app_name );
++            RtlSetEnvironmentVariable( &new_env, &var, &value );
++        }
++
++        params = create_process_params( app_name, tidy_cmdline, cur_dir, new_env,
++                                        flags | CREATE_UNICODE_ENVIRONMENT, startup_info );
++        RtlFreeHeap( GetProcessHeap(), 0, new_env );
++        if (!params)
++        {
++            status = STATUS_NO_MEMORY;
++            goto done;
++        }
++    }
++
+     if (flags & (DEBUG_PROCESS | DEBUG_ONLY_THIS_PROCESS))
+     {
+         if ((status = DbgUiConnectToDbg())) goto done;
+@@ -819,6 +948,8 @@ BOOL WINAPI DECLSPEC_HOTPATCH CreateProcessInternalW( HANDLE token, const WCHAR
+  done:
+     RtlDestroyProcessParameters( params );
+     if (tidy_cmdline != cmd_line) HeapFree( GetProcessHeap(), 0, tidy_cmdline );
++    HeapFree( GetProcessHeap(), 0, orig_app_name );
++    HeapFree( GetProcessHeap(), 0, product_name );
+     return set_ntstatus( status );
+ }
+ 
+diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
+index 9206daf283b..09e1922c5de 100644
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -296,6 +296,8 @@ static WORD get_alt_machine( WORD machine )
+ static void set_dll_path(void)
+ {
+     char *p, *path = getenv( "WINEDLLPATH" );
++    /* Proton: the BattlEye and EasyAntiCheat runtimes, whose bridge DLLs are loaded as builtins */
++    char *be_runtime = getenv( "PROTON_BATTLEYE_RUNTIME" ), *eac_runtime = getenv( "PROTON_EAC_RUNTIME" );
+     int i, count = 0;
+ 
+ #ifdef __APPLE__
+@@ -356,6 +358,9 @@ static void set_dll_path(void)
+ 
+     if (path) for (p = path, count = 1; *p; p++) if (*p == ':') count++;
+ 
++    if (be_runtime) count += 2;
++    if (eac_runtime) count += 2;
++
+     dll_paths = malloc( (count + 2) * sizeof(*dll_paths) );
+     count = 0;
+ 
+@@ -368,6 +373,18 @@ static void set_dll_path(void)
+         free( path );
+     }
+ 
++    if (be_runtime)
++    {
++        if (asprintf( &p, "%s/v1/lib/wine/", be_runtime ) != -1) dll_paths[count++] = p;
++        if (asprintf( &p, "%s/v1/lib64/wine/", be_runtime ) != -1) dll_paths[count++] = p;
++    }
++
++    if (eac_runtime)
++    {
++        if (asprintf( &p, "%s/v2/lib32/", eac_runtime ) != -1) dll_paths[count++] = p;
++        if (asprintf( &p, "%s/v2/lib64/", eac_runtime ) != -1) dll_paths[count++] = p;
++    }
++
+     for (i = 0; i < count; i++) dll_path_maxlen = max( dll_path_maxlen, strlen(dll_paths[i]) );
+     dll_paths[count] = NULL;
+ }
+diff --git a/dlls/ntdll/unix/loadorder.c b/dlls/ntdll/unix/loadorder.c
+index 54d485a5b58..bc18ccae7e6 100644
+--- a/dlls/ntdll/unix/loadorder.c
++++ b/dlls/ntdll/unix/loadorder.c
+@@ -75,6 +75,7 @@ static HANDLE std_key;
+ static HANDLE app_key;
+ static BOOL init_done;
+ static BOOL main_exe_loaded;
++static BOOL eac_launcher_process;  /* Proton: the EasyAntiCheat launcher, which loads the real client library */
+ 
+ /***************************************************************************
+  *	get_version_entry
+@@ -480,11 +481,24 @@ static enum loadorder version_heuristics( const UNICODE_STRING *nt_name,
+  */
+ void set_load_order_app_name( const WCHAR *app_name )
+ {
++    static const WCHAR eac_launcherW[] = {'P','R','O','T','O','N','_','E','A','C','_','L','A','U','N','C','H','E','R','_','P','R','O','C','E','S','S','=',0};
+     const WCHAR *p;
+ 
+     if ((p = wcsrchr( app_name, '\\' ))) app_name = p + 1;
+     app_key = open_app_key( app_name );
+     main_exe_loaded = TRUE;
++
++    /* kernelbase sets it for the program whose product name is "EasyAntiCheat Launcher" */
++    p = NtCurrentTeb()->Peb->ProcessParameters->Environment;
++    while (*p)
++    {
++        if (!wcsncmp( p, eac_launcherW, ARRAY_SIZE(eac_launcherW) - 1 ))
++        {
++            eac_launcher_process = TRUE;
++            break;
++        }
++        p += wcslen(p) + 1;
++    }
+ }
+ 
+ 
+@@ -517,6 +531,55 @@ enum loadorder get_load_order( const UNICODE_STRING *nt_name, BOOL is_system_dir
+     remove_dll_ext( module + 1 );
+     basename = get_basename( module + 1 );
+ 
++    /* Proton: the EasyAntiCheat bridge, a builtin of the same name as the game's Windows client library, is loaded
++     * only when the game also ships the native client library the bridge forwards to (<name>.so next to the
++     * Windows one). The EAC launcher always gets the Windows library. */
++    {
++        static const WCHAR easyanticheat_x86W[] = {'e','a','s','y','a','n','t','i','c','h','e','a','t','_','x','8','6',0};
++        static const WCHAR easyanticheat_x64W[] = {'e','a','s','y','a','n','t','i','c','h','e','a','t','_','x','6','4',0};
++        static const WCHAR easyanticheatW[] = {'e','a','s','y','a','n','t','i','c','h','e','a','t',0};
++        static const WCHAR soW[] = {'.','s','o',0};
++
++        if (!wcsicmp( basename, easyanticheat_x86W ) || !wcsicmp( basename, easyanticheat_x64W ) ||
++            !wcsicmp( basename, easyanticheatW ))
++        {
++            UNICODE_STRING eac_unix_name, out_nt_name;
++            OBJECT_ATTRIBUTES attr;
++            char *unix_path = NULL;
++            WCHAR *eac_basename;
++            NTSTATUS status;
++
++            if (eac_launcher_process)
++            {
++                ret = LO_NATIVE;
++                TRACE( "got hardcoded %s for %s, as this is the EAC launcher process\n",
++                       debugstr_loadorder(ret), debugstr_w(path) );
++                goto done;
++            }
++
++            if ((eac_unix_name.Buffer = malloc( (wcslen( module + 1 ) + 10) * sizeof(WCHAR) )))
++            {
++                memcpy( eac_unix_name.Buffer, prefixW, sizeof(prefixW) );
++                eac_unix_name.Buffer[4] = 0;
++                wcscat( eac_unix_name.Buffer, module + 1 );
++                eac_basename = get_basename( eac_unix_name.Buffer );
++                if (!wcsicmp( eac_basename, easyanticheatW )) wcscpy( eac_basename, easyanticheat_x64W );
++                wcscat( eac_basename, soW );
++                eac_unix_name.Length = eac_unix_name.MaximumLength = wcslen( eac_unix_name.Buffer ) * sizeof(WCHAR);
++                InitializeObjectAttributes( &attr, &eac_unix_name, 0, NULL, NULL );
++
++                status = get_nt_and_unix_names( &attr, &out_nt_name, &unix_path, FILE_OPEN, FALSE );
++                free( out_nt_name.Buffer );
++                free( unix_path );
++                ret = status ? LO_NATIVE : LO_BUILTIN;
++                TRACE( "got hardcoded %s for %s, as the eac unix library is %s\n", debugstr_loadorder(ret),
++                       debugstr_w(path), status ? "not present" : "present" );
++                free( eac_unix_name.Buffer );
++                goto done;
++            }
++        }
++    }
++
+     /* first explicit module name */
+     if ((ret = get_load_order_value( std_key, app_key, is_system_dir ? basename : module+1 )) != LO_INVALID)
+         goto done;
+diff --git a/dlls/ws2_32/protocol.c b/dlls/ws2_32/protocol.c
+index 78dc0c78fca..c89f6855b09 100644
+--- a/dlls/ws2_32/protocol.c
++++ b/dlls/ws2_32/protocol.c
+@@ -184,6 +184,27 @@ static int dns_only_query( const char *node, const struct addrinfo *hints, struc
+     return 0;
+ }
+ 
++/* Proton: for one game, EasyAntiCheat's alternative download host is not resolved, so it uses its main one
++ * (WINE_DISABLE_EAC_ALT_DOWNLOAD overrides) */
++static BOOL eac_download_hack(void)
++{
++    static int eac_download_hack_enabled = -1;
++    char str[64];
++
++    if (eac_download_hack_enabled == -1)
++    {
++        if (GetEnvironmentVariableA("WINE_DISABLE_EAC_ALT_DOWNLOAD", str, sizeof(str)))
++            eac_download_hack_enabled = !!atoi(str);
++        else
++            eac_download_hack_enabled = GetEnvironmentVariableA("SteamGameId", str, sizeof(str))
++                                        && !strcmp(str, "626690");
++
++        if (eac_download_hack_enabled)
++            ERR("HACK: failing download-alt.easyanticheat.net resolution.\n");
++    }
++    return eac_download_hack_enabled;
++}
++
+ /***********************************************************************
+  *      getaddrinfo   (ws2_32.@)
+  */
+@@ -205,6 +226,12 @@ int WINAPI getaddrinfo( const char *node, const char *service,
+ 
+     if (node)
+     {
++        if (eac_download_hack() && !strcmp(node, "download-alt.easyanticheat.net"))
++        {
++            SetLastError(WSAHOST_NOT_FOUND);
++            return WSAHOST_NOT_FOUND;
++        }
++
+         if (!node[0])
+         {
+             if (!(fqdn = get_fqdn())) return WSA_NOT_ENOUGH_MEMORY;
+@@ -980,6 +1007,12 @@ struct hostent * WINAPI gethostbyname( const char *name )
+         return NULL;
+     }
+ 
++    if (eac_download_hack() && name && !strcmp(name, "download-alt.easyanticheat.net"))
++    {
++        SetLastError( WSAHOST_NOT_FOUND );
++        return NULL;
++    }
++
+     if ((ret = WS_CALL( gethostname, &params )))
+     {
+         SetLastError( ret );
+diff --git a/programs/belauncher/Makefile.in b/programs/belauncher/Makefile.in
+new file mode 100644
+index 00000000000..927983f7423
+--- /dev/null
++++ b/programs/belauncher/Makefile.in
+@@ -0,0 +1,7 @@
++MODULE    = belauncher.exe
++IMPORTS   = shlwapi shcore
++
++EXTRADLLFLAGS = -mwindows -municode
++
++SOURCES = \
++        main.c \
+diff --git a/programs/belauncher/main.c b/programs/belauncher/main.c
+new file mode 100644
+index 00000000000..a2b0666ad91
+--- /dev/null
++++ b/programs/belauncher/main.c
+@@ -0,0 +1,220 @@
++#define WIN32_LEAN_AND_MEAN
++#include <windows.h>
++#include <io.h>
++#include <shlwapi.h>
++#include <shellapi.h>
++
++#include "wine/debug.h"
++
++WINE_DEFAULT_DEBUG_CHANNEL(belauncher);
++
++int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrevInst, LPWSTR cmdline, int cmdshow)
++{
++    char *configs, *config, *arch_32_exe = NULL, *arch_64_exe = NULL, *game_exe = NULL, *be_arg = NULL;
++    WCHAR orig_path[MAX_PATH], path[MAX_PATH], *p, config_path[MAX_PATH], game_exeW[MAX_PATH], **argvW;
++    LARGE_INTEGER launcher_cfg_size;
++    unsigned char battleye_status;
++    int game_exe_len, arg_len, path_len;
++    PROCESS_INFORMATION pi;
++    HANDLE launcher_cfg;
++    LPWSTR launch_cmd;
++    STARTUPINFOW si = { sizeof(si) };
++    HANDLE orig_launcher_process = NULL;
++    int i, argc;
++    DWORD size;
++    BOOL wow64;
++
++    battleye_status = 0x3; /* Starting */
++    _write(1, &battleye_status, 1);
++
++    *path = 0;
++    *orig_path = 0;
++    if ((size = GetEnvironmentVariableW(L"PROTON_ORIG_LAUNCHER_NAME", orig_path, ARRAY_SIZE(orig_path)))
++            && size <= ARRAY_SIZE(orig_path))
++    {
++        wcscpy(path, orig_path);
++        WINE_TRACE("PROTON_ORIG_LAUNCHER_NAME %s.\n", wine_dbgstr_w(path));
++
++        for (p = path + wcslen(path); p != path; --p)
++            if (*p == '\\') break;
++        if (*p == '\\')
++            ++p;
++        *p = 0;
++    }
++
++    wcscpy(config_path, path);
++    wcscat(config_path, L"Battleye\\BELauncher.ini");
++    launcher_cfg = CreateFileW(config_path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
++    if (launcher_cfg == INVALID_HANDLE_VALUE)
++    {
++        *path = 0;
++        launcher_cfg = CreateFileW(L"Battleye\\BELauncher.ini", GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
++    }
++    if (launcher_cfg == INVALID_HANDLE_VALUE)
++    {
++        WINE_ERR("BELauncher.ini not found.\n");
++        goto start_failed;
++    }
++
++    if(!GetFileSizeEx(launcher_cfg, &launcher_cfg_size) || launcher_cfg_size.u.HighPart)
++    {
++        CloseHandle(launcher_cfg);
++        goto start_failed;
++    }
++
++    configs = HeapAlloc( GetProcessHeap(), 0, launcher_cfg_size.u.LowPart);
++
++    if (!ReadFile(launcher_cfg, configs, launcher_cfg_size.u.LowPart, &size, NULL) || size != launcher_cfg_size.u.LowPart)
++    {
++        CloseHandle(launcher_cfg);
++        HeapFree( GetProcessHeap(), 0, configs );
++        goto start_failed;
++    }
++
++    CloseHandle(launcher_cfg);
++
++    config = configs;
++    do
++    {
++        if (!strncmp(config, "32BitExe=", 9))
++            arch_32_exe = config + 9;
++
++        if (!strncmp(config, "64BitExe=", 9))
++            arch_64_exe = config + 9;
++
++        if (!strncmp(config, "BEArg=", 6))
++            be_arg = config + 6;
++    }
++    while ((config = strchr(config, '\n')) && *(config++));
++
++    *game_exeW = 0;
++    game_exe_len = 0;
++
++    WINE_TRACE("cmdline %s.\n", wine_dbgstr_w(cmdline));
++    if ((argvW = CommandLineToArgvW(cmdline, &argc)))
++    {
++        if (argc && iswdigit(argvW[0][0]) && _wtoi(argvW[0]) == 4)
++        {
++            WINE_TRACE("uninstall cmd, exiting.\n");
++            return 0;
++        }
++        if (argc && iswdigit(argvW[0][0]) && _wtoi(argvW[0]) == 1)
++        {
++            WINE_ERR("install cmd, exiting.\n");
++            return 0;
++        }
++
++        for (i = 0; i < argc; ++i)
++        {
++            if (!wcscmp(argvW[i], L"-exe") && i < argc - 1)
++            {
++                wcscpy(game_exeW, argvW[i + 1]);
++                game_exe_len = wcslen(game_exeW);
++                break;
++            }
++        }
++    }
++
++    if (!*game_exeW)
++    {
++        if (arch_64_exe && (sizeof(void *) == 8 || (IsWow64Process(GetCurrentProcess(), &wow64) && wow64)))
++            game_exe = arch_64_exe;
++        else if (arch_32_exe)
++            game_exe = arch_32_exe;
++        else
++        {
++            HeapFree( GetProcessHeap(), 0, configs );
++            WINE_ERR("Failed to find game executable name from BattlEye config.\n");
++            goto start_failed;
++        }
++
++        if (strchr(game_exe, '\r'))
++            *(strchr(game_exe, '\r')) = 0;
++        if (strchr(game_exe, '\n'))
++            *(strchr(game_exe, '\n')) = 0;
++        game_exe_len = MultiByteToWideChar(CP_ACP, 0, game_exe, -1, game_exeW, ARRAY_SIZE(game_exeW));
++        if (!game_exe_len)
++        {
++            WINE_ERR("Failed to convert game_exe %s.\n", wine_dbgstr_a(game_exe));
++            goto start_failed;
++        }
++        --game_exe_len;
++    }
++
++    if (!be_arg) arg_len = 0;
++    else
++    {
++        if (strchr(be_arg, '\r'))
++            *(strchr(be_arg, '\r')) = 0;
++        if (strchr(be_arg, '\n'))
++            *(strchr(be_arg, '\n')) = 0;
++        arg_len = MultiByteToWideChar(CP_ACP, 0, be_arg, -1, NULL, 0) - 1;
++    }
++
++    if (*orig_path)
++    {
++        WINE_TRACE("Launching original launcher %s.\n", debugstr_w(orig_path));
++        if (!CreateProcessW(orig_path, NULL, NULL, NULL, FALSE, CREATE_SUSPENDED, NULL, NULL, &si, &pi))
++        {
++            DWORD err = GetLastError();
++
++            WINE_ERR("CreateProcessW failed for original launcher %s, err %lu.\n", debugstr_w(orig_path), err);
++            return err;
++        }
++        CloseHandle(pi.hThread);
++        orig_launcher_process = pi.hProcess;
++    }
++
++    WINE_TRACE("Launching game executable %s for BattlEye.\n", game_exe);
++    battleye_status = 0x9; /* Launching Game */
++    _write(1, &battleye_status, 1);
++
++    if (PathIsRelativeW(game_exeW))
++        path_len = wcslen(path);
++    else
++        path_len = 0;
++
++    launch_cmd = HeapAlloc(GetProcessHeap(), 0, (path_len + game_exe_len + 1 + wcslen(cmdline) + 1 + arg_len + 1) * sizeof(WCHAR));
++
++    memcpy(launch_cmd, path, path_len * sizeof(*path));
++
++    memcpy(launch_cmd + path_len, game_exeW, game_exe_len * sizeof(*launch_cmd));
++    launch_cmd[path_len + game_exe_len] = ' ';
++
++    wcscpy(launch_cmd + path_len + game_exe_len + 1, cmdline);
++    launch_cmd[path_len + game_exe_len + 1 + wcslen(cmdline)] = ' ';
++
++    if (!MultiByteToWideChar(CP_ACP, 0, be_arg, -1, launch_cmd + path_len + game_exe_len + 1 + wcslen(cmdline) + 1, arg_len + 1))
++        launch_cmd[path_len + game_exe_len + 1 + wcslen(cmdline)] = 0;
++
++    WINE_TRACE("game_exe %s.\n", wine_dbgstr_w(game_exeW));
++    WINE_TRACE("path %s, be_arg %s.\n", wine_dbgstr_w(path), wine_dbgstr_a(be_arg));
++    WINE_TRACE("launch_cmd %s.\n", wine_dbgstr_w(launch_cmd));
++
++    if (!CreateProcessW(NULL, launch_cmd, NULL, NULL, FALSE, CREATE_NEW_CONSOLE, NULL, NULL, &si, &pi))
++    {
++        DWORD err = GetLastError();
++
++        WINE_ERR("CreateProcessW failed, error %lu.\n", err);
++        if (orig_launcher_process)
++            TerminateProcess(orig_launcher_process, err);
++        battleye_status = 0xA; /* Launch Failed */
++        _write(1, &battleye_status, 1);
++        return err;
++    }
++    HeapFree( GetProcessHeap(), 0, launch_cmd );
++    CloseHandle(pi.hThread);
++
++    WaitForSingleObject(pi.hProcess, INFINITE);
++    CloseHandle(pi.hProcess);
++
++    if (orig_launcher_process)
++        TerminateProcess(orig_launcher_process, 0);
++    return 0;
++
++start_failed:
++    WINE_ERR("Failed.\n");
++    battleye_status = 0x4; /* Start Failed */
++    _write(1, &battleye_status, 1);
++    return 0;
++}
+-- 
+2.54.0 (Apple Git-157)
+

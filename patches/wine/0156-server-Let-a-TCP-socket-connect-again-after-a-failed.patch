@@ -1,0 +1,47 @@
+From 668ae5eb897abeebdc4cd9e0640dc1de3ddb48e5 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Wed, 11 Nov 2026 03:17:55 -0700
+Subject: [PATCH 156/158] server: Let a TCP socket connect again after a failed
+ connect on macOS.
+
+BSD refuses another connect() on a TCP socket whose connect() failed,
+with EISCONN or EINVAL. Windows and Linux take it. Such a socket now gets
+a new kernel socket with the same options and binding, and the connect
+is retried.
+
+ws2_32:sock waited forever in test_connect() on an accept() for the
+connection that was refused.
+---
+ server/sock.c | 16 ++++++++++++++++
+ 1 file changed, 16 insertions(+)
+
+diff --git a/server/sock.c b/server/sock.c
+index bd8a3ff6691..417577befcd 100644
+--- a/server/sock.c
++++ b/server/sock.c
+@@ -2918,6 +2918,22 @@ static void sock_ioctl( struct fd *fd, ioctl_code_t code, struct async *async )
+             ret = connect( unix_fd, &unix_addr.addr, unix_len );
+         }
+ 
++#ifdef __APPLE__
++        if (ret < 0 && (errno == EISCONN || errno == EINVAL) && sock->state == SOCK_UNCONNECTED &&
++            is_tcp_socket( sock ))
++        {
++            /* BSD does not take a TCP socket whose connect() failed for another connect(); Linux
++             * and Windows do. Give it a new kernel socket with the same options and binding. */
++            int bound = sock->bound;
++
++            drop_kernel_binding( sock, unix_fd );
++            if (!bound) sock->dropped_addr_len = 0;
++            if ((unix_fd = get_unix_fd( sock->fd )) == -1) return;
++            if (!restore_kernel_binding( sock, unix_fd )) return;
++            ret = connect( unix_fd, &unix_addr.addr, unix_len );
++        }
++#endif
++
+         if (ret < 0 && errno == EACCES && sock->state == SOCK_CONNECTIONLESS && unix_addr.addr.sa_family == AF_INET)
+         {
+             int broadcast, saved_errno;
+-- 
+2.54.0 (Apple Git-157)
+

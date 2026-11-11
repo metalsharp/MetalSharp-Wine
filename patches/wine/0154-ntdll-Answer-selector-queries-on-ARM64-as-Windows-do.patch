@@ -1,0 +1,37 @@
+From 707e95be3ea193119fab91a96e451f2fce8b5315 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Wed, 11 Nov 2026 02:30:01 -0700
+Subject: [PATCH 154/158] ntdll: Answer selector queries on ARM64 as Windows
+ does.
+
+ARM64 has no descriptor tables. For a selector it has no entry for,
+Windows returns STATUS_UNSUCCESSFUL, or STATUS_NO_LDT for an LDT
+selector; this returned STATUS_NOT_IMPLEMENTED.
+RtlWow64GetThreadSelectorEntry() answers for the WoW64 GDT selectors
+itself.
+
+ntdll:wow64 had 128 failures in test_selectors(), in each of its two
+processes.
+---
+ dlls/ntdll/unix/signal_arm64.c | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/ntdll/unix/signal_arm64.c b/dlls/ntdll/unix/signal_arm64.c
+index 83c29574e0c..23467c8db02 100644
+--- a/dlls/ntdll/unix/signal_arm64.c
++++ b/dlls/ntdll/unix/signal_arm64.c
+@@ -1905,7 +1905,10 @@ static void usr2_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
+  */
+ NTSTATUS get_thread_ldt_entry( HANDLE handle, THREAD_DESCRIPTOR_INFORMATION *info, ULONG len )
+ {
+-    return STATUS_NOT_IMPLEMENTED;
++    /* ARM64 has no descriptor tables. Windows answers as x86 does for a selector it has no
++     * entry for; RtlWow64GetThreadSelectorEntry() answers for the WoW64 GDT selectors. */
++    if (len != sizeof(*info)) return STATUS_INFO_LENGTH_MISMATCH;
++    return (info->Selector & 4) ? STATUS_NO_LDT : STATUS_UNSUCCESSFUL;
+ }
+ 
+ 
+-- 
+2.54.0 (Apple Git-157)
+

@@ -1,0 +1,33 @@
+From 9df1933a57e9705952e28584f7b4da5709ebf665 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Tue, 10 Nov 2026 23:04:43 -0700
+Subject: [PATCH 147/158] server: Report unreadable memory as a partial copy on
+ macOS.
+
+NtReadVirtualMemory of an address that is not mapped returned
+STATUS_ACCESS_VIOLATION where Windows, and the ptrace implementation,
+return STATUS_PARTIAL_COPY.
+
+Fixes 1 failure in ntdll:info.
+---
+ server/mach.c | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/server/mach.c b/server/mach.c
+index 1344725df08..7bdd1d13335 100644
+--- a/server/mach.c
++++ b/server/mach.c
+@@ -411,7 +411,9 @@ int read_process_memory( struct process *process, client_ptr_t ptr, data_size_t
+     }
+ 
+     ret = mach_vm_read_overwrite( process_port, (mach_vm_address_t)ptr, (mach_vm_size_t)size, (mach_vm_address_t)dest, &bytes_read );
+-    mach_set_error( ret );
++    /* memory that is not mapped or not readable: what ReadProcessMemory reports as a partial copy */
++    if (ret == KERN_INVALID_ADDRESS || ret == KERN_PROTECTION_FAILURE) set_error( STATUS_PARTIAL_COPY );
++    else mach_set_error( ret );
+     return (ret == KERN_SUCCESS);
+ }
+ 
+-- 
+2.54.0 (Apple Git-157)
+
