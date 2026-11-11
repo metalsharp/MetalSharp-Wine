@@ -794,6 +794,7 @@ BOOL WINAPI DECLSPEC_HOTPATCH CreateProcessInternalW( HANDLE token, const WCHAR 
       - We don't do this check in ntdll itself because it's harder to get the product name there
       - we don't overwrite WINEDLLOVERRIDES because it's fetched from the unix environment */
     if (orig_app_name || (product_name && !strcmp( product_name, "EasyAntiCheat Launcher" )) ||
+        (product_name && !strcmp( product_name, "Easy Anti-Cheat Bootstrapper (EOS)" )) ||
         GetEnvironmentVariableW( L"PROTON_EAC_LAUNCHER_PROCESS", NULL, 0 ))
     {
         UNICODE_STRING var, value;
@@ -811,6 +812,14 @@ BOOL WINAPI DECLSPEC_HOTPATCH CreateProcessInternalW( HANDLE token, const WCHAR 
         RtlInitUnicodeString( &value, L"1" );
         RtlSetEnvironmentVariable( &new_env, &var,
                                    product_name && !strcmp( product_name, "EasyAntiCheat Launcher" ) ? &value : NULL );
+
+        /* Proton on macOS: the EOS bootstrapper loads EAC's Linux module into itself, through the Linux module
+         * host (ntdll's load_linux_host) */
+        if (product_name && !strcmp( product_name, "Easy Anti-Cheat Bootstrapper (EOS)" ))
+        {
+            RtlInitUnicodeString( &var, L"PROTON_LINUX_HOST" );
+            RtlSetEnvironmentVariable( &new_env, &var, &value );
+        }
 
         if (orig_app_name)
         {

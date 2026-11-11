@@ -4304,6 +4304,35 @@ PIMAGE_NT_HEADERS WINAPI RtlImageNtHeader(HMODULE hModule)
 }
 
 /***********************************************************************
+ *           load_linux_host
+ *
+ * Proton on macOS: a program that loads Linux code into itself, as Easy Anti-Cheat's EOS bootstrapper does on
+ * Proton, gets the Linux module host (linuxhost.dll, x86_64) before its own code runs. kernelbase sets
+ * PROTON_LINUX_HOST for such a program; its value may also be the path of the host, to test another one.
+ */
+static void load_linux_host( CONTEXT *context )
+{
+#if defined(__x86_64__) || defined(__arm64ec__)
+    WCHAR buffer[MAX_PATH];
+    UNICODE_STRING name = RTL_CONSTANT_STRING( L"PROTON_LINUX_HOST" ), value;
+    WINE_MODREF *host;
+    NTSTATUS status;
+
+    if (NtCurrentTeb()->WowTebOffset) return;
+    value.Buffer = buffer;
+    value.Length = 0;
+    value.MaximumLength = sizeof(buffer) - sizeof(WCHAR);
+    if (RtlQueryEnvironmentVariable_U( NULL, &name, &value )) return;
+    buffer[value.Length / sizeof(WCHAR)] = 0;
+    status = load_dll( NULL, (wcschr( buffer, '\\' ) ? buffer : L"linuxhost.dll"), 0, &host, FALSE );
+    if (!status) status = process_attach( host->ldr.DdagNode, context );
+    if (status) ERR( "could not load the Linux module host %s, status %lx\n", debugstr_w(buffer), status );
+    else TRACE( "loaded the Linux module host\n" );
+#endif
+}
+
+
+/***********************************************************************
  *           load_global_options
  */
 static void load_global_options(void)
@@ -4769,6 +4798,7 @@ void loader_init( CONTEXT *context, void **entry )
                  debugstr_w(NtCurrentTeb()->Peb->ProcessParameters->ImagePathName.Buffer), status );
             NtTerminateProcess( GetCurrentProcess(), status );
         }
+        load_linux_host( context );
         release_address_space();
         if (wm->ldr.TlsIndex == -1) call_tls_callbacks( wm->ldr.DllBase, DLL_PROCESS_ATTACH );
         if (wm->ldr.ActivationContext) RtlDeactivateActivationContext( 0, cookie );
