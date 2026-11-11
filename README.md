@@ -1,6 +1,6 @@
 # Linux module host
 
-Loads Linux x86_64 shared libraries into a Wine process on macOS and runs them. It exists for Proton's anti-cheat support, where the code that does the checking is the vendor's Linux library (`SPEC.md` §9).
+Loads Linux x86_64 shared libraries into a Wine process on macOS and runs them. For aarch64 Linux libraries, which Apple silicon runs without translation, see `native/` (Elden Ring's Easy Anti-Cheat ships as one). It exists for Proton's anti-cheat support, where the code that does the checking is the vendor's Linux library (`SPEC.md` §9).
 
 ## How it works
 
