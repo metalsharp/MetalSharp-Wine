@@ -418,6 +418,16 @@ int linuxhost_exe_path( char *buf, size_t size )
     if (!get_unix || !(unix_name = get_unix( p ))) return linuxhost_program_path( buf, size );
     snprintf( buf, size, "%s", unix_name );
     HeapFree( GetProcessHeap(), 0, unix_name );
+    {
+        /* On Linux, a Wine process's executable is Wine's preloader, which loads the wine binary beside it; EAC
+         * starts the game the same way, deriving the wine binary from that name (its exec comes to the host, which
+         * starts the program). MetalSharp Wine's loader needs no preloader, so the name is Proton's 64-bit one for the binary
+         * that is there. LINUXHOST_EXE_NAME gives another name, to test. */
+        char name[64] = "wine64-preloader", *slash = strrchr( buf, '/' );
+
+        GetEnvironmentVariableA( "LINUXHOST_EXE_NAME", name, sizeof(name) );
+        if (slash) snprintf( slash + 1, size - (slash + 1 - buf), "%s", name );
+    }
     return 1;
 }
 

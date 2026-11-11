@@ -411,6 +411,7 @@ static SYSV char *lx_getenv( const char *name )
     char *ret = NULL;
 
     if (!name) return NULL;
+    linuxhost_trace( "getenv %s\n", name );
     AcquireSRWLockExclusive( &env_lock );
     len = GetEnvironmentVariableA( name, buffer, sizeof(buffer) );
     for (i = 0; i < env_count; i++) if (!strcmp( env_cache[i].name, name )) break;
@@ -444,12 +445,14 @@ static SYSV char *lx_getenv( const char *name )
 
 static SYSV int lx_setenv( const char *name, const char *value, int overwrite )
 {
+    linuxhost_trace( "setenv %s=%s\n", name, value );
     if (!overwrite && GetEnvironmentVariableA( name, NULL, 0 )) return 0;
     return SetEnvironmentVariableA( name, value ) ? 0 : fail( LX_ENOMEM );
 }
 
 static SYSV int lx_unsetenv( const char *name )
 {
+    linuxhost_trace( "unsetenv %s\n", name );
     SetEnvironmentVariableA( name, NULL );
     return 0;
 }
@@ -458,323 +461,10 @@ static SYSV int lx_unsetenv( const char *name )
  * The process
  */
 
-/* ---------------------------------------------------------------------------------------------------------
- * fork and exec, as launchers use them: fork, a few calls in the child, then exec or _exit. fork saves the
- * caller's registers and returns 0, so the child's branch runs here; exec starts the program as a Windows process
- * and then the parent's branch resumes at fork's return with the new process's id, as after vfork.
- */
-
-struct fork_context
-{
-    unsigned long long rbx, rbp, r12, r13, r14, r15, rsp, rip;
-    int active;
-};
-static __thread struct fork_context fork_ctx;
-
-/* lx_fork saves the registers a call keeps and the return address; fork_resume returns from it again with rax */
-__asm__( ".text\n"
-         ".globl lx_fork_entry\n"
-         "lx_fork_entry:\n"
-         "    pushq %rdi\n"
-         "    subq $0x28, %rsp\n"
-         "    call fork_context_ptr\n"          /* rax: this thread's context */
-         "    addq $0x28, %rsp\n"
-         "    popq %rdi\n"
-         "    movq %rbx, 0x00(%rax)\n"
-         "    movq %rbp, 0x08(%rax)\n"
-         "    movq %r12, 0x10(%rax)\n"
-         "    movq %r13, 0x18(%rax)\n"
-         "    movq %r14, 0x20(%rax)\n"
-         "    movq %r15, 0x28(%rax)\n"
-         "    leaq 8(%rsp), %rcx\n"
-         "    movq %rcx, 0x30(%rax)\n"           /* the stack pointer after fork returns */
-         "    movq (%rsp), %rcx\n"
-         "    movq %rcx, 0x38(%rax)\n"           /* where fork returns to */
-         "    movl $1, 0x40(%rax)\n"
-         "    xorl %eax, %eax\n"                  /* the child's branch */
-         "    ret\n"
-         ".globl fork_resume\n"
-         "fork_resume:\n"                         /* rcx: context, rdx: pid (Windows convention) */
-         "    movl $0, 0x40(%rcx)\n"
-         "    movq 0x00(%rcx), %rbx\n"
-         "    movq 0x08(%rcx), %rbp\n"
-         "    movq 0x10(%rcx), %r12\n"
-         "    movq 0x18(%rcx), %r13\n"
-         "    movq 0x20(%rcx), %r14\n"
-         "    movq 0x28(%rcx), %r15\n"
-         "    movq 0x30(%rcx), %rsp\n"
-         "    movq %rdx, %rax\n"
-         "    jmp *0x38(%rcx)\n" );
-extern void lx_fork_entry(void);
-extern void fork_resume( struct fork_context *ctx, long long pid ) __attribute__((noreturn));
-
-struct fork_context *fork_context_ptr(void) { return &fork_ctx; }
-
-/* the processes started this way, for waitpid and kill */
-static struct
-{
-    int pid;
-    HANDLE process, thread;
-    int status, reaped;
-    int traced;          /* started under PTRACE_TRACEME */
-    int stops[4];        /* the stops waitpid reports in turn: the child's own SIGSTOP, then exec */
-    int stop_count, stop_index;
-    int awaiting_cont;   /* a stop was reported; the tracer has not continued it yet */
-    int suspended;       /* the Windows process has not started running */
-    unsigned long long options;
-} children[32];
-static unsigned int child_count;
-static __thread int trace_next_exec;  /* the forked child asked for PTRACE_TRACEME */
-static __thread int sigstop_before_exec;  /* the forked child stopped itself (raise(SIGSTOP)) */
-
-enum { STOP_SIGSTOP = 1, STOP_EXEC = 2 };
-
-static int add_child( HANDLE process, DWORD pid )
-{
-    if (child_count < 32)
-    {
-        memset( &children[child_count], 0, sizeof(children[0]) );
-        children[child_count].pid = pid;
-        children[child_count].process = process;
-        child_count++;
-    }
-    return pid;
-}
-
-static int find_child( int pid )
-{
-    unsigned int i;
-
-    for (i = 0; i < child_count; i++) if (children[i].pid == pid) return i;
-    return -1;
-}
-
-static void append_quoted( WCHAR *cmd, size_t size, const char *arg )
-{
-    WCHAR warg[2048];
-    size_t len = wcslen( cmd );
-
-    MultiByteToWideChar( CP_UTF8, 0, arg, -1, warg, ARRAY_SIZE(warg) );
-    _snwprintf( cmd + len, size - len, len ? L" \"%s\"" : L"\"%s\"", warg );
-}
-
-/* Starts what exec was asked for, as a Windows process: a Windows program (.exe) directly; Wine's own launcher
- * with its first argument as the program. Returns the process id, or 0. */
-static int spawn( const char *path, char *const argv[] )
-{
-    typedef WCHAR *(CDECL *get_dos_fn)( const char * );
-    get_dos_fn get_dos = (get_dos_fn)GetProcAddress( GetModuleHandleA( "kernel32.dll" ), "wine_get_dos_file_name" );
-    STARTUPINFOW si = { sizeof(si) };
-    PROCESS_INFORMATION pi;
-    WCHAR cmd[8192] = L"", *app = NULL;
-    const char *base = strrchr( path, '/' ) ? strrchr( path, '/' ) + 1 : path;
-    int first = 1, i;
-
-    for (i = 0; argv && argv[i]; i++) linuxhost_trace( "exec %s argv[%d] = %s\n", path, i, argv[i] );
-    /* wine, wine64 or a preloader: the program is the first argument */
-    if (!strncmp( base, "wine", 4 )) first = 1;
-    else
-    {
-        size_t len = strlen( path );
-
-        if (len < 4 || _stricmp( path + len - 4, ".exe" ))
-        {
-            linuxhost_trace( "exec %s: not a Windows program, not started\n", path );
-            return 0;
-        }
-        if (get_dos && path[0] == '/') app = get_dos( path );
-        append_quoted( cmd, ARRAY_SIZE(cmd), path );
-    }
-    for (i = first; argv && argv[i]; i++) append_quoted( cmd, ARRAY_SIZE(cmd), argv[i] );
-    linuxhost_trace( "exec: CreateProcess %ls%s\n", cmd, trace_next_exec ? " (traced: suspended)" : "" );
-    if (!CreateProcessW( app, cmd, NULL, NULL, FALSE, trace_next_exec ? CREATE_SUSPENDED : 0, NULL, NULL, &si, &pi ))
-    {
-        linuxhost_trace( "exec: CreateProcess failed: %lu\n", GetLastError() );
-        if (app) HeapFree( GetProcessHeap(), 0, app );
-        return 0;
-    }
-    if (app) HeapFree( GetProcessHeap(), 0, app );
-    add_child( pi.hProcess, pi.dwProcessId );
-    children[child_count - 1].thread = pi.hThread;
-    if (trace_next_exec)
-    {
-        /* a traced child stops where Linux would stop it: at its own SIGSTOP and after exec. The Windows
-         * process waits suspended until the tracer continues it past the last of those. */
-        children[child_count - 1].traced = 1;
-        if (sigstop_before_exec) children[child_count - 1].stops[children[child_count - 1].stop_count++] = STOP_SIGSTOP;
-        children[child_count - 1].stops[children[child_count - 1].stop_count++] = STOP_EXEC;
-        children[child_count - 1].suspended = 1;
-        trace_next_exec = 0;
-        sigstop_before_exec = 0;
-    }
-    return pi.dwProcessId;
-}
-
-static SYSV int lx_execv( const char *path, char *const argv[] )
-{
-    int pid = spawn( path, argv );
-
-    if (!fork_ctx.active)
-    {
-        linuxhost_trace( "exec %s without fork: the process ends\n", path );
-        if (pid) ExitProcess( 0 );
-        *linuxhost_errno() = 2;
-        return -1;
-    }
-    if (!pid) pid = add_child( NULL, 0x7fff0000 + child_count );  /* a child that failed to exec: exits 127 */
-    if (!children[child_count - 1].process) children[child_count - 1].status = 127 << 8, children[child_count - 1].reaped = 0;
-    fork_resume( &fork_ctx, pid );
-}
-
-static SYSV int lx_execvp( const char *file, char *const argv[] ) { return lx_execv( file, argv ); }
-
-static SYSV int lx_waitpid( int pid, int *status, int options )
-{
-    unsigned int i;
-
-    for (i = 0; i < child_count; i++)
-    {
-        DWORD code;
-
-        if (pid != -1 && children[i].pid != pid) continue;
-        if (children[i].reaped) continue;
-        if (children[i].traced && !children[i].awaiting_cont && children[i].stop_index < children[i].stop_count)
-        {
-            int stop = children[i].stops[children[i].stop_index++], st;
-
-            if (stop == STOP_SIGSTOP) st = (19 << 8) | 0x7f;                       /* stopped by SIGSTOP */
-            else if (children[i].options & 0x10) st = ((5 | (4 << 8)) << 8) | 0x7f;  /* PTRACE_EVENT_EXEC */
-            else st = (5 << 8) | 0x7f;                                              /* SIGTRAP after exec */
-            children[i].awaiting_cont = 1;
-            if (status) *status = st;
-            linuxhost_trace( "waitpid %d: stopped, status %#x\n", children[i].pid, st );
-            return children[i].pid;
-        }
-        if (children[i].traced && children[i].awaiting_cont)
-        {
-            if (options & 1) return 0;  /* WNOHANG: still stopped */
-            linuxhost_trace( "waitpid %d: waits on a stopped child that was not continued\n", children[i].pid );
-        }
-        if (children[i].process)
-        {
-            if (WaitForSingleObject( children[i].process, (options & 1) ? 0 : INFINITE ) == WAIT_TIMEOUT) return 0;
-            GetExitCodeProcess( children[i].process, &code );
-            children[i].status = (code & 0xff) << 8;
-        }
-        children[i].reaped = 1;
-        if (status) *status = children[i].status;
-        linuxhost_trace( "waitpid %d: status %#x\n", children[i].pid, children[i].status );
-        return children[i].pid;
-    }
-    *linuxhost_errno() = 10;  /* ECHILD */
-    return -1;
-}
-
-static SYSV int lx_kill( int pid, int sig )
-{
-    unsigned int i;
-
-    linuxhost_trace( "kill %d %d\n", pid, sig );
-    for (i = 0; i < child_count; i++)
-    {
-        if (children[i].pid != pid) continue;
-        if (!sig) return children[i].process && WaitForSingleObject( children[i].process, 0 ) == WAIT_TIMEOUT ? 0 : (*linuxhost_errno() = 3, -1);
-        if (children[i].process && (sig == 9 || sig == 15)) TerminateProcess( children[i].process, 128 + sig );
-        return 0;
-    }
-    if (pid == (int)GetCurrentProcessId()) return 0;
-    *linuxhost_errno() = 3;  /* ESRCH */
-    return -1;
-}
-
-/* ptrace on the Windows processes started by exec: what has a Windows counterpart works (being traced from the
- * start, the stop after exec, continuing, reading and writing memory); the rest is logged and refused */
-static SYSV long long lx_ptrace( int request, int pid, void *addr, void *data )
-{
-    int i = find_child( pid );
-    unsigned long long value = 0;
-    SIZE_T done;
-
-    switch (request)
-    {
-    case 0:  /* PTRACE_TRACEME */
-        if (!fork_ctx.active) break;
-        trace_next_exec = 1;
-        linuxhost_trace( "ptrace TRACEME in a forked child\n" );
-        return 0;
-    case 1: case 2:  /* PTRACE_PEEKTEXT, PTRACE_PEEKDATA */
-        if (i < 0 || !children[i].traced) break;
-        if (!ReadProcessMemory( children[i].process, addr, &value, 8, &done ) || done != 8)
-        {
-            *linuxhost_errno() = 5;  /* EIO */
-            return -1;
-        }
-        *linuxhost_errno() = 0;
-        return value;
-    case 4: case 5:  /* PTRACE_POKETEXT, PTRACE_POKEDATA */
-        if (i < 0 || !children[i].traced) break;
-        value = (unsigned long long)data;
-        if (!WriteProcessMemory( children[i].process, addr, &value, 8, &done ) || done != 8)
-        {
-            *linuxhost_errno() = 5;
-            return -1;
-        }
-        return 0;
-    case 7: case 17:  /* PTRACE_CONT, PTRACE_DETACH */
-        if (i < 0 || !children[i].traced) break;
-        children[i].awaiting_cont = 0;
-        if (children[i].suspended && (children[i].stop_index >= children[i].stop_count || request == 17))
-        {
-            ResumeThread( children[i].thread );
-            children[i].suspended = 0;
-        }
-        if (request == 17) children[i].traced = 0;
-        linuxhost_trace( "ptrace %s %d\n", request == 7 ? "CONT" : "DETACH", pid );
-        return 0;
-    case 0x4200:  /* PTRACE_SETOPTIONS */
-        if (i < 0 || !children[i].traced) break;
-        children[i].options = (unsigned long long)data;
-        linuxhost_trace( "ptrace SETOPTIONS %d %#llx\n", pid, children[i].options );
-        return 0;
-    case 0x4201:  /* PTRACE_GETEVENTMSG */
-        if (i < 0 || !children[i].traced) break;
-        *(unsigned long long *)data = 0;
-        return 0;
-    }
-    linuxhost_trace( "ptrace %#x pid %d addr %p data %p%s: refused\n", request, pid, addr, data,
-                     fork_ctx.active ? " (in a forked child)" : "" );
-    *linuxhost_errno() = i < 0 ? 3 : 5;  /* ESRCH, EIO */
-    return -1;
-}
-
-static SYSV int lx_raise( int sig )
-{
-    linuxhost_trace( "raise %d%s\n", sig, fork_ctx.active ? " (in a forked child)" : "" );
-    if (sig == 19 && fork_ctx.active && trace_next_exec)
-    {
-        sigstop_before_exec = 1;  /* reported to the tracer by waitpid */
-        return 0;
-    }
-    if (sig == 6) { linuxhost_trace( "abort\n" ); ExitProcess( 134 ); }
-    return 0;
-}
-
 static SYSV int lx_getpid(void) { return GetCurrentProcessId(); }
 static SYSV int lx_getppid(void) { return 1; }
 static SYSV unsigned int lx_getuid(void) { return 1000; }
 static SYSV void lx_abort(void) { linuxhost_trace( "abort\n" ); ExitProcess( 134 ); }
-static SYSV void lx_exit( int code )
-{
-    linuxhost_trace( "exit %d%s\n", code, fork_ctx.active ? " (a forked child)" : "" );
-    if (fork_ctx.active)
-    {
-        int pid = add_child( NULL, 0x7fff0000 + child_count );
-
-        children[child_count - 1].status = (code & 0xff) << 8;
-        fork_resume( &fork_ctx, pid );
-    }
-    ExitProcess( code );
-}
 static SYSV void lx___stack_chk_fail(void) { linuxhost_trace( "stack smashing detected\n" ); ExitProcess( 134 ); }
 
 /* Linux's struct utsname. The module is on Linux, as it would be under Proton. */
@@ -818,6 +508,7 @@ static SYSV lx_long lx_syscall( lx_long number, lx_long a1, lx_long a2, lx_long 
 {
     lx_long ret = linuxhost_syscall( number, a1, a2, a3, a4, a5, a6 );
 
+    linuxhost_trace( "syscall(%lld, %#llx, %#llx, %#llx) = %lld\n", number, a1, a2, a3, ret );
     if (ret < 0 && ret > -4096) return fail( -ret );
     return ret;
 }
@@ -936,10 +627,8 @@ const struct libc_function linuxhost_libc_functions[] =
     { "gmtime_r", lx_gmtime_r }, { "gmtime", lx_gmtime }, { "difftime", lx_difftime }, { "strftime", lx_strftime },
     { "wcsftime", lx_wcsftime }, { "alarm", lx_alarm },
     { "getenv", lx_getenv }, { "secure_getenv", lx_getenv }, { "setenv", lx_setenv }, { "unsetenv", lx_unsetenv },
-    { "fork", lx_fork_entry }, { "execv", lx_execv }, { "execvp", lx_execvp }, { "waitpid", lx_waitpid },
-    { "kill", lx_kill }, { "_exit", lx_exit }, { "ptrace", lx_ptrace }, { "raise", lx_raise },
     { "getpid", lx_getpid }, { "getppid", lx_getppid }, { "getuid", lx_getuid }, { "abort", lx_abort },
-    { "exit", lx_exit }, { "__stack_chk_fail", lx___stack_chk_fail }, { "uname", lx_uname },
+{ "__stack_chk_fail", lx___stack_chk_fail }, { "uname", lx_uname },
     { "sysconf", lx_sysconf }, { "syscall", lx_syscall }, { "prctl", lx_prctl },
     { "pthread_mutexattr_init", lx_pthread_mutexattr_init }, { "pthread_mutexattr_settype", lx_pthread_mutexattr_settype },
     { "pthread_mutex_init", lx_pthread_mutex_init }, { "pthread_mutex_destroy", lx_pthread_mutex_destroy },

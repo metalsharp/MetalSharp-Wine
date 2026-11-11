@@ -56,6 +56,21 @@ static SYSV lx_long lx_write( int fd, const void *buf, lx_size_t size )
         WriteFile( GetStdHandle( fd == 1 ? STD_OUTPUT_HANDLE : STD_ERROR_HANDLE ), buf, size, &written, NULL );
         return size;
     }
+    linuxhost_trace( "write %d: %llu bytes \"%.*s\"\n", fd, size, (int)min( size, 48 ), (const char *)buf );
+    if (size > 4 && !memcmp( buf, "\177ELF", 4 ))
+    {
+        /* LINUXHOST_DUMP_ELF=<path>: keep a copy of an ELF file written out, to look at */
+        char dump[MAX_PATH];
+        HANDLE file;
+        DWORD done;
+
+        if (GetEnvironmentVariableA( "LINUXHOST_DUMP_ELF", dump, sizeof(dump) ) &&
+            (file = CreateFileA( dump, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL )) != INVALID_HANDLE_VALUE)
+        {
+            WriteFile( file, buf, size, &done, NULL );
+            CloseHandle( file );
+        }
+    }
     return result( linuxhost_write( fd, buf, size ) );
 }
 
@@ -150,6 +165,7 @@ static SYSV lx_long lx_readlink( const char *path, char *buf, lx_size_t size )
     {
         len = min( strlen( exe ), size );
         memcpy( buf, exe, len );
+        linuxhost_trace( "readlink %s -> %s (%zu of a %llu-byte buffer)\n", path, exe, len, size );
         return len;
     }
     return fail( 22 );

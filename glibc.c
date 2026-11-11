@@ -360,6 +360,7 @@ void *linuxhost_resolve( const char *name, void *context )
 
     for (f = linuxhost_libc_functions; f->name; f++) if (!strcmp( f->name, name )) return f->function;
     for (f = linuxhost_libc_io_functions; f->name; f++) if (!strcmp( f->name, name )) return f->function;
+    for (f = linuxhost_fork_functions; f->name; f++) if (!strcmp( f->name, name )) return f->function;
     for (i = 0; i < sizeof(functions) / sizeof(functions[0]); i++)
         if (!strcmp( functions[i].name, name )) return functions[i].function;
     return NULL;
