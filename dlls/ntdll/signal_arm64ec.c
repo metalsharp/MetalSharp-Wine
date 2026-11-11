@@ -1337,12 +1337,69 @@ __ASM_GLOBAL_FUNC( "#KiUserEmulationDispatcher",
                    "brk #1" )
 
 
+/* Proton on macOS: Linux system calls.
+ *
+ * The anti-cheat libraries Proton uses are Linux x86_64 code, which a module host loads into the process
+ * (darwin/linuxhost in the Proton tree) and the emulator runs like any other x86_64 code. Such a library can make
+ * a system call directly, with the syscall instruction and a Linux call number. The emulator hands every syscall
+ * instruction to dispatch_syscall, which would take it for a Windows one.
+ *
+ * The host registers the address range of each library it loads together with a handler. A syscall instruction
+ * inside a registered range becomes a jump to the handler, with the address to return to in rcx, where the
+ * instruction itself leaves it on a real processor. Every other register is as the library set it (the call
+ * number in rax, the arguments in rdi, rsi, rdx, r10, r8 and r9), and nothing is written to the stack, whose
+ * 128 bytes below rsp belong to the library, so the handler, x86_64 code itself, sees what a Linux kernel would. */
+static struct linux_syscall_range
+{
+    ULONG_PTR start, end, handler;
+} linux_syscall_ranges[32];
+static LONG linux_syscall_range_count;
+
+/***********************************************************************
+ *		__wine_register_linux_syscalls  (NTDLL.@)
+ */
+NTSTATUS CDECL __wine_register_linux_syscalls( void *start, SIZE_T size, void *handler )
+{
+    LONG index = InterlockedIncrement( &linux_syscall_range_count ) - 1;
+
+    if (index >= ARRAY_SIZE(linux_syscall_ranges))
+    {
+        InterlockedDecrement( &linux_syscall_range_count );
+        return STATUS_NO_MEMORY;
+    }
+    linux_syscall_ranges[index].handler = (ULONG_PTR)handler;
+    linux_syscall_ranges[index].end = (ULONG_PTR)start + size;
+    /* the start last: a range is looked at only once its start is set */
+    WriteRelease64( (LONG64 *)&linux_syscall_ranges[index].start, (ULONG_PTR)start );
+    return STATUS_SUCCESS;
+}
+
+static ULONG_PTR get_linux_syscall_handler( ULONG_PTR pc )
+{
+    LONG i, count = min( ReadNoFence( &linux_syscall_range_count ), ARRAY_SIZE(linux_syscall_ranges) );
+
+    for (i = 0; i < count; i++)
+    {
+        ULONG_PTR start = ReadAcquire64( (LONG64 *)&linux_syscall_ranges[i].start );
+
+        if (start && pc >= start && pc < linux_syscall_ranges[i].end) return linux_syscall_ranges[i].handler;
+    }
+    return 0;
+}
+
 /*******************************************************************
  *		dispatch_syscall
  */
 static void dispatch_syscall( ARM64_NT_CONTEXT *context )
 {
-    if (context->X8 < __nb_syscalls)  /* syscall number in rax */
+    ULONG_PTR linux_handler;
+
+    if (linux_syscall_range_count && (linux_handler = get_linux_syscall_handler( context->Pc )))
+    {
+        context->X0 = context->Pc;  /* rcx: the instruction after the syscall */
+        context->Pc = linux_handler;
+    }
+    else if (context->X8 < __nb_syscalls)  /* syscall number in rax */
     {
         context->X0 = context->X4;  /* get first param from r10 */
         context->X4 = context->Pc;  /* and save return address to syscall thunk */
