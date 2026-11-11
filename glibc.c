@@ -268,6 +268,18 @@ static SYSV void *lx_dlopen( const char *path, int flags )
                          stats->relocations, stats->imports, stats->unresolved, stats->unresolved_names,
                          stats->unsupported );
     }
+    {
+        /* the name /proc/self/maps shows it under, as Linux would */
+        char maps_name[256];
+        void *base;
+        size_t size;
+
+        elf_get_range( module, &base, &size );
+        if (sscanf( path, "/proc/self/fd/%d", &fd ) == 1 && linuxhost_fd_maps_name( fd, maps_name, sizeof(maps_name) ))
+            linuxhost_note_module_path( base, size, maps_name );
+        else
+            linuxhost_note_module_path( base, size, path );
+    }
     linuxhost_register_syscalls( module );
     elf_run_constructors( module );
     return module;

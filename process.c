@@ -259,12 +259,69 @@ static int build_libc( const struct libc_export *exports, unsigned int count )
  * /proc
  */
 
-/* /proc/<pid>/maps: the process's memory as Windows sees it, and the made-up libc */
+/* the names Linux code was loaded under, as /proc/self/maps shows them (a memfd: "/memfd:<name> (deleted)") */
+static struct { void *base; size_t size; char path[256]; } module_names[16];
+static unsigned int module_name_count;
+
+void linuxhost_note_module_path( void *base, size_t size, const char *path )
+{
+    if (module_name_count == ARRAY_SIZE(module_names)) return;
+    module_names[module_name_count].base = base;
+    module_names[module_name_count].size = size;
+    snprintf( module_names[module_name_count].path, sizeof(module_names[0].path), "%s", path );
+    module_name_count++;
+}
+
+/* how an in-memory file shows in /proc/self/maps once mapped */
+int linuxhost_fd_maps_name( int fd, char *buf, size_t size )
+{
+    struct fd_entry *f = get_fd( fd );
+
+    if (!f || f->kind != FD_MEMORY) return 0;
+    snprintf( buf, size, "/memfd:%s (deleted)", f->name );
+    return 1;
+}
+
+/* the file a region is mapped from, as a Unix path: an image Wine mapped, or Linux code the host loaded */
+static int region_path( const MEMORY_BASIC_INFORMATION *info, char *buf, size_t size )
+{
+    static char cached[1024];
+    static void *cached_base;
+    typedef char *(CDECL *get_unix_fn)( const WCHAR * );
+    static get_unix_fn get_unix;
+    WCHAR name[MAX_PATH];
+    char *unix_name;
+    unsigned int i;
+
+    for (i = 0; i < module_name_count; i++)
+        if ((char *)info->BaseAddress >= (char *)module_names[i].base &&
+            (char *)info->BaseAddress < (char *)module_names[i].base + module_names[i].size)
+        {
+            snprintf( buf, size, "%s", module_names[i].path );
+            return 1;
+        }
+    if (info->Type != MEM_IMAGE) return 0;
+    if (info->AllocationBase == cached_base && cached[0])
+    {
+        snprintf( buf, size, "%s", cached );
+        return 1;
+    }
+    if (!get_unix) get_unix = (get_unix_fn)GetProcAddress( GetModuleHandleA( "kernel32.dll" ), "wine_get_unix_file_name" );
+    if (!get_unix || !GetModuleFileNameW( (HMODULE)info->AllocationBase, name, MAX_PATH )) return 0;
+    if (!(unix_name = get_unix( name ))) return 0;
+    snprintf( cached, sizeof(cached), "%s", unix_name );
+    HeapFree( GetProcessHeap(), 0, unix_name );
+    cached_base = info->AllocationBase;
+    snprintf( buf, size, "%s", cached );
+    return 1;
+}
+
+/* /proc/<pid>/maps: the process's memory as Windows sees it, with the files mapped in it, and the made-up libc */
 static int make_maps( struct fd_entry *f )
 {
     MEMORY_BASIC_INFORMATION info;
     char *addr = NULL;
-    char line[256];
+    char line[1400], path[1024];
 
     while (VirtualQuery( addr, &info, sizeof(info) ) == sizeof(info))
     {
@@ -272,12 +329,21 @@ static int make_maps( struct fd_entry *f )
 
         if (info.State == MEM_COMMIT && (info.BaseAddress != libc_image))
         {
+            int has_path = region_path( &info, path, sizeof(path) );
             DWORD p = info.Protect & 0xff;
             char r = (p & (PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE |
                            PAGE_EXECUTE_WRITECOPY)) ? 'r' : '-';
             char w = (p & (PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) ? 'w' : '-';
             char x = (p & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) ? 'x' : '-';
-            int len = snprintf( line, sizeof(line), "%08llx-%08llx %c%c%c%c 00000000 00:00 0\n",
+            int len;
+
+            if (has_path)
+                len = snprintf( line, sizeof(line), "%08llx-%08llx %c%c%c%c %08llx 08:01 %lu                    %s\n",
+                                (unsigned long long)info.BaseAddress, (unsigned long long)end, r, w, x, 'p',
+                                (unsigned long long)((char *)info.BaseAddress - (char *)info.AllocationBase),
+                                (unsigned long)((uintptr_t)info.AllocationBase >> 12) & 0xfffff, path );
+            else
+                len = snprintf( line, sizeof(line), "%08llx-%08llx %c%c%c%c 00000000 00:00 0\n",
                                 (unsigned long long)info.BaseAddress, (unsigned long long)end, r, w, x,
                                 info.Type == MEM_PRIVATE ? 'p' : 's' );
 
@@ -749,12 +815,60 @@ static void describe_arg( char *out, size_t size, long long arg )
     if (i == 4) snprintf( out, size, "%#llx \"%.60s\"", arg, (const char *)p );
 }
 
+/* the callback a request to the module carries (EAC's launch request: the result comes back through it) */
+static linux_fn request_callback;
+
+SYSV long long traced_callback( long long a1, long long a2, long long a3, long long a4, long long a5, long long a6 )
+{
+    char d1[96], d2[96], d3[96], d4[96];
+    long long ret;
+
+    describe_arg( d1, sizeof(d1), a1 ); describe_arg( d2, sizeof(d2), a2 );
+    describe_arg( d3, sizeof(d3), a3 ); describe_arg( d4, sizeof(d4), a4 );
+    linuxhost_trace( "callback( %s, %s, %s, %s )\n", d1, d2, d3, d4 );
+    if (a1 > 0x10000)
+    {
+        const long long *p = (const long long *)a1;
+        int i;
+
+        for (i = 0; i < 8; i++)
+        {
+            describe_arg( d1, sizeof(d1), p[i] );
+            linuxhost_trace( "  callback arg +%#x: %s\n", i * 8, d1 );
+        }
+    }
+    ret = request_callback( a1, a2, a3, a4, a5, a6 );
+    linuxhost_trace( "callback returned %#llx\n", ret );
+    return ret;
+}
+
+static void dump_request( const char *name, long long arg )
+{
+    long long *p = (long long *)arg;
+    char d[96];
+    int i;
+
+    if (arg < 0x10000) return;
+    for (i = 0; i < 12; i++)
+    {
+        describe_arg( d, sizeof(d), p[i] );
+        linuxhost_trace( "  %s request +%#x: %s\n", name, i * 8, d );
+    }
+    /* EAC's launch request (a): a version, then pointers, the callback at +0x30 */
+    if (!strcmp( name, "a" ) && p[6] && (void *)p[6] != (void *)traced_callback)
+    {
+        request_callback = (linux_fn)p[6];
+        p[6] = (long long)traced_callback;
+    }
+}
+
 SYSV long long traced_call( struct traced_export *e, long long a1, long long a2, long long a3, long long a4,
                                    long long a5 )
 {
     char d1[96], d2[96], d3[96], d4[96];
     long long ret;
 
+    dump_request( e->name, a1 );
     describe_arg( d1, sizeof(d1), a1 ); describe_arg( d2, sizeof(d2), a2 );
     describe_arg( d3, sizeof(d3), a3 ); describe_arg( d4, sizeof(d4), a4 );
     linuxhost_trace( "-> %s( %s, %s, %s, %s )\n", e->name, d1, d2, d3, d4 );

@@ -16,6 +16,10 @@ void linuxhost_thread_init(void);
 /* an address a Windows program can call a Linux function at: it sets up %fs first if the thread needs it */
 void *linuxhost_entry_stub( void *function, const char *name );
 
+/* the path Linux code was loaded under, for /proc/self/maps; how an in-memory file shows there */
+void linuxhost_note_module_path( void *base, size_t size, const char *path );
+int linuxhost_fd_maps_name( int fd, char *buf, size_t size );
+
 /* the contents of an in-memory file, for dlopen("/proc/self/fd/<n>") */
 int linuxhost_fd_contents( int fd, const void **data, size_t *size );
 
