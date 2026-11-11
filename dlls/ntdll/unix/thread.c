@@ -2519,6 +2519,11 @@ NTSTATUS WINAPI NtQueryInformationThread( HANDLE handle, THREADINFOCLASS class,
 }
 
 
+#ifdef __APPLE__
+/* the affinity mask the thread set for itself, 0 when it never did; see NtGetCurrentProcessorNumber */
+static __thread ULONG_PTR own_affinity_mask;
+#endif
+
 /******************************************************************************
  *              NtSetInformationThread  (NTDLL.@)
  */
@@ -2606,6 +2611,9 @@ NTSTATUS WINAPI NtSetInformationThread( HANDLE handle, THREADINFOCLASS class,
             status = wine_server_call( req );
         }
         SERVER_END_REQ;
+#ifdef __APPLE__
+        if (!status && handle == GetCurrentThread()) own_affinity_mask = req_aff & get_system_affinity_mask();
+#endif
         return status;
     }
 
@@ -2790,6 +2798,17 @@ ULONG WINAPI NtGetCurrentProcessorNumber(void)
     {
         size_t cpu_id;
         pthread_cpu_number_np( &cpu_id );
+        /* macOS does not pin threads. A thread that restricted itself to some processors is told it runs on
+         * one of them, as it would be on Windows, where programs index per-processor data by this number. */
+        if (own_affinity_mask && cpu_id < 8 * sizeof(own_affinity_mask) && !(own_affinity_mask & ((ULONG_PTR)1 << cpu_id)))
+        {
+            unsigned int i, count = 0, pick;
+
+            for (i = 0; i < 8 * sizeof(own_affinity_mask); i++) if (own_affinity_mask & ((ULONG_PTR)1 << i)) count++;
+            pick = cpu_id % count;
+            for (i = 0; i < 8 * sizeof(own_affinity_mask); i++)
+                if ((own_affinity_mask & ((ULONG_PTR)1 << i)) && !pick--) return i;
+        }
         return cpu_id;
     }
 #endif
