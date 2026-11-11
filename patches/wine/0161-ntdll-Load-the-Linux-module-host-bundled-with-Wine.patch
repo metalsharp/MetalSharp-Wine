@@ -1,0 +1,118 @@
+From 58dd75b0a4aa3c5699c6b7643d88360e00215fc4 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@Averys-Mac-Mini.local>
+Date: Wed, 11 Nov 2026 13:33:02 -0700
+Subject: [PATCH 161/161] ntdll: Load the Linux module host bundled with Wine.
+
+The host ships in the bundle's lib/linuxhost/x86_64-windows, as WFDXCompat and
+Mullion ship in lib/wfdxcompat and lib/mullion. ntdll's Unix side defaults
+LINUXHOST_RUNTIME_DIR to that directory when the host is there, and
+load_linux_host loads it from there unless PROTON_LINUX_HOST names another
+host; without either it still looks for linuxhost.dll by name.
+
+kernelbase now keeps a PROTON_LINUX_HOST the environment already has, so a
+host given by path for testing is not replaced.
+---
+ dlls/kernelbase/process.c |  6 +++++-
+ dlls/ntdll/loader.c       | 26 ++++++++++++++++++++++++--
+ dlls/ntdll/unix/loader.c  | 16 ++++++++++++++++
+ 3 files changed, 45 insertions(+), 3 deletions(-)
+
+diff --git a/dlls/kernelbase/process.c b/dlls/kernelbase/process.c
+index 73193dad932..f4e2ea2c587 100644
+--- a/dlls/kernelbase/process.c
++++ b/dlls/kernelbase/process.c
+@@ -817,8 +817,12 @@ BOOL WINAPI DECLSPEC_HOTPATCH CreateProcessInternalW( HANDLE token, const WCHAR
+          * host (ntdll's load_linux_host) */
+         if (product_name && !strcmp( product_name, "Easy Anti-Cheat Bootstrapper (EOS)" ))
+         {
++            UNICODE_STRING set = { 0 };
++
++            /* keep a value already given: the path of another host, to test it */
+             RtlInitUnicodeString( &var, L"PROTON_LINUX_HOST" );
+-            RtlSetEnvironmentVariable( &new_env, &var, &value );
++            if (RtlQueryEnvironmentVariable_U( new_env, &var, &set ) == STATUS_VARIABLE_NOT_FOUND)
++                RtlSetEnvironmentVariable( &new_env, &var, &value );
+         }
+ 
+         if (orig_app_name)
+diff --git a/dlls/ntdll/loader.c b/dlls/ntdll/loader.c
+index 2bd7345e615..bc9a9a11a48 100644
+--- a/dlls/ntdll/loader.c
++++ b/dlls/ntdll/loader.c
+@@ -4309,14 +4309,20 @@ PIMAGE_NT_HEADERS WINAPI RtlImageNtHeader(HMODULE hModule)
+  * Proton on macOS: a program that loads Linux code into itself, as Easy Anti-Cheat's EOS bootstrapper does on
+  * Proton, gets the Linux module host (linuxhost.dll, x86_64) before its own code runs. kernelbase sets
+  * PROTON_LINUX_HOST for such a program; its value may also be the path of the host, to test another one.
++ * Otherwise the host is the one bundled with Wine, in LINUXHOST_RUNTIME_DIR (by default the bundle's
++ * lib/linuxhost), or else linuxhost.dll wherever the search for a DLL finds it.
+  */
+ static void load_linux_host( CONTEXT *context )
+ {
+ #if defined(__x86_64__) || defined(__arm64ec__)
+-    WCHAR buffer[MAX_PATH];
++    static const WCHAR unix_prefixW[] = L"\\\\?\\unix";
++    static const WCHAR suffixW[] = L"\\x86_64-windows\\linuxhost.dll";
++    WCHAR buffer[MAX_PATH], dir[MAX_PATH];
+     UNICODE_STRING name = RTL_CONSTANT_STRING( L"PROTON_LINUX_HOST" ), value;
++    UNICODE_STRING dir_name = RTL_CONSTANT_STRING( L"LINUXHOST_RUNTIME_DIR" ), dir_value;
+     WINE_MODREF *host;
+     NTSTATUS status;
++    WCHAR *p;
+ 
+     if (NtCurrentTeb()->WowTebOffset) return;
+     value.Buffer = buffer;
+@@ -4324,7 +4330,23 @@ static void load_linux_host( CONTEXT *context )
+     value.MaximumLength = sizeof(buffer) - sizeof(WCHAR);
+     if (RtlQueryEnvironmentVariable_U( NULL, &name, &value )) return;
+     buffer[value.Length / sizeof(WCHAR)] = 0;
+-    status = load_dll( NULL, (wcschr( buffer, '\\' ) ? buffer : L"linuxhost.dll"), 0, &host, FALSE );
++    if (!wcschr( buffer, '\\' ))
++    {
++        dir_value.Buffer = dir;
++        dir_value.Length = 0;
++        dir_value.MaximumLength = sizeof(dir) - (wcslen( unix_prefixW ) + wcslen( suffixW ) + 1) * sizeof(WCHAR);
++        if (!RtlQueryEnvironmentVariable_U( NULL, &dir_name, &dir_value ) && dir_value.Length)
++        {
++            /* a Unix directory, as \\?\unix\<path> */
++            dir[dir_value.Length / sizeof(WCHAR)] = 0;
++            for (p = dir; *p; p++) if (*p == '/') *p = '\\';
++            wcscpy( buffer, unix_prefixW );
++            wcscat( buffer, dir );
++            wcscat( buffer, suffixW );
++        }
++        else wcscpy( buffer, L"linuxhost.dll" );
++    }
++    status = load_dll( NULL, buffer, 0, &host, FALSE );
+     if (!status) status = process_attach( host->ldr.DdagNode, context );
+     if (status) ERR( "could not load the Linux module host %s, status %lx\n", debugstr_w(buffer), status );
+     else TRACE( "loaded the Linux module host\n" );
+diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
+index 2dee060a741..b8b444abb1f 100644
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -354,6 +354,22 @@ static void set_dll_path(void)
+             free( runtime );
+         }
+     }
++
++    /* default to the Linux module host bundled next to Wine's own modules (ntdll's load_linux_host) */
++    if (!getenv( "LINUXHOST_RUNTIME_DIR" ) && dll_dir)
++    {
++        char *runtime, *check;
++
++        if (asprintf( &runtime, "%s/../linuxhost", dll_dir ) != -1)
++        {
++            if (asprintf( &check, "%s/x86_64-windows/linuxhost.dll", runtime ) != -1)
++            {
++                if (!access( check, R_OK )) setenv( "LINUXHOST_RUNTIME_DIR", runtime, 0 );
++                free( check );
++            }
++            free( runtime );
++        }
++    }
+ #endif
+ 
+     if (path) for (p = path, count = 1; *p; p++) if (*p == ':') count++;
+-- 
+2.54.0 (Apple Git-157)
+

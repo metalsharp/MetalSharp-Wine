@@ -6,6 +6,7 @@
 #   src/winemetalgl  WineMetalGL, arm64 Wine module (branch source/winemetalgl)
 #   src/mullion      Mullion (DXMT fork, aaf2tbz/mullion); its work goes upstream as pull requests
 #   src/wfdxcompat   WFDXCompat + the ARM64EC launcher companion (branch source/wfdxcompat)
+#   src/linuxhost    the Linux module host for Easy Anti-Cheat (branch source/linuxhost, from metalsharp/Proton)
 #   src/vkd3d-proton VKD3D-Proton macOS (metalsharp/VKD3D-Proton-MacOS): the GRAPHICS_BACKEND=vkd3d lane and
 #                    MoltenVK. Its own scripts/fetch-sources.sh fetches the VKD3D-Proton, MoltenVK and DXVK
 #                    sources it patches, for stage-vkd3d-proton.sh and stage-moltenvk.sh
@@ -18,7 +19,7 @@
 set -e
 source ${0:A:h}/env.sh
 if [[ -f $ROOT/.gitmodules ]] && git -C $ROOT rev-parse --git-dir >/dev/null 2>&1; then
-  git -C $ROOT submodule update --init src/wine src/FEX src/winemetalgl src/mullion src/wfdxcompat src/vkd3d-proton src/dxvk-macos
+  git -C $ROOT submodule update --init src/wine src/FEX src/winemetalgl src/mullion src/wfdxcompat src/linuxhost src/vkd3d-proton src/dxvk-macos
   [[ ${1:-} = x86_64 ]] && git -C $ROOT submodule update --init src/wine-x86_64
 else
   REPO=${METALSHARP_WINE_REPO:-https://github.com/metalsharp/MetalSharp-Wine.git}
@@ -31,6 +32,7 @@ else
   clone FEX $REPO source/fex
   clone winemetalgl $REPO source/winemetalgl
   clone wfdxcompat $REPO source/wfdxcompat
+  clone linuxhost $REPO source/linuxhost
   clone mullion https://github.com/aaf2tbz/mullion.git metalsharp-2.1-main
   clone vkd3d-proton https://github.com/metalsharp/VKD3D-Proton-MacOS.git main
   clone dxvk-macos https://github.com/metalsharp/DXVK-MacOS.git main

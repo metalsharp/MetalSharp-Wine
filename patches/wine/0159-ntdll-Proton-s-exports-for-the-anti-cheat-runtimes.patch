@@ -1,0 +1,236 @@
+From 643fc9858a87d5db46469b251ef6842438e64eb4 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Wed, 11 Nov 2026 10:53:00 -0700
+Subject: [PATCH 159/161] ntdll: Proton's exports for the anti-cheat runtimes.
+
+From Valve's Wine: __wine_set_unix_env (1d4a019a8c6), which the EOS
+Easy Anti-Cheat bootstrapper looks up, and __wine_unix_call (473509718c7)
+and wine_nt_to_unix_file_name (758caa78e85), which the anti-cheat
+runtimes' bridges, built against older Wine, still use.
+---
+ dlls/ntdll/loader.c            | 30 ++++++++++++++++++++++++++++
+ dlls/ntdll/ntdll.spec          |  3 +++
+ dlls/ntdll/unix/file.c         | 36 ++++++++++++++++++++++++++++++++++
+ dlls/ntdll/unix/loader.c       | 24 +++++++++++++++++++++++
+ dlls/ntdll/unix/unix_private.h |  1 +
+ dlls/ntdll/unixlib.h           | 16 +++++++++++++++
+ include/winternl.h             |  2 ++
+ 7 files changed, 112 insertions(+)
+
+diff --git a/dlls/ntdll/loader.c b/dlls/ntdll/loader.c
+index 7cf9403fcdd..f3fbd6b51d7 100644
+--- a/dlls/ntdll/loader.c
++++ b/dlls/ntdll/loader.c
+@@ -3494,6 +3494,36 @@ NTSTATUS WINAPI __wine_ctrl_routine( void *arg )
+ }
+ 
+ 
++/***********************************************************************
++ *              __wine_unix_call (Proton: kept for the anti-cheat runtimes' bridges, built against older Wine)
++ */
++NTSTATUS WINAPI compat___wine_unix_call( unixlib_handle_t handle, unsigned int code, void *args )
++{
++    return __wine_unix_call( handle, code, args );
++}
++
++/***********************************************************************
++ *              wine_nt_to_unix_file_name (Proton: the same)
++ */
++NTSTATUS WINAPI compat_wine_nt_to_unix_file_name( const OBJECT_ATTRIBUTES *attr, char *nameA, ULONG *size,
++                                                  UINT disposition )
++{
++    struct compat_wine_nt_to_unix_file_name_params params = { attr, nameA, size, disposition };
++
++    return WINE_UNIX_CALL( unix_compat_wine_nt_to_unix_file_name, &params );
++}
++
++/***********************************************************************
++ *              __wine_set_unix_env (Proton: sets a variable in the Unix environment)
++ */
++NTSTATUS WINAPI __wine_set_unix_env( const char *var, const char *val )
++{
++    struct wine_set_unix_env_params params = { var, val };
++
++    return WINE_UNIX_CALL( unix_wine_set_unix_env, &params );
++}
++
++
+ /***********************************************************************
+  *           __wine_unix_spawnvp
+  */
+diff --git a/dlls/ntdll/ntdll.spec b/dlls/ntdll/ntdll.spec
+index e2f45cab96c..9b1ad5fca5d 100644
+--- a/dlls/ntdll/ntdll.spec
++++ b/dlls/ntdll/ntdll.spec
+@@ -1771,6 +1771,9 @@
+ @ cdecl wine_server_handle_to_fd(long long ptr ptr)
+ 
+ # Unix interface
++@ stdcall __wine_unix_call(int64 long ptr) compat___wine_unix_call
++@ stdcall __wine_set_unix_env(ptr ptr)
++@ stdcall wine_nt_to_unix_file_name(ptr ptr ptr long) compat_wine_nt_to_unix_file_name
+ @ stdcall __wine_unix_spawnvp(long ptr)
+ @ stdcall __wine_ctrl_routine(ptr)
+ @ cdecl -arch=arm64ec __wine_register_linux_syscalls(ptr long ptr)
+diff --git a/dlls/ntdll/unix/file.c b/dlls/ntdll/unix/file.c
+index 3bc9f50c9d0..646ca7f1a3c 100644
+--- a/dlls/ntdll/unix/file.c
++++ b/dlls/ntdll/unix/file.c
+@@ -7768,3 +7768,39 @@ NTSTATUS WINAPI NtSetInformationObject( HANDLE handle, OBJECT_INFORMATION_CLASS
+     }
+     return status;
+ }
++
++
++/* Proton: wine_nt_to_unix_file_name, which older Wine exported and the anti-cheat runtimes' bridges still use */
++NTSTATUS WINAPI unixcall_compat_wine_nt_to_unix_file_name( void *args )
++{
++    struct compat_wine_nt_to_unix_file_name_params *p = args;
++    OBJECT_ATTRIBUTES new_attr = *p->attr;
++    UNICODE_STRING nt_name;
++    char *buffer = NULL;
++    NTSTATUS status;
++
++    status = get_nt_and_unix_names( &new_attr, &nt_name, &buffer, p->disposition, FALSE );
++    if (!status || status == STATUS_NO_SUCH_FILE)
++    {
++        struct stat st1, st2;
++        char *name = buffer;
++
++        /* the z: drive's path without the prefix, when z: is the Unix root */
++        if (!strncmp( buffer, config_dir, strlen( config_dir ) ) &&
++            !strncmp( buffer + strlen( config_dir ), "/dosdevices/z:/", 15 ))
++        {
++            char *slash = buffer + strlen( config_dir ) + 14;
++
++            *slash = 0;
++            if (!stat( buffer, &st1 ) && !stat( "/", &st2 ) && st1.st_dev == st2.st_dev && st1.st_ino == st2.st_ino)
++                name = slash;
++            *slash = '/';
++        }
++        if (*p->size > strlen( name )) strcpy( p->nameA, name );
++        else status = STATUS_BUFFER_TOO_SMALL;
++        *p->size = strlen( name ) + 1;
++        free( nt_name.Buffer );
++    }
++    free( buffer );
++    return status;
++}
+diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
+index 09e1922c5de..2dee060a741 100644
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -1133,6 +1133,16 @@ static NTSTATUS unwind_builtin_dll( void *args )
+ #endif /* SO_DLLS_SUPPORTED */
+ 
+ 
++/* Proton: __wine_set_unix_env, for the EasyAntiCheat bootstrapper and launcher (kernelbase) */
++static NTSTATUS wine_set_unix_env( void *args )
++{
++    struct wine_set_unix_env_params *params = args;
++
++    if (!params->val) unsetenv( params->name );
++    else setenv( params->name, params->val, 1 );
++    return STATUS_SUCCESS;
++}
++
+ static const unixlib_entry_t unix_call_funcs[] =
+ {
+     load_so_dll,
+@@ -1143,6 +1153,8 @@ static const unixlib_entry_t unix_call_funcs[] =
+     unixcall_wine_server_handle_to_fd,
+     unixcall_wine_spawnvp,
+     system_time_precise,
++    wine_set_unix_env,
++    unixcall_compat_wine_nt_to_unix_file_name,
+ };
+ 
+ 
+@@ -1151,6 +1163,16 @@ static const unixlib_entry_t unix_call_funcs[] =
+ static NTSTATUS wow64_load_so_dll( void *args ) { return STATUS_INVALID_IMAGE_FORMAT; }
+ static NTSTATUS wow64_unwind_builtin_dll( void *args ) { return STATUS_UNSUCCESSFUL; }
+ 
++static NTSTATUS wow64_wine_set_unix_env( void *args )
++{
++    const struct { ULONG name; ULONG val; } *params32 = args;
++    struct wine_set_unix_env_params params = { ULongToPtr( params32->name ), ULongToPtr( params32->val ) };
++
++    return wine_set_unix_env( &params );
++}
++
++static NTSTATUS wow64_compat_wine_nt_to_unix_file_name( void *args ) { return STATUS_NOT_SUPPORTED; }
++
+ const unixlib_entry_t unix_call_wow64_funcs[] =
+ {
+     wow64_load_so_dll,
+@@ -1161,6 +1183,8 @@ const unixlib_entry_t unix_call_wow64_funcs[] =
+     wow64_wine_server_handle_to_fd,
+     wow64_wine_spawnvp,
+     system_time_precise,
++    wow64_wine_set_unix_env,
++    wow64_compat_wine_nt_to_unix_file_name,
+ };
+ 
+ #endif  /* _WIN64 */
+diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
+index 2d6259ec168..bb745ee9631 100644
+--- a/dlls/ntdll/unix/unix_private.h
++++ b/dlls/ntdll/unix/unix_private.h
+@@ -433,6 +433,7 @@ extern NTSTATUS errno_to_status( int err );
+ extern NTSTATUS get_nt_and_unix_names( OBJECT_ATTRIBUTES *attr, UNICODE_STRING *nt_name,
+                                        char **unix_name, UINT disposition, BOOL open_reparse );
+ extern NTSTATUS unix_to_nt_file_name( const char *unix_name, WCHAR **nt, UINT disposition );
++extern NTSTATUS WINAPI unixcall_compat_wine_nt_to_unix_file_name( void *args );
+ extern NTSTATUS get_full_path( char *name, const WCHAR *curdir, UNICODE_STRING *nt_name );
+ extern NTSTATUS get_nt_path( const WCHAR *name, UNICODE_STRING *nt_name );
+ extern NTSTATUS open_unix_file( HANDLE *handle, const char *unix_name, ACCESS_MASK access,
+diff --git a/dlls/ntdll/unixlib.h b/dlls/ntdll/unixlib.h
+index 9cb444342fe..52b0e4c3751 100644
+--- a/dlls/ntdll/unixlib.h
++++ b/dlls/ntdll/unixlib.h
+@@ -66,6 +66,20 @@ struct unwind_builtin_dll_params
+     CONTEXT                    *context;
+ };
+ 
++struct wine_set_unix_env_params
++{
++    const char *name;
++    const char *val;
++};
++
++struct compat_wine_nt_to_unix_file_name_params
++{
++    const OBJECT_ATTRIBUTES *attr;
++    char *nameA;
++    ULONG *size;
++    unsigned int disposition;
++};
++
+ enum ntdll_unix_funcs
+ {
+     unix_load_so_dll,
+@@ -76,6 +90,8 @@ enum ntdll_unix_funcs
+     unix_wine_server_handle_to_fd,
+     unix_wine_spawnvp,
+     unix_system_time_precise,
++    unix_wine_set_unix_env,
++    unix_compat_wine_nt_to_unix_file_name,
+ };
+ 
+ extern unixlib_handle_t __wine_unixlib_handle;
+diff --git a/include/winternl.h b/include/winternl.h
+index 8b51f023c96..6400d6185e2 100644
+--- a/include/winternl.h
++++ b/include/winternl.h
+@@ -5626,6 +5626,8 @@ static inline PLIST_ENTRY RemoveTailList(PLIST_ENTRY le)
+ 
+ /* Wine internal functions */
+ 
++NTSYSAPI NTSTATUS WINAPI __wine_set_unix_env( const char *var, const char *val );
++
+ NTSYSAPI NTSTATUS WINAPI __wine_unix_spawnvp( char * const argv[], int wait );
+ 
+ /* The thread information for 16-bit threads */
+-- 
+2.54.0 (Apple Git-157)
+
