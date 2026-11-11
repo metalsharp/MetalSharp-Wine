@@ -11,6 +11,7 @@
  * of Linux file descriptors (in-memory files and the /proc files it makes up); and it maps a small ELF image named
  * libc.so.6 whose dlopen and dlsym are the host's (glibc.c), which load the module with the host's ELF loader. */
 #include <windows.h>
+#include <shellapi.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -41,6 +42,7 @@ struct fd_entry
     enum fd_kind kind;
     HANDLE handle;         /* FD_HANDLE */
     int flags;             /* Linux open flags */
+    unsigned int seals;    /* memfd seals: F_SEAL_SEAL 1, SHRINK 2, GROW 4, WRITE 8 */
     char *data;
     size_t size, capacity, pos;
     char name[64];
@@ -402,8 +404,25 @@ static int append_text( struct fd_entry *f, const char *text, size_t len )
     return 1;
 }
 
-/* the Unix path of this program, as /proc/self/exe gives it */
+/* The Unix path of this process's executable, as /proc/self/exe gives it: Wine's loader, which Wine names in
+ * WINELOADER (an NT path, \??\Z:\...), as on Linux under Proton. */
 int linuxhost_exe_path( char *buf, size_t size )
+{
+    WCHAR loader[MAX_PATH], *p = loader;
+    char *unix_name;
+    typedef char *(CDECL *get_unix_fn)( const WCHAR * );
+    get_unix_fn get_unix = (get_unix_fn)GetProcAddress( GetModuleHandleA( "kernel32.dll" ), "wine_get_unix_file_name" );
+
+    if (!GetEnvironmentVariableW( L"WINELOADER", loader, MAX_PATH )) return linuxhost_program_path( buf, size );
+    if (!wcsncmp( p, L"\\??\\", 4 )) p += 4;
+    if (!get_unix || !(unix_name = get_unix( p ))) return linuxhost_program_path( buf, size );
+    snprintf( buf, size, "%s", unix_name );
+    HeapFree( GetProcessHeap(), 0, unix_name );
+    return 1;
+}
+
+/* the Unix path of the Windows program this process runs */
+int linuxhost_program_path( char *buf, size_t size )
 {
     WCHAR exe[MAX_PATH];
     char *unix_name;
@@ -454,7 +473,7 @@ static int make_proc_file( struct fd_entry *f, const char *entry )
     {
         const char *name;
 
-        if (!linuxhost_exe_path( exe, sizeof(exe) )) strcpy( exe, "start_protected_game.exe" );
+        if (!linuxhost_program_path( exe, sizeof(exe) )) strcpy( exe, "start_protected_game.exe" );
         name = strrchr( exe, '/' ) ? strrchr( exe, '/' ) + 1 : exe;
         len = snprintf( text, sizeof(text), "Name:\t%.15s\nUmask:\t0022\nState:\tR (running)\nTgid:\t%lu\nNgid:\t0\n"
                         "Pid:\t%lu\nPPid:\t1\nTracerPid:\t0\nUid:\t1000\t1000\t1000\t1000\nGid:\t1000\t1000\t1000\t1000\n"
@@ -466,8 +485,18 @@ static int make_proc_file( struct fd_entry *f, const char *entry )
     }
     if (!strcmp( entry, "cmdline" ))
     {
-        if (!linuxhost_exe_path( exe, sizeof(exe) )) strcpy( exe, "start_protected_game.exe" );
-        return append_text( f, exe, strlen( exe ) + 1 );
+        /* Wine on Linux shows a process's Windows command line, one argument per string */
+        int argc, i;
+        WCHAR **argv = CommandLineToArgvW( GetCommandLineW(), &argc );
+
+        if (!argv) return append_text( f, "start_protected_game.exe", 25 );
+        for (i = 0; i < argc; i++)
+        {
+            len = WideCharToMultiByte( CP_UTF8, 0, argv[i], -1, text, sizeof(text), NULL, NULL );
+            if (len > 0 && !append_text( f, text, len )) break;
+        }
+        LocalFree( argv );
+        return 1;
     }
     if (!strcmp( entry, "stat" ))
     {
@@ -590,11 +619,25 @@ long long linuxhost_read( int fd, void *buf, size_t size )
     return n;
 }
 
+long long linuxhost_seals( int fd, int add, unsigned int seals )
+{
+    struct fd_entry *f = get_fd( fd );
+
+    if (!f) return -LX_EBADF;
+    if (f->kind != FD_MEMORY) return -LX_EINVAL;
+    if (!add) return f->seals;
+    if (f->seals & 1) return -1;  /* EPERM: sealed against more seals */
+    f->seals |= seals;
+    return 0;
+}
+
 long long linuxhost_write( int fd, const void *buf, size_t size )
 {
     struct fd_entry *f = get_fd( fd );
 
     if (!f) return -LX_EBADF;
+    if (f->kind == FD_MEMORY && (f->seals & 8)) return -1;  /* EPERM: F_SEAL_WRITE */
+    if (f->kind == FD_MEMORY && (f->seals & 4) && f->pos + size > f->size) return -1;  /* F_SEAL_GROW */
     if (f->kind == FD_HANDLE)
     {
         DWORD written;

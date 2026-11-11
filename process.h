@@ -30,6 +30,7 @@ long long linuxhost_read( int fd, void *buf, size_t size );
 long long linuxhost_write( int fd, const void *buf, size_t size );
 long long linuxhost_lseek( int fd, long long offset, int whence );
 long long linuxhost_close( int fd );
+long long linuxhost_seals( int fd, int add, unsigned int seals );  /* F_ADD_SEALS (add), F_GET_SEALS */
 long long linuxhost_fstat( int fd, void *buf );
 long long linuxhost_unlink( const char *path );
 
@@ -37,7 +38,8 @@ long long linuxhost_unlink( const char *path );
 #include <windows.h>
 WCHAR *linuxhost_unix_path( const char *path );
 int linuxhost_is_proc_path( const char *path );
-int linuxhost_exe_path( char *buf, size_t size );
+int linuxhost_exe_path( char *buf, size_t size );      /* Wine's loader, as /proc/self/exe */
+int linuxhost_program_path( char *buf, size_t size );  /* the Windows program */
 
 /* Linux's struct stat for a file */
 void linuxhost_stat_from_info( const BY_HANDLE_FILE_INFORMATION *info, void *st );

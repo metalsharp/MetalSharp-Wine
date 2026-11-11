@@ -64,6 +64,8 @@ static SYSV int lx_fcntl( int fd, int cmd, unsigned long long arg )
     switch (cmd)
     {
     case 1: case 2: case 3: case 4: return 0;  /* F_GETFD, F_SETFD, F_GETFL, F_SETFL */
+    case 1033: return result( linuxhost_seals( fd, 1, (unsigned int)arg ) );  /* F_ADD_SEALS */
+    case 1034: return result( linuxhost_seals( fd, 0, 0 ) );                  /* F_GET_SEALS */
     default: linuxhost_trace( "fcntl %d %d\n", fd, cmd ); return fail( 22 );
     }
 }
