@@ -1905,7 +1905,10 @@ static void usr2_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
  */
 NTSTATUS get_thread_ldt_entry( HANDLE handle, THREAD_DESCRIPTOR_INFORMATION *info, ULONG len )
 {
-    return STATUS_NOT_IMPLEMENTED;
+    /* ARM64 has no descriptor tables. Windows answers as x86 does for a selector it has no
+     * entry for; RtlWow64GetThreadSelectorEntry() answers for the WoW64 GDT selectors. */
+    if (len != sizeof(*info)) return STATUS_INFO_LENGTH_MISMATCH;
+    return (info->Selector & 4) ? STATUS_NO_LDT : STATUS_UNSUCCESSFUL;
 }
 
 

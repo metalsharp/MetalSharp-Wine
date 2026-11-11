@@ -1792,6 +1792,38 @@ static BOOL set_vprot( struct file_view *view, void *base, size_t size, BYTE vpr
 }
 
 
+#ifndef __linux__
+/***********************************************************************
+ *           make_pages_private
+ *
+ * Replace the host pages of a range of a shared, read-only file view with private
+ * copies of their contents, so that they can be made writable without writing to the
+ * file. map_file_into_view() maps read-only views shared outside Linux, because there
+ * a private file mapping does not see later changes to the file; the host refuses
+ * write access to a shared mapping of a file opened read-only.
+ */
+static BOOL make_pages_private( void *base, size_t size )
+{
+    char *addr = ROUND_ADDR( base, host_page_mask );
+    void *copy;
+
+    size = ROUND_SIZE( base, size, host_page_mask );
+    if ((copy = mmap( NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0 )) == MAP_FAILED)
+        return FALSE;
+    if (mprotect( addr, size, PROT_READ ) ||
+        (memcpy( copy, addr, size ),
+         anon_mmap_fixed( addr, size, PROT_READ | PROT_WRITE, 0 ) != addr))
+    {
+        munmap( copy, size );
+        return FALSE;
+    }
+    memcpy( addr, copy, size );
+    munmap( copy, size );
+    return TRUE;
+}
+#endif
+
+
 /***********************************************************************
  *           set_protection
  *
@@ -1813,7 +1845,18 @@ static NTSTATUS set_protection( struct file_view *view, void *base, SIZE_T size,
         if ((view->protect & access) != access) return STATUS_INVALID_PAGE_PROTECTION;
     }
 
-    if (!set_vprot( view, base, size, vprot | VPROT_COMMITTED )) return STATUS_ACCESS_DENIED;
+    if (!set_vprot( view, base, size, vprot | VPROT_COMMITTED ))
+    {
+#ifndef __linux__
+        /* copy-on-write asked of a read-only view, which is a shared mapping here */
+        if ((vprot & VPROT_WRITECOPY) && !is_view_valloc( view ) &&
+            !(view->protect & (SEC_IMAGE | VPROT_WRITE | VPROT_WRITECOPY)) &&
+            make_pages_private( base, size ) &&
+            set_vprot( view, base, size, vprot | VPROT_COMMITTED ))
+            return STATUS_SUCCESS;
+#endif
+        return STATUS_ACCESS_DENIED;
+    }
     return STATUS_SUCCESS;
 }
 
@@ -4771,6 +4814,29 @@ unsigned int virtual_locked_server_call( void *req_ptr )
 }
 
 
+#ifndef __linux__
+/***********************************************************************
+ *           buffer_has_write_watch
+ *
+ * Whether a write to the range would fault on a write watch. Read without the lock, as a hint:
+ * outside Linux a read from a socket or a pipe that faults has already consumed the data (it is
+ * lost on macOS), so the write watches are opened before it, not after the fault.
+ */
+static BOOL buffer_has_write_watch( const void *base, size_t size )
+{
+    char *addr = ROUND_ADDR( base, host_page_mask );
+    size_t i;
+
+    if (use_kernel_writewatch || !size) return FALSE;
+    size = ROUND_SIZE( base, size, host_page_mask );
+    for (i = 0; i < size; i += host_page_size)
+        if ((get_host_page_vprot( addr + i ) & VPROT_WRITEWATCH) || is_host_page_write_mixed( addr + i ))
+            return TRUE;
+    return FALSE;
+}
+#endif
+
+
 /***********************************************************************
  *           virtual_locked_read
  */
@@ -4779,9 +4845,15 @@ ssize_t virtual_locked_read( int fd, void *addr, size_t size )
     sigset_t sigset;
     BOOL has_write_watch = FALSE;
     int err = EFAULT;
+    ssize_t ret = -1;
 
-    ssize_t ret = read( fd, addr, size );
-    if (ret != -1 || use_kernel_writewatch || errno != EFAULT) return ret;
+#ifndef __linux__
+    if (!buffer_has_write_watch( addr, size ))
+#endif
+    {
+        ret = read( fd, addr, size );
+        if (ret != -1 || use_kernel_writewatch || errno != EFAULT) return ret;
+    }
 
     server_enter_uninterrupted_section( &virtual_mutex, &sigset );
     if (!check_write_access( addr, size, &has_write_watch ))
@@ -4830,9 +4902,17 @@ ssize_t virtual_locked_recvmsg( int fd, struct msghdr *hdr, int flags )
     size_t i;
     BOOL has_write_watch = FALSE;
     int err = EFAULT;
+    ssize_t ret = -1;
 
-    ssize_t ret = recvmsg( fd, hdr, flags );
-    if (ret != -1 || use_kernel_writewatch || errno != EFAULT) return ret;
+#ifndef __linux__
+    for (i = 0; i < hdr->msg_iovlen; i++)
+        if (buffer_has_write_watch( hdr->msg_iov[i].iov_base, hdr->msg_iov[i].iov_len )) break;
+    if (i == hdr->msg_iovlen)
+#endif
+    {
+        ret = recvmsg( fd, hdr, flags );
+        if (ret != -1 || use_kernel_writewatch || errno != EFAULT) return ret;
+    }
 
     server_enter_uninterrupted_section( &virtual_mutex, &sigset );
     for (i = 0; i < hdr->msg_iovlen; i++)

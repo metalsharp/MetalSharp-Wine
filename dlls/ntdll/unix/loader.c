@@ -296,6 +296,8 @@ static WORD get_alt_machine( WORD machine )
 static void set_dll_path(void)
 {
     char *p, *path = getenv( "WINEDLLPATH" );
+    /* Proton: the BattlEye and EasyAntiCheat runtimes, whose bridge DLLs are loaded as builtins */
+    char *be_runtime = getenv( "PROTON_BATTLEYE_RUNTIME" ), *eac_runtime = getenv( "PROTON_EAC_RUNTIME" );
     int i, count = 0;
 
 #ifdef __APPLE__
@@ -356,6 +358,9 @@ static void set_dll_path(void)
 
     if (path) for (p = path, count = 1; *p; p++) if (*p == ':') count++;
 
+    if (be_runtime) count += 2;
+    if (eac_runtime) count += 2;
+
     dll_paths = malloc( (count + 2) * sizeof(*dll_paths) );
     count = 0;
 
@@ -366,6 +371,18 @@ static void set_dll_path(void)
         path = strdup(path);
         for (p = strtok( path, ":" ); p; p = strtok( NULL, ":" )) dll_paths[count++] = strdup( p );
         free( path );
+    }
+
+    if (be_runtime)
+    {
+        if (asprintf( &p, "%s/v1/lib/wine/", be_runtime ) != -1) dll_paths[count++] = p;
+        if (asprintf( &p, "%s/v1/lib64/wine/", be_runtime ) != -1) dll_paths[count++] = p;
+    }
+
+    if (eac_runtime)
+    {
+        if (asprintf( &p, "%s/v2/lib32/", eac_runtime ) != -1) dll_paths[count++] = p;
+        if (asprintf( &p, "%s/v2/lib64/", eac_runtime ) != -1) dll_paths[count++] = p;
     }
 
     for (i = 0; i < count; i++) dll_path_maxlen = max( dll_path_maxlen, strlen(dll_paths[i]) );

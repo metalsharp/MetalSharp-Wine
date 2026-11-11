@@ -123,6 +123,10 @@ extern void default_fd_ioctl( struct fd *fd, ioctl_code_t code, struct async *as
 extern void default_fd_queue_async( struct fd *fd, struct async *async, int type, int count );
 extern void default_fd_reselect_async( struct fd *fd, struct async_queue *queue );
 extern void main_loop(void);
+#ifdef __APPLE__
+extern int add_vnode_watch( int unix_fd, void (*callback)( void *private ), void *private );
+extern void remove_vnode_watch( int unix_fd, void *private );
+#endif
 extern void remove_process_locks( struct process *process );
 
 /* timeout functions */

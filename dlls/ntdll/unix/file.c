@@ -2696,6 +2696,14 @@ static NTSTATUS find_file_in_dir( int root_fd, char *unix_name, int pos, const W
     {
         unix_name[pos + ret] = 0;
         if (!fstatat( root_fd, unix_name, &st, 0 )) return STATUS_SUCCESS;
+        /* The "directory" is a file. On a case-sensitive file system the search below opens it and fails the
+         * same way; on a case-insensitive one (macOS) nothing is searched, and the name was reported as not
+         * found where Windows reports the path. */
+        if (errno == ENOTDIR)
+        {
+            unix_name[pos - 1] = 0;
+            return STATUS_OBJECT_PATH_NOT_FOUND;
+        }
     }
     if (check_case) goto not_found;  /* we want an exact match */
 

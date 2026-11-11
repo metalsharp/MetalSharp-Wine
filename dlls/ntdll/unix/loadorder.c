@@ -75,6 +75,7 @@ static HANDLE std_key;
 static HANDLE app_key;
 static BOOL init_done;
 static BOOL main_exe_loaded;
+static BOOL eac_launcher_process;  /* Proton: the EasyAntiCheat launcher, which loads the real client library */
 
 /***************************************************************************
  *	get_version_entry
@@ -480,11 +481,24 @@ static enum loadorder version_heuristics( const UNICODE_STRING *nt_name,
  */
 void set_load_order_app_name( const WCHAR *app_name )
 {
+    static const WCHAR eac_launcherW[] = {'P','R','O','T','O','N','_','E','A','C','_','L','A','U','N','C','H','E','R','_','P','R','O','C','E','S','S','=',0};
     const WCHAR *p;
 
     if ((p = wcsrchr( app_name, '\\' ))) app_name = p + 1;
     app_key = open_app_key( app_name );
     main_exe_loaded = TRUE;
+
+    /* kernelbase sets it for the program whose product name is "EasyAntiCheat Launcher" */
+    p = NtCurrentTeb()->Peb->ProcessParameters->Environment;
+    while (*p)
+    {
+        if (!wcsncmp( p, eac_launcherW, ARRAY_SIZE(eac_launcherW) - 1 ))
+        {
+            eac_launcher_process = TRUE;
+            break;
+        }
+        p += wcslen(p) + 1;
+    }
 }
 
 
@@ -516,6 +530,55 @@ enum loadorder get_load_order( const UNICODE_STRING *nt_name, BOOL is_system_dir
     module[len + 1] = 0;
     remove_dll_ext( module + 1 );
     basename = get_basename( module + 1 );
+
+    /* Proton: the EasyAntiCheat bridge, a builtin of the same name as the game's Windows client library, is loaded
+     * only when the game also ships the native client library the bridge forwards to (<name>.so next to the
+     * Windows one). The EAC launcher always gets the Windows library. */
+    {
+        static const WCHAR easyanticheat_x86W[] = {'e','a','s','y','a','n','t','i','c','h','e','a','t','_','x','8','6',0};
+        static const WCHAR easyanticheat_x64W[] = {'e','a','s','y','a','n','t','i','c','h','e','a','t','_','x','6','4',0};
+        static const WCHAR easyanticheatW[] = {'e','a','s','y','a','n','t','i','c','h','e','a','t',0};
+        static const WCHAR soW[] = {'.','s','o',0};
+
+        if (!wcsicmp( basename, easyanticheat_x86W ) || !wcsicmp( basename, easyanticheat_x64W ) ||
+            !wcsicmp( basename, easyanticheatW ))
+        {
+            UNICODE_STRING eac_unix_name, out_nt_name;
+            OBJECT_ATTRIBUTES attr;
+            char *unix_path = NULL;
+            WCHAR *eac_basename;
+            NTSTATUS status;
+
+            if (eac_launcher_process)
+            {
+                ret = LO_NATIVE;
+                TRACE( "got hardcoded %s for %s, as this is the EAC launcher process\n",
+                       debugstr_loadorder(ret), debugstr_w(path) );
+                goto done;
+            }
+
+            if ((eac_unix_name.Buffer = malloc( (wcslen( module + 1 ) + 10) * sizeof(WCHAR) )))
+            {
+                memcpy( eac_unix_name.Buffer, prefixW, sizeof(prefixW) );
+                eac_unix_name.Buffer[4] = 0;
+                wcscat( eac_unix_name.Buffer, module + 1 );
+                eac_basename = get_basename( eac_unix_name.Buffer );
+                if (!wcsicmp( eac_basename, easyanticheatW )) wcscpy( eac_basename, easyanticheat_x64W );
+                wcscat( eac_basename, soW );
+                eac_unix_name.Length = eac_unix_name.MaximumLength = wcslen( eac_unix_name.Buffer ) * sizeof(WCHAR);
+                InitializeObjectAttributes( &attr, &eac_unix_name, 0, NULL, NULL );
+
+                status = get_nt_and_unix_names( &attr, &out_nt_name, &unix_path, FILE_OPEN, FALSE );
+                free( out_nt_name.Buffer );
+                free( unix_path );
+                ret = status ? LO_NATIVE : LO_BUILTIN;
+                TRACE( "got hardcoded %s for %s, as the eac unix library is %s\n", debugstr_loadorder(ret),
+                       debugstr_w(path), status ? "not present" : "present" );
+                free( eac_unix_name.Buffer );
+                goto done;
+            }
+        }
+    }
 
     /* first explicit module name */
     if ((ret = get_load_order_value( std_key, app_key, is_system_dir ? basename : module+1 )) != LO_INVALID)
