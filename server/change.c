@@ -80,9 +80,10 @@ struct change_record {
 #if defined(__APPLE__) && !defined(HAVE_SYS_INOTIFY_H)
 struct change_poll_entry {
     struct list entry;
-    char *name;
+    char *name;      /* relative to the watched directory, with '/' between the parts */
     struct stat st;
     int seen;
+    int watch_fd;    /* a subdirectory the kernel reports changes of, or -1 */
 };
 #endif
 
@@ -105,6 +106,9 @@ struct dir
     struct list    kernel_object;    /* list of kernel object pointers */
 #if defined(__APPLE__) && !defined(HAVE_SYS_INOTIFY_H)
     struct list    poll_entries;     /* polling fallback snapshot */
+    int            poll_watched;     /* the kernel reports changes of the directory's entries */
+    int            poll_subdirs;     /* subdirectories it reports changes of, for a recursive watch */
+    int            poll_subtree;     /* the snapshot covers subdirectories */
 #endif
 };
 
@@ -392,16 +396,27 @@ static void change_poll_notify( struct dir *dir, unsigned int action, unsigned i
     fd_async_wake_up( dir->fd, ASYNC_TYPE_WAIT, STATUS_ALERTED );
 }
 
+static void change_poll_vnode_event( void *private );
+
+static void change_poll_free_entry( struct dir *dir, struct change_poll_entry *entry )
+{
+    if (entry->watch_fd != -1)
+    {
+        remove_vnode_watch( entry->watch_fd, dir );
+        close( entry->watch_fd );
+        dir->poll_subdirs--;
+    }
+    list_remove( &entry->entry );
+    free( entry->name );
+    free( entry );
+}
+
 static void change_poll_free_entries( struct dir *dir )
 {
     struct change_poll_entry *entry, *next;
 
     LIST_FOR_EACH_ENTRY_SAFE( entry, next, &dir->poll_entries, struct change_poll_entry, entry )
-    {
-        list_remove( &entry->entry );
-        free( entry->name );
-        free( entry );
-    }
+        change_poll_free_entry( dir, entry );
 }
 
 static struct change_poll_entry *change_poll_add_entry( struct dir *dir, const char *name,
@@ -417,65 +432,94 @@ static struct change_poll_entry *change_poll_add_entry( struct dir *dir, const c
     }
     entry->st = *st;
     entry->seen = 1;
+    entry->watch_fd = -1;
     list_add_tail( &dir->poll_entries, &entry->entry );
     return entry;
 }
 
-static void change_poll_scan_dir( struct dir *dir, int initial )
+/* A recursive watch follows subdirectories, up to these limits: past them the rest of the tree is not looked at.
+ * Each followed subdirectory costs an open file, for the kernel to report its changes as they happen. */
+#define CHANGE_POLL_MAX_TREE_ENTRIES 8192
+#define CHANGE_POLL_MAX_TREE_DEPTH   16
+#define CHANGE_POLL_MAX_SUBDIRS      64
+
+static void change_poll_scan_path( struct dir *dir, const char *path, const char *prefix, int initial,
+                                   unsigned int depth, unsigned int *count )
 {
-    struct change_poll_entry *entry, *next;
+    struct change_poll_entry *entry;
     struct dirent *de;
-    char *path;
     DIR *unix_dir;
-    size_t path_len;
+    size_t path_len = strlen( path ), prefix_len = prefix ? strlen( prefix ) + 1 : 0;
 
-    LIST_FOR_EACH_ENTRY( entry, &dir->poll_entries, struct change_poll_entry, entry )
-        entry->seen = 0;
-
-    if (!(path = change_poll_get_path( dir ))) return;
-    if (!(unix_dir = opendir( path )))
-    {
-        free( path );
-        return;
-    }
-
-    path_len = strlen( path );
+    if (!(unix_dir = opendir( path ))) return;
 
     while ((de = readdir( unix_dir )))
     {
         struct stat st;
-        char *full_path;
+        char *full_path, *name;
         unsigned int filter;
 
         if (!strcmp( de->d_name, "." ) || !strcmp( de->d_name, ".." )) continue;
         if (!(full_path = malloc( path_len + strlen( de->d_name ) + 2 ))) continue;
         snprintf( full_path, path_len + strlen( de->d_name ) + 2, "%s/%s", path, de->d_name );
 
-        if (lstat( full_path, &st ) == -1)
+        if (lstat( full_path, &st ) == -1 || !(name = malloc( prefix_len + strlen( de->d_name ) + 1 )))
         {
             free( full_path );
             continue;
         }
-        free( full_path );
+        snprintf( name, prefix_len + strlen( de->d_name ) + 1, "%s%s%s", prefix ? prefix : "", prefix ? "/" : "",
+                  de->d_name );
+        (*count)++;
 
-        if (!(entry = change_poll_find_entry( dir, de->d_name )))
+        if (!(entry = change_poll_find_entry( dir, name )))
         {
-            entry = change_poll_add_entry( dir, de->d_name, &st );
-            if (!initial && entry)
+            if ((entry = change_poll_add_entry( dir, name, &st )) && !initial)
             {
                 filter = change_poll_name_filter( &st ) | FILE_NOTIFY_CHANGE_CREATION;
-                change_poll_notify( dir, FILE_ACTION_ADDED, filter, de->d_name );
+                change_poll_notify( dir, FILE_ACTION_ADDED, filter, name );
             }
-            continue;
+        }
+        else
+        {
+            entry->seen = 1;
+            filter = change_poll_modified_filter( &entry->st, &st );
+            if (!initial && filter) change_poll_notify( dir, FILE_ACTION_MODIFIED, filter, name );
+            entry->st = st;
         }
 
-        entry->seen = 1;
-        filter = change_poll_modified_filter( &entry->st, &st );
-        if (!initial && filter) change_poll_notify( dir, FILE_ACTION_MODIFIED, filter, de->d_name );
-        entry->st = st;
+        if (entry && dir->subtree && S_ISDIR( st.st_mode ) && depth < CHANGE_POLL_MAX_TREE_DEPTH &&
+            *count < CHANGE_POLL_MAX_TREE_ENTRIES)
+        {
+            if (entry->watch_fd == -1 && dir->poll_subdirs < CHANGE_POLL_MAX_SUBDIRS &&
+                (entry->watch_fd = open( full_path, O_EVTONLY )) != -1)
+            {
+                if (add_vnode_watch( entry->watch_fd, change_poll_vnode_event, dir )) dir->poll_subdirs++;
+                else
+                {
+                    close( entry->watch_fd );
+                    entry->watch_fd = -1;
+                }
+            }
+            change_poll_scan_path( dir, full_path, name, initial, depth + 1, count );
+        }
+        free( name );
+        free( full_path );
     }
-
     closedir( unix_dir );
+}
+
+static void change_poll_scan_dir( struct dir *dir, int initial )
+{
+    struct change_poll_entry *entry, *next;
+    unsigned int count = 0;
+    char *path;
+
+    LIST_FOR_EACH_ENTRY( entry, &dir->poll_entries, struct change_poll_entry, entry )
+        entry->seen = 0;
+
+    if (!(path = change_poll_get_path( dir ))) return;
+    change_poll_scan_path( dir, path, NULL, initial, 0, &count );
     free( path );
 
     LIST_FOR_EACH_ENTRY_SAFE( entry, next, &dir->poll_entries, struct change_poll_entry, entry )
@@ -483,9 +527,7 @@ static void change_poll_scan_dir( struct dir *dir, int initial )
         if (entry->seen) continue;
         if (!initial) change_poll_notify( dir, FILE_ACTION_REMOVED,
                                           change_poll_name_filter( &entry->st ), entry->name );
-        list_remove( &entry->entry );
-        free( entry->name );
-        free( entry );
+        change_poll_free_entry( dir, entry );
     }
 }
 
@@ -504,12 +546,26 @@ static void change_poll_callback( void *private )
         change_poll_timer = add_timeout_user( CHANGE_POLL_INTERVAL, change_poll_callback, NULL );
 }
 
+/* the kernel says the directory's entries changed: report them now, without waiting for the next poll */
+static void change_poll_vnode_event( void *private )
+{
+    struct dir *dir = private;
+
+    if (dir->filter) change_poll_scan_dir( dir, 0 );
+}
+
 static void change_poll_adjust_changes( struct dir *dir )
 {
-    if (list_empty( &dir->poll_entries ))
+    /* the first snapshot, taken again when the watch becomes recursive: what is in the tree now is not a change */
+    if (list_empty( &dir->poll_entries ) || (dir->subtree && !dir->poll_subtree))
     {
+        dir->poll_subtree = dir->subtree;
         change_poll_scan_dir( dir, 1 );
     }
+    /* Additions, removals and renames are reported by the kernel as they happen. The poll below stays for what
+     * it does not report on a directory: changes to the files in it. */
+    if (!dir->poll_watched)
+        dir->poll_watched = add_vnode_watch( get_unix_fd( dir->fd ), change_poll_vnode_event, dir );
 
     if (!change_poll_timer)
         change_poll_timer = add_timeout_user( CHANGE_POLL_INTERVAL, change_poll_callback, NULL );
@@ -653,6 +709,9 @@ static void dir_destroy( struct object *obj )
 
     while ((record = get_first_change_record( dir ))) free( record );
 
+#if defined(__APPLE__) && !defined(HAVE_SYS_INOTIFY_H)
+    if (dir->poll_watched) remove_vnode_watch( get_unix_fd( dir->fd ), dir );
+#endif
     change_poll_free_entries( dir );
     release_dir_cache_entry( dir );
     release_object( dir->fd );
@@ -1376,6 +1435,9 @@ struct object *create_dir_obj( struct fd *fd, unsigned int access, mode_t mode )
     set_fd_user( fd, &dir_fd_ops, &dir->obj );
 #if defined(__APPLE__) && !defined(HAVE_SYS_INOTIFY_H)
     list_init( &dir->poll_entries );
+    dir->poll_watched = 0;
+    dir->poll_subdirs = 0;
+    dir->poll_subtree = 0;
 #endif
 
     dir_add_to_existing_notify( dir );
