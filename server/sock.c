@@ -4110,6 +4110,15 @@ struct object *create_socket_device( struct object *root, struct unicode_str nam
     return create_named_object( &params );
 }
 
+/* poll() on Linux reports an unconnected stream socket as writable and hung up, so a send or
+ * receive on it is tried at once and fails with ENOTCONN, as on Windows. macOS reports nothing,
+ * and the request would wait for an event that never comes. */
+static int is_unconnected_stream( struct sock *sock )
+{
+    return sock->type == WS_SOCK_STREAM &&
+           (sock->state == SOCK_UNCONNECTED || sock->state == SOCK_LISTENING);
+}
+
 DECL_HANDLER(recv_socket)
 {
     struct sock *sock = (struct sock *)get_handle_obj( current->process, req->async.handle, 0, &sock_ops );
@@ -4134,7 +4143,7 @@ DECL_HANDLER(recv_socket)
          * asyncs will not consume all available data; if there's no data
          * available, the current request won't be immediately satiable.
          */
-        if ((!req->force_async && sock->nonblocking) ||
+        if ((!req->force_async && sock->nonblocking) || is_unconnected_stream( sock ) ||
             check_fd_events( sock->fd, req->oob && !is_oobinline( sock ) ? POLLPRI : POLLIN ))
         {
             /* Give the client opportunity to complete synchronously.
@@ -4239,7 +4248,8 @@ DECL_HANDLER(send_socket)
          * asyncs will not consume all available space; if there's no space
          * available, the current request won't be immediately satiable.
          */
-        if ((!force_async && sock->nonblocking) || check_fd_events( sock->fd, POLLOUT ))
+        if ((!force_async && sock->nonblocking) || is_unconnected_stream( sock ) ||
+            check_fd_events( sock->fd, POLLOUT ))
         {
             /* Give the client opportunity to complete synchronously.
              * If it turns out that the I/O request is not actually immediately satiable,
