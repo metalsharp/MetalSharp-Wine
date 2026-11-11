@@ -1,4 +1,5 @@
 /* archs: x86_64 i686 */
+/* libs: ole32 oleaut32 uuid */
 /* MSHTML (Wine Gecko) smoke test: create an HTML document, write markup into it and read the
  * body's text back. There is no ARM64 Gecko, so this is built for x86_64 and i386 only. */
 #define COBJMACROS

@@ -1,4 +1,5 @@
 /* archs: x86_64 */
+/* needs: WebView2.h */
 /* WebView2 smoke test: create an environment on a Fixed Version runtime, a controller in a window,
  * navigate to a page that runs JavaScript, read document.title back through ExecuteScript.
  *   webview2info.exe <WebView2Loader.dll> <runtime folder> <user data folder>

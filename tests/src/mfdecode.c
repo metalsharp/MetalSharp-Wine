@@ -1,4 +1,5 @@
 /* archs: aarch64 x86_64 */
+/* libs: mfplat mfreadwrite mfuuid */
 /* Media Foundation smoke test (winedmo, i.e. FFmpeg): decode an AAC .m4a to PCM through the
  * source reader and count the samples. Test file (not in git):
  *   afconvert -f m4af -d aac -b 128000 /System/Library/Sounds/Glass.aiff tests/media/glass.m4a */
