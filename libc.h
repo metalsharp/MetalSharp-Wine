@@ -4,12 +4,19 @@
 
 struct libc_function { const char *name; void *function; };
 
-/* ended by a NULL name: libc.c's and libc_io.c's */
+/* ended by a NULL name: libc.c's, libc_io.c's, fork.c's, libc_thread.c's, libc_net.c's, libc_misc.c's and
+ * unwind.c's */
 extern const struct libc_function linuxhost_libc_functions[], linuxhost_libc_io_functions[],
-                                  linuxhost_fork_functions[];
+                                  linuxhost_fork_functions[], linuxhost_thread_functions[],
+                                  linuxhost_net_functions[], linuxhost_misc_functions[],
+                                  linuxhost_unwind_functions[];
 
 /* glibc.c's own functions, by name */
 void *linuxhost_glibc_function( const char *name );
+
+/* the critical section a glibc pthread_mutex_t holds (libc.c) */
+#include <windows.h>
+CRITICAL_SECTION *linuxhost_mutex_cs( void *mutex );
 
 /* the calling thread's Linux errno */
 int *linuxhost_errno(void);

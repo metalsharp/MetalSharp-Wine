@@ -533,6 +533,9 @@ static SYSV int lx_prctl( int option, unsigned long long a2, unsigned long long 
 
 struct lx_mutex { CRITICAL_SECTION *cs; int pad[2]; int kind; int rest[5]; };
 struct lx_mutexattr { int kind; };
+static CRITICAL_SECTION *get_cs( struct lx_mutex *m );
+
+CRITICAL_SECTION *linuxhost_mutex_cs( void *mutex ) { return get_cs( mutex ); }
 
 static CRITICAL_SECTION *get_cs( struct lx_mutex *m )
 {
@@ -586,12 +589,6 @@ static SYSV int lx___pthread_key_create( unsigned int *key, void (*destructor)(v
 
 static SYSV unsigned __int128 lx___udivti3( unsigned __int128 a, unsigned __int128 b ) { return a / b; }
 
-static SYSV void lx_unwind_unsupported(void)
-{
-    linuxhost_trace( "a C++ exception was thrown: not supported yet\n" );
-    ExitProcess( 71 );
-}
-
 static SYSV int lx_dladdr( const void *addr, void *info )
 {
     struct { const char *fname; void *fbase; const char *sname; void *saddr; } *out = info;
@@ -608,10 +605,33 @@ static SYSV int lx_dladdr( const void *addr, void *info )
     return 1;
 }
 
+/* dl_iterate_phdr: the modules the host loaded, with glibc's struct dl_phdr_info */
+struct lx_dl_phdr_info
+{
+    void *addr;
+    const char *name;
+    const void *phdr;
+    unsigned short phnum;
+    unsigned long long adds, subs, tls_modid;
+    void *tls_data;
+};
+struct iterate_args { void *callback, *data; };
+
+static int iterate_one( struct elf_module *module, void *base, const char *name, const void *phdr, unsigned int phnum,
+                        unsigned long tls_id, void *data )
+{
+    typedef int (SYSV *callback_fn)( struct lx_dl_phdr_info *, unsigned long long, void * );
+    struct iterate_args *args = data;
+    struct lx_dl_phdr_info info = { base, name, phdr, phnum, 1, 0, tls_id, tls_id ? elf_tls_block( module ) : NULL };
+
+    return ((callback_fn)args->callback)( &info, sizeof(info), args->data );
+}
+
 static SYSV int lx_dl_iterate_phdr( void *callback, void *data )
 {
-    linuxhost_trace( "dl_iterate_phdr: no modules listed\n" );
-    return 0;
+    struct iterate_args args = { callback, data };
+
+    return elf_iterate_phdr( iterate_one, &args );
 }
 
 const struct libc_function linuxhost_libc_functions[] =
@@ -635,8 +655,6 @@ const struct libc_function linuxhost_libc_functions[] =
     { "pthread_mutex_lock", lx_pthread_mutex_lock }, { "pthread_mutex_trylock", lx_pthread_mutex_trylock },
     { "pthread_mutex_unlock", lx_pthread_mutex_unlock }, { "__pthread_key_create", lx___pthread_key_create },
     { "__udivti3", lx___udivti3 },
-    { "_Unwind_RaiseException", lx_unwind_unsupported }, { "_Unwind_Resume", lx_unwind_unsupported },
-    { "_Unwind_Resume_or_Rethrow", lx_unwind_unsupported },
     { "dladdr", lx_dladdr }, { "dl_iterate_phdr", lx_dl_iterate_phdr },
     { NULL, NULL }
 };

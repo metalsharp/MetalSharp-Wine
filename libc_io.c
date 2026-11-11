@@ -78,7 +78,10 @@ static SYSV int lx_fcntl( int fd, int cmd, unsigned long long arg )
 {
     switch (cmd)
     {
-    case 1: case 2: case 3: case 4: return 0;  /* F_GETFD, F_SETFD, F_GETFL, F_SETFL */
+    case 1: case 2: case 3: return 0;  /* F_GETFD, F_SETFD, F_GETFL */
+    case 4:  /* F_SETFL: O_NONBLOCK matters on a socket */
+        linuxhost_socket_set_nonblock( fd, !!(arg & 0x800) );
+        return 0;
     case 1033: return result( linuxhost_seals( fd, 1, (unsigned int)arg ) );  /* F_ADD_SEALS */
     case 1034: return result( linuxhost_seals( fd, 0, 0 ) );                  /* F_GET_SEALS */
     default: linuxhost_trace( "fcntl %d %d\n", fd, cmd ); return fail( 22 );
@@ -94,6 +97,20 @@ static SYSV int lx___xstat( int ver, const char *path, void *st )
 
     if (linuxhost_is_proc_path( path ))
     {
+        char names[16];
+
+        if (linuxhost_proc_dir( path, names, sizeof(names) ) >= 0)
+        {
+            struct { unsigned long long dev, ino, nlink; unsigned int mode, uid, gid; } *dst = st;
+
+            memset( st, 0, 144 );
+            dst->dev = 4;
+            dst->ino = 1;
+            dst->nlink = 2;
+            dst->mode = 0040555;
+            dst->uid = dst->gid = 1000;
+            return 0;
+        }
         if ((fd = linuxhost_open( path, 0 )) < 0) return fail( (int)-fd );
         linuxhost_fstat( fd, st );
         linuxhost_close( fd );
@@ -168,7 +185,44 @@ static SYSV lx_long lx_readlink( const char *path, char *buf, lx_size_t size )
         linuxhost_trace( "readlink %s -> %s (%zu of a %llu-byte buffer)\n", path, exe, len, size );
         return len;
     }
-    return fail( 22 );
+    if (linuxhost_is_proc_path( path ))
+    {
+        const char *rest = NULL;
+        char prefix[32];
+        int fd, n = 0;
+
+        snprintf( prefix, sizeof(prefix), "/proc/%lu/", GetCurrentProcessId() );
+        if (!strncmp( path, "/proc/self/", 11 )) rest = path + 11;
+        else if (!strncmp( path, "/proc/thread-self/", 18 )) rest = path + 18;
+        else if (!strncmp( path, prefix, strlen( prefix ) )) rest = path + strlen( prefix );
+        exe[0] = 0;
+        if (rest && sscanf( rest, "fd/%d%n", &fd, &n ) == 1 && !rest[n]) linuxhost_fd_link( fd, exe, sizeof(exe) );
+        else if (rest && !strcmp( rest, "cwd" ))
+        {
+            WCHAR dir[MAX_PATH];
+            typedef char *(CDECL *get_unix_fn)( const WCHAR * );
+            get_unix_fn get_unix = (get_unix_fn)GetProcAddress( GetModuleHandleA( "kernel32.dll" ), "wine_get_unix_file_name" );
+            char *unix_name;
+
+            GetCurrentDirectoryW( MAX_PATH, dir );
+            if (get_unix && (unix_name = get_unix( dir )))
+            {
+                snprintf( exe, sizeof(exe), "%s", unix_name );
+                HeapFree( GetProcessHeap(), 0, unix_name );
+            }
+        }
+        else if (rest && !strcmp( rest, "root" )) strcpy( exe, "/" );
+        else if (rest && !strncmp( rest, "ns/", 3 )) snprintf( exe, sizeof(exe), "%s:[4026531836]", rest + 3 );
+        if (exe[0])
+        {
+            len = min( strlen( exe ), size );
+            memcpy( buf, exe, len );
+            linuxhost_trace( "readlink %s -> %s\n", path, exe );
+            return len;
+        }
+        return fail( 2 );
+    }
+    return fail( 22 );  /* EINVAL: not a link */
 }
 
 static SYSV char *lx_realpath( const char *path, char *resolved )
@@ -183,7 +237,15 @@ static SYSV char *lx_realpath( const char *path, char *resolved )
  */
 
 struct lx_dirent { unsigned long long ino; long long off; unsigned short reclen; unsigned char type; char name[256]; };
-struct lx_dir { HANDLE find; WIN32_FIND_DATAW data; int first, done; struct lx_dirent entry; };
+struct lx_dir
+{
+    HANDLE find;              /* a real directory */
+    WIN32_FIND_DATAW data;
+    int first, done;
+    char *names, *next;       /* a made-up one: its names, NUL-separated */
+    int count;
+    struct lx_dirent entry;
+};
 
 static SYSV struct lx_dir *lx_opendir( const char *path )
 {
@@ -192,7 +254,24 @@ static SYSV struct lx_dir *lx_opendir( const char *path )
     size_t len;
 
     linuxhost_trace( "opendir %s\n", path );
-    if (linuxhost_is_proc_path( path )) { fail( 2 ); return NULL; }
+    if (linuxhost_is_proc_path( path ))
+    {
+        char names[4096];
+        int count = linuxhost_proc_dir( path, names, sizeof(names) );
+
+        if (count < 0) { fail( 2 ); return NULL; }
+        if (!(dir = calloc( 1, sizeof(*dir) )) || !(dir->names = malloc( sizeof(names) )))
+        {
+            free( dir );
+            fail( 12 );
+            return NULL;
+        }
+        memcpy( dir->names, names, sizeof(names) );
+        dir->next = dir->names;
+        dir->count = count;
+        dir->find = INVALID_HANDLE_VALUE;
+        return dir;
+    }
     if (!(wpath = linuxhost_unix_path( path ))) { fail( 12 ); return NULL; }
     len = wcslen( wpath );
     pattern = malloc( (len + 3) * sizeof(WCHAR) );
@@ -219,6 +298,18 @@ static SYSV struct lx_dir *lx_opendir( const char *path )
 
 static SYSV struct lx_dirent *lx_readdir( struct lx_dir *dir )
 {
+    if (dir->names)
+    {
+        if (!dir->count) return NULL;
+        memset( &dir->entry, 0, sizeof(dir->entry) );
+        dir->entry.ino = 1;
+        dir->entry.reclen = sizeof(dir->entry);
+        dir->entry.type = (dir->next[0] >= '0' && dir->next[0] <= '9') || !strcmp( dir->next, "self" ) ? 4 : 8;
+        snprintf( dir->entry.name, sizeof(dir->entry.name), "%s", dir->next );
+        dir->next += strlen( dir->next ) + 1;
+        dir->count--;
+        return &dir->entry;
+    }
     if (dir->done) return NULL;
     if (!dir->first && !FindNextFileW( dir->find, &dir->data ))
     {
@@ -236,9 +327,155 @@ static SYSV struct lx_dirent *lx_readdir( struct lx_dir *dir )
 
 static SYSV int lx_closedir( struct lx_dir *dir )
 {
-    FindClose( dir->find );
+    if (dir->find != INVALID_HANDLE_VALUE) FindClose( dir->find );
+    free( dir->names );
     free( dir );
     return 0;
+}
+
+/* glob: wildcards in the last component of a path; glibc's glob_t */
+struct lx_glob
+{
+    lx_size_t pathc;
+    char **pathv;
+    lx_size_t offs;
+    int flags;
+    void *gl_closedir, *gl_readdir, *gl_opendir, *gl_lstat, *gl_stat;
+};
+
+/* fnmatch's *, ? and [...] */
+static int match( const char *pattern, const char *name )
+{
+    for (; *pattern; pattern++, name++)
+    {
+        if (*pattern == '*')
+        {
+            while (pattern[1] == '*') pattern++;
+            if (!pattern[1]) return 1;
+            for (; *name; name++) if (match( pattern + 1, name )) return 1;
+            return 0;
+        }
+        if (!*name) return 0;
+        if (*pattern == '?') continue;
+        if (*pattern == '[')
+        {
+            const char *p = pattern + 1;
+            int negate = *p == '!' || *p == '^', found = 0;
+
+            if (negate) p++;
+            for (; *p && (*p != ']' || p == pattern + 1 + negate); p++)
+            {
+                if (p[1] == '-' && p[2] && p[2] != ']')
+                {
+                    if (*name >= p[0] && *name <= p[2]) found = 1;
+                    p += 2;
+                }
+                else if (*p == *name) found = 1;
+            }
+            if (!*p || found == negate) return 0;
+            pattern = p;
+            continue;
+        }
+        if (*pattern == '\\' && pattern[1]) pattern++;
+        if (*pattern != *name) return 0;
+    }
+    return !*name;
+}
+
+static int compare_paths( const void *a, const void *b ) { return strcmp( *(char **)a, *(char **)b ); }
+
+static SYSV int lx_glob( const char *pattern, int flags, void *errfunc, struct lx_glob *g )
+{
+    char dir[1024], **found = NULL;
+    const char *base = strrchr( pattern, '/' );
+    lx_size_t count = 0, capacity = 0, i, offs;
+    struct lx_dirent *entry;
+    struct lx_dir *d;
+
+    linuxhost_trace( "glob %s %#x\n", pattern, flags );
+    if (!(flags & 0x20))  /* not GLOB_APPEND */
+    {
+        g->pathc = 0;
+        g->pathv = NULL;
+        if (!(flags & 0x8)) g->offs = 0;  /* GLOB_DOOFFS */
+    }
+    if (base)
+    {
+        snprintf( dir, sizeof(dir), "%.*s", (int)(base - pattern), pattern );
+        if (!dir[0]) strcpy( dir, "/" );
+        base++;
+    }
+    else
+    {
+        strcpy( dir, "." );
+        base = pattern;
+    }
+    if (strpbrk( dir, "*?[" )) linuxhost_trace( "glob %s: wildcards before the last component are not matched\n", pattern );
+    if ((d = lx_opendir( dir )))
+    {
+        while ((entry = lx_readdir( d )))
+        {
+            char path[1024];
+
+            if (entry->name[0] == '.' && base[0] != '.') continue;
+            if (!strcmp( entry->name, "." ) || !strcmp( entry->name, ".." )) continue;
+            if (!match( base, entry->name )) continue;
+            if (count == capacity)
+            {
+                char **tmp = realloc( found, (capacity = capacity ? capacity * 2 : 16) * sizeof(*found) );
+
+                if (!tmp) break;
+                found = tmp;
+            }
+            if (!strcmp( dir, "." )) snprintf( path, sizeof(path), "%s%s", entry->name,
+                                               (flags & 2) && entry->type == 4 ? "/" : "" );
+            else snprintf( path, sizeof(path), "%s%s%s%s", dir, strcmp( dir, "/" ) ? "/" : "", entry->name,
+                           (flags & 2) && entry->type == 4 ? "/" : "" );  /* GLOB_MARK */
+            found[count++] = _strdup( path );
+        }
+        lx_closedir( d );
+    }
+    if (!count && (flags & 0x10))  /* GLOB_NOCHECK */
+    {
+        found = malloc( sizeof(*found) );
+        found[count++] = _strdup( pattern );
+    }
+    if (!count)
+    {
+        free( found );
+        return 3;  /* GLOB_NOMATCH */
+    }
+    if (!(flags & 0x4)) qsort( found, count, sizeof(*found), compare_paths );  /* not GLOB_NOSORT */
+    offs = (flags & 0x8) ? g->offs : 0;
+    {
+        char **pathv = realloc( g->pathv, (offs + g->pathc + count + 1) * sizeof(char *) );
+
+        if (!pathv)
+        {
+            for (i = 0; i < count; i++) free( found[i] );
+            free( found );
+            return 1;  /* GLOB_NOSPACE */
+        }
+        if (!g->pathv) for (i = 0; i < offs; i++) pathv[i] = NULL;
+        g->pathv = pathv;
+    }
+    for (i = 0; i < count; i++) g->pathv[offs + g->pathc + i] = found[i];
+    g->pathc += count;
+    g->pathv[offs + g->pathc] = NULL;
+    g->flags = flags;
+    free( found );
+    return 0;
+}
+
+static SYSV void lx_globfree( struct lx_glob *g )
+{
+    lx_size_t i;
+
+    if (!g->pathv) return;
+    for (i = 0; i < g->pathc; i++) free( g->pathv[g->offs + i] );
+    free( g->pathv );
+    g->pathv = NULL;
+    g->pathc = 0;
 }
 
 /* ---------------------------------------------------------------------------------------------------------
@@ -277,6 +514,12 @@ static SYSV lx_size_t lx_fread( void *buf, lx_size_t size, lx_size_t count, stru
     long long n;
 
     if (!total) return 0;
+    if (f->ungot >= 0)
+    {
+        *(char *)buf = f->ungot;
+        f->ungot = -1;
+        got = 1;
+    }
     while (got < total)
     {
         if ((n = linuxhost_read( f->fd, (char *)buf + got, total - got )) <= 0)
@@ -309,7 +552,10 @@ static SYSV char *lx_fgets( char *buf, int size, struct lx_file *f )
 
     while (len < size - 1)
     {
-        long long n = linuxhost_read( f->fd, &c, 1 );
+        long long n = 1;
+
+        if (f->ungot >= 0) { c = f->ungot; f->ungot = -1; }
+        else n = linuxhost_read( f->fd, &c, 1 );
 
         if (n <= 0) { if (n < 0) f->error = 1; else f->eof = 1; break; }
         buf[len++] = c;
@@ -329,8 +575,81 @@ static SYSV int lx_fseek( struct lx_file *f, lx_long offset, int whence )
     return linuxhost_lseek( f->fd, offset, whence ) < 0 ? -1 : 0;
 }
 
-static SYSV lx_long lx_ftell( struct lx_file *f ) { return linuxhost_lseek( f->fd, 0, 1 ); }
-static SYSV void lx_rewind( struct lx_file *f ) { lx_fseek( f, 0, 0 ); f->error = 0; }
+static SYSV lx_long lx_ftell( struct lx_file *f )
+{
+    lx_long pos = linuxhost_lseek( f->fd, 0, 1 );
+
+    return pos > 0 && f->ungot >= 0 ? pos - 1 : pos;
+}
+static SYSV void lx_rewind( struct lx_file *f ) { f->ungot = -1; lx_fseek( f, 0, 0 ); f->error = 0; }
+
+static SYSV struct lx_file *lx_fdopen( int fd, const char *mode )
+{
+    struct lx_file *f;
+
+    if (!linuxhost_fd_kind( fd, NULL ) && fd > 2) { fail( 9 ); return NULL; }
+    if (!(f = calloc( 1, sizeof(*f) ))) { fail( 12 ); return NULL; }
+    f->fd = fd;
+    f->ungot = -1;
+    return f;
+}
+
+/* nothing is buffered: writes go straight to the descriptor */
+static SYSV int lx_fflush( struct lx_file *f ) { return 0; }
+static SYSV int lx_setvbuf( struct lx_file *f, char *buf, int mode, lx_size_t size ) { return 0; }
+static SYSV int lx_fileno( struct lx_file *f ) { return f->fd; }
+
+static SYSV int lx_getc( struct lx_file *f )
+{
+    unsigned char c;
+
+    return lx_fread( &c, 1, 1, f ) ? c : -1;
+}
+
+static SYSV int lx_ungetc( int c, struct lx_file *f )
+{
+    if (c == -1 || f->ungot >= 0) return -1;
+    f->ungot = (unsigned char)c;
+    f->eof = 0;
+    return (unsigned char)c;
+}
+
+static SYSV int lx_fseeko64( struct lx_file *f, lx_long offset, int whence )
+{
+    if (whence == 1 && f->ungot >= 0) offset--;
+    f->ungot = -1;
+    return lx_fseek( f, offset, whence );
+}
+
+static SYSV lx_long lx_lseek( int fd, lx_long offset, int whence ) { return result( linuxhost_lseek( fd, offset, whence ) ); }
+
+struct lx_iovec { void *base; lx_size_t len; };
+
+static SYSV lx_long lx_writev( int fd, const struct lx_iovec *iov, int count )
+{
+    lx_long total = 0, n;
+    int i;
+
+    for (i = 0; i < count; i++)
+    {
+        if (!iov[i].len) continue;
+        if ((n = lx_write( fd, iov[i].base, iov[i].len )) < 0) return total ? total : -1;
+        total += n;
+        if ((lx_size_t)n < iov[i].len) break;
+    }
+    return total;
+}
+
+static SYSV int lx___fxstat64( int ver, int fd, void *st ) { return result( linuxhost_fstat( fd, st ) ); }
+
+/* popen runs a shell command, which a Windows process cannot: no shell */
+static SYSV struct lx_file *lx_popen( const char *command, const char *mode )
+{
+    linuxhost_trace( "popen \"%s\": no shell\n", command );
+    fail( 2 );
+    return NULL;
+}
+static SYSV int lx_pclose( struct lx_file *f ) { return fail( 10 ); }  /* ECHILD */
 
 /* ---------------------------------------------------------------------------------------------------------
  * Formatted output, with glibc.c's formatter. Variadic entry points (below) build Linux's va_list.
@@ -436,5 +755,11 @@ const struct libc_function linuxhost_libc_io_functions[] =
     { "stdin", &lx_stdin },
     { "printf", lx_printf }, { "snprintf", lx_snprintf }, { "__sprintf_chk", lx___sprintf_chk },
     { "vsnprintf", lx_vsnprintf_core }, { "vswprintf", lx_vswprintf },
+    { "fdopen", lx_fdopen }, { "fflush", lx_fflush }, { "setvbuf", lx_setvbuf }, { "fileno", lx_fileno },
+    { "getc", lx_getc }, { "fgetc", lx_getc }, { "putc", lx_fputc }, { "ungetc", lx_ungetc },
+    { "fopen64", lx_fopen }, { "fseeko64", lx_fseeko64 }, { "fseeko", lx_fseeko64 }, { "ftello64", lx_ftell },
+    { "ftello", lx_ftell }, { "lseek", lx_lseek }, { "lseek64", lx_lseek }, { "writev", lx_writev },
+    { "glob", lx_glob }, { "glob64", lx_glob }, { "globfree", lx_globfree }, { "globfree64", lx_globfree },
+    { "__fxstat", lx___fxstat64 }, { "__fxstat64", lx___fxstat64 }, { "popen", lx_popen }, { "pclose", lx_pclose },
     { NULL, NULL }
 };

@@ -11,6 +11,8 @@
  * of Linux file descriptors (in-memory files and the /proc files it makes up); and it maps a small ELF image named
  * libc.so.6 whose dlopen and dlsym are the host's (glibc.c), which load the module with the host's ELF loader. */
 #include <windows.h>
+#include <bcrypt.h>
+#include <intrin.h>
 #include <shellapi.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -35,7 +37,8 @@
  * File descriptors
  */
 
-enum fd_kind { FD_FREE, FD_MEMORY, FD_HANDLE };
+enum fd_kind { FD_FREE, FD_MEMORY, FD_HANDLE, FD_SOCKET, FD_EPOLL, FD_DEVICE };
+enum device { DEV_RANDOM = 1, DEV_NULL, DEV_ZERO };
 
 struct fd_entry
 {
@@ -43,6 +46,7 @@ struct fd_entry
     HANDLE handle;         /* FD_HANDLE */
     int flags;             /* Linux open flags */
     unsigned int seals;    /* memfd seals: F_SEAL_SEAL 1, SHRINK 2, GROW 4, WRITE 8 */
+    enum device device;    /* FD_DEVICE */
     char *data;
     size_t size, capacity, pos;
     char name[64];
@@ -51,7 +55,8 @@ struct fd_entry
 #define FIRST_FD 3
 #define MAX_FDS 256
 static struct fd_entry fds[MAX_FDS];
-static CRITICAL_SECTION fd_lock;
+/* initialised statically (unowned, its event made when first contended), so descriptors work before process init */
+static CRITICAL_SECTION fd_lock = { NULL, -1, 0, 0, 0, 0 };
 
 static int alloc_fd( const char *name )
 {
@@ -90,6 +95,35 @@ static int reserve( struct fd_entry *f, size_t size )
     f->data = data;
     f->capacity = capacity;
     return 1;
+}
+
+/* a descriptor for a Windows object (a socket, an epoll set's private data): returns the descriptor or -errno */
+int linuxhost_new_fd( int kind, HANDLE handle, const char *name )
+{
+    int fd = alloc_fd( name );
+
+    if (fd < 0) return fd;
+    fds[fd].kind = kind;
+    fds[fd].handle = handle;
+    return fd;
+}
+
+/* the kind and Windows object of a descriptor; FD_FREE (0) if it is not open */
+int linuxhost_fd_kind( int fd, HANDLE *handle )
+{
+    struct fd_entry *f = get_fd( fd );
+
+    if (!f) return FD_FREE;
+    if (handle) *handle = f->handle;
+    return f->kind;
+}
+
+/* where an epoll set keeps its registrations */
+void **linuxhost_fd_private( int fd )
+{
+    struct fd_entry *f = get_fd( fd );
+
+    return f ? (void **)&f->data : NULL;
 }
 
 int linuxhost_fd_contents( int fd, const void **data, size_t *size )
@@ -284,6 +318,30 @@ int linuxhost_fd_maps_name( int fd, char *buf, size_t size )
     return 1;
 }
 
+/* what /proc/self/fd/<fd> links to */
+int linuxhost_fd_link( int fd, char *buf, size_t size )
+{
+    struct fd_entry *f;
+
+    if (fd >= 0 && fd < FIRST_FD)
+    {
+        snprintf( buf, size, "/dev/pts/0" );
+        return 1;
+    }
+    if (!(f = get_fd( fd ))) return 0;
+    switch (f->kind)
+    {
+    case FD_MEMORY:
+        if (f->name[0] == '/') snprintf( buf, size, "%s", f->name );  /* a made-up /proc file */
+        else snprintf( buf, size, "/memfd:%s (deleted)", f->name );
+        break;
+    case FD_SOCKET: snprintf( buf, size, "socket:[%llu]", (unsigned long long)(UINT_PTR)f->handle + 40000 ); break;
+    case FD_EPOLL: snprintf( buf, size, "anon_inode:[eventpoll]" ); break;
+    default: snprintf( buf, size, "%s", f->name ); break;
+    }
+    return 1;
+}
+
 /* the file a region is mapped from, as a Unix path: an image Wine mapped, or Linux code the host loaded */
 static int region_path( const MEMORY_BASIC_INFORMATION *info, char *buf, size_t size )
 {
@@ -368,32 +426,59 @@ static int make_maps( struct fd_entry *f )
     return 1;
 }
 
-/* the name of a /proc file of this process ("maps"), or NULL */
+/* The made-up file a /proc or /sys path names: an entry of this process ("maps"), of init ("init-status"), of a
+ * child ("child-<pid>-status") or of the machine ("sys-mounts"); NULL if there is none. A thread's own entries
+ * (/proc/self/task/<tid>/...) are the process's. */
 static const char *proc_self( const char *path )
 {
+    static const struct { const char *path, *entry; } machine[] =
+    {
+        { "/proc/mounts", "sys-mounts" }, { "/proc/bus/pci/devices", "sys-pci" }, { "/proc/cpuinfo", "sys-cpuinfo" },
+        { "/proc/meminfo", "sys-meminfo" }, { "/proc/version", "sys-version" }, { "/proc/uptime", "sys-uptime" },
+        { "/proc/loadavg", "sys-loadavg" }, { "/proc/stat", "sys-stat" }, { "/proc/filesystems", "sys-filesystems" },
+        { "/proc/modules", "sys-empty" }, { "/proc/cmdline", "sys-cmdline" },
+        { "/proc/sys/kernel/osrelease", "sys-osrelease" }, { "/proc/sys/kernel/ostype", "sys-ostype" },
+        { "/proc/sys/kernel/hostname", "sys-hostname" }, { "/proc/sys/kernel/pid_max", "sys-pid_max" },
+        { "/proc/sys/kernel/yama/ptrace_scope", "sys-ptrace_scope" }, { "/proc/sys/kernel/random/boot_id", "sys-boot_id" },
+        { "/proc/sys/kernel/random/uuid", "sys-uuid" }, { "/proc/sys/kernel/tainted", "sys-zero" },
+        { "/proc/sys/kernel/unprivileged_userns_clone", "sys-one" }, { "/proc/sys/fs/file-max", "sys-file_max" },
+    };
+    static __thread char entry[96];
+    const char *rest;
     char prefix[32];
-    int len;
+    unsigned int i;
+    int len, pid;
 
+    for (i = 0; i < ARRAY_SIZE(machine); i++) if (!strcmp( path, machine[i].path )) return machine[i].entry;
+    /* the firmware's identity: the machine as it is, a Mac */
+    if (!strncmp( path, "/sys/devices/virtual/dmi/id/", 28 ) || !strncmp( path, "/sys/class/dmi/id/", 18 ))
+    {
+        snprintf( entry, sizeof(entry), "dmi-%s", strrchr( path, '/' ) + 1 );
+        return entry;
+    }
     /* this process is a child of init (pid 1), which has no parent and no tracer */
     if (!strncmp( path, "/proc/1/", 8 ))
     {
-        static char entry[64];
-
         snprintf( entry, sizeof(entry), "init-%s", path + 8 );
         return entry;
     }
-    if (!strncmp( path, "/proc/self/", 11 )) return path + 11;
-    if (!strncmp( path, "/proc/thread-self/", 18 )) return path + 18;
-    /* machine-wide files */
-    if (!strcmp( path, "/proc/mounts" )) return "sys-mounts";
-    if (!strcmp( path, "/proc/bus/pci/devices" )) return "sys-pci";
-    if (!strcmp( path, "/sys/devices/virtual/dmi/id/board_name" )) return "sys-board";
-    if (!strcmp( path, "/sys/devices/virtual/dmi/id/product_name" )) return "sys-product";
-    if (!strcmp( path, "/sys/devices/virtual/dmi/id/sys_vendor" ) ||
-        !strcmp( path, "/sys/devices/virtual/dmi/id/board_vendor" )) return "sys-vendor";
     len = snprintf( prefix, sizeof(prefix), "/proc/%lu/", GetCurrentProcessId() );
-    if (!strncmp( path, prefix, len )) return path + len;
-    return NULL;
+    if (!strncmp( path, "/proc/self/", 11 )) rest = path + 11;
+    else if (!strncmp( path, "/proc/thread-self/", 18 )) rest = path + 18;
+    else if (!strncmp( path, prefix, len )) rest = path + len;
+    else if (sscanf( path, "/proc/%d/%n", &pid, &len ) == 1 && len)
+    {
+        char state;
+        int traced;
+        unsigned long windows_pid;
+
+        if (!linuxhost_child_info( pid, &state, &traced, &windows_pid )) return NULL;
+        snprintf( entry, sizeof(entry), "child-%d-%s", pid, path + len );
+        return entry;
+    }
+    else return NULL;
+    if (!strncmp( rest, "task/", 5 ) && (rest = strchr( rest + 5, '/' ))) rest++;
+    return rest;
 }
 
 static int append_text( struct fd_entry *f, const char *text, size_t len )
@@ -446,6 +531,237 @@ int linuxhost_program_path( char *buf, size_t size )
     return 1;
 }
 
+/* /sys/class/dmi/id: the firmware as a Mac's would describe itself */
+static int make_dmi_file( struct fd_entry *f, const char *name )
+{
+    static const struct { const char *name, *value; } dmi[] =
+    {
+        { "board_name", "Mac\n" }, { "product_name", "Mac\n" }, { "product_family", "Mac\n" },
+        { "sys_vendor", "Apple Inc.\n" }, { "board_vendor", "Apple Inc.\n" }, { "chassis_vendor", "Apple Inc.\n" },
+        { "bios_vendor", "Apple Inc.\n" }, { "bios_version", "1.0\n" }, { "bios_date", "01/01/2025\n" },
+        { "product_version", "1.0\n" }, { "board_version", "1.0\n" }, { "chassis_type", "10\n" },
+        { "chassis_version", "1.0\n" },
+    };
+    unsigned int i;
+
+    for (i = 0; i < ARRAY_SIZE(dmi); i++)
+        if (!strcmp( name, dmi[i].name )) return append_text( f, dmi[i].value, strlen( dmi[i].value ) );
+    return 0;
+}
+
+/* the processor's name, as cpuid gives it to x86 code (FEX's, here) */
+static void cpu_brand( char *brand )
+{
+    int regs[12];
+
+    __cpuid( regs, 0x80000002 );
+    __cpuid( regs + 4, 0x80000003 );
+    __cpuid( regs + 8, 0x80000004 );
+    memcpy( brand, regs, 48 );
+    brand[48] = 0;
+    while (*brand == ' ') memmove( brand, brand + 1, strlen( brand ) );
+}
+
+/* files about the machine: what it is, a Mac with its own processors and memory, said the way Linux says it */
+static int make_machine_file( struct fd_entry *f, const char *name )
+{
+    char text[4096];
+    int len = 0;
+
+    if (!strcmp( name, "mounts" ))
+    {
+        static const char mounts[] = "/dev/disk3s1 / apfs rw,relatime 0 0\nproc /proc proc rw,nosuid,nodev,noexec 0 0\n"
+                                     "sysfs /sys sysfs rw,nosuid,nodev,noexec 0 0\ntmpfs /tmp tmpfs rw,nosuid,nodev 0 0\n";
+        return append_text( f, mounts, sizeof(mounts) - 1 );
+    }
+    if (!strcmp( name, "pci" ) || !strcmp( name, "empty" )) return 1;
+    if (!strcmp( name, "zero" )) return append_text( f, "0\n", 2 );
+    if (!strcmp( name, "one" )) return append_text( f, "1\n", 2 );
+    if (!strcmp( name, "ptrace_scope" )) return append_text( f, "1\n", 2 );
+    if (!strcmp( name, "pid_max" )) return append_text( f, "4194304\n", 8 );
+    if (!strcmp( name, "file_max" )) return append_text( f, "9223372036854775807\n", 20 );
+    if (!strcmp( name, "ostype" )) return append_text( f, "Linux\n", 6 );
+    if (!strcmp( name, "osrelease" )) return append_text( f, "6.5.0\n", 6 );
+    if (!strcmp( name, "version" ))
+        len = snprintf( text, sizeof(text), "Linux version 6.5.0 (builder@localhost) (gcc (GCC) 13.2.0, GNU ld 2.41) "
+                        "#1 SMP PREEMPT_DYNAMIC\n" );
+    else if (!strcmp( name, "cmdline" )) len = snprintf( text, sizeof(text), "BOOT_IMAGE=/boot/vmlinuz-6.5.0 ro quiet splash\n" );
+    else if (!strcmp( name, "filesystems" ))
+        len = snprintf( text, sizeof(text), "nodev\tsysfs\nnodev\ttmpfs\nnodev\tproc\nnodev\tdevtmpfs\n\text4\n\tapfs\n" );
+    else if (!strcmp( name, "hostname" ))
+    {
+        DWORD size = sizeof(text) - 2;
+
+        if (!GetComputerNameA( text, &size )) strcpy( text, "localhost" );
+        strcat( text, "\n" );
+        len = strlen( text );
+    }
+    else if (!strcmp( name, "boot_id" ) || !strcmp( name, "uuid" ))
+    {
+        static unsigned char boot[16];
+        unsigned char id[16];
+        unsigned int i;
+
+        /* boot_id stays the same for the process; uuid is new each time */
+        if (!boot[0]) for (i = 0; i < 16; i++) boot[i] = (unsigned char)(GetTickCount64() * 2654435761u >> (i % 4 * 8)) ^ (i * 37) ^ GetCurrentProcessId();
+        for (i = 0; i < 16; i++) id[i] = name[0] == 'b' ? boot[i] : (unsigned char)(rand() ^ (GetTickCount64() >> i));
+        id[6] = (id[6] & 0x0f) | 0x40;
+        id[8] = (id[8] & 0x3f) | 0x80;
+        len = snprintf( text, sizeof(text), "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x\n",
+                        id[0], id[1], id[2], id[3], id[4], id[5], id[6], id[7], id[8], id[9], id[10], id[11], id[12],
+                        id[13], id[14], id[15] );
+    }
+    else if (!strcmp( name, "uptime" ))
+    {
+        unsigned long long ms = GetTickCount64();
+
+        len = snprintf( text, sizeof(text), "%llu.%02llu %llu.%02llu\n", ms / 1000, ms / 10 % 100, ms / 1000 * 4,
+                        ms / 10 % 100 );
+    }
+    else if (!strcmp( name, "loadavg" ))
+        len = snprintf( text, sizeof(text), "0.50 0.40 0.30 1/600 %lu\n", GetCurrentProcessId() );
+    else if (!strcmp( name, "meminfo" ))
+    {
+        MEMORYSTATUSEX mem = { sizeof(mem) };
+
+        GlobalMemoryStatusEx( &mem );
+        len = snprintf( text, sizeof(text), "MemTotal:       %llu kB\nMemFree:        %llu kB\nMemAvailable:   %llu kB\n"
+                        "Buffers:               0 kB\nCached:                0 kB\nSwapCached:            0 kB\n"
+                        "SwapTotal:             0 kB\nSwapFree:              0 kB\n",
+                        mem.ullTotalPhys / 1024, mem.ullAvailPhys / 1024, mem.ullAvailPhys / 1024 );
+    }
+    else if (!strcmp( name, "stat" ) || !strcmp( name, "cpuinfo" ))
+    {
+        SYSTEM_INFO info;
+        unsigned int i;
+        char brand[49];
+
+        GetSystemInfo( &info );
+        if (!strcmp( name, "stat" ))
+        {
+            FILETIME now;
+            unsigned long long t;
+
+            GetSystemTimeAsFileTime( &now );
+            t = (((unsigned long long)now.dwHighDateTime << 32 | now.dwLowDateTime) - 116444736000000000ull) / 10000000;
+            len = snprintf( text, sizeof(text), "cpu  1000 0 1000 100000 0 0 0 0 0 0\n" );
+            for (i = 0; i < info.dwNumberOfProcessors && len < (int)sizeof(text) - 200; i++)
+                len += snprintf( text + len, sizeof(text) - len, "cpu%u 100 0 100 10000 0 0 0 0 0 0\n", i );
+            len += snprintf( text + len, sizeof(text) - len, "ctxt 100000\nbtime %llu\nprocesses 1000\n"
+                             "procs_running 1\nprocs_blocked 0\n", t - GetTickCount64() / 1000 );
+            return append_text( f, text, len );
+        }
+        cpu_brand( brand );
+        for (i = 0; i < info.dwNumberOfProcessors; i++)
+        {
+            len = snprintf( text, sizeof(text), "processor\t: %u\nvendor_id\t: GenuineIntel\ncpu family\t: 6\n"
+                            "model\t\t: 85\nmodel name\t: %s\nstepping\t: 4\ncpu MHz\t\t: 3000.000\n"
+                            "cache size\t: 4096 KB\nphysical id\t: 0\nsiblings\t: %lu\ncore id\t\t: %u\n"
+                            "cpu cores\t: %lu\napicid\t\t: %u\nfpu\t\t: yes\nfpu_exception\t: yes\ncpuid level\t: 13\n"
+                            "wp\t\t: yes\nflags\t\t: fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat "
+                            "pse36 clflush mmx fxsr sse sse2 ht syscall nx lm constant_tsc rep_good nopl pni pclmulqdq "
+                            "ssse3 cx16 sse4_1 sse4_2 popcnt aes xsave avx hypervisor lahf_lm\nbogomips\t: 6000.00\n"
+                            "clflush size\t: 64\ncache_alignment\t: 64\naddress sizes\t: 48 bits physical, 48 bits virtual\n"
+                            "power management:\n\n", i, brand, info.dwNumberOfProcessors, i, info.dwNumberOfProcessors, i );
+            if (!append_text( f, text, len )) return 0;
+        }
+        return 1;
+    }
+    else return 0;
+    return append_text( f, text, len );
+}
+
+/* /proc/<pid> of a child of fork: a Wine process this process started and traces */
+static int make_child_file( struct fd_entry *f, const char *entry )
+{
+    char text[1024], state;
+    int pid, traced, len;
+    unsigned long windows_pid;
+    const char *name;
+
+    if (sscanf( entry, "%d-%n", &pid, &len ) != 1 || !linuxhost_child_info( pid, &state, &traced, &windows_pid ))
+        return 0;
+    name = entry + len;
+    if (!strcmp( name, "comm" )) return append_text( f, "wine64-preload\n", 15 );
+    if (!strcmp( name, "status" ))
+    {
+        len = snprintf( text, sizeof(text), "Name:\twine64-preload\nUmask:\t0022\nState:\t%c (%s)\nTgid:\t%d\nNgid:\t0\n"
+                        "Pid:\t%d\nPPid:\t%lu\nTracerPid:\t%lu\nUid:\t1000\t1000\t1000\t1000\n"
+                        "Gid:\t1000\t1000\t1000\t1000\nFDSize:\t64\nGroups:\t\nThreads:\t1\nSeccomp:\t0\n", state,
+                        state == 't' ? "tracing stop" : state == 'T' ? "stopped" : state == 'Z' ? "zombie" : "sleeping",
+                        pid, pid, GetCurrentProcessId(), traced ? GetCurrentProcessId() : 0 );
+        return append_text( f, text, len );
+    }
+    if (!strcmp( name, "stat" ))
+    {
+        len = snprintf( text, sizeof(text), "%d (wine64-preload) %c %lu %d %d 0 -1 4194560 0 0 0 0 0 0 0 0 20 0 1 0 "
+                        "200 0 0 18446744073709551615 0 0 0 0 0 0 0 4096 0 0 0 0 17 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n",
+                        pid, state, GetCurrentProcessId(), pid, pid );
+        return append_text( f, text, len );
+    }
+    return 0;
+}
+
+/* the names in a made-up directory */
+int linuxhost_proc_dir( const char *path, char *names, size_t size )
+{
+    char buf[4096];
+    size_t len = 0, n;
+    int count = 0, pid, i;
+    const char *rest = NULL;
+    char prefix[32];
+
+#define ADD(...) do { n = snprintf( buf + len, sizeof(buf) - len, __VA_ARGS__ ); \
+                      if (len + n + 1 < sizeof(buf)) { len += n + 1; count++; } } while (0)
+    snprintf( prefix, sizeof(prefix), "/proc/%lu", GetCurrentProcessId() );
+    if (!strcmp( path, "/proc" ) || !strcmp( path, "/proc/" ))
+    {
+        char state;
+        int traced;
+        unsigned long windows_pid;
+
+        ADD( "1" );
+        ADD( "%lu", GetCurrentProcessId() );
+        for (pid = 0x7000; pid < 0x7010; pid++)
+            if (linuxhost_child_info( pid, &state, &traced, &windows_pid )) ADD( "%d", pid );
+        ADD( "self" );
+        ADD( "thread-self" );
+        ADD( "cpuinfo" ); ADD( "meminfo" ); ADD( "mounts" ); ADD( "stat" ); ADD( "uptime" ); ADD( "version" );
+        ADD( "loadavg" ); ADD( "filesystems" ); ADD( "modules" ); ADD( "cmdline" ); ADD( "sys" ); ADD( "bus" );
+    }
+    else if (!strcmp( path, "/proc/self" ) || !strcmp( path, prefix )) rest = "";
+    else if (!strncmp( path, "/proc/self/", 11 )) rest = path + 11;
+    else if (!strncmp( path, prefix, strlen( prefix ) ) && path[strlen( prefix )] == '/') rest = path + strlen( prefix ) + 1;
+    else if (!strcmp( path, "/sys/devices/virtual/dmi/id" ) || !strcmp( path, "/sys/class/dmi/id" ))
+    {
+        ADD( "board_name" ); ADD( "board_vendor" ); ADD( "board_version" ); ADD( "product_name" );
+        ADD( "product_family" ); ADD( "product_version" ); ADD( "sys_vendor" ); ADD( "chassis_vendor" );
+        ADD( "chassis_type" ); ADD( "chassis_version" ); ADD( "bios_vendor" ); ADD( "bios_version" ); ADD( "bios_date" );
+    }
+    else return -1;
+    if (rest)
+    {
+        if (!*rest)
+        {
+            static const char *const entries[] = { "fd", "task", "maps", "status", "stat", "statm", "comm", "cmdline",
+                                                   "environ", "exe", "cwd", "root", "mounts", "mountinfo", "cgroup",
+                                                   "limits", "auxv", "loginuid", "sessionid", "wchan", "attr" };
+
+            for (i = 0; i < (int)ARRAY_SIZE(entries); i++) ADD( "%s", entries[i] );
+        }
+        else if (!strcmp( rest, "fd" ))
+        {
+            ADD( "0" ); ADD( "1" ); ADD( "2" );
+            for (i = FIRST_FD; i < MAX_FDS; i++) if (fds[i].kind != FD_FREE) ADD( "%d", i );
+        }
+        else if (!strcmp( rest, "task" )) ADD( "%lu", GetCurrentThreadId() );
+        else return -1;
+    }
+#undef ADD
+    memcpy( names, buf, min( len, size ) );
+    return count;
+}
+
 /* the /proc files of this process the host makes up; 0 if it does not provide this one */
 static int make_proc_file( struct fd_entry *f, const char *entry )
 {
@@ -453,16 +769,6 @@ static int make_proc_file( struct fd_entry *f, const char *entry )
     int len;
 
     if (!strcmp( entry, "maps" )) return make_maps( f );
-    /* the machine as it is: a Mac, its disk at /, and no PCI devices a Linux kernel would list */
-    if (!strcmp( entry, "sys-mounts" ))
-    {
-        static const char mounts[] = "/dev/disk3s1 / apfs rw,relatime 0 0\nproc /proc proc rw,nosuid,nodev,noexec 0 0\n"
-                                     "sysfs /sys sysfs rw,nosuid,nodev,noexec 0 0\ntmpfs /tmp tmpfs rw,nosuid,nodev 0 0\n";
-        return append_text( f, mounts, sizeof(mounts) - 1 );
-    }
-    if (!strcmp( entry, "sys-pci" )) return 1;
-    if (!strcmp( entry, "sys-board" ) || !strcmp( entry, "sys-product" )) return append_text( f, "Mac\n", 4 );
-    if (!strcmp( entry, "sys-vendor" )) return append_text( f, "Apple Inc.\n", 11 );
     if (!strcmp( entry, "init-comm" )) return append_text( f, "systemd\n", 8 );
     if (!strcmp( entry, "init-cmdline" )) return append_text( f, "/sbin/init\0splash\0", 18 );
     if (!strcmp( entry, "init-status" ))
@@ -478,6 +784,63 @@ static int make_proc_file( struct fd_entry *f, const char *entry )
                         "18446744073709551615 0 0 0 0 0 0 671173123 4096 1260 0 0 0 17 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n" );
         return append_text( f, text, len );
     }
+    if (!strncmp( entry, "child-", 6 )) return make_child_file( f, entry + 6 );
+    if (!strncmp( entry, "dmi-", 4 )) return make_dmi_file( f, entry + 4 );
+    if (!strncmp( entry, "sys-", 4 )) return make_machine_file( f, entry + 4 );
+    if (!strcmp( entry, "environ" ))
+    {
+        /* the Windows environment, which under Wine holds the Unix one */
+        WCHAR *env = GetEnvironmentStringsW(), *p;
+
+        for (p = env; p && *p; p += wcslen( p ) + 1)
+        {
+            if (*p == '=') continue;  /* a drive's current directory */
+            len = WideCharToMultiByte( CP_UTF8, 0, p, -1, text, sizeof(text), NULL, NULL );
+            if (len > 0 && !append_text( f, text, len )) break;
+        }
+        FreeEnvironmentStringsW( env );
+        return 1;
+    }
+    if (!strcmp( entry, "cgroup" )) return append_text( f, "0::/user.slice/user-1000.slice/session-2.scope\n", 48 );
+    if (!strcmp( entry, "mounts" )) return make_machine_file( f, "mounts" );
+    if (!strcmp( entry, "mountinfo" ))
+    {
+        static const char mountinfo[] = "22 1 1:4 / / rw,relatime shared:1 - apfs /dev/disk3s1 rw\n"
+                                        "23 22 0:21 / /proc rw,nosuid,nodev,noexec,relatime shared:12 - proc proc rw\n"
+                                        "24 22 0:22 / /sys rw,nosuid,nodev,noexec,relatime shared:7 - sysfs sysfs rw\n"
+                                        "25 22 0:23 / /tmp rw,nosuid,nodev shared:14 - tmpfs tmpfs rw\n";
+        return append_text( f, mountinfo, sizeof(mountinfo) - 1 );
+    }
+    if (!strcmp( entry, "limits" ))
+    {
+        static const char limits[] =
+            "Limit                     Soft Limit           Hard Limit           Units     \n"
+            "Max cpu time              unlimited            unlimited            seconds   \n"
+            "Max file size             unlimited            unlimited            bytes     \n"
+            "Max data size             unlimited            unlimited            bytes     \n"
+            "Max stack size            8388608              unlimited            bytes     \n"
+            "Max core file size        0                    unlimited            bytes     \n"
+            "Max resident set          unlimited            unlimited            bytes     \n"
+            "Max processes             63432                63432                processes \n"
+            "Max open files            1024                 524288               files     \n"
+            "Max locked memory         8388608              8388608              bytes     \n"
+            "Max address space         unlimited            unlimited            bytes     \n"
+            "Max file locks            unlimited            unlimited            locks     \n"
+            "Max pending signals       63432                63432                signals   \n"
+            "Max msgqueue size         819200               819200               bytes     \n"
+            "Max nice priority         0                    0                    \n"
+            "Max realtime priority     0                    0                    \n"
+            "Max realtime timeout      unlimited            unlimited            us        \n";
+        return append_text( f, limits, sizeof(limits) - 1 );
+    }
+    if (!strcmp( entry, "statm" )) return append_text( f, "65536 16384 4096 512 0 32768 0\n", 31 );
+    if (!strcmp( entry, "loginuid" )) return append_text( f, "1000", 4 );
+    if (!strcmp( entry, "sessionid" )) return append_text( f, "2", 1 );
+    if (!strcmp( entry, "oom_score_adj" ) || !strcmp( entry, "oom_score" )) return append_text( f, "0\n", 2 );
+    if (!strcmp( entry, "wchan" )) return append_text( f, "0", 1 );
+    if (!strcmp( entry, "personality" )) return append_text( f, "00000000\n", 9 );
+    if (!strcmp( entry, "attr/current" )) return append_text( f, "unconfined\n", 11 );
+    if (!strcmp( entry, "auxv" )) return append_text( f, "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0", 16 );  /* AT_NULL */
     if (!strcmp( entry, "comm" )) return append_text( f, "start_protected\n", 16 );
     if (!strcmp( entry, "status" ))
     {
@@ -550,6 +913,16 @@ long long linuxhost_open( const char *path, int flags )
     int fd;
 
     if (!path) return -LX_EINVAL;
+    if (!strcmp( path, "/dev/urandom" ) || !strcmp( path, "/dev/random" ) || !strcmp( path, "/dev/null" ) ||
+        !strcmp( path, "/dev/zero" ))
+    {
+        if ((fd = alloc_fd( path )) < 0) return fd;
+        fds[fd].kind = FD_DEVICE;
+        fds[fd].device = path[5] == 'n' ? DEV_NULL : path[5] == 'z' ? DEV_ZERO : DEV_RANDOM;
+        fds[fd].flags = flags;
+        linuxhost_trace( "open %s: %d\n", path, fd );
+        return fd;
+    }
     if (linuxhost_is_proc_path( path ))
     {
         if (!(entry = proc_self( path )))
@@ -616,6 +989,14 @@ long long linuxhost_read( int fd, void *buf, size_t size )
     size_t n;
 
     if (!f) return -LX_EBADF;
+    if (f->kind == FD_SOCKET) return linuxhost_socket_io( (UINT_PTR)f->handle, buf, size, 0 );
+    if (f->kind == FD_DEVICE)
+    {
+        if (f->device == DEV_NULL) return 0;
+        if (f->device == DEV_ZERO) memset( buf, 0, size );
+        else if (BCryptGenRandom( NULL, buf, (ULONG)min( size, 0x7fffffff ), BCRYPT_USE_SYSTEM_PREFERRED_RNG )) return -5;
+        return min( size, 0x7fffffff );
+    }
     if (f->kind == FD_HANDLE)
     {
         DWORD got;
@@ -646,6 +1027,8 @@ long long linuxhost_write( int fd, const void *buf, size_t size )
     struct fd_entry *f = get_fd( fd );
 
     if (!f) return -LX_EBADF;
+    if (f->kind == FD_SOCKET) return linuxhost_socket_io( (UINT_PTR)f->handle, (void *)buf, size, 1 );
+    if (f->kind == FD_DEVICE) return size;
     if (f->kind == FD_MEMORY && (f->seals & 8)) return -1;  /* EPERM: F_SEAL_WRITE */
     if (f->kind == FD_MEMORY && (f->seals & 4) && f->pos + size > f->size) return -1;  /* F_SEAL_GROW */
     if (f->kind == FD_HANDLE)
@@ -696,7 +1079,9 @@ long long linuxhost_close( int fd )
     if (!f) return -LX_EBADF;
     EnterCriticalSection( &fd_lock );
     if (f->kind == FD_HANDLE) CloseHandle( f->handle );
-    free( f->data );
+    if (f->kind == FD_SOCKET) linuxhost_socket_close( (UINT_PTR)f->handle );
+    if (f->kind != FD_EPOLL) free( f->data );
+    else linuxhost_epoll_free( f->data );
     memset( f, 0, sizeof(*f) );
     LeaveCriticalSection( &fd_lock );
     return 0;
@@ -757,7 +1142,8 @@ long long linuxhost_fstat( int fd, void *buf )
     memset( st, 0, sizeof(*st) );
     st->ino = fd;
     st->nlink = 1;
-    st->mode = 0100600;
+    st->mode = f->kind == FD_DEVICE ? 0020666 : f->kind == FD_SOCKET ? 0140777 : 0100600;
+    if (f->kind == FD_DEVICE) st->rdev = f->device == DEV_NULL ? 0x103 : f->device == DEV_ZERO ? 0x105 : 0x109;
     st->size = f->size;
     st->blksize = 4096;
     st->blocks = (f->size + 511) / 512;
@@ -1096,7 +1482,6 @@ static void import_fds(void)
 
 int linuxhost_process_init( const struct libc_export *exports, unsigned int count )
 {
-    InitializeCriticalSection( &fd_lock );
     import_fds();
     /* glibc's canary has a zero low byte, so string functions cannot copy past it */
     while (!(stack_guard >> 8)) stack_guard = ((unsigned long long)rand() << 40 ^ (unsigned long long)rand() << 20 ^

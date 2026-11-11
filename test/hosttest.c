@@ -1,6 +1,7 @@
 /* Test of the Linux module host: an x86_64 Windows program that loads Linux x86_64 libraries.
  *
  *   hosttest.exe hello <path to hello.so>     load the test library and call into it
+ *   hosttest.exe extras <path to extras.so>   the unwinder, and glibc's sockets, threads, locales and files
  *   hosttest.exe load <library.so>...         load libraries, report what they import, run their constructors
  *   hosttest.exe inspect <library.so>...      the same, without running any of their code
  *
@@ -90,6 +91,49 @@ static int test_hello( const char *path )
     return failures;
 }
 
+static int test_extras( const char *path )
+{
+    static const char *const checks[] = { "rand (glibc's sequence)", "mbrtowc", "wcrtomb", "socket send and recv",
+                                           "poll", "epoll", "glob /proc/self/fd", "/dev/urandom", "/proc/cpuinfo",
+                                           "pthread_create and join", "mmap and munmap", "the C locale's tables" };
+    typedef long (SYSV *test_fn)( void );
+    char err[256];
+    struct elf_module *module = elf_load( path, linuxhost_resolve, NULL, err, sizeof(err) );
+    test_fn unwind_test, backtrace_test, libc_test;
+    int failures = 0;
+    unsigned int i;
+    long r;
+
+    if (!module)
+    {
+        printf( "FAIL  load: %s\n", err );
+        return 1;
+    }
+    failures += report( module );
+    elf_run_constructors( module );
+    unwind_test = elf_symbol( module, "unwind_test" );
+    backtrace_test = elf_symbol( module, "backtrace_test" );
+    libc_test = elf_symbol( module, "libc_test" );
+    if (!unwind_test || !backtrace_test || !libc_test)
+    {
+        printf( "FAIL  exports not found\n" );
+        return 1;
+    }
+    r = unwind_test();
+    printf( "%s  exception through a cleanup to a handler: %ld (expect 7045)\n", r == 7045 ? "ok  " : "FAIL", r );
+    failures += r != 7045;
+    r = backtrace_test();
+    printf( "%s  backtrace: %ld (expect 502: the end of the stack after two frames)\n", r == 502 ? "ok  " : "FAIL", r );
+    failures += r != 502;
+    r = libc_test();
+    for (i = 0; i < ARRAY_SIZE(checks); i++)
+    {
+        printf( "%s  %s\n", (r >> i) & 1 ? "ok  " : "FAIL", checks[i] );
+        failures += !((r >> i) & 1);
+    }
+    return failures;
+}
+
 static int test_load( int count, char **paths, int run )
 {
     char err[256];
@@ -133,11 +177,12 @@ int main( int argc, char **argv )
 
     setvbuf( stdout, NULL, _IONBF, 0 );
     if (argc >= 3 && !strcmp( argv[1], "hello" )) failures = test_hello( argv[2] );
+    else if (argc >= 3 && !strcmp( argv[1], "extras" )) failures = test_extras( argv[2] );
     else if (argc >= 3 && !strcmp( argv[1], "load" )) failures = test_load( argc - 2, argv + 2, 1 );
     else if (argc >= 3 && !strcmp( argv[1], "inspect" )) failures = test_load( argc - 2, argv + 2, 0 );
     else
     {
-        printf( "usage: hosttest hello <hello.so> | load <library.so>... | inspect <library.so>...\n" );
+        printf( "usage: hosttest hello <hello.so> | extras <extras.so> | load <library.so>... | inspect <library.so>...\n" );
         return 2;
     }
     printf( "%d failure(s); the host provides %u glibc functions\n", failures, linuxhost_function_count() );

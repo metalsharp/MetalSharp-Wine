@@ -13,7 +13,7 @@ typedef struct { int64_t tag; uint64_t val; } Elf64_Dyn;
 typedef struct { uint32_t name; uint8_t info, other; uint16_t shndx; uint64_t value, size; } Elf64_Sym;
 typedef struct { uint64_t offset, info; int64_t addend; } Elf64_Rela;
 
-enum { PT_LOAD = 1, PT_DYNAMIC = 2, PT_TLS = 7 };
+enum { PT_LOAD = 1, PT_DYNAMIC = 2, PT_TLS = 7, PT_GNU_EH_FRAME = 0x6474e550 };
 enum { DT_NEEDED = 1, DT_PLTRELSZ = 2, DT_HASH = 4, DT_STRTAB = 5, DT_SYMTAB = 6, DT_RELA = 7, DT_RELASZ = 8,
        DT_INIT = 12, DT_SONAME = 14, DT_JMPREL = 23, DT_INIT_ARRAY = 25, DT_INIT_ARRAYSZ = 27, DT_RELRSZ = 35,
        DT_RELR = 36, DT_GNU_HASH = 0x6ffffef5 };
@@ -37,6 +37,9 @@ struct elf_module
     unsigned long tls_id;          /* 1-based, what DTPMOD64 stores */
     DWORD tls_slot;
     int constructed;
+    const uint8_t *eh_frame_hdr;   /* PT_GNU_EH_FRAME, for the unwinder */
+    Elf64_Phdr *phdr;              /* a copy of the program headers, for dl_iterate_phdr */
+    unsigned int phnum;
     struct elf_stats stats;
 };
 
@@ -428,6 +431,11 @@ struct elf_module *elf_load_buffer( const char *path, const uint8_t *file, size_
         goto failed;
     }
     module->base = module->mapping - low;
+    if ((module->phdr = malloc( ehdr->phnum * sizeof(*phdr) )))
+    {
+        memcpy( module->phdr, phdr, ehdr->phnum * sizeof(*phdr) );
+        module->phnum = ehdr->phnum;
+    }
     file_name = strrchr( path, '/' );
     if (!file_name) file_name = strrchr( path, '\\' );
     snprintf( module->name, sizeof(module->name), "%s", file_name ? file_name + 1 : path );
@@ -449,6 +457,9 @@ struct elf_module *elf_load_buffer( const char *path, const uint8_t *file, size_
             module->tls_memsz = phdr[i].memsz;
             module->tls_id = next_tls_id++;
             module->tls_slot = TlsAlloc();
+            break;
+        case PT_GNU_EH_FRAME:
+            module->eh_frame_hdr = module->base + phdr[i].vaddr;
             break;
         }
     }
@@ -499,6 +510,7 @@ struct elf_module *elf_load_buffer( const char *path, const uint8_t *file, size_
 
 failed:
     if (module && module->mapping) VirtualFree( module->mapping, 0, MEM_RELEASE );
+    if (module) free( module->phdr );
     free( module );
     return NULL;
 }
@@ -547,4 +559,17 @@ void elf_get_range( const struct elf_module *module, void **base, size_t *size )
 {
     *base = module->mapping;
     *size = module->size;
+}
+
+const void *elf_eh_frame_hdr( const struct elf_module *module ) { return module->eh_frame_hdr; }
+
+int elf_iterate_phdr( int (*callback)( struct elf_module *module, void *base, const char *name, const void *phdr,
+                                        unsigned int phnum, unsigned long tls_id, void *data ), void *data )
+{
+    struct elf_module *module;
+    int ret = 0;
+
+    for (module = modules; module && !ret; module = module->next)
+        ret = callback( module, module->base, module->name, module->phdr, module->phnum, module->tls_id, data );
+    return ret;
 }

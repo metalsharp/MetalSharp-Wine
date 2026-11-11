@@ -53,6 +53,13 @@ struct elf_module *elf_module_by_tls_id( unsigned long id );
 /* the loaded module containing an address, or NULL */
 struct elf_module *elf_find_address( const void *addr );
 
+/* the module's .eh_frame_hdr (PT_GNU_EH_FRAME), or NULL */
+const void *elf_eh_frame_hdr( const struct elf_module *module );
+
+/* calls callback for each loaded module (base is the load bias), until it returns nonzero; returns that */
+int elf_iterate_phdr( int (*callback)( struct elf_module *module, void *base, const char *name, const void *phdr,
+                                        unsigned int phnum, unsigned long tls_id, void *data ), void *data );
+
 /* a loaded module by file name or soname, or NULL */
 struct elf_module *elf_find( const char *name );
 

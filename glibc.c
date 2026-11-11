@@ -353,20 +353,30 @@ const struct libc_export *linuxhost_libc_exports( unsigned int *count )
     return exports;
 }
 
+static const struct libc_function *const tables[] =
+{
+    linuxhost_libc_functions, linuxhost_libc_io_functions, linuxhost_fork_functions, linuxhost_thread_functions,
+    linuxhost_net_functions, linuxhost_misc_functions, linuxhost_unwind_functions,
+};
+
 void *linuxhost_resolve( const char *name, void *context )
 {
     const struct libc_function *f;
     unsigned int i;
 
-    for (f = linuxhost_libc_functions; f->name; f++) if (!strcmp( f->name, name )) return f->function;
-    for (f = linuxhost_libc_io_functions; f->name; f++) if (!strcmp( f->name, name )) return f->function;
-    for (f = linuxhost_fork_functions; f->name; f++) if (!strcmp( f->name, name )) return f->function;
+    for (i = 0; i < sizeof(tables) / sizeof(tables[0]); i++)
+        for (f = tables[i]; f->name; f++) if (!strcmp( f->name, name )) return f->function;
     for (i = 0; i < sizeof(functions) / sizeof(functions[0]); i++)
         if (!strcmp( functions[i].name, name )) return functions[i].function;
     return NULL;
 }
 
+/* how many names the resolver answers (a name in two tables counts twice) */
 unsigned int linuxhost_function_count(void)
 {
-    return sizeof(functions) / sizeof(functions[0]);
+    const struct libc_function *f;
+    unsigned int i, count = sizeof(functions) / sizeof(functions[0]);
+
+    for (i = 0; i < sizeof(tables) / sizeof(tables[0]); i++) for (f = tables[i]; f->name; f++) count++;
+    return count;
 }

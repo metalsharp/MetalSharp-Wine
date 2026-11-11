@@ -155,6 +155,23 @@ static struct child *find_child( int pid )
     return NULL;
 }
 
+/* what /proc/<pid> shows of a child: 0 if pid is not one; its state letter and tracer as Linux shows them */
+int linuxhost_child_info( int pid, char *state, int *traced, unsigned long *windows_pid )
+{
+    struct child *c = find_child( pid );
+
+    if (!c || c->reaped) return 0;
+    *traced = c->traced;
+    *windows_pid = c->process ? GetProcessId( c->process ) : 0;
+    switch (c->state)
+    {
+    case CHILD_STOPPED: *state = c->traced ? 't' : 'T'; break;
+    case CHILD_EXITED: *state = 'Z'; break;
+    default: *state = c->suspended && c->traced ? 't' : 'S'; break;
+    }
+    return 1;
+}
+
 /* fork: the parent's context is saved and the child's branch runs (fork returns 0) */
 SYSV int lx_fork_impl(void)
 {
