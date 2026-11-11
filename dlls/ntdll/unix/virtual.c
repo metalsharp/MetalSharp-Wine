@@ -1792,6 +1792,38 @@ static BOOL set_vprot( struct file_view *view, void *base, size_t size, BYTE vpr
 }
 
 
+#ifndef __linux__
+/***********************************************************************
+ *           make_pages_private
+ *
+ * Replace the host pages of a range of a shared, read-only file view with private
+ * copies of their contents, so that they can be made writable without writing to the
+ * file. map_file_into_view() maps read-only views shared outside Linux, because there
+ * a private file mapping does not see later changes to the file; the host refuses
+ * write access to a shared mapping of a file opened read-only.
+ */
+static BOOL make_pages_private( void *base, size_t size )
+{
+    char *addr = ROUND_ADDR( base, host_page_mask );
+    void *copy;
+
+    size = ROUND_SIZE( base, size, host_page_mask );
+    if ((copy = mmap( NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0 )) == MAP_FAILED)
+        return FALSE;
+    if (mprotect( addr, size, PROT_READ ) ||
+        (memcpy( copy, addr, size ),
+         anon_mmap_fixed( addr, size, PROT_READ | PROT_WRITE, 0 ) != addr))
+    {
+        munmap( copy, size );
+        return FALSE;
+    }
+    memcpy( addr, copy, size );
+    munmap( copy, size );
+    return TRUE;
+}
+#endif
+
+
 /***********************************************************************
  *           set_protection
  *
@@ -1813,7 +1845,18 @@ static NTSTATUS set_protection( struct file_view *view, void *base, SIZE_T size,
         if ((view->protect & access) != access) return STATUS_INVALID_PAGE_PROTECTION;
     }
 
-    if (!set_vprot( view, base, size, vprot | VPROT_COMMITTED )) return STATUS_ACCESS_DENIED;
+    if (!set_vprot( view, base, size, vprot | VPROT_COMMITTED ))
+    {
+#ifndef __linux__
+        /* copy-on-write asked of a read-only view, which is a shared mapping here */
+        if ((vprot & VPROT_WRITECOPY) && !is_view_valloc( view ) &&
+            !(view->protect & (SEC_IMAGE | VPROT_WRITE | VPROT_WRITECOPY)) &&
+            make_pages_private( base, size ) &&
+            set_vprot( view, base, size, vprot | VPROT_COMMITTED ))
+            return STATUS_SUCCESS;
+#endif
+        return STATUS_ACCESS_DENIED;
+    }
     return STATUS_SUCCESS;
 }
 
