@@ -1,0 +1,90 @@
+From e71662d94eaa39fd29e50615579f473129f58e2e Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Wed, 11 Nov 2026 11:20:46 -0700
+Subject: [PATCH 160/161] ntdll: Load the Linux module host into programs that
+ load Linux code themselves.
+
+Easy Anti-Cheat's EOS bootstrapper loads EAC's Linux module into its own process on Proton, with Linux system calls and glibc's dlopen. kernelbase marks it (PROTON_LINUX_HOST) by its product name, and ntdll loads linuxhost.dll, x86_64, into it before its code runs; the host provides those.
+---
+ dlls/kernelbase/process.c |  9 +++++++++
+ dlls/ntdll/loader.c       | 30 ++++++++++++++++++++++++++++++
+ 2 files changed, 39 insertions(+)
+
+diff --git a/dlls/kernelbase/process.c b/dlls/kernelbase/process.c
+index 1c00a2bb534..73193dad932 100644
+--- a/dlls/kernelbase/process.c
++++ b/dlls/kernelbase/process.c
+@@ -794,6 +794,7 @@ BOOL WINAPI DECLSPEC_HOTPATCH CreateProcessInternalW( HANDLE token, const WCHAR
+       - We don't do this check in ntdll itself because it's harder to get the product name there
+       - we don't overwrite WINEDLLOVERRIDES because it's fetched from the unix environment */
+     if (orig_app_name || (product_name && !strcmp( product_name, "EasyAntiCheat Launcher" )) ||
++        (product_name && !strcmp( product_name, "Easy Anti-Cheat Bootstrapper (EOS)" )) ||
+         GetEnvironmentVariableW( L"PROTON_EAC_LAUNCHER_PROCESS", NULL, 0 ))
+     {
+         UNICODE_STRING var, value;
+@@ -812,6 +813,14 @@ BOOL WINAPI DECLSPEC_HOTPATCH CreateProcessInternalW( HANDLE token, const WCHAR
+         RtlSetEnvironmentVariable( &new_env, &var,
+                                    product_name && !strcmp( product_name, "EasyAntiCheat Launcher" ) ? &value : NULL );
+ 
++        /* Proton on macOS: the EOS bootstrapper loads EAC's Linux module into itself, through the Linux module
++         * host (ntdll's load_linux_host) */
++        if (product_name && !strcmp( product_name, "Easy Anti-Cheat Bootstrapper (EOS)" ))
++        {
++            RtlInitUnicodeString( &var, L"PROTON_LINUX_HOST" );
++            RtlSetEnvironmentVariable( &new_env, &var, &value );
++        }
++
+         if (orig_app_name)
+         {
+             RtlInitUnicodeString( &var, L"PROTON_ORIG_LAUNCHER_NAME" );
+diff --git a/dlls/ntdll/loader.c b/dlls/ntdll/loader.c
+index f3fbd6b51d7..2bd7345e615 100644
+--- a/dlls/ntdll/loader.c
++++ b/dlls/ntdll/loader.c
+@@ -4303,6 +4303,35 @@ PIMAGE_NT_HEADERS WINAPI RtlImageNtHeader(HMODULE hModule)
+     return ret;
+ }
+ 
++/***********************************************************************
++ *           load_linux_host
++ *
++ * Proton on macOS: a program that loads Linux code into itself, as Easy Anti-Cheat's EOS bootstrapper does on
++ * Proton, gets the Linux module host (linuxhost.dll, x86_64) before its own code runs. kernelbase sets
++ * PROTON_LINUX_HOST for such a program; its value may also be the path of the host, to test another one.
++ */
++static void load_linux_host( CONTEXT *context )
++{
++#if defined(__x86_64__) || defined(__arm64ec__)
++    WCHAR buffer[MAX_PATH];
++    UNICODE_STRING name = RTL_CONSTANT_STRING( L"PROTON_LINUX_HOST" ), value;
++    WINE_MODREF *host;
++    NTSTATUS status;
++
++    if (NtCurrentTeb()->WowTebOffset) return;
++    value.Buffer = buffer;
++    value.Length = 0;
++    value.MaximumLength = sizeof(buffer) - sizeof(WCHAR);
++    if (RtlQueryEnvironmentVariable_U( NULL, &name, &value )) return;
++    buffer[value.Length / sizeof(WCHAR)] = 0;
++    status = load_dll( NULL, (wcschr( buffer, '\\' ) ? buffer : L"linuxhost.dll"), 0, &host, FALSE );
++    if (!status) status = process_attach( host->ldr.DdagNode, context );
++    if (status) ERR( "could not load the Linux module host %s, status %lx\n", debugstr_w(buffer), status );
++    else TRACE( "loaded the Linux module host\n" );
++#endif
++}
++
++
+ /***********************************************************************
+  *           load_global_options
+  */
+@@ -4769,6 +4798,7 @@ void loader_init( CONTEXT *context, void **entry )
+                  debugstr_w(NtCurrentTeb()->Peb->ProcessParameters->ImagePathName.Buffer), status );
+             NtTerminateProcess( GetCurrentProcess(), status );
+         }
++        load_linux_host( context );
+         release_address_space();
+         if (wm->ldr.TlsIndex == -1) call_tls_callbacks( wm->ldr.DllBase, DLL_PROCESS_ATTACH );
+         if (wm->ldr.ActivationContext) RtlDeactivateActivationContext( 0, cookie );
+-- 
+2.54.0 (Apple Git-157)
+

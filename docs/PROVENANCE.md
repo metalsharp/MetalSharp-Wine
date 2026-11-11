@@ -65,15 +65,19 @@ Some macOS display, painting and wined3d fixes come from the Wine in CodeWeavers
 
 ## Proton
 
-Patches 0141–0143 come from the port of Valve's [Proton](https://github.com/ValveSoftware/Proton) 11.0 to macOS in [metalsharp/Proton](https://github.com/metalsharp/Proton), branch `proton_11.0-macos`.
+Patches 0141–0143 and 0159–0161 come from the port of Valve's [Proton](https://github.com/ValveSoftware/Proton) 11.0 to macOS in [metalsharp/Proton](https://github.com/metalsharp/Proton), branch `proton_11.0-macos`.
 
 | Patch (`patches/wine/`) | Origin |
 | --- | --- |
 | 0141 per-game rules | Written for the port. The rules file it reads (`resources/appcompat.env`) is generated from Proton's launcher, `proton` (BSD-3-Clause, Valve Corporation), by metalsharp/Proton's `appcompat/extract.py` |
 | 0142 EasyAntiCheat and BattlEye | The final state of 17 commits in [Valve's Wine](https://github.com/ValveSoftware/wine) (LGPL 2.1 or later), ported to Wine 11.20 as one commit; `programs/belauncher` is Valve's, unchanged. metalsharp/Proton's `ledger/` names the Valve commits |
 | 0143 Linux system calls | Written for the port's Linux module host |
+| 0159 anti-cheat runtime exports | Valve's Wine: the ntdll exports Valve's EasyAntiCheat and BattlEye runtimes import, ported to Wine 11.20 |
+| 0160–0161 loading the Linux module host | Written for the port's Linux module host |
 
 Patches 0144–0157 are fixes to MetalSharp Wine found by running Wine's test suite, and 0158 sets the version to 7.0.
+
+The Linux module host itself (`source/linuxhost`, built into `lib/linuxhost`) is written for the port and developed in metalsharp/Proton's `darwin/linuxhost`; the branch is that directory's history.
 
 ## Other upstream projects
 

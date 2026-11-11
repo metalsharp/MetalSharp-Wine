@@ -32,3 +32,7 @@
 	url = https://github.com/metalsharp/MetalSharp-Wine.git
 	branch = source/wine-x86_64
 	shallow = true
+[submodule "src/linuxhost"]
+	path = src/linuxhost
+	url = https://github.com/metalsharp/MetalSharp-Wine.git
+	branch = source/linuxhost
