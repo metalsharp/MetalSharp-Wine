@@ -51,6 +51,9 @@
 #ifdef HAVE_LIBPROCSTAT
 # include <libprocstat.h>
 #endif
+#ifdef __APPLE__
+# include <libproc.h>
+#endif
 
 #include "ntstatus.h"
 #include "winternl.h"
@@ -1579,6 +1582,27 @@ DECL_HANDLER(get_process_vm_counters)
             }
             reply->peak_pagefile_usage = reply->pagefile_usage;
             fclose( f );
+        }
+        else set_error( STATUS_ACCESS_DENIED );
+#elif defined(__APPLE__)
+        struct proc_taskinfo info;
+        struct rusage_info_v4 usage;
+
+        if (proc_pidinfo( process->unix_pid, PROC_PIDTASKINFO, 0, &info, sizeof(info) ) == sizeof(info))
+        {
+            reply->virtual_size = info.pti_virtual_size;
+            reply->peak_virtual_size = info.pti_virtual_size;
+            reply->working_set_size = info.pti_resident_size;
+            reply->peak_working_set_size = info.pti_resident_size;
+            reply->pagefile_usage = info.pti_resident_size;
+            /* the footprint is what macOS charges the process for: its private and compressed memory */
+            if (!proc_pid_rusage( process->unix_pid, RUSAGE_INFO_V4, (rusage_info_t *)&usage ))
+            {
+                if (usage.ri_phys_footprint) reply->pagefile_usage = usage.ri_phys_footprint;
+                if (usage.ri_lifetime_max_phys_footprint > reply->peak_working_set_size)
+                    reply->peak_working_set_size = usage.ri_lifetime_max_phys_footprint;
+            }
+            reply->peak_pagefile_usage = reply->pagefile_usage;
         }
         else set_error( STATUS_ACCESS_DENIED );
 #elif defined(HAVE_LIBPROCSTAT)
