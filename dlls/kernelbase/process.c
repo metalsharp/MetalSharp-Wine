@@ -817,8 +817,12 @@ BOOL WINAPI DECLSPEC_HOTPATCH CreateProcessInternalW( HANDLE token, const WCHAR 
          * host (ntdll's load_linux_host) */
         if (product_name && !strcmp( product_name, "Easy Anti-Cheat Bootstrapper (EOS)" ))
         {
+            UNICODE_STRING set = { 0 };
+
+            /* keep a value already given: the path of another host, to test it */
             RtlInitUnicodeString( &var, L"PROTON_LINUX_HOST" );
-            RtlSetEnvironmentVariable( &new_env, &var, &value );
+            if (RtlQueryEnvironmentVariable_U( new_env, &var, &set ) == STATUS_VARIABLE_NOT_FOUND)
+                RtlSetEnvironmentVariable( &new_env, &var, &value );
         }
 
         if (orig_app_name)

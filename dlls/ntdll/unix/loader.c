@@ -354,6 +354,22 @@ static void set_dll_path(void)
             free( runtime );
         }
     }
+
+    /* default to the Linux module host bundled next to Wine's own modules (ntdll's load_linux_host) */
+    if (!getenv( "LINUXHOST_RUNTIME_DIR" ) && dll_dir)
+    {
+        char *runtime, *check;
+
+        if (asprintf( &runtime, "%s/../linuxhost", dll_dir ) != -1)
+        {
+            if (asprintf( &check, "%s/x86_64-windows/linuxhost.dll", runtime ) != -1)
+            {
+                if (!access( check, R_OK )) setenv( "LINUXHOST_RUNTIME_DIR", runtime, 0 );
+                free( check );
+            }
+            free( runtime );
+        }
+    }
 #endif
 
     if (path) for (p = path, count = 1; *p; p++) if (*p == ':') count++;

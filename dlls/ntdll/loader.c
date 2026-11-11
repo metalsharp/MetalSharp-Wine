@@ -4309,14 +4309,20 @@ PIMAGE_NT_HEADERS WINAPI RtlImageNtHeader(HMODULE hModule)
  * Proton on macOS: a program that loads Linux code into itself, as Easy Anti-Cheat's EOS bootstrapper does on
  * Proton, gets the Linux module host (linuxhost.dll, x86_64) before its own code runs. kernelbase sets
  * PROTON_LINUX_HOST for such a program; its value may also be the path of the host, to test another one.
+ * Otherwise the host is the one bundled with Wine, in LINUXHOST_RUNTIME_DIR (by default the bundle's
+ * lib/linuxhost), or else linuxhost.dll wherever the search for a DLL finds it.
  */
 static void load_linux_host( CONTEXT *context )
 {
 #if defined(__x86_64__) || defined(__arm64ec__)
-    WCHAR buffer[MAX_PATH];
+    static const WCHAR unix_prefixW[] = L"\\\\?\\unix";
+    static const WCHAR suffixW[] = L"\\x86_64-windows\\linuxhost.dll";
+    WCHAR buffer[MAX_PATH], dir[MAX_PATH];
     UNICODE_STRING name = RTL_CONSTANT_STRING( L"PROTON_LINUX_HOST" ), value;
+    UNICODE_STRING dir_name = RTL_CONSTANT_STRING( L"LINUXHOST_RUNTIME_DIR" ), dir_value;
     WINE_MODREF *host;
     NTSTATUS status;
+    WCHAR *p;
 
     if (NtCurrentTeb()->WowTebOffset) return;
     value.Buffer = buffer;
@@ -4324,7 +4330,23 @@ static void load_linux_host( CONTEXT *context )
     value.MaximumLength = sizeof(buffer) - sizeof(WCHAR);
     if (RtlQueryEnvironmentVariable_U( NULL, &name, &value )) return;
     buffer[value.Length / sizeof(WCHAR)] = 0;
-    status = load_dll( NULL, (wcschr( buffer, '\\' ) ? buffer : L"linuxhost.dll"), 0, &host, FALSE );
+    if (!wcschr( buffer, '\\' ))
+    {
+        dir_value.Buffer = dir;
+        dir_value.Length = 0;
+        dir_value.MaximumLength = sizeof(dir) - (wcslen( unix_prefixW ) + wcslen( suffixW ) + 1) * sizeof(WCHAR);
+        if (!RtlQueryEnvironmentVariable_U( NULL, &dir_name, &dir_value ) && dir_value.Length)
+        {
+            /* a Unix directory, as \\?\unix\<path> */
+            dir[dir_value.Length / sizeof(WCHAR)] = 0;
+            for (p = dir; *p; p++) if (*p == '/') *p = '\\';
+            wcscpy( buffer, unix_prefixW );
+            wcscat( buffer, dir );
+            wcscat( buffer, suffixW );
+        }
+        else wcscpy( buffer, L"linuxhost.dll" );
+    }
+    status = load_dll( NULL, buffer, 0, &host, FALSE );
     if (!status) status = process_attach( host->ldr.DdagNode, context );
     if (status) ERR( "could not load the Linux module host %s, status %lx\n", debugstr_w(buffer), status );
     else TRACE( "loaded the Linux module host\n" );
