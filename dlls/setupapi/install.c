@@ -171,6 +171,15 @@ static BOOL copy_files_callback( HINF hinf, PCWSTR field, void *arg )
             {
                 if (!SetupGetStringFieldW( &context, 1, p, MAX_PATH - (p - src_root), NULL )) p[-1] = 0;
             }
+            /* MetalSharp: a directory of Wine's own data that the build did not install (the shader compilers are
+             * staged by a separate script) is skipped. Queued, its files would be asked for without end: the default
+             * queue callback answers every request for missing media with "try again". */
+            if (GetFileAttributesW( src_root ) == INVALID_FILE_ATTRIBUTES)
+            {
+                ERR( "%s: the source directory %s is missing, not copying its files\n",
+                     debugstr_w(field), debugstr_w(src_root) );
+                return TRUE;
+            }
         }
         else
         {
