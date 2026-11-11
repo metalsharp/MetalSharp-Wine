@@ -63,6 +63,18 @@ Some macOS display, painting and wined3d fixes come from the Wine in CodeWeavers
 
 0099 (Wine brought to the front when it shows a window), 0100 (wined3d's Vulkan renderer at feature level 10 and above on MoltenVK) 0101 (a NativeFullscreen Mac Driver option for WineForge's native fullscreen, off for ELDEN RING) and 0102 (a game's saved resolution fitted to the main display after it changed) are MetalSharp Wine's own.
 
+## Proton
+
+Patches 0141–0143 come from the port of Valve's [Proton](https://github.com/ValveSoftware/Proton) 11.0 to macOS in [metalsharp/Proton](https://github.com/metalsharp/Proton), branch `proton_11.0-macos`.
+
+| Patch (`patches/wine/`) | Origin |
+| --- | --- |
+| 0141 per-game rules | Written for the port. The rules file it reads (`resources/appcompat.env`) is generated from Proton's launcher, `proton` (BSD-3-Clause, Valve Corporation), by metalsharp/Proton's `appcompat/extract.py` |
+| 0142 EasyAntiCheat and BattlEye | The final state of 17 commits in [Valve's Wine](https://github.com/ValveSoftware/wine) (LGPL 2.1 or later), ported to Wine 11.20 as one commit; `programs/belauncher` is Valve's, unchanged. metalsharp/Proton's `ledger/` names the Valve commits |
+| 0143 Linux system calls | Written for the port's Linux module host |
+
+Patches 0144–0157 are fixes to MetalSharp Wine found by running Wine's test suite, and 0158 sets the version to 7.0.
+
 ## Other upstream projects
 
 | Project | Authors | License | Source of what we ship |

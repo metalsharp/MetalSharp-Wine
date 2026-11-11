@@ -121,6 +121,27 @@ Each remaining failure group was looked at and assigned to a cause.
 | FEX: DF lost on a fault in the same block as `std` (cached context store), and AF/DF missing from ARM64EC contexts | Write DF through; carry AF/DF in RES0 CPSR bits |
 | Vulkan: the loader hid MoltenVK without portability enumeration (`VK_ERROR_INCOMPATIBLE_DRIVER`) | Enable `VK_KHR_portability_enumeration` |
 
+## 7.0: core modules on the Developer ID app
+
+Run 2026-11-11 for ntdll, kernel32, kernelbase, ws2_32, advapi32 and msvcrt (94 units), native ARM64, with the signed app (4K pages, low 4GB). Native ARM64 failures went from 301 to 227. Every unit finishes except `kernel32:loader`, an upstream ARM64 test bug. `ws2_32:sock`, which used to hang at the 300 s limit, runs all 2,671,520 checks in 39 s. The full tables, the first i386 run and every remaining failure are in metalsharp/Proton's [`docs/macos/CONFORMANCE.md`](https://github.com/metalsharp/Proton/blob/proton_11.0-macos/docs/macos/CONFORMANCE.md).
+
+| Patch | Fix | Unit |
+|---|---|---|
+| 0144 | A path through a file is `STATUS_OBJECT_PATH_NOT_FOUND` on case-insensitive volumes | ntdll:path, ntdll:file |
+| 0145 | A thread that restricted its affinity runs on one of its processors | ntdll:info |
+| 0146 | Process memory counters | ntdll:info |
+| 0147 | Unreadable memory is `STATUS_PARTIAL_COPY` | ntdll:info |
+| 0148 | Directory changes are reported as they happen, and in subdirectories | ntdll:change, kernel32:change |
+| 0149 | The computer's own bare name resolves; an unknown service is reported as one | ws2_32:protocol |
+| 0150 | A second TCP listener on an address is refused; a reuse-bound socket holds its port only while listening or connecting (hang) | ws2_32:sock |
+| 0151 | A send or receive on an unconnected stream socket is tried at once (hang) | ws2_32:sock |
+| 0152 | Socket options get Windows' values and sizes | ws2_32:sock |
+| 0153 | Copy-on-write protection of a read-only file view | kernel32:virtual |
+| 0154 | Selector queries answer as Windows does on ARM64 | ntdll:wow64 |
+| 0155 | Write-watched pages are opened before a read into them. On macOS the read that faulted had already consumed the data, so data received into the .NET heap was lost (hang) | ws2_32:sock |
+| 0156 | A TCP socket can connect again after a failed connect (hang) | ws2_32:sock |
+| 0157 | `IP_UNICAST_IF` and `IPV6_UNICAST_IF` through `IP_BOUND_IF` | ws2_32:sock |
+
 ## Expected x86_64-only differences (ARM64EC semantics, same as upstream Wine on any ARM64 host)
 
 - An x64 process can't `LoadLibrary` Wine's ARM64 programs such as `winver.exe` (ERROR_BAD_EXE_FORMAT).

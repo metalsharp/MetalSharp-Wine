@@ -3,7 +3,7 @@
 # All dependency references become @rpath, absolute rpaths are removed, binaries are re-signed.
 set -e
 source ${0:A:h}/env.sh
-NAME=${1:-metalsharp-wine-6.0-arm64}
+NAME=${1:-metalsharp-wine-7.0-arm64}
 D=$ROOT/dist/$NAME
 rm -rf $D; mkdir -p $D
 rsync -a $ROOT/install/ $D/
@@ -42,6 +42,9 @@ if [[ -x $ROOT/deps/innoextract/innoextract ]]; then
   cp $ROOT/deps/innoextract/innoextract $D/bin/
   mkdir -p $D/share/licenses/innoextract; cp $ROOT/deps/innoextract/LICENSE.* $D/share/licenses/innoextract/
 fi
+# Proton's per-game rules (Wine patch 0141 applies them to the programs Steam starts). metalsharp/Proton
+# generates the file from its launcher with appcompat/extract.py; resources/ keeps a copy.
+mkdir -p $D/share/proton; cp $ROOT/resources/appcompat.env $D/share/proton/appcompat.env
 # cabextract (scripts/build-cabextract.sh), for Microsoft cabinet installers (corefonts, VC++)
 if [[ -x $ROOT/deps/cabextract/cabextract ]]; then
   cp $ROOT/deps/cabextract/cabextract $D/bin/

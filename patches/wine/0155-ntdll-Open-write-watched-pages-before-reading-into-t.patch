@@ -1,0 +1,98 @@
+From a3ec4281cfa5b594a2c88b12e07676ca53b10eb7 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Wed, 11 Nov 2026 03:17:55 -0700
+Subject: [PATCH 155/158] ntdll: Open write-watched pages before reading into
+ them outside Linux.
+
+A read from a socket or a pipe into a write-watched buffer faults, and
+the pages were opened and the read retried after the fault. On Linux the
+data is still queued then. On macOS the read that faulted has already
+consumed it: the retry finds nothing and the data is lost. Programs that
+receive into write-watched memory, such as the .NET garbage-collected
+heap, lost network data.
+
+Outside Linux the write watches of the buffer are now opened before the
+read. A scan of the page flags without the lock keeps the common case, a
+buffer with no write watch, a plain read. pread() keeps the retry, since
+reading again at an offset is harmless.
+
+ws2_32:sock waited forever in test_write_watch().
+---
+ dlls/ntdll/unix/virtual.c | 45 +++++++++++++++++++++++++++++++++++----
+ 1 file changed, 41 insertions(+), 4 deletions(-)
+
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index 6de0799946a..5a9c9354a5f 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -4814,6 +4814,29 @@ unsigned int virtual_locked_server_call( void *req_ptr )
+ }
+ 
+ 
++#ifndef __linux__
++/***********************************************************************
++ *           buffer_has_write_watch
++ *
++ * Whether a write to the range would fault on a write watch. Read without the lock, as a hint:
++ * outside Linux a read from a socket or a pipe that faults has already consumed the data (it is
++ * lost on macOS), so the write watches are opened before it, not after the fault.
++ */
++static BOOL buffer_has_write_watch( const void *base, size_t size )
++{
++    char *addr = ROUND_ADDR( base, host_page_mask );
++    size_t i;
++
++    if (use_kernel_writewatch || !size) return FALSE;
++    size = ROUND_SIZE( base, size, host_page_mask );
++    for (i = 0; i < size; i += host_page_size)
++        if ((get_host_page_vprot( addr + i ) & VPROT_WRITEWATCH) || is_host_page_write_mixed( addr + i ))
++            return TRUE;
++    return FALSE;
++}
++#endif
++
++
+ /***********************************************************************
+  *           virtual_locked_read
+  */
+@@ -4822,9 +4845,15 @@ ssize_t virtual_locked_read( int fd, void *addr, size_t size )
+     sigset_t sigset;
+     BOOL has_write_watch = FALSE;
+     int err = EFAULT;
++    ssize_t ret = -1;
+ 
+-    ssize_t ret = read( fd, addr, size );
+-    if (ret != -1 || use_kernel_writewatch || errno != EFAULT) return ret;
++#ifndef __linux__
++    if (!buffer_has_write_watch( addr, size ))
++#endif
++    {
++        ret = read( fd, addr, size );
++        if (ret != -1 || use_kernel_writewatch || errno != EFAULT) return ret;
++    }
+ 
+     server_enter_uninterrupted_section( &virtual_mutex, &sigset );
+     if (!check_write_access( addr, size, &has_write_watch ))
+@@ -4873,9 +4902,17 @@ ssize_t virtual_locked_recvmsg( int fd, struct msghdr *hdr, int flags )
+     size_t i;
+     BOOL has_write_watch = FALSE;
+     int err = EFAULT;
++    ssize_t ret = -1;
+ 
+-    ssize_t ret = recvmsg( fd, hdr, flags );
+-    if (ret != -1 || use_kernel_writewatch || errno != EFAULT) return ret;
++#ifndef __linux__
++    for (i = 0; i < hdr->msg_iovlen; i++)
++        if (buffer_has_write_watch( hdr->msg_iov[i].iov_base, hdr->msg_iov[i].iov_len )) break;
++    if (i == hdr->msg_iovlen)
++#endif
++    {
++        ret = recvmsg( fd, hdr, flags );
++        if (ret != -1 || use_kernel_writewatch || errno != EFAULT) return ret;
++    }
+ 
+     server_enter_uninterrupted_section( &virtual_mutex, &sigset );
+     for (i = 0; i < hdr->msg_iovlen; i++)
+-- 
+2.54.0 (Apple Git-157)
+

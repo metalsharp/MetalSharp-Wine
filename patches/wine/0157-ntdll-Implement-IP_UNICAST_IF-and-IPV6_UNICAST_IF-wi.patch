@@ -1,0 +1,72 @@
+From c80a7470991ca1860de67e03fe72146e65c20e77 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Wed, 11 Nov 2026 03:17:55 -0700
+Subject: [PATCH 157/158] ntdll: Implement IP_UNICAST_IF and IPV6_UNICAST_IF
+ with the macOS bound-interface options.
+
+macOS has the same options as IP_BOUND_IF and IPV6_BOUND_IF. The IPv4
+one takes the interface index in host byte order, where Windows, like
+Linux, takes it in network byte order.
+
+ws2_32:sock had 16 failures in test_sockopt_validity().
+---
+ dlls/ntdll/unix/socket.c | 36 ++++++++++++++++++++++++++++++++++++
+ 1 file changed, 36 insertions(+)
+
+diff --git a/dlls/ntdll/unix/socket.c b/dlls/ntdll/unix/socket.c
+index 2dcbc1a7d55..a550699cc73 100644
+--- a/dlls/ntdll/unix/socket.c
++++ b/dlls/ntdll/unix/socket.c
+@@ -2466,6 +2466,35 @@ NTSTATUS sock_ioctl( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc
+ 
+         case IOCTL_AFD_WINE_SET_IP_UNICAST_IF:
+             return do_setsockopt( handle, io, IPPROTO_IP, IP_UNICAST_IF, in_buffer, in_size );
++#elif defined(IP_BOUND_IF)
++        /* the same option on macOS, which takes the interface index in host byte order;
++         * Windows, like Linux, takes it in network byte order */
++        case IOCTL_AFD_WINE_GET_IP_UNICAST_IF:
++        {
++            IO_STATUS_BLOCK host_io;
++            NTSTATUS ret;
++            int index = 0;
++
++            if (!out_size) return do_getsockopt( handle, io, IPPROTO_IP, IP_BOUND_IF, out_buffer, out_size );
++            if ((ret = do_getsockopt( handle, &host_io, IPPROTO_IP, IP_BOUND_IF, &index, sizeof(index) )))
++                return ret;
++            index = htonl( index );
++            io->Information = min( out_size, sizeof(index) );
++            memcpy( out_buffer, &index, io->Information );
++            io->Status = STATUS_SUCCESS;
++            return STATUS_SUCCESS;
++        }
++
++        case IOCTL_AFD_WINE_SET_IP_UNICAST_IF:
++        {
++            int index;
++
++            if (in_size < sizeof(index))
++                return do_setsockopt( handle, io, IPPROTO_IP, IP_BOUND_IF, in_buffer, in_size );
++            memcpy( &index, in_buffer, sizeof(index) );
++            index = ntohl( index );
++            return do_setsockopt( handle, io, IPPROTO_IP, IP_BOUND_IF, &index, sizeof(index) );
++        }
+ #endif
+ 
+ #ifdef IPV6_ADD_MEMBERSHIP
+@@ -2638,6 +2667,13 @@ NTSTATUS sock_ioctl( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc
+ 
+         case IOCTL_AFD_WINE_SET_IPV6_UNICAST_IF:
+             return do_setsockopt( handle, io, IPPROTO_IPV6, IPV6_UNICAST_IF, in_buffer, in_size );
++#elif defined(IPV6_BOUND_IF)
++        /* the same option on macOS */
++        case IOCTL_AFD_WINE_GET_IPV6_UNICAST_IF:
++            return do_getsockopt( handle, io, IPPROTO_IPV6, IPV6_BOUND_IF, out_buffer, out_size );
++
++        case IOCTL_AFD_WINE_SET_IPV6_UNICAST_IF:
++            return do_setsockopt( handle, io, IPPROTO_IPV6, IPV6_BOUND_IF, in_buffer, in_size );
+ #endif
+ 
+         case IOCTL_AFD_WINE_GET_IPV6_V6ONLY:
+-- 
+2.54.0 (Apple Git-157)
+
