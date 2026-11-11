@@ -66,6 +66,20 @@ struct unwind_builtin_dll_params
     CONTEXT                    *context;
 };
 
+struct wine_set_unix_env_params
+{
+    const char *name;
+    const char *val;
+};
+
+struct compat_wine_nt_to_unix_file_name_params
+{
+    const OBJECT_ATTRIBUTES *attr;
+    char *nameA;
+    ULONG *size;
+    unsigned int disposition;
+};
+
 enum ntdll_unix_funcs
 {
     unix_load_so_dll,
@@ -76,6 +90,8 @@ enum ntdll_unix_funcs
     unix_wine_server_handle_to_fd,
     unix_wine_spawnvp,
     unix_system_time_precise,
+    unix_wine_set_unix_env,
+    unix_compat_wine_nt_to_unix_file_name,
 };
 
 extern unixlib_handle_t __wine_unixlib_handle;

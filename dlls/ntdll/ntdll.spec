@@ -1771,6 +1771,9 @@
 @ cdecl wine_server_handle_to_fd(long long ptr ptr)
 
 # Unix interface
+@ stdcall __wine_unix_call(int64 long ptr) compat___wine_unix_call
+@ stdcall __wine_set_unix_env(ptr ptr)
+@ stdcall wine_nt_to_unix_file_name(ptr ptr ptr long) compat_wine_nt_to_unix_file_name
 @ stdcall __wine_unix_spawnvp(long ptr)
 @ stdcall __wine_ctrl_routine(ptr)
 @ cdecl -arch=arm64ec __wine_register_linux_syscalls(ptr long ptr)

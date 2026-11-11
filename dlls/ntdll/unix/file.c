@@ -7768,3 +7768,39 @@ NTSTATUS WINAPI NtSetInformationObject( HANDLE handle, OBJECT_INFORMATION_CLASS 
     }
     return status;
 }
+
+
+/* Proton: wine_nt_to_unix_file_name, which older Wine exported and the anti-cheat runtimes' bridges still use */
+NTSTATUS WINAPI unixcall_compat_wine_nt_to_unix_file_name( void *args )
+{
+    struct compat_wine_nt_to_unix_file_name_params *p = args;
+    OBJECT_ATTRIBUTES new_attr = *p->attr;
+    UNICODE_STRING nt_name;
+    char *buffer = NULL;
+    NTSTATUS status;
+
+    status = get_nt_and_unix_names( &new_attr, &nt_name, &buffer, p->disposition, FALSE );
+    if (!status || status == STATUS_NO_SUCH_FILE)
+    {
+        struct stat st1, st2;
+        char *name = buffer;
+
+        /* the z: drive's path without the prefix, when z: is the Unix root */
+        if (!strncmp( buffer, config_dir, strlen( config_dir ) ) &&
+            !strncmp( buffer + strlen( config_dir ), "/dosdevices/z:/", 15 ))
+        {
+            char *slash = buffer + strlen( config_dir ) + 14;
+
+            *slash = 0;
+            if (!stat( buffer, &st1 ) && !stat( "/", &st2 ) && st1.st_dev == st2.st_dev && st1.st_ino == st2.st_ino)
+                name = slash;
+            *slash = '/';
+        }
+        if (*p->size > strlen( name )) strcpy( p->nameA, name );
+        else status = STATUS_BUFFER_TOO_SMALL;
+        *p->size = strlen( name ) + 1;
+        free( nt_name.Buffer );
+    }
+    free( buffer );
+    return status;
+}

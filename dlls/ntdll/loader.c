@@ -3495,6 +3495,36 @@ NTSTATUS WINAPI __wine_ctrl_routine( void *arg )
 
 
 /***********************************************************************
+ *              __wine_unix_call (Proton: kept for the anti-cheat runtimes' bridges, built against older Wine)
+ */
+NTSTATUS WINAPI compat___wine_unix_call( unixlib_handle_t handle, unsigned int code, void *args )
+{
+    return __wine_unix_call( handle, code, args );
+}
+
+/***********************************************************************
+ *              wine_nt_to_unix_file_name (Proton: the same)
+ */
+NTSTATUS WINAPI compat_wine_nt_to_unix_file_name( const OBJECT_ATTRIBUTES *attr, char *nameA, ULONG *size,
+                                                  UINT disposition )
+{
+    struct compat_wine_nt_to_unix_file_name_params params = { attr, nameA, size, disposition };
+
+    return WINE_UNIX_CALL( unix_compat_wine_nt_to_unix_file_name, &params );
+}
+
+/***********************************************************************
+ *              __wine_set_unix_env (Proton: sets a variable in the Unix environment)
+ */
+NTSTATUS WINAPI __wine_set_unix_env( const char *var, const char *val )
+{
+    struct wine_set_unix_env_params params = { var, val };
+
+    return WINE_UNIX_CALL( unix_wine_set_unix_env, &params );
+}
+
+
+/***********************************************************************
  *           __wine_unix_spawnvp
  */
 NTSTATUS WINAPI __wine_unix_spawnvp( char * const argv[], int wait )

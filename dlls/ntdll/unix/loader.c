@@ -1133,6 +1133,16 @@ static NTSTATUS unwind_builtin_dll( void *args )
 #endif /* SO_DLLS_SUPPORTED */
 
 
+/* Proton: __wine_set_unix_env, for the EasyAntiCheat bootstrapper and launcher (kernelbase) */
+static NTSTATUS wine_set_unix_env( void *args )
+{
+    struct wine_set_unix_env_params *params = args;
+
+    if (!params->val) unsetenv( params->name );
+    else setenv( params->name, params->val, 1 );
+    return STATUS_SUCCESS;
+}
+
 static const unixlib_entry_t unix_call_funcs[] =
 {
     load_so_dll,
@@ -1143,6 +1153,8 @@ static const unixlib_entry_t unix_call_funcs[] =
     unixcall_wine_server_handle_to_fd,
     unixcall_wine_spawnvp,
     system_time_precise,
+    wine_set_unix_env,
+    unixcall_compat_wine_nt_to_unix_file_name,
 };
 
 
@@ -1150,6 +1162,16 @@ static const unixlib_entry_t unix_call_funcs[] =
 
 static NTSTATUS wow64_load_so_dll( void *args ) { return STATUS_INVALID_IMAGE_FORMAT; }
 static NTSTATUS wow64_unwind_builtin_dll( void *args ) { return STATUS_UNSUCCESSFUL; }
+
+static NTSTATUS wow64_wine_set_unix_env( void *args )
+{
+    const struct { ULONG name; ULONG val; } *params32 = args;
+    struct wine_set_unix_env_params params = { ULongToPtr( params32->name ), ULongToPtr( params32->val ) };
+
+    return wine_set_unix_env( &params );
+}
+
+static NTSTATUS wow64_compat_wine_nt_to_unix_file_name( void *args ) { return STATUS_NOT_SUPPORTED; }
 
 const unixlib_entry_t unix_call_wow64_funcs[] =
 {
@@ -1161,6 +1183,8 @@ const unixlib_entry_t unix_call_wow64_funcs[] =
     wow64_wine_server_handle_to_fd,
     wow64_wine_spawnvp,
     system_time_precise,
+    wow64_wine_set_unix_env,
+    wow64_compat_wine_nt_to_unix_file_name,
 };
 
 #endif  /* _WIN64 */
