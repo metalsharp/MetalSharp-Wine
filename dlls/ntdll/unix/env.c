@@ -32,6 +32,8 @@
 #include <fcntl.h>
 #include <stdarg.h>
 #include <sys/types.h>
+#include <dirent.h>
+#include <limits.h>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -1252,6 +1254,313 @@ static void set_launch_moltenvk_compiles( WCHAR **env, SIZE_T *pos, SIZE_T *size
     }
 }
 
+/* Proton on macOS: per-game rules for the programs Steam starts.
+ *
+ * On Linux the Steam client starts each game through Proton's launcher, which sets the game's environment from tables
+ * keyed by app id. Here Steam is the Windows client inside the prefix and starts games itself, so the launcher is not
+ * there. Its tables are generated into <datadir>/../proton/appcompat.env (appcompat/extract.py in the Proton tree;
+ * PROTON_APPCOMPAT_FILE names another file), and the section of the game that is starting is applied here, before
+ * launch.env, which can therefore still change anything.
+ *
+ * The file is launch.env's format in sections: "[*]" for every program with an app id, "[<id>]" or "[<id>,<id>]" for
+ * games. "NAME=value" sets NAME unless the program's environment already has it, so what the user or the program that
+ * started it set is kept; "NAME+=value" adds the items of a semicolon-separated list that NAME does not have yet;
+ * "-NAME" removes NAME. "@FILES@" in a value is the directory Wine is installed in.
+ *
+ * The app id is SteamAppId or SteamGameId, which Steam sets for a game, or else the appmanifest_<id>.acf of the Steam
+ * library the program is in whose installdir is the program's folder under steamapps/common. */
+
+/* sets a variable of any name length in the Windows environment and the Unix one */
+static void set_appcompat_var( WCHAR **env, SIZE_T *pos, SIZE_T *size, const char *name, const char *value )
+{
+    WCHAR nameW[256], *valueW;
+    SIZE_T namelen = strlen( name ), len;
+
+    if (namelen >= ARRAY_SIZE(nameW)) return;
+    ascii_to_unicode( nameW, name, namelen + 1 );
+    if (!value)
+    {
+        set_env_var( env, pos, size, nameW, namelen, NULL );
+        unsetenv( name );
+        return;
+    }
+    len = strlen( value ) + 1;
+    if (!(valueW = malloc( len * sizeof(WCHAR) ))) return;
+    ntdll_umbstowcs( value, len, valueW, len );
+    set_env_var( env, pos, size, nameW, namelen, valueW );
+    free( valueW );
+    setenv( name, value, 1 );
+}
+
+/* the value of a variable of the Windows environment block as a Unix string, or NULL */
+static char *get_appcompat_var( WCHAR *env, SIZE_T size, const char *name )
+{
+    WCHAR nameW[256], *valueW;
+    SIZE_T namelen = strlen( name ), len;
+    char *value;
+
+    if (namelen >= ARRAY_SIZE(nameW)) return NULL;
+    ascii_to_unicode( nameW, name, namelen + 1 );
+    if (!(valueW = get_env_var( env, size, nameW, namelen ))) return NULL;
+    len = wcslen( valueW ) * 3 + 1;
+    if ((value = malloc( len )))
+    {
+        int ret = ntdll_wcstoumbs( valueW, wcslen( valueW ), value, len - 1, FALSE );
+        value[ret > 0 ? ret : 0] = 0;
+    }
+    free( valueW );
+    return value;
+}
+
+static BOOL is_app_id( const char *str )
+{
+    const char *p;
+
+    if (!str || !str[0] || str[0] == '0' || strlen( str ) > 10) return FALSE;
+    for (p = str; *p; p++) if (*p < '0' || *p > '9') return FALSE;
+    return TRUE;
+}
+
+/* the app id of the Steam library folder a program is in, from the library's app manifests */
+static BOOL get_app_id_from_library( const char *unix_name, char *appid, size_t size )
+{
+    static const char common[] = "/steamapps/common/";
+    const char *p, *dir, *end;
+    char path[PATH_MAX], data[8192], *line, *next, *q;
+    struct dirent *de;
+    BOOL ret = FALSE;
+    DIR *d;
+
+    /* the last one, in case a library is inside another's folder */
+    for (p = NULL, dir = unix_name; (dir = strcasestr( dir, common )); dir++) p = dir;
+    if (!p) return FALSE;
+    dir = p + sizeof(common) - 1;
+    if (!(end = strchr( dir, '/' )) || end == dir) return FALSE;
+    if (snprintf( path, sizeof(path), "%.*s/steamapps", (int)(p - unix_name), unix_name ) >= sizeof(path)) return FALSE;
+    if (!(d = opendir( path ))) return FALSE;
+    while (!ret && (de = readdir( d )))
+    {
+        size_t len = strlen( de->d_name );
+        ssize_t got;
+        int fd;
+
+        if (len < 17 || strncmp( de->d_name, "appmanifest_", 12 ) || strcmp( de->d_name + len - 4, ".acf" )) continue;
+        if ((fd = openat( dirfd( d ), de->d_name, O_RDONLY | O_CLOEXEC )) == -1) continue;
+        got = read( fd, data, sizeof(data) - 1 );
+        close( fd );
+        if (got <= 0) continue;
+        data[got] = 0;
+        for (line = data; line && !ret; line = next)
+        {
+            if ((next = strchr( line, '\n' ))) *next++ = 0;
+            if (!(q = strstr( line, "\"installdir\"" ))) continue;
+            /* "installdir"		"ELDEN RING" */
+            if (!(q = strchr( q + 12, '"' ))) break;
+            q++;
+            if (strlen( q ) > (size_t)(end - dir) && q[end - dir] == '"' && !strncasecmp( q, dir, end - dir ))
+            {
+                /* appmanifest_<id>.acf */
+                if (len - 16 < size)
+                {
+                    memcpy( appid, de->d_name + 12, len - 16 );
+                    appid[len - 16] = 0;
+                    ret = is_app_id( appid );
+                }
+            }
+            break;
+        }
+    }
+    closedir( d );
+    return ret;
+}
+
+static BOOL get_steam_app_id( WCHAR *env, SIZE_T size, const WCHAR *image, char *appid, size_t len )
+{
+    static const WCHAR ntprefixW[] = {'\\','?','?','\\'};
+    static const char * const vars[] = { "SteamAppId", "SteamGameId" };
+    char *value, *unix_name = NULL;
+    unsigned int i;
+    BOOL ret;
+
+    for (i = 0; i < ARRAY_SIZE(vars); i++)
+    {
+        if (!(value = get_appcompat_var( env, size, vars[i] ))) continue;
+        ret = is_app_id( value ) && strlen( value ) < len;
+        if (ret) strcpy( appid, value );
+        free( value );
+        if (ret) return TRUE;
+    }
+    if (!image) return FALSE;
+    if (!wcsncmp( image, ntprefixW, ARRAY_SIZE(ntprefixW) )) image += ARRAY_SIZE(ntprefixW);
+    if (ntdll_get_unix_file_name( image, &unix_name, FILE_OPEN ) || !unix_name) return FALSE;
+    ret = get_app_id_from_library( unix_name, appid, len );
+    free( unix_name );
+    return ret;
+}
+
+/* whether a section header, "[*]" or "[<id>,<id>]" with an optional comment after it, is for this app
+ * (appid), or for every app (no appid) */
+static BOOL appcompat_section_matches( const char *line, const char *appid )
+{
+    size_t len = appid ? strlen( appid ) : 0;
+    const char *p = line + 1, *end = strchr( line, ']' );
+
+    if (!end) return FALSE;
+    while (p < end)
+    {
+        const char *next = memchr( p, ',', end - p );
+        size_t n;
+
+        if (!next) next = end;
+        while (p < next && *p == ' ') p++;
+        n = next - p;
+        while (n && p[n - 1] == ' ') n--;
+        if (appid ? (n == len && !memcmp( p, appid, len )) : (n == 1 && *p == '*')) return TRUE;
+        p = next + 1;
+    }
+    return FALSE;
+}
+
+/* adds the items of a semicolon-separated list that a variable does not have yet */
+static void add_appcompat_list( WCHAR **env, SIZE_T *pos, SIZE_T *size, const char *name, char *items )
+{
+    char *current = get_appcompat_var( *env, *pos, name ), *result, *item, *next;
+    size_t len = (current ? strlen( current ) : 0) + strlen( items ) + 2;
+
+    if (!(result = malloc( len )))
+    {
+        free( current );
+        return;
+    }
+    strcpy( result, current ? current : "" );
+    for (item = items; item; item = next)
+    {
+        size_t n;
+        char *p;
+
+        if ((next = strchr( item, ';' ))) *next++ = 0;
+        if (!(n = strlen( item ))) continue;
+        /* a whole item of the list, not a part of one */
+        for (p = result; (p = strstr( p, item )); p += n)
+            if ((p == result || p[-1] == ';') && (!p[n] || p[n] == ';')) break;
+        if (p) continue;
+        if (result[0]) strcat( result, ";" );
+        strcat( result, item );
+    }
+    set_appcompat_var( env, pos, size, name, result );
+    free( result );
+    free( current );
+}
+
+static void add_appcompat_environment( WCHAR **env, SIZE_T *pos, SIZE_T *size, const WCHAR *image )
+{
+    const char *file = getenv( "PROTON_APPCOMPAT_FILE" ), *debug = getenv( "PROTON_APPCOMPAT_DEBUG" );
+    char appid[16], path[PATH_MAX], files[PATH_MAX], *data, *copy, *line, *next, *p;
+    BOOL active = FALSE;
+    struct stat st;
+    ssize_t len;
+    int fd, pass;
+
+    if (!file)
+    {
+        /* <prefix>/share/wine -> <prefix>/share/proton/appcompat.env */
+        if (build_dir || !data_dir) return;
+        if (snprintf( path, sizeof(path), "%s/../proton/appcompat.env", data_dir ) >= sizeof(path)) return;
+        file = path;
+    }
+    if ((fd = open( file, O_RDONLY | O_CLOEXEC )) == -1) return;
+    if (!get_steam_app_id( *env, *pos, image, appid, sizeof(appid) ) ||
+        fstat( fd, &st ) || !S_ISREG( st.st_mode ) || st.st_size <= 0 || st.st_size > 4 * 1024 * 1024 ||
+        !(data = malloc( st.st_size + 1 )))
+    {
+        close( fd );
+        return;
+    }
+    len = read( fd, data, st.st_size );
+    close( fd );
+    if (len <= 0)
+    {
+        free( data );
+        return;
+    }
+    data[len] = 0;
+    /* the directory Wine is installed in: <files>/share/wine */
+    files[0] = 0;
+    if (data_dir && strlen( data_dir ) < sizeof(files))
+    {
+        strcpy( files, data_dir );
+        if ((p = strrchr( files, '/' ))) *p = 0;
+        if ((p = strrchr( files, '/' ))) *p = 0;
+    }
+    if (debug) fprintf( stderr, "appcompat: app %s, rules from %s\n", appid, file );
+
+    /* the game's own sections first, then "[*]": a variable is set once, so the game's value stands */
+    copy = strdup( data );
+    for (pass = 0; pass < 2; pass++)
+    for (line = pass ? copy : data, active = FALSE; line; line = next)
+    {
+        char *value, *name = line;
+        BOOL append = FALSE;
+
+        if ((next = strchr( line, '\n' ))) *next++ = 0;
+        if ((p = strchr( line, '\r' ))) *p = 0;
+        if (line[0] == '[')
+        {
+            active = appcompat_section_matches( line, pass ? NULL : appid );
+            continue;
+        }
+        if (!active || !line[0] || line[0] == '#') continue;
+        if (line[0] == '-')
+        {
+            if (debug) fprintf( stderr, "appcompat: %s\n", line );
+            set_appcompat_var( env, pos, size, line + 1, NULL );
+            continue;
+        }
+        if (!(value = strchr( line, '=' )) || value == line) continue;
+        if (value[-1] == '+')
+        {
+            append = TRUE;
+            value[-1] = 0;
+        }
+        *value++ = 0;
+        for (p = name; *p; p++)
+            if (!((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z') || (*p >= '0' && *p <= '9') || *p == '_'))
+                break;
+        if (*p || !name[0]) continue;
+
+        if (append)
+        {
+            if (debug) fprintf( stderr, "appcompat: %s+=%s\n", name, value );
+            add_appcompat_list( env, pos, size, name, value );
+        }
+        else
+        {
+            char *current = get_appcompat_var( *env, *pos, name ), *expanded = NULL, *at;
+
+            if (current)
+            {
+                if (debug) fprintf( stderr, "appcompat: %s is already %s, not set to %s\n", name, current, value );
+                free( current );
+                continue;
+            }
+            if ((at = strstr( value, "@FILES@" )) && files[0] &&
+                (expanded = malloc( strlen( value ) + strlen( files ) + 1 )))
+            {
+                memcpy( expanded, value, at - value );
+                strcpy( expanded + (at - value), files );
+                strcat( expanded, at + 7 );
+                value = expanded;
+            }
+            if (debug) fprintf( stderr, "appcompat: %s=%s\n", name, value );
+            set_appcompat_var( env, pos, size, name, value );
+            free( expanded );
+        }
+    }
+    set_appcompat_var( env, pos, size, "PROTON_APPCOMPAT_APPID", appid );
+    free( copy );
+    free( data );
+}
+
 /* launch.env, which MetalSharp writes at each launch, then launch.local.env, which it never writes: the user's own
  * variables for the programs of the folder (a debugging option, say), applied over it */
 static void add_launch_environment( WCHAR **env, SIZE_T *pos, SIZE_T *size, const WCHAR *image )
@@ -2247,6 +2556,7 @@ static RTL_USER_PROCESS_PARAMETERS *build_initial_params(void)
     if (main_argv[1] && !get_full_path( main_argv[1], curdir, &nt_name ))
     {
         set_launch_moltenvk_compiles( &env, &env_pos, &env_size, nt_name.Buffer );
+        add_appcompat_environment( &env, &env_pos, &env_size, nt_name.Buffer );
         add_launch_environment( &env, &env_pos, &env_size, nt_name.Buffer );
         disable_launch_ray_tracing( &env, &env_pos, &env_size, nt_name.Buffer );
         fit_launch_resolution( &env, &env_pos, &env_size, nt_name.Buffer );
@@ -2391,6 +2701,7 @@ void init_startup_info(void)
             memcpy( image, info + 1, info->imagepath_len );
             image[info->imagepath_len / sizeof(WCHAR)] = 0;
             set_launch_moltenvk_compiles( &env, &env_pos, &env_size, image );
+            add_appcompat_environment( &env, &env_pos, &env_size, image );
             add_launch_environment( &env, &env_pos, &env_size, image );
             disable_launch_ray_tracing( &env, &env_pos, &env_size, image );
             fit_launch_resolution( &env, &env_pos, &env_size, image );
