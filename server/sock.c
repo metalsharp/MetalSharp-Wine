@@ -287,6 +287,9 @@ struct sock
     }
     icmp_fixup_data[MAX_ICMP_HISTORY_LENGTH]; /* Sent ICMP packets history used to fixup reply id. */
     struct bound_addr  *bound_addr[2]; /* Links to the entries in bound addresses tree. */
+    struct list         listen_entry; /* entry in the list of listening TCP sockets (macOS) */
+    union unix_sockaddr dropped_addr; /* address of a binding given up, to take again (macOS) */
+    socklen_t           dropped_addr_len;
     unsigned int        icmp_fixup_data_len;  /* Sent ICMP packets history length. */
     unsigned int        rd_shutdown : 1; /* is the read end shut down? */
     unsigned int        wr_shutdown : 1; /* is the write end shut down? */
@@ -473,6 +476,153 @@ static void sock_reselect_async( struct fd *fd, struct async_queue *queue );
 static int accept_into_socket( struct sock *sock, struct sock *acceptsock );
 static struct sock *accept_socket( struct sock *sock );
 static int sock_get_ntstatus( int err );
+static void sock_reselect( struct sock *sock );
+static const struct fd_ops sock_fd_ops;
+
+#ifdef __APPLE__
+/* Winsock's SO_REUSEADDR is SO_REUSEPORT here (see IOCTL_AFD_WINE_SET_SO_REUSEADDR). With it,
+ * BSD lets a second TCP socket listen on an address another one listens on, and hands it the
+ * new connections. Windows keeps giving them to the first socket, and Linux refuses the second
+ * listen(); refuse it as Linux does, so that the first socket keeps its connections. */
+static struct list listening_tcp_socks = LIST_INIT( listening_tcp_socks );
+
+static unsigned short sockaddr_port( const union unix_sockaddr *addr )
+{
+    if (addr->addr.sa_family == AF_INET) return ntohs( addr->in.sin_port );
+    if (addr->addr.sa_family == AF_INET6) return ntohs( addr->in6.sin6_port );
+    return 0;
+}
+
+static int addrs_overlap( const union unix_sockaddr *a, const union unix_sockaddr *b )
+{
+    if (a->addr.sa_family != b->addr.sa_family) return 0;
+    if (a->addr.sa_family == AF_INET)
+        return a->in.sin_port == b->in.sin_port &&
+               (a->in.sin_addr.s_addr == b->in.sin_addr.s_addr ||
+                a->in.sin_addr.s_addr == htonl( INADDR_ANY ) ||
+                b->in.sin_addr.s_addr == htonl( INADDR_ANY ));
+    if (a->addr.sa_family == AF_INET6)
+        return a->in6.sin6_port == b->in6.sin6_port &&
+               (IN6_ARE_ADDR_EQUAL( &a->in6.sin6_addr, &b->in6.sin6_addr ) ||
+                IN6_IS_ADDR_UNSPECIFIED( &a->in6.sin6_addr ) ||
+                IN6_IS_ADDR_UNSPECIFIED( &b->in6.sin6_addr ));
+    return 0;
+}
+
+static int is_address_listened_on( struct sock *sock, const union unix_sockaddr *addr )
+{
+    union unix_sockaddr other_addr;
+    struct sock *other;
+    socklen_t len;
+    int other_fd;
+
+    LIST_FOR_EACH_ENTRY( other, &listening_tcp_socks, struct sock, listen_entry )
+    {
+        if (other == sock) continue;
+        if ((other_fd = get_unix_fd( other->fd )) == -1)
+        {
+            clear_error();
+            continue;
+        }
+        len = sizeof(other_addr);
+        if (!getsockname( other_fd, &other_addr.addr, &len ) && addrs_overlap( addr, &other_addr ))
+            return 1;
+    }
+    return 0;
+}
+
+static int is_unix_socket_listened_on( struct sock *sock, int unix_fd )
+{
+    union unix_sockaddr addr;
+    socklen_t len = sizeof(addr);
+
+    if (getsockname( unix_fd, &addr.addr, &len )) return 0;
+    return is_address_listened_on( sock, &addr );
+}
+
+/* A TCP socket bound with SO_REUSEPORT that is not listening still holds its address in
+ * the kernel: BSD gives it the connections meant for a socket listening there, and drops
+ * them, where Linux gives them to the listening socket or refuses them. Such a socket gets
+ * a new, unbound kernel socket with the same options; the address is taken again when it
+ * listens or connects. */
+static void drop_kernel_binding( struct sock *sock, int unix_fd )
+{
+    static const struct { int level, name; } int_options[] =
+    {
+        { SOL_SOCKET, SO_REUSEADDR }, { SOL_SOCKET, SO_REUSEPORT }, { SOL_SOCKET, SO_KEEPALIVE },
+        { SOL_SOCKET, SO_OOBINLINE }, { SOL_SOCKET, SO_DONTROUTE }, { SOL_SOCKET, SO_RCVBUF },
+        { SOL_SOCKET, SO_SNDBUF }, { SOL_SOCKET, SO_RCVLOWAT }, { IPPROTO_TCP, TCP_NODELAY },
+#ifdef TCP_KEEPALIVE
+        { IPPROTO_TCP, TCP_KEEPALIVE },
+#endif
+#ifdef TCP_KEEPINTVL
+        { IPPROTO_TCP, TCP_KEEPINTVL },
+#endif
+#ifdef TCP_KEEPCNT
+        { IPPROTO_TCP, TCP_KEEPCNT },
+#endif
+    };
+    union unix_sockaddr addr;
+    socklen_t len = sizeof(addr), optlen;
+    struct linger linger;
+    struct fd *newfd;
+    unsigned int i;
+    int fd, value;
+
+    if (getsockname( unix_fd, &addr.addr, &len )) return;
+    if ((fd = socket( addr.addr.sa_family, SOCK_STREAM, IPPROTO_TCP )) == -1) return;
+    fcntl( fd, F_SETFL, O_NONBLOCK );
+    for (i = 0; i < ARRAY_SIZE(int_options); i++)
+    {
+        optlen = sizeof(value);
+        if (!getsockopt( unix_fd, int_options[i].level, int_options[i].name, &value, &optlen ))
+            setsockopt( fd, int_options[i].level, int_options[i].name, &value, optlen );
+    }
+    optlen = sizeof(linger);
+    if (!getsockopt( unix_fd, SOL_SOCKET, SO_LINGER, &linger, &optlen ))
+        setsockopt( fd, SOL_SOCKET, SO_LINGER, &linger, optlen );
+    if (addr.addr.sa_family == AF_INET6)
+    {
+        optlen = sizeof(value);
+        if (!getsockopt( unix_fd, IPPROTO_IPV6, IPV6_V6ONLY, &value, &optlen ))
+            setsockopt( fd, IPPROTO_IPV6, IPV6_V6ONLY, &value, optlen );
+        optlen = sizeof(value);
+        if (!getsockopt( unix_fd, IPPROTO_IPV6, IPV6_TCLASS, &value, &optlen ))
+            setsockopt( fd, IPPROTO_IPV6, IPV6_TCLASS, &value, optlen );
+    }
+    else
+    {
+        optlen = sizeof(value);
+        if (!getsockopt( unix_fd, IPPROTO_IP, IP_TOS, &value, &optlen ))
+            setsockopt( fd, IPPROTO_IP, IP_TOS, &value, optlen );
+    }
+    if (!(newfd = create_anonymous_fd( &sock_fd_ops, fd, &sock->obj, get_fd_options( sock->fd ) )))
+    {
+        clear_error();
+        return;
+    }
+    fd_copy_completion( sock->fd, newfd );
+    release_object( sock->fd );
+    sock->fd = newfd;
+    sock->dropped_addr = addr;
+    sock->dropped_addr_len = len;
+    sock_reselect( sock );
+}
+
+/* take back the address given up by drop_kernel_binding() */
+static int restore_kernel_binding( struct sock *sock, int unix_fd )
+{
+    if (!sock->dropped_addr_len) return 1;
+    if (is_address_listened_on( sock, &sock->dropped_addr ) ||
+        bind( unix_fd, &sock->dropped_addr.addr, sock->dropped_addr_len ))
+    {
+        set_error( sock_get_ntstatus( EADDRINUSE ) );
+        return 0;
+    }
+    sock->dropped_addr_len = 0;
+    return 1;
+}
+#endif
 static unsigned int sock_get_error( int err );
 static void poll_socket( struct sock *poll_sock, struct async *async, int exclusive, timeout_t timeout,
                          unsigned int count, const struct afd_poll_socket_64 *sockets );
@@ -1734,6 +1884,8 @@ static void sock_destroy( struct object *obj )
 
     /* FIXME: special socket shutdown stuff? */
 
+    list_remove( &sock->listen_entry );
+
     for (i = 0; i < 2; ++i)
     {
         if (sock->bound_addr[i] && --sock->bound_addr[i]->reuse_count <= 0)
@@ -1801,6 +1953,8 @@ static struct sock *create_socket(void)
     sock->sndtimeo = 0;
     sock->icmp_fixup_data_len = 0;
     sock->bound_addr[0] = sock->bound_addr[1] = NULL;
+    list_init( &sock->listen_entry );
+    sock->dropped_addr_len = 0;
     init_async_queue( &sock->read_q );
     init_async_queue( &sock->write_q );
     init_async_queue( &sock->ifchange_q );
@@ -2644,12 +2798,29 @@ static void sock_ioctl( struct fd *fd, ioctl_code_t code, struct async *async )
             return;
         }
 
+#ifdef __APPLE__
+        if (is_tcp_socket( sock ) && sock->state != SOCK_LISTENING)
+        {
+            if (!restore_kernel_binding( sock, unix_fd )) return;
+            if (is_unix_socket_listened_on( sock, unix_fd ))
+            {
+                drop_kernel_binding( sock, unix_fd );
+                set_error( sock_get_ntstatus( EADDRINUSE ) );
+                return;
+            }
+        }
+#endif
+
         if (listen( unix_fd, params->backlog ) < 0)
         {
             set_error( sock_get_ntstatus( errno ) );
             return;
         }
 
+#ifdef __APPLE__
+        if (is_tcp_socket( sock ) && list_empty( &sock->listen_entry ))
+            list_add_tail( &listening_tcp_socks, &sock->listen_entry );
+#endif
         sock->state = SOCK_LISTENING;
 
         /* a listening socket can no longer be accepted into */
@@ -2732,6 +2903,9 @@ static void sock_ioctl( struct fd *fd, ioctl_code_t code, struct async *async )
             unix_addr.in.sin_addr.s_addr = htonl( INADDR_LOOPBACK );
 
         memcpy( &peer_addr, &unix_addr, sizeof(unix_addr) );
+#ifdef __APPLE__
+        if (is_tcp_socket( sock ) && !restore_kernel_binding( sock, unix_fd )) return;
+#endif
         ret = connect( unix_fd, &unix_addr.addr, unix_len );
         if (ret < 0 && errno == ECONNABORTED)
         {
@@ -3079,6 +3253,15 @@ static void sock_ioctl( struct fd *fd, ioctl_code_t code, struct async *async )
         if (check_addr_usage( sock, &bind_addr, v6only ))
             return;
 
+#ifdef __APPLE__
+        /* as on Linux, an address a TCP socket listens on cannot be bound again */
+        if (is_tcp_socket( sock ) && is_address_listened_on( sock, &bind_addr ))
+        {
+            set_error( sock_get_ntstatus( sock->reuseaddr ? EACCES : EADDRINUSE ) );
+            return;
+        }
+#endif
+
 #ifdef HAS_BLUETOOTH
         if (unix_addr.rfcomm.rc_family == AF_BLUETOOTH
             && !(unix_addr.rfcomm.rc_channel >= 1 && unix_addr.rfcomm.rc_channel <= 30))
@@ -3138,6 +3321,10 @@ static void sock_ioctl( struct fd *fd, ioctl_code_t code, struct async *async )
 
         if (get_reply_max_size() >= sock->addr_len)
             set_reply_data( &sock->addr, sock->addr_len );
+#ifdef __APPLE__
+        if (is_tcp_socket( sock ) && sock->reuseaddr && sockaddr_port( &unix_addr ))
+            drop_kernel_binding( sock, unix_fd );
+#endif
         return;
     }
 
