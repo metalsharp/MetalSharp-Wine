@@ -1009,16 +1009,95 @@ void linuxhost_trace( const char *format, ... )
 
     if (enabled == -1) enabled = GetEnvironmentVariableA( "LINUXHOST_TRACE", NULL, 0 ) > 0;
     if (!enabled) return;
-    len = snprintf( line, sizeof(line), "linuxhost:%04lx: ", GetCurrentThreadId() );
+    len = snprintf( line, sizeof(line), "linuxhost:%04lx:%04lx: ", GetCurrentProcessId(), GetCurrentThreadId() );
     va_start( args, format );
     len += vsnprintf( line + len, sizeof(line) - len, format, args );
     va_end( args );
-    WriteFile( GetStdHandle( STD_ERROR_HANDLE ), line, min( len, (int)sizeof(line) - 1 ), &written, NULL );
+    len = min( len, (int)sizeof(line) - 1 );
+    {
+        /* LINUXHOST_TRACE_FILE: appended to, for processes whose standard error goes nowhere (Steam's games) */
+        static HANDLE file = INVALID_HANDLE_VALUE;
+        static int checked;
+        char path[MAX_PATH];
+
+        if (!checked)
+        {
+            checked = 1;
+            if (GetEnvironmentVariableA( "LINUXHOST_TRACE_FILE", path, sizeof(path) ))
+                file = CreateFileA( path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_ALWAYS, 0, NULL );
+        }
+        if (file != INVALID_HANDLE_VALUE) WriteFile( file, line, len, &written, NULL );
+    }
+    WriteFile( GetStdHandle( STD_ERROR_HANDLE ), line, len, &written, NULL );
+}
+
+/* Linux keeps a process's descriptors across exec. The in-memory files open at exec are written to temporary
+ * files and named in LINUXHOST_INHERIT ("fd:seals:path;..."), which the new process's host reads at start. */
+void linuxhost_export_fds(void)
+{
+    char list[2048] = "", tmp_dir[MAX_PATH], path[MAX_PATH];
+    int fd;
+
+    GetTempPathA( sizeof(tmp_dir), tmp_dir );
+    EnterCriticalSection( &fd_lock );
+    for (fd = FIRST_FD; fd < MAX_FDS; fd++)
+    {
+        HANDLE file;
+        DWORD written;
+        size_t len = strlen( list );
+
+        if (fds[fd].kind != FD_MEMORY) continue;
+        if (!GetTempFileNameA( tmp_dir, "lfd", 0, path )) continue;
+        file = CreateFileA( path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL );
+        if (file == INVALID_HANDLE_VALUE) continue;
+        WriteFile( file, fds[fd].data, fds[fd].size, &written, NULL );
+        CloseHandle( file );
+        snprintf( list + len, sizeof(list) - len, "%d:%u:%s;", fd, fds[fd].seals, path );
+        linuxhost_trace( "exec: descriptor %d (%s, %zu bytes) passed on\n", fd, fds[fd].name, fds[fd].size );
+    }
+    LeaveCriticalSection( &fd_lock );
+    SetEnvironmentVariableA( "LINUXHOST_INHERIT", list[0] ? list : NULL );
+}
+
+static void import_fds(void)
+{
+    char list[2048], *entry, *next;
+
+    if (!GetEnvironmentVariableA( "LINUXHOST_INHERIT", list, sizeof(list) )) return;
+    SetEnvironmentVariableA( "LINUXHOST_INHERIT", NULL );  /* this process's own children get their own list */
+    for (entry = list; *entry; entry = next)
+    {
+        int fd;
+        unsigned int seals;
+        char path[MAX_PATH];
+        HANDLE file;
+        LARGE_INTEGER size;
+        DWORD got;
+
+        if (!(next = strchr( entry, ';' ))) break;
+        *next++ = 0;
+        if (sscanf( entry, "%d:%u:%259[^;]", &fd, &seals, path ) != 3 || fd < FIRST_FD || fd >= MAX_FDS) continue;
+        file = CreateFileA( path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_FLAG_DELETE_ON_CLOSE, NULL );
+        if (file == INVALID_HANDLE_VALUE) continue;
+        GetFileSizeEx( file, &size );
+        memset( &fds[fd], 0, sizeof(fds[fd]) );
+        fds[fd].kind = FD_MEMORY;
+        snprintf( fds[fd].name, sizeof(fds[fd].name), "inherited" );
+        if (size.QuadPart && reserve( &fds[fd], size.QuadPart ))
+        {
+            ReadFile( file, fds[fd].data, size.QuadPart, &got, NULL );
+            fds[fd].size = got;
+        }
+        fds[fd].seals = seals;
+        CloseHandle( file );
+        linuxhost_trace( "descriptor %d inherited (%zu bytes)\n", fd, fds[fd].size );
+    }
 }
 
 int linuxhost_process_init( const struct libc_export *exports, unsigned int count )
 {
     InitializeCriticalSection( &fd_lock );
+    import_fds();
     /* glibc's canary has a zero low byte, so string functions cannot copy past it */
     while (!(stack_guard >> 8)) stack_guard = ((unsigned long long)rand() << 40 ^ (unsigned long long)rand() << 20 ^
                                                rand() ^ GetTickCount64() << 8 ^ (unsigned long long)&count) & ~0xffull;

@@ -10,6 +10,9 @@ struct libc_export { const char *name; void *function; };
 /* makes up libc.so.6 with these exports; returns 0 on failure */
 int linuxhost_process_init( const struct libc_export *exports, unsigned int count );
 
+/* before exec: the in-memory files go to the new process (it reads them at start) */
+void linuxhost_export_fds(void);
+
 /* gives the calling thread a Linux thread control block in %fs */
 void linuxhost_thread_init(void);
 

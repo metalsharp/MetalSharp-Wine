@@ -239,6 +239,7 @@ static int spawn( struct child *c, const char *path, char *const argv[] )
     }
     for (i = first; argv && argv[i]; i++) append_quoted( cmd, ARRAY_SIZE(cmd), argv[i] );
     linuxhost_trace( "exec: CreateProcess %ls%s\n", cmd, c->traced ? " (traced: suspended)" : "" );
+    linuxhost_export_fds();
     if (!CreateProcessW( app, cmd, NULL, NULL, FALSE, c->traced ? CREATE_SUSPENDED : 0, NULL, NULL, &si, &pi ))
     {
         linuxhost_trace( "exec: CreateProcess failed: %lu\n", GetLastError() );
@@ -246,6 +247,7 @@ static int spawn( struct child *c, const char *path, char *const argv[] )
         return 0;
     }
     if (app) HeapFree( GetProcessHeap(), 0, app );
+    SetEnvironmentVariableA( "LINUXHOST_INHERIT", NULL );
     c->process = pi.hProcess;
     c->thread = pi.hThread;
     c->state = CHILD_EXECED;
