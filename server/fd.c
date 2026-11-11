@@ -636,6 +636,61 @@ static inline void remove_epoll_user( struct fd *fd, int user )
     }
 }
 
+/* MetalSharp: directories watched for changes of their contents. The kernel reports a directory whose entries were
+ * added, removed or renamed (EVFILT_VNODE), and the callback runs from the main loop before the requests that
+ * arrived with it, so a program that changes a directory and then asks at once finds the change reported. */
+static struct vnode_watch
+{
+    int    unix_fd;
+    void (*callback)( void *private );
+    void  *private;
+} vnode_watches[256];
+static int vnode_watch_count;
+
+int add_vnode_watch( int unix_fd, void (*callback)( void *private ), void *private )
+{
+    struct kevent ev;
+
+    if (kqueue_fd == -1 || vnode_watch_count == ARRAY_SIZE(vnode_watches)) return 0;
+    EV_SET( &ev, unix_fd, EVFILT_VNODE, EV_ADD | EV_CLEAR,
+            NOTE_WRITE | NOTE_EXTEND | NOTE_ATTRIB | NOTE_LINK | NOTE_RENAME | NOTE_DELETE, 0, NULL );
+    if (kevent( kqueue_fd, &ev, 1, NULL, 0, NULL ) == -1) return 0;
+    vnode_watches[vnode_watch_count].unix_fd = unix_fd;
+    vnode_watches[vnode_watch_count].callback = callback;
+    vnode_watches[vnode_watch_count].private = private;
+    vnode_watch_count++;
+    return 1;
+}
+
+void remove_vnode_watch( int unix_fd, void *private )
+{
+    struct kevent ev;
+    int i;
+
+    for (i = 0; i < vnode_watch_count; i++)
+    {
+        if (vnode_watches[i].unix_fd != unix_fd || vnode_watches[i].private != private) continue;
+        vnode_watches[i] = vnode_watches[--vnode_watch_count];
+        if (kqueue_fd == -1) return;
+        EV_SET( &ev, unix_fd, EVFILT_VNODE, EV_DELETE, 0, 0, NULL );
+        kevent( kqueue_fd, &ev, 1, NULL, 0, NULL );
+        return;
+    }
+}
+
+static void vnode_watch_event( int unix_fd )
+{
+    int i;
+
+    /* looked up at each event: a callback can remove watches, its own among them */
+    for (i = 0; i < vnode_watch_count; i++)
+    {
+        if (vnode_watches[i].unix_fd != unix_fd) continue;
+        vnode_watches[i].callback( vnode_watches[i].private );
+        return;
+    }
+}
+
 static inline void main_loop_epoll(void)
 {
     int i, ret, timeout;
@@ -655,15 +710,21 @@ static inline void main_loop_epoll(void)
 
         set_current_time();
 
+        /* directory changes first */
+        for (i = 0; i < ret; i++)
+            if (events[i].filter == EVFILT_VNODE) vnode_watch_event( events[i].ident );
+
         /* put the events into the pollfd array first, like poll does */
         for (i = 0; i < ret; i++)
         {
             long user = (long)events[i].udata;
+            if (events[i].filter == EVFILT_VNODE) continue;
             pollfd[user].revents = 0;
         }
         for (i = 0; i < ret; i++)
         {
             long user = (long)events[i].udata;
+            if (events[i].filter == EVFILT_VNODE) continue;
             if (events[i].filter == EVFILT_READ) pollfd[user].revents |= POLLIN;
             else if (events[i].filter == EVFILT_WRITE) pollfd[user].revents |= POLLOUT;
             if (events[i].flags & EV_EOF) pollfd[user].revents |= POLLHUP;
@@ -674,6 +735,7 @@ static inline void main_loop_epoll(void)
         for (i = 0; i < ret; i++)
         {
             long user = (long)events[i].udata;
+            if (events[i].filter == EVFILT_VNODE) continue;
             if (pollfd[user].revents) fd_poll_event( poll_users[user], pollfd[user].revents );
             pollfd[user].revents = 0;
         }
