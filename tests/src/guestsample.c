@@ -1,3 +1,4 @@
+/* archs: x86_64 */
 /* Samples where a thread of another process runs, as the program sees it: what macOS's sample shows of a program run
  * by FEX is the translated code, with no symbols. The thread is suspended, its context read and resumed, many times,
  * and the instruction pointers are counted by module and offset (and the return addresses on its stack, one frame up,

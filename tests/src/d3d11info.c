@@ -1,3 +1,4 @@
+/* libs: d3d11 dxgi dxguid */
 /* D3D11 smoke test: device + swap chain on a window, clear and present a few frames, read
  * back the adapter and feature level. Run with DXMT (WINEDLLPATH) or Wine's wined3d. */
 #define COBJMACROS

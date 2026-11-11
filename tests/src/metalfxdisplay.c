@@ -1,3 +1,4 @@
+/* libs: dxgi dxguid */
 /* metalfxdisplay: prints the display a program sees (screen metrics, the primary monitor, the current, registry
  * and largest modes, DXGI's output, the adapter's LUID), to check that a MetalFX game is shown the display divided by its factor */
 #define COBJMACROS

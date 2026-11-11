@@ -1,4 +1,5 @@
 /* archs: aarch64 x86_64 */
+/* libs: d3d12 dxgi dxguid */
 /* D3D12 smoke test: device, queue, flip swap chain, RTV heap; clear and present 30 frames with
  * a fence wait per frame. Run with GRAPHICS_BACKEND=dxmt (Mullion). */
 #define COBJMACROS

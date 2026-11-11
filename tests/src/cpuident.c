@@ -1,4 +1,5 @@
 /* archs: x86_64 */
+/* libs: powrprof */
 /* cpuident: what an x64 program can learn about the CPU it runs on, the way protectors and anti-VM checks look
  * (CPUID vendor, brand, family/model, feature and hypervisor bits, the TSC leaves; RDTSC's measured rate; and the
  * processor clock CallNtPowerInformation reports). Prints one "name value" line each, so two runtimes' output (FEX,

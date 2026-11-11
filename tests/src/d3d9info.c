@@ -1,3 +1,4 @@
+/* libs: d3d9 */
 /* D3D9 smoke test (wined3d over OpenGL): HAL device on a window, clear and present 30 frames,
  * read a pixel of the back buffer back. */
 #define COBJMACROS

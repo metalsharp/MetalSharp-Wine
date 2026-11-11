@@ -1,0 +1,41 @@
+From 1dfb01f46882eb195ca1e40ceb25125fc9e7d0c2 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Tue, 10 Nov 2026 21:41:32 -0700
+Subject: [PATCH] setupapi: Skip a Wine source directory that is not installed.
+
+wine.inf copies Microsoft's shader compilers from <datadir>/shadercompilers,
+which a separate script stages. Without them, creating a prefix never
+finished: the copy queue asks for the missing file, the default callback
+answers "try again", and rundll32 spins at full CPU.
+
+A [WineSourceDirs] directory that does not exist is now skipped with an
+error message.
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+---
+ dlls/setupapi/install.c | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/dlls/setupapi/install.c b/dlls/setupapi/install.c
+index 0321ff66bbf..f069e3b46ce 100644
+--- a/dlls/setupapi/install.c
++++ b/dlls/setupapi/install.c
+@@ -171,6 +171,15 @@ static BOOL copy_files_callback( HINF hinf, PCWSTR field, void *arg )
+             {
+                 if (!SetupGetStringFieldW( &context, 1, p, MAX_PATH - (p - src_root), NULL )) p[-1] = 0;
+             }
++            /* MetalSharp: a directory of Wine's own data that the build did not install (the shader compilers are
++             * staged by a separate script) is skipped. Queued, its files would be asked for without end: the default
++             * queue callback answers every request for missing media with "try again". */
++            if (GetFileAttributesW( src_root ) == INVALID_FILE_ATTRIBUTES)
++            {
++                ERR( "%s: the source directory %s is missing, not copying its files\n",
++                     debugstr_w(field), debugstr_w(src_root) );
++                return TRUE;
++            }
+         }
+         else
+         {
+-- 
+2.54.0 (Apple Git-157)
+
