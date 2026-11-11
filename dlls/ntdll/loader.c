@@ -3495,6 +3495,36 @@ NTSTATUS WINAPI __wine_ctrl_routine( void *arg )
 
 
 /***********************************************************************
+ *              __wine_unix_call (Proton: kept for the anti-cheat runtimes' bridges, built against older Wine)
+ */
+NTSTATUS WINAPI compat___wine_unix_call( unixlib_handle_t handle, unsigned int code, void *args )
+{
+    return __wine_unix_call( handle, code, args );
+}
+
+/***********************************************************************
+ *              wine_nt_to_unix_file_name (Proton: the same)
+ */
+NTSTATUS WINAPI compat_wine_nt_to_unix_file_name( const OBJECT_ATTRIBUTES *attr, char *nameA, ULONG *size,
+                                                  UINT disposition )
+{
+    struct compat_wine_nt_to_unix_file_name_params params = { attr, nameA, size, disposition };
+
+    return WINE_UNIX_CALL( unix_compat_wine_nt_to_unix_file_name, &params );
+}
+
+/***********************************************************************
+ *              __wine_set_unix_env (Proton: sets a variable in the Unix environment)
+ */
+NTSTATUS WINAPI __wine_set_unix_env( const char *var, const char *val )
+{
+    struct wine_set_unix_env_params params = { var, val };
+
+    return WINE_UNIX_CALL( unix_wine_set_unix_env, &params );
+}
+
+
+/***********************************************************************
  *           __wine_unix_spawnvp
  */
 NTSTATUS WINAPI __wine_unix_spawnvp( char * const argv[], int wait )
@@ -4274,6 +4304,57 @@ PIMAGE_NT_HEADERS WINAPI RtlImageNtHeader(HMODULE hModule)
 }
 
 /***********************************************************************
+ *           load_linux_host
+ *
+ * Proton on macOS: a program that loads Linux code into itself, as Easy Anti-Cheat's EOS bootstrapper does on
+ * Proton, gets the Linux module host (linuxhost.dll, x86_64) before its own code runs. kernelbase sets
+ * PROTON_LINUX_HOST for such a program; its value may also be the path of the host, to test another one.
+ * Otherwise the host is the one bundled with Wine, in LINUXHOST_RUNTIME_DIR (by default the bundle's
+ * lib/linuxhost), or else linuxhost.dll wherever the search for a DLL finds it.
+ */
+static void load_linux_host( CONTEXT *context )
+{
+#if defined(__x86_64__) || defined(__arm64ec__)
+    static const WCHAR unix_prefixW[] = L"\\\\?\\unix";
+    static const WCHAR suffixW[] = L"\\x86_64-windows\\linuxhost.dll";
+    WCHAR buffer[MAX_PATH], dir[MAX_PATH];
+    UNICODE_STRING name = RTL_CONSTANT_STRING( L"PROTON_LINUX_HOST" ), value;
+    UNICODE_STRING dir_name = RTL_CONSTANT_STRING( L"LINUXHOST_RUNTIME_DIR" ), dir_value;
+    WINE_MODREF *host;
+    NTSTATUS status;
+    WCHAR *p;
+
+    if (NtCurrentTeb()->WowTebOffset) return;
+    value.Buffer = buffer;
+    value.Length = 0;
+    value.MaximumLength = sizeof(buffer) - sizeof(WCHAR);
+    if (RtlQueryEnvironmentVariable_U( NULL, &name, &value )) return;
+    buffer[value.Length / sizeof(WCHAR)] = 0;
+    if (!wcschr( buffer, '\\' ))
+    {
+        dir_value.Buffer = dir;
+        dir_value.Length = 0;
+        dir_value.MaximumLength = sizeof(dir) - (wcslen( unix_prefixW ) + wcslen( suffixW ) + 1) * sizeof(WCHAR);
+        if (!RtlQueryEnvironmentVariable_U( NULL, &dir_name, &dir_value ) && dir_value.Length)
+        {
+            /* a Unix directory, as \\?\unix\<path> */
+            dir[dir_value.Length / sizeof(WCHAR)] = 0;
+            for (p = dir; *p; p++) if (*p == '/') *p = '\\';
+            wcscpy( buffer, unix_prefixW );
+            wcscat( buffer, dir );
+            wcscat( buffer, suffixW );
+        }
+        else wcscpy( buffer, L"linuxhost.dll" );
+    }
+    status = load_dll( NULL, buffer, 0, &host, FALSE );
+    if (!status) status = process_attach( host->ldr.DdagNode, context );
+    if (status) ERR( "could not load the Linux module host %s, status %lx\n", debugstr_w(buffer), status );
+    else TRACE( "loaded the Linux module host\n" );
+#endif
+}
+
+
+/***********************************************************************
  *           load_global_options
  */
 static void load_global_options(void)
@@ -4739,6 +4820,7 @@ void loader_init( CONTEXT *context, void **entry )
                  debugstr_w(NtCurrentTeb()->Peb->ProcessParameters->ImagePathName.Buffer), status );
             NtTerminateProcess( GetCurrentProcess(), status );
         }
+        load_linux_host( context );
         release_address_space();
         if (wm->ldr.TlsIndex == -1) call_tls_callbacks( wm->ldr.DllBase, DLL_PROCESS_ATTACH );
         if (wm->ldr.ActivationContext) RtlDeactivateActivationContext( 0, cookie );
