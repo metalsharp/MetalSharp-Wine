@@ -19,6 +19,7 @@
  */
 
 #include <stdarg.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "ntstatus.h"
@@ -27,6 +28,7 @@
 #include "winnls.h"
 #include "wincontypes.h"
 #include "winternl.h"
+#include "winver.h"
 #include "processsnapshot.h"
 
 #include "kernelbase.h"
@@ -589,6 +591,89 @@ static BOOL get_metalsharp_launch( const WCHAR *app_name, WCHAR *chosen, DWORD s
     return chosen[0] || args[0];
 }
 
+/* Proton: the ProductName of a program's version resource, which names the anti-cheat launchers
+ * whatever their file names are. The caller frees it. */
+static char *get_product_name( const WCHAR *app_name )
+{
+    WCHAR full_path[MAX_PATH];
+    char *product_name, *ret;
+    DWORD *translation;
+    char buf[100];
+    void *block;
+    UINT size;
+
+    if (!GetLongPathNameW( app_name, full_path, MAX_PATH )) lstrcpynW( full_path, app_name, MAX_PATH );
+    if (!GetFullPathNameW( full_path, MAX_PATH, full_path, NULL )) lstrcpynW( full_path, app_name, MAX_PATH );
+
+    size = GetFileVersionInfoSizeExW(0, full_path, NULL);
+    if (!size)
+        return NULL;
+
+    block = HeapAlloc( GetProcessHeap(), 0, size );
+
+    if (!GetFileVersionInfoExW(0, full_path, 0, size, block))
+    {
+        HeapFree( GetProcessHeap(), 0, block );
+        return NULL;
+    }
+
+    if (!VerQueryValueA(block, "\\VarFileInfo\\Translation", (void **) &translation, &size) || size != 4)
+    {
+        HeapFree( GetProcessHeap(), 0, block );
+        return NULL;
+    }
+
+    sprintf(buf, "\\StringFileInfo\\%08lx\\ProductName", MAKELONG(HIWORD(*translation), LOWORD(*translation)));
+
+    if (!VerQueryValueA(block, buf, (void **) &product_name, &size))
+    {
+        HeapFree( GetProcessHeap(), 0, block );
+        return NULL;
+    }
+
+    ret = HeapAlloc( GetProcessHeap(), 0, strlen( product_name ) + 1 );
+    strcpy( ret, product_name );
+    HeapFree( GetProcessHeap(), 0, block );
+    return ret;
+}
+
+/* Proton: BattlEye's launcher is replaced by the builtin belauncher.exe, which starts the game with
+ * BattlEye's arguments and then the original launcher */
+static int battleye_launcher_redirect_hack( const WCHAR *app_name, WCHAR *new_name, DWORD new_name_len,
+                                            WCHAR **orig_app_name, const char *product_name )
+{
+    static const WCHAR belauncherW[] = L"c:\\windows\\system32\\belauncher.exe";
+    unsigned int len;
+
+    if (GetEnvironmentVariableW(L"PROTON_ORIG_LAUNCHER_NAME", NULL, 0))
+    {
+        /* run from builtin belauncher. */
+        return 0;
+    }
+
+    /* We detect the BattlEye launcher executable through the product name property, as the executable name varies */
+    if (!product_name || strcmp( product_name, "BattlEye Launcher" ))
+        return 0;
+
+    TRACE( "Detected launch of a BattlEye Launcher, redirecting to Proton version.\n" );
+
+    if (new_name_len < wcslen( belauncherW ) + 1)
+    {
+        ERR( "Game executable path doesn't fit in buffer.\n" );
+        return 0;
+    }
+
+    len = (wcslen( app_name ) + 1) * sizeof(*app_name);
+    if (!(*orig_app_name = HeapAlloc( GetProcessHeap(), 0, len )))
+    {
+        ERR( "No memory.\n" );
+        return 0;
+    }
+    memcpy( *orig_app_name, app_name, len );
+    wcscpy( new_name, belauncherW );
+    return 1;
+}
+
 /**********************************************************************
  *           CreateProcessInternalW   (kernelbase.@)
  */
@@ -601,11 +686,12 @@ BOOL WINAPI DECLSPEC_HOTPATCH CreateProcessInternalW( HANDLE token, const WCHAR 
 {
     const struct proc_thread_attr *handle_list = NULL, *job_list = NULL;
     WCHAR name[MAX_PATH], chosen[MAX_PATH], launch_args[MAX_PATH * 3];
-    WCHAR *p, *tidy_cmdline = cmd_line;
+    WCHAR *p, *tidy_cmdline = cmd_line, *orig_app_name = NULL;
     RTL_USER_PROCESS_PARAMETERS *params = NULL;
     RTL_USER_PROCESS_INFORMATION rtl_info = { 0 };
     HANDLE parent = 0, debug = 0;
     const WCHAR *append_args;
+    char *product_name = NULL;
     ULONG nt_flags = 0;
     USHORT machine = 0;
     NTSTATUS status;
@@ -675,6 +761,10 @@ BOOL WINAPI DECLSPEC_HOTPATCH CreateProcessInternalW( HANDLE token, const WCHAR 
         }
     }
 
+    product_name = get_product_name( app_name );
+    if (battleye_launcher_redirect_hack( app_name, name, ARRAY_SIZE(name), &orig_app_name, product_name ))
+        app_name = name;
+
     /* Warn if unsupported features are used */
 
     if (flags & (IDLE_PRIORITY_CLASS | HIGH_PRIORITY_CLASS | REALTIME_PRIORITY_CLASS |
@@ -698,6 +788,45 @@ BOOL WINAPI DECLSPEC_HOTPATCH CreateProcessInternalW( HANDLE token, const WCHAR 
     {
         status = STATUS_NO_MEMORY;
         goto done;
+    }
+
+    /* Set PROTON_EAC_LAUNCHER_PROCESS when launching the EAC launcher to let ntdll know to load the native EAC client library.
+      - We don't do this check in ntdll itself because it's harder to get the product name there
+      - we don't overwrite WINEDLLOVERRIDES because it's fetched from the unix environment */
+    if (orig_app_name || (product_name && !strcmp( product_name, "EasyAntiCheat Launcher" )) ||
+        GetEnvironmentVariableW( L"PROTON_EAC_LAUNCHER_PROCESS", NULL, 0 ))
+    {
+        UNICODE_STRING var, value;
+        WCHAR *new_env = RtlAllocateHeap( GetProcessHeap(), 0, params->EnvironmentSize );
+
+        if (!new_env)
+        {
+            status = STATUS_NO_MEMORY;
+            goto done;
+        }
+        memcpy( new_env, params->Environment, params->EnvironmentSize );
+        RtlDestroyProcessParameters( params );
+
+        RtlInitUnicodeString( &var, L"PROTON_EAC_LAUNCHER_PROCESS" );
+        RtlInitUnicodeString( &value, L"1" );
+        RtlSetEnvironmentVariable( &new_env, &var,
+                                   product_name && !strcmp( product_name, "EasyAntiCheat Launcher" ) ? &value : NULL );
+
+        if (orig_app_name)
+        {
+            RtlInitUnicodeString( &var, L"PROTON_ORIG_LAUNCHER_NAME" );
+            RtlInitUnicodeString( &value, orig_app_name );
+            RtlSetEnvironmentVariable( &new_env, &var, &value );
+        }
+
+        params = create_process_params( app_name, tidy_cmdline, cur_dir, new_env,
+                                        flags | CREATE_UNICODE_ENVIRONMENT, startup_info );
+        RtlFreeHeap( GetProcessHeap(), 0, new_env );
+        if (!params)
+        {
+            status = STATUS_NO_MEMORY;
+            goto done;
+        }
     }
 
     if (flags & (DEBUG_PROCESS | DEBUG_ONLY_THIS_PROCESS))
@@ -819,6 +948,8 @@ BOOL WINAPI DECLSPEC_HOTPATCH CreateProcessInternalW( HANDLE token, const WCHAR 
  done:
     RtlDestroyProcessParameters( params );
     if (tidy_cmdline != cmd_line) HeapFree( GetProcessHeap(), 0, tidy_cmdline );
+    HeapFree( GetProcessHeap(), 0, orig_app_name );
+    HeapFree( GetProcessHeap(), 0, product_name );
     return set_ntstatus( status );
 }
 
