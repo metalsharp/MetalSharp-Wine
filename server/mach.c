@@ -411,7 +411,9 @@ int read_process_memory( struct process *process, client_ptr_t ptr, data_size_t 
     }
 
     ret = mach_vm_read_overwrite( process_port, (mach_vm_address_t)ptr, (mach_vm_size_t)size, (mach_vm_address_t)dest, &bytes_read );
-    mach_set_error( ret );
+    /* memory that is not mapped or not readable: what ReadProcessMemory reports as a partial copy */
+    if (ret == KERN_INVALID_ADDRESS || ret == KERN_PROTECTION_FAILURE) set_error( STATUS_PARTIAL_COPY );
+    else mach_set_error( ret );
     return (ret == KERN_SUCCESS);
 }
 
