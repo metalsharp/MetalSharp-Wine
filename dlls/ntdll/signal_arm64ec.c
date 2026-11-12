@@ -1352,7 +1352,7 @@ __ASM_GLOBAL_FUNC( "#KiUserEmulationDispatcher",
 static struct linux_syscall_range
 {
     ULONG_PTR start, end, handler;
-} linux_syscall_ranges[32];
+} linux_syscall_ranges[512];  /* an obfuscated library (EAC) maps and runs many executable regions, each a range */
 static LONG linux_syscall_range_count;
 
 /***********************************************************************
