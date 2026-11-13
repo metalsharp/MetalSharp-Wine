@@ -101,6 +101,25 @@ static BOOL string_contains_ci( const WCHAR *string, const WCHAR *needle )
     return FALSE;
 }
 
+/* MetalSharp: whether the command line has the argument `arg`. One ending in '=' is a prefix
+ * ("--type=" matches any type); another must be the whole argument, so "--disable-gpu" is not
+ * "--disable-gpu-early-init", which Steam's web helper has since November 2026. */
+static BOOL cmd_line_has_arg( const WCHAR *cmd_line, const WCHAR *arg )
+{
+    SIZE_T len = lstrlenW( arg );
+    const WCHAR *p;
+
+    if (!cmd_line || !len) return FALSE;
+    if (arg[len - 1] == '=') return string_contains_ci( cmd_line, arg );
+    for (p = cmd_line; *p; p++)
+    {
+        if (wcsnicmp( p, arg, len )) continue;
+        if (p > cmd_line && p[-1] != ' ' && p[-1] != '\t' && p[-1] != '"') continue;
+        if (!p[len] || p[len] == ' ' || p[len] == '\t' || p[len] == '"' || p[len] == '=') return TRUE;
+    }
+    return FALSE;
+}
+
 static BOOL process_matches( const WCHAR *app_name, const WCHAR *cmd_line,
                              const struct launcher_process_policy *policy )
 {
@@ -148,7 +167,7 @@ const WCHAR *get_launcher_process_args( const WCHAR *app_name, const WCHAR *cmd_
             string_contains_ci( cmd_line, policy->excluded_path_alt ))
             return NULL;
         for (j = 0; j < ARRAY_SIZE(policy->blocked_args) && policy->blocked_args[j]; j++)
-            if (string_contains_ci( cmd_line, policy->blocked_args[j] )) return NULL;
+            if (cmd_line_has_arg( cmd_line, policy->blocked_args[j] )) return NULL;
         return policy->append_args;
     }
 
