@@ -728,6 +728,7 @@ BOOL WINAPI DECLSPEC_HOTPATCH CreateProcessInternalW( HANDLE token, const WCHAR 
             goto done;
         }
         if (old_cmdline != cmd_line) HeapFree( GetProcessHeap(), 0, old_cmdline );
+        strip_launcher_process_args( app_name, tidy_cmdline );
     }
 
     if (get_metalsharp_launch( app_name, chosen, ARRAY_SIZE(chosen), launch_args, ARRAY_SIZE(launch_args) ))

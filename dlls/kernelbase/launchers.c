@@ -25,8 +25,9 @@ struct launcher_process_policy
     const WCHAR *path_alt;
     const WCHAR *excluded_path;
     const WCHAR *excluded_path_alt;
-    const WCHAR *blocked_args[3];
+    const WCHAR *blocked_args[4];
     const WCHAR *append_args;
+    const WCHAR *stripped_args[2];
 };
 
 static const struct launcher_process_policy launcher_process_policies[] =
@@ -38,7 +39,7 @@ static const struct launcher_process_policy launcher_process_policies[] =
         L"/Steam/bin/cef/",
         NULL,
         NULL,
-        {L"--type=crashpad-handler", L"--disable-gpu", NULL},
+        {L"--type=crashpad-handler", L"--type=renderer", L"--disable-gpu", NULL},
         L" --no-sandbox"
         L" --in-process-gpu"
         L" --disable-gpu"
@@ -46,6 +47,9 @@ static const struct launcher_process_policy launcher_process_policies[] =
         L" --enable-unsafe-swiftshader"
         L" --use-gl=angle"
         L" --use-angle=swiftshader",
+        /* Steam 1794424036 defers GPU init; with the in-process GPU its renderers then never get a
+         * channel and Steam kills the main window as unresponsive */
+        {L"--disable-gpu-early-init", NULL},
     },
     /* WineForge-Internal: launcher-compat/rockstar-cef-in-process-gpu-v1. */
     {
@@ -101,6 +105,29 @@ static BOOL string_contains_ci( const WCHAR *string, const WCHAR *needle )
     return FALSE;
 }
 
+/* A whole argument: Steam's webhelper passes --disable-gpu-early-init, which must not count as
+ * --disable-gpu. An entry ending in '=' (--type=) matches any value. */
+static const WCHAR *find_cmd_line_arg( const WCHAR *cmd_line, const WCHAR *arg )
+{
+    SIZE_T len;
+    const WCHAR *p;
+
+    if (!cmd_line || !arg || !(len = lstrlenW( arg ))) return NULL;
+    for (p = cmd_line; *p; p++)
+    {
+        if (p > cmd_line && p[-1] != ' ' && p[-1] != '\t' && p[-1] != '"') continue;
+        if (wcsnicmp( p, arg, len )) continue;
+        if (arg[len - 1] == '=' || !p[len] || p[len] == ' ' || p[len] == '\t' || p[len] == '"' || p[len] == '=')
+            return p;
+    }
+    return NULL;
+}
+
+static BOOL cmd_line_has_arg( const WCHAR *cmd_line, const WCHAR *arg )
+{
+    return find_cmd_line_arg( cmd_line, arg ) != NULL;
+}
+
 static BOOL process_matches( const WCHAR *app_name, const WCHAR *cmd_line,
                              const struct launcher_process_policy *policy )
 {
@@ -148,14 +175,36 @@ const WCHAR *get_launcher_process_args( const WCHAR *app_name, const WCHAR *cmd_
             string_contains_ci( cmd_line, policy->excluded_path_alt ))
             return NULL;
         for (j = 0; j < ARRAY_SIZE(policy->blocked_args) && policy->blocked_args[j]; j++)
-            if (string_contains_ci( cmd_line, policy->blocked_args[j] )) return NULL;
+            if (cmd_line_has_arg( cmd_line, policy->blocked_args[j] )) return NULL;
         return policy->append_args;
     }
 
     /* MetalSharp: any other Chromium browser process. Its GPU process can't draw into the
      * browser's windows on macOS (they stay blank), so keep the GPU thread in process. */
-    if (!string_contains_ci( cmd_line, L"--type=" ) && !string_contains_ci( cmd_line, L"--in-process-gpu" ) &&
+    if (!cmd_line_has_arg( cmd_line, L"--type=" ) && !cmd_line_has_arg( cmd_line, L"--in-process-gpu" ) &&
         is_chromium_browser( app_name ))
         return L" --in-process-gpu";
     return NULL;
+}
+
+/* removes the matching policy's stripped arguments from a command line it was applied to */
+void strip_launcher_process_args( const WCHAR *app_name, WCHAR *cmd_line )
+{
+    unsigned int i, j;
+
+    for (i = 0; i < ARRAY_SIZE(launcher_process_policies); i++)
+    {
+        const struct launcher_process_policy *policy = &launcher_process_policies[i];
+
+        if (!process_matches( app_name, cmd_line, policy )) continue;
+        for (j = 0; j < ARRAY_SIZE(policy->stripped_args) && policy->stripped_args[j]; j++)
+        {
+            SIZE_T len = lstrlenW( policy->stripped_args[j] );
+            WCHAR *p;
+
+            while ((p = (WCHAR *)find_cmd_line_arg( cmd_line, policy->stripped_args[j] )))
+                memmove( p, p + len, (lstrlenW( p + len ) + 1) * sizeof(WCHAR) );
+        }
+        return;
+    }
 }

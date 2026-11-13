@@ -13,5 +13,6 @@
 #define __WINE_KERNELBASE_LAUNCHERS_H
 
 const WCHAR *get_launcher_process_args( const WCHAR *app_name, const WCHAR *cmd_line );
+void strip_launcher_process_args( const WCHAR *app_name, WCHAR *cmd_line );
 
 #endif
