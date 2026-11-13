@@ -121,7 +121,7 @@ Each remaining failure group was looked at and assigned to a cause.
 | FEX: DF lost on a fault in the same block as `std` (cached context store), and AF/DF missing from ARM64EC contexts | Write DF through; carry AF/DF in RES0 CPSR bits |
 | Vulkan: the loader hid MoltenVK without portability enumeration (`VK_ERROR_INCOMPATIBLE_DRIVER`) | Enable `VK_KHR_portability_enumeration` |
 
-## 7.0: core modules on the Developer ID app
+## 6.5: core modules on the Developer ID app
 
 Run 2026-11-11 for ntdll, kernel32, kernelbase, ws2_32, advapi32 and msvcrt (94 units), native ARM64, with the signed app (4K pages, low 4GB). Native ARM64 failures went from 301 to 227. Every unit finishes except `kernel32:loader`, an upstream ARM64 test bug. `ws2_32:sock`, which used to hang at the 300 s limit, runs all 2,671,520 checks in 39 s. The full tables, the first i386 run and every remaining failure are in metalsharp/Proton's [`docs/macos/CONFORMANCE.md`](https://github.com/metalsharp/Proton/blob/proton_11.0-macos/docs/macos/CONFORMANCE.md).
 

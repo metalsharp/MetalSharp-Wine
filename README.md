@@ -2,252 +2,84 @@
 
 <img width="80" height="80" alt="MetalSharp Wine" src="https://github.com/user-attachments/assets/87d1a9ab-a9dd-46d6-ad4b-db646ef07b7a" />
 
-
 # MetalSharp Wine
 
 [![Release](https://img.shields.io/github/v/release/metalsharp/MetalSharp-Wine?style=for-the-badge)](https://github.com/metalsharp/MetalSharp-Wine/releases/latest)
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-purple.svg?style=for-the-badge)](LICENSE)
 
-</div>
-
-<div align="center">
-
 ### The Official Open-Source Wine of [MetalSharp](https://github.com/metalsharp/MetalSharp)
 
 </div>
 
-___
+Wine 11.20 as a native arm64 macOS app for Apple silicon. It runs ARM64, x86_64 and 32-bit x86 Windows programs, with x86 code translated by FEX, and Direct3D 9–12 and OpenGL 4.6 on Metal. No Rosetta. It needs **macOS 15 or later**, and 32-bit programs need **macOS 26.4 or later**.
 
-**Early access.** MetalSharp Wine is under active development, and Direct3D 12 most of all. Where to report a problem:
-- **A game's rendering on Mullion (the default Direct3D lane):** [dttdrv/mullion](https://github.com/dttdrv/mullion).
-- **A game's rendering on VKD3D-Proton (`GRAPHICS_BACKEND=vkd3d`):** [metalsharp/VKD3D-Proton-MacOS](https://github.com/metalsharp/VKD3D-Proton-MacOS).
-- **A game's rendering on DXVK (`GRAPHICS_BACKEND=dxvk`):** [metalsharp/DXVK-MacOS](https://github.com/metalsharp/DXVK-MacOS).
-- **Anything else** (a game that won't start, crashes, input, windows, sound, installers): this repository's [issues](https://github.com/metalsharp/MetalSharp-Wine/issues).
+**Early access.** Direct3D 12 most of all is under active development.
 
-**New in 7.0** (arm64 build; the x86_64 build is 6.0's):
-- Proton's Wine. Programs Steam starts get Proton's per-game rules for 198 games (`share/proton/appcompat.env`), and Valve's EasyAntiCheat and BattlEye support is ported: the BattlEye launcher redirect and `belauncher.exe`, `PROTON_EAC_RUNTIME` and `PROTON_BATTLEYE_RUNTIME`, and the EasyAntiCheat bridge load order. Easy Anti-Cheat's EOS bootstrapper loads EAC's Linux module into itself, as under Proton, through the Linux module host (`lib/linuxhost`). With Elden Ring, EAC starts and keeps running and the game boots, but plays offline: EAC's in-game client never gets into the game. BattlEye has not been tested with a game. The port is [metalsharp/Proton](https://github.com/metalsharp/Proton), branch `proton_11.0-macos`.
-- Fourteen fixes found by running Wine's test suite: network data received into write-watched memory (the .NET heap) was lost, four socket bugs could hang a program, socket options now have Windows' values and sizes, and copy-on-write protection of a read-only file view works. Native ARM64 failures in the six core modules went from 301 to 227, and every unit finishes ([`docs/TESTING.md`](docs/TESTING.md)).
+## Install
 
-**New in 6.0:**
-- The x86_64 build, `MetalSharp-Wine-x86_64.app`: x86_64 Wine 11.17 under Rosetta 2 with every graphics lane, DLSS on MetalFX and Apple's D3DMetal (Game Porting Toolkit 4.0 beta 3 on macOS 27, 3.0 below).
-- FEX runs x86 code more like an x86 CPU: x64 debug registers, code that protectors unlock on execute, undefined flags as Intel sets them, x87 state across exceptions, and the TSC's frequency in CPUID.
-- Faster x86 callbacks and cold program starts.
-- VKD3D-Proton-MacOS 5.3 with the Metal Shader Converter bridge, WineMetalGL 3.9.0 and a newer Mullion.
+1. Download `MetalSharp-Wine-<version>-arm64.zip` from [Releases](https://github.com/metalsharp/MetalSharp-Wine/releases/latest).
+2. Unzip it and move `MetalSharp-Wine.app` to `/Applications`.
 
-The [release notes](https://github.com/metalsharp/MetalSharp-Wine/releases/latest) have the full list.
+MetalSharp uses the app from its Play button, so there's nothing else to set up there. On its own the app has no window: you run it from Terminal, as below.
 
-MetalSharp Wine comes in two builds:
-- **The arm64 build, `MetalSharp-Wine.app`:** Wine 11.20 built as a native arm64 macOS application for Apple silicon. A FEX-Emu fork translates x86 Windows code to ARM64. This is the build the rest of this page describes.
-- **The x86_64 build, `MetalSharp-Wine-x86_64.app`:** an x86_64 Wine 11.17 that runs under Rosetta 2, with the same graphics lanes plus Apple's D3DMetal. See [`docs/X86_64.md`](docs/X86_64.md).
+## Steam
 
-MetalSharp's FEX build ships the arm64 app and runs games with it from its Play button. On its own the app has no interface: you run it from Terminal, like Sikarugir ([Use it](#use-it)).
+Paste each block into Terminal. Each one sets up what it needs, so they work in a new window too.
 
-- **No Rosetta:** none of the arm64 build is x86 code run through Rosetta.
-- **No hardware TSO:** FEX emulates the x86 memory model with ordinary ARM64 instructions.
-
-It runs ARM64, x86_64 and 32-bit x86 Windows programs, with Direct3D 9 through 12 and OpenGL 4.6 on Metal. Both builds need **macOS 15 or later**; i386 on the arm64 build needs **macOS 26.4 or later**.
-
-| Windows code | How it runs |
-|---|---|
-| ARM64 (aarch64) | natively |
-| x86_64 | FEX through ARM64EC (`libarm64ecfex.dll`); Wine's own DLLs are native ARM64X hybrids |
-| i386 | FEX through WoW64 (`libwow64fex.dll`), in the signed app (cross-architecture entitlement: low 4GB, 4K pages) |
-
-## Download
-
-[Releases](https://github.com/metalsharp/MetalSharp-Wine/releases) has:
-- `MetalSharp-Wine-<version>-arm64.zip`: the signed and notarized `MetalSharp-Wine.app`. Use this one; i386 and 4K pages need it.
-- `metalsharp-wine-<version>-arm64.tar.xz`: the same Wine as a relocatable folder (`bin/wine`). It is ad-hoc signed, so x86_64 and ARM64 only, with 16K pages.
-- `MetalSharp-Wine-<version>-x86_64.zip`: **the x86_64 build**, the signed and notarized `MetalSharp-Wine-x86_64.app`. It's an x86_64 Wine 11.17 that runs under Rosetta 2, with the same graphics lanes plus Apple's D3DMetal. It's built as MetalSharp's x86_64 runtime. See [`docs/X86_64.md`](docs/X86_64.md).
-
-## Use it
-
-In MetalSharp's FEX build there's nothing to set up: it's the Play button. To run the app on its own, from Terminal:
-
-1) _**Download the .zip and move the .app from inside into /applications.**_
-
-___
-
-### Terminal Commands: 
-
-2) _**First point a shell variable at the Wine Inside the app:**_
-
-`export WINE=/Applications/MetalSharp-Wine.app/Contents/MacOS/wine`
-
-3) _**Create a prefix:**_
-
-`WINEPREFIX=~/Games/my-prefix $WINE wineboot -i`
-
-(It takes a minute the first time. The prefix comes with Wine Mono (.NET), Gecko and the core fonts already set up, and x86 programs run through FEX automatically). 
-
-4) _**Run an installer or game by passing the .exe path:**_ 
-
-`WINEPREFIX=~/Games/my-prefix $WINE ~/Downloads/setup.exe`
-
-`WINEPREFIX=~/Games/my-prefix $WINE "C:\\Program Files\\MyGame\\Game.exe"` 
-
-4.1) _**Running from inside the game’s folder also works and helps some games find their files:**_
-
-`cd ~/Games/my-prefix/drive_c/Program\ Files/MyGame && WINEPREFIX=~/Games/my-prefix $WINE Game.exe` 
-
-5) _**For Steam: run SteamSetup.exe (from Valve, or share/metalsharp/steam inside the app) the same way, then start Steam with:**_
-
-`WINEPREFIX=~/Games/my-prefix $WINE "C:\\Program Files (x86)\\Steam\\steam.exe"` 
-
-6) _**Useful switches, set before the $WINE command like WINEPREFIX:**_ 
-
-* Direct3D: Mullion on Metal is the default. For x86_64 games, GRAPHICS_BACKEND=dxvk uses DXVK-macOS (D3D9/10/11 on MoltenVK) and GRAPHICS_BACKEND=vkd3d uses VKD3D-Proton (D3D12 on MoltenVK). GRAPHICS_BACKEND=wine uses Wine’s own wined3d.
-* VKD3D-Proton: run it with WINEDEBUG=-all. With Wine's default debug channels, device creation can fail ("Lacking support for single texel alignment").
-* OpenGL: WineMetalGL 4.6 is the default. OPENGL_BACKEND=wine switches back to Wine’s own.
-* Sync: msync is on by default and is much faster than going through the wineserver. WINEMSYNC=0 turns it off.
-* Memory ordering: FEX runs x86 code with its TSO emulation on by default, which games that hand data between threads with plain stores need (Red Dead Redemption 2 hangs without it). FEX_TSOENABLED=0 turns it off, which is faster for programs that don't need it.
-* x87: 32-bit programs run x87 floating point in double precision by default, as under Rosetta; full 80-bit emulation is much slower (it made Ori's FMOD audio stutter). FEX_X87REDUCEDPRECISION=0 restores full precision for a program that needs it.
-* Mouse: setting UseGCMouse to N (in HKCU\Software\Wine\Mac Driver) goes back to the old mouse input path if GCMouse raw input misbehaves in a game.
-* Cursor: a fullscreen game started by Steam or MetalSharp keeps the cursor inside its window. Windowed programs, launchers among them, leave it free. Cmd+left click in a window locks the cursor in it or frees it. METALSHARP_CONFINE_CURSOR=0 turns off the fullscreen default.
-* Per game: a `.metalsharp/launch.local.env` file in the game's folder sets environment variables for that game (one `NAME=value` per line). MetalSharp never writes it, so it survives MetalSharp rewriting `launch.env`. An empty `.metalsharp/trace` file there turns on Wine's trace log for that folder's programs.
-* Settings: WINEPREFIX=~/Games/my-prefix $WINE winecfg opens Wine’s settings.
-
-## What's included
-
-| Area | Details |
-|---|---|
-| Direct3D 10/11/12 | **Mullion** (DXMT fork) on Metal, the default. ARM64X, so native ARM64 and x86_64 programs use one build; there's also an i386 build (D3D10/11). `GRAPHICS_BACKEND=wine` selects wined3d |
-| Direct3D 9/10/11 (opt-in) | **DXVK-MacOS 3.1.1-macos.3** ([metalsharp/DXVK-MacOS](https://github.com/metalsharp/DXVK-MacOS), DXVK 3.1.1 ported to MoltenVK, with MetalFX), built as ARM64X and run by x86_64 programs as ARM64EC under FEX: `GRAPHICS_BACKEND=dxvk` |
-| Direct3D 12 (opt-in) | **VKD3D-Proton-MacOS 5.4** ([metalsharp/VKD3D-Proton-MacOS](https://github.com/metalsharp/VKD3D-Proton-MacOS)), ARM64X, with DXVK 2.7.1's DXGI and D3D10/11 (ARM64X too) for swap chains and D3D11On12, on MetalSharp's MoltenVK: `GRAPHICS_BACKEND=vkd3d` (x86_64 programs, and native ARM64 ones; D3D9 there comes from DXVK-macOS). Apple's Metal Shader Converter turns its compute, vertex, mesh, amplification and pixel shaders, DXIL and DXBC (through DirectXShaderCompiler's dxilconv, `libdxbcconverter.dylib`), into Metal libraries directly; geometry and tessellation shaders and what only SPIR-V can emulate stay on SPIR-V (`METALSHARP_MSC=0` turns the converter off, `METALSHARP_MSC=compute` keeps it to compute, `METALSHARP_MSC_DXBC=0` keeps DXBC shaders on SPIR-V) |
-| Upscaling and DLSS | **MetalFX** upscaling from MetalSharp's MetalFX setting on every lane: Mullion, VKD3D-Proton, DXVK-MacOS and WineMetalGL. The game is shown the display divided by the upscale factor, and its saved resolution follows the main display. **DLSS** in games that ship it, run on MetalFX: Super Resolution on the temporal scaler, Ray Reconstruction on the denoising scaler, and Frame Generation on the frame interpolator (Mullion and VKD3D-Proton). Each lane has its own NGX core and NVAPI, and `winemac.conf` sets the GPU a DLSS game sees |
-| Tracing | `MULLION_TRACE_<CATEGORY>=1` or `heavy` (Mullion: gpu, sync, resource, memory, shader, present, pass, api, cpu) and `METALSHARP_TRACE=<category>[+heavy]` (VKD3D-Proton and MoltenVK) write a log per game: `~/Library/Logs/Mullion/<exe>/mullion.log`, and `vkd3d.log` and `moltenvk.log` in `~/.metalsharp/logs/trace/<exe>/` |
-| Shader compilers | Microsoft's DXC 1.9 (`dxcompiler.dll`, `dxil.dll`; ARM64 and x86) and the ARM64 `d3dcompiler_47.dll` are installed into every prefix, for programs that compile HLSL at run time |
-| OpenGL | **WineMetalGL 3.9.0** (OpenGL 4.6 on Metal), the default, with MetalFX upscaling and a frame rate limit (`WINEMETALGL_MAX_FRAME_RATE`). `OPENGL_BACKEND=wine` selects Wine's own, whose Vulkan renderer now runs at feature level 10 and above on MoltenVK |
-| Vulkan | MoltenVK 1.4.3 (MetalSharp build from VKD3D-Proton-MacOS: the pipeline cache is saved during long compiles and keyed on the shader sources, and compiled Metal libraries and binary archives are cached) |
-| Media | FFmpeg 8.0 (LGPL, VideoToolbox/AudioToolbox) and GStreamer 1.26 |
-| .NET / HTML | Wine Mono 11.3.0 (arm64, x86, x86_64) and Wine Gecko 2.47.4 (x86, x86_64) |
-| Sync | msync (shared-memory synchronization; on by default, `WINEMSYNC=0` turns it off) |
-| Fonts | Metric-compatible Arial, Times New Roman and Courier New files (renamed Liberation) in every prefix's `C:\windows\Fonts`. CJK Windows families are mapped to the macOS system fonts |
-| Controllers | winebus with SDL2 and IOHID (XInput and DirectInput) |
-| Tools | `innoextract` 1.9 (Inno Setup / GOG installers) and `cabextract` 1.11 |
-| Compatibility | WineForge's launcher fixes (Steam, Epic, EA, Ubisoft, Battle.net, Rockstar), PE patches and the native Steam bridge. Rockstar's launcher runs on Mullion with WFDXCompat's launcher companion. `HideWineExports` hides Wine from programs that refuse to run under it (the PlayStation PC SDK in Sony's ports) |
-| Displays and windows | Display modes Apple silicon reports without the "safe" flag are listed. A hung window no longer stops other windows painting, and child windows owned by another process are drawn. Wine comes to the front when it shows a window |
-| Fullscreen and mouse | WineForge's **native macOS fullscreen** (macOS 27: fullscreen games get their own Space, and cursor confinement survives switching apps). ELDEN RING and MetalFX games stay out of it (the `NativeFullscreen` Mac Driver option). Fullscreen games keep the cursor in their window, and Cmd+left click toggles that for any window and **GCMouse raw input** (Elvin Hayatov's WineHQ MR !11799), with MetalSharp's fix-up: raw GCMouse moves the game hasn't read yet are summed, like ordinary mouse moves, instead of costing a wineserver round trip at every report of a high-polling-rate mouse (Wine patches 0038, 0039, 0065) |
-| App bundle | Developer ID signed, hardened and notarized, with the cross-architecture entitlement. Windows programs run in an inner loader bundle (`lib/wine/aarch64-unix/wine.app`) that carries the provisioning profile, so they get 4K pages and the low 4GB |
-| MetalSharp app payloads | `share/metalsharp/`: Goldberg, the Steam installer and wrapper, FNA/XNA, fnalibs, the FNA kickstart, Unity Mono runtimes, SDL3, shims, Terraria launchers, CEF hooks, `mullion.conf` and `winemac.conf`, compat rules, the host runtime, and Microsoft's unmodified VC++ 2015-2022 and core-fonts installers |
-
-Results and design notes are in [`docs/STATUS.md`](docs/STATUS.md); measured performance is in [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md).
-
-## Source
-
-The modified sources are kept in this repository as branches, and `main` links them as submodules in `src/`, pinned to the commits each release is built from:
-
-| Submodule | Branch | Contents |
-|---|---|---|
-| `src/wine` | [`source/wine`](../../tree/source/wine) | Wine 11.20 + WineForge + MetalSharp (`wine-11.20` tag plus 139 commits) |
-| `src/wine-x86_64` | [`source/wine-x86_64`](../../tree/source/wine-x86_64) | **x86_64 build:** Wine 11.17 as ported by WineForge, plus 59 MetalSharp commits. `scripts/fetch-sources.sh x86_64` fetches it ([`docs/X86_64.md`](docs/X86_64.md)) |
-| `src/FEX` | [`source/fex`](../../tree/source/fex) | FEX-2610 + MetalSharp (34 commits). It is not upstreamed |
-| `src/winemetalgl` | [`source/winemetalgl`](../../tree/source/winemetalgl) | WineMetalGL's arm64 Wine module |
-| `src/wfdxcompat` | [`source/wfdxcompat`](../../tree/source/wfdxcompat) | WineForge DXCompat, built ARM64EC for Mullion: the Rockstar launcher companion |
-| `src/linuxhost` | [`source/linuxhost`](../../tree/source/linuxhost) | The Linux module host: runs the x86_64 Linux code Easy Anti-Cheat's EOS bootstrapper loads into itself. Developed in [metalsharp/Proton](https://github.com/metalsharp/Proton) (`darwin/linuxhost`) |
-| `src/mullion` | [aaf2tbz/mullion](https://github.com/aaf2tbz/mullion) `metalsharp-2.1-main` | Mullion (DXMT fork). Developed there and sent upstream to [dttdrv/mullion](https://github.com/dttdrv/mullion) as pull requests |
-| `src/dxvk-macos` | [metalsharp/DXVK-MacOS](https://github.com/metalsharp/DXVK-MacOS) `main` | DXVK-MacOS 3.1, DXVK 3.1.1 ported to MoltenVK: the `GRAPHICS_BACKEND=dxvk` lane, built as ARM64X |
-| `src/vkd3d-proton` | [metalsharp/VKD3D-Proton-MacOS](https://github.com/metalsharp/VKD3D-Proton-MacOS) `main` | VKD3D-Proton macOS: the `GRAPHICS_BACKEND=vkd3d` lane (D3D12 on Vulkan, with DXVK's DXGI and D3D10/11) and MetalSharp's MoltenVK, as patches on the upstream projects |
-
-The branches are full source trees with their upstream history (Wine's is large), which is why they are linked rather than merged into `main`. `legacy-1.x` holds the previous MetalSharp Wine (VKMT) history.
-
-The same changes are in `patches/` as git patches against the upstream tags. `patches/wine/0042` is a pointer to WineForge's Steam bridge commit, because that commit vendors about 66 MB.
-
-| Path | Contents |
-|---|---|
-| `scripts/` | Build, staging, test, audit, benchmark, packaging and signing scripts |
-| `patches/` | `wine/`, `fex/`, `mullion/`, `winemetalgl/`, and `wine-x86_64/` (the x86_64 build, against WineForge `a05564cf`) |
-| `resources/` | The app icon (`MetalSharp-Wine.icon`, an Icon Composer document) |
-| `tests/src/` | Smoke tests and benchmarks (native ARM64, x86_64 and i386) |
-| `docs/` | Status, testing, performance, the WineForge port plan, and provenance and licenses (`PROVENANCE.md`) |
-
-## Building
-
-You need Xcode, the Metal Toolchain, and these Homebrew tools: cmake, ninja, meson, pkgconf, autoconf, automake, libtool, bison, flex, nasm, gettext and gperf.
+**1. Make a prefix for Steam** (`~/Games/steam`; it takes a minute or two):
 
 ```bash
-git clone --recurse-submodules https://github.com/metalsharp/MetalSharp-Wine.git
+APP=/Applications/MetalSharp-Wine.app/Contents; export WINEPREFIX=~/Games/steam WINEDEBUG=-all
+"$APP/MacOS/wine" wineboot -u -r && "$APP/MacOS/wineserver" -w
+for a in x64 x86; do "$APP/MacOS/wine" "$APP/share/metalsharp/redist/vcrun2022/vc_redist.$a.exe" /install /quiet /norestart; "$APP/MacOS/wineserver" -w; done
 ```
 
-Or, in an existing clone:
+**2. Install Steam:**
 
 ```bash
-zsh scripts/fetch-sources.sh
+APP=/Applications/MetalSharp-Wine.app/Contents; export WINEPREFIX=~/Games/steam WINEDEBUG=-all
+"$APP/MacOS/wine" "$APP/share/metalsharp/steam/SteamSetup.exe" /S; "$APP/MacOS/wineserver" -w
+```
+
+**3. Launch Steam** (run this one whenever you want Steam):
+
+```bash
+APP=/Applications/MetalSharp-Wine.app/Contents; export WINEPREFIX=~/Games/steam WINEDEBUG=-all
+cd "$WINEPREFIX/drive_c/Program Files (x86)/Steam" && "$APP/MacOS/wine" steam.exe
+```
+
+Steam updates itself the first time it starts. To close everything in the prefix:
+
+```bash
+WINEPREFIX=~/Games/steam /Applications/MetalSharp-Wine.app/Contents/MacOS/wineserver -k
+```
+
+## Other programs
+
+```bash
+export WINE=/Applications/MetalSharp-Wine.app/Contents/MacOS/wine
 ```
 
 ```bash
-zsh scripts/build-all.sh
+WINEPREFIX=~/Games/my-prefix $WINE ~/Downloads/setup.exe
 ```
 
-That builds:
-1. The dependencies.
-2. The ARM64X runtimes.
-3. Wine.
-4. FEX.
-5. The tests.
+The first run makes the prefix. Switches such as the Direct3D backend are in [docs/USAGE.md](docs/USAGE.md).
 
-It then audits the Mach-O files and packages `dist/metalsharp-wine-<version>-arm64`.
+## Reporting problems
 
-Packaging, so `build-all.sh` too, needs a macOS 15 SDK (`MACOS15_SDK=<path>/MacOSX15.x.sdk`). Some of the bundles' payloads were linked on a newer macOS without a deployment target. `scripts/macos-floor.py` uses the SDK to check that each one needs nothing macOS 15 lacks, then holds it to macOS 15. Both packagers run it.
+- **A game's rendering on Mullion** (the default Direct3D backend): [dttdrv/mullion](https://github.com/dttdrv/mullion).
+- **On VKD3D-Proton** (`GRAPHICS_BACKEND=vkd3d`): [metalsharp/VKD3D-Proton-MacOS](https://github.com/metalsharp/VKD3D-Proton-MacOS).
+- **On DXVK** (`GRAPHICS_BACKEND=dxvk`): [metalsharp/DXVK-MacOS](https://github.com/metalsharp/DXVK-MacOS).
+- **Anything else:** this repository's [issues](https://github.com/metalsharp/MetalSharp-Wine/issues).
 
-The add-ons have their own scripts:
-- `build-llvm15.sh` and `build-mullion.sh`
-- `build-winemetalgl.sh`
-- `build-wfdxcompat.sh` (after `build-mullion.sh`)
-- `build-linuxhost.sh`
-- `stage-moltenvk.sh` and `stage-vkd3d-proton.sh` (built in `src/vkd3d-proton` with its own scripts)
-- `build-dxvk-macos.sh` then `stage-dxvk.sh`
-- `stage-shader-compilers.sh`
-- `fetch-addons.sh` (Mono and Gecko) and `fetch-fonts.sh`
-- `build-innoextract.sh` and `build-cabextract.sh`
-- `stage-metalsharp-assets.sh` and `stage-metalsharp-redist.sh`
+## More
 
-**The x86_64 build** (`MetalSharp-Wine-x86_64.app`) has its own scripts, all named `*-x86_64.sh`: `build-wine-x86_64.sh`, `build-deps-x86_64.sh`, `build-mullion-x86_64.sh`, `build-winemetalgl-x86_64.sh` and `package-x86_64.sh`. The steps are in [`docs/X86_64.md`](docs/X86_64.md).
-
-`sign-app.sh` builds `MetalSharp-Wine.app` with the hardened runtime and compiles the icon (`actool`, from Xcode). It needs a Developer ID certificate and a provisioning profile with the cross-architecture entitlement.
-
-## How the Mac-specific problems are solved
-
-These are patches to Wine and FEX; see `docs/STATUS.md` for details.
-
-- **x18 / TEB.** Windows ARM64 keeps the thread pointer (TEB) in x18, and macOS clears it on every syscall. Measured result: the kernel preserves x18 only when the main executable's build-version SDK is 12.0 or older. The loader is therefore linked with `-platform_version macos 15.0 12.0`.
-- **4GB PAGEZERO.** Without an entitlement, nothing below 4GB can be mapped. KUSER_SHARED_DATA moves from 0x7ffe0000 to 0x17ffe0000.
-  - Wine publishes the new address (`__wine_user_shared_data`).
-  - ARM64 loads from the old address are emulated in the fault handler.
-  - FEX rebases constant-address loads at JIT time: 0.3 ns per read instead of 1.7 µs.
-- **16K pages and W^X.**
-  - Wine's ARM64 modules are linked with 64K sections. This fixes a winegcc bug that silently dropped the alignment for ARM64EC.
-  - x86 images never get host execute permission.
-  - Pages that really need write and execute switch between RX and RW on demand.
-  - Stores from code into its own page are emulated, as are LSE atomics and exclusive stores.
-  - Wine's `NtFlushInstructionCache` and FEX's code-write notifications keep JIT overhead to one fault per compiled block.
-- **CPU features.** macOS doesn't let EL0 read the ID registers, so Wine builds them from the `hw.optional.arm.FEAT_*` sysctls. FEX uses them to pick LSE, LRCPC, AFP and other fast paths.
-- **Startup.** dnsapi used to look up the host's own `.local` name through multicast DNS at every process start (5 seconds). A cold start went from 10.5s to about 0.6s.
-
-## Limitations
-
-**i386 (32-bit x86) programs** need the low 4GB of address space. On macOS 26.4 and later Apple's `com.apple.developer.cross-architecture-support` entitlement provides it. `scripts/sign-app.sh` builds `dist/MetalSharp-Wine.app` with that entitlement, using your Developer ID certificate and a provisioning profile for the bundle's App ID. In that bundle:
-- i386 works.
-- KUSER_SHARED_DATA is at its real address.
-- Every process runs with 4K pages, so none of the 16K workarounds are active.
-
-macOS only grants that entitlement to an executable whose own bundle embeds the provisioning profile; on release builds of macOS 27.2 a standalone executable that claims it is killed at launch. Every Windows process runs in Wine's inner loader, so `sign-app.sh` gives the inner loader a bundle of its own (`lib/wine/aarch64-unix/wine.app`, with the profile), and Wine runs it from there.
-
-The bundle is signed with the hardened runtime, as notarization requires. Wine maps Windows DLLs from disk as executable code, which the hardened runtime only allows through the `disable-executable-page-protection` entitlement. Without the entitlement, i386 would need a full guest address-translation layer.
-
-**Unsigned builds, or macOS 15 through 26.3:**
-- x86_64 and ARM64 programs work.
-- The page size is 16K, so 4K-granular memory tests in Wine's test suite fail, as they do on Linux with 16K pages.
-- Native ARM64 programs with 4K sections take the slower W^X emulation path.
-
-## Licenses
-
-- **MetalSharp Wine's own material** (scripts, docs, tests and build glue): [AGPL-3.0](LICENSE), like MetalSharp.
-- **Wine and the Wine changes:** LGPL-2.1-or-later.
-- **FEX and its fork:** MIT.
-- **Mullion/DXMT:** LGPL-2.1-or-later.
-- **VKD3D-Proton:** LGPL-2.1. **DXVK and DXVK-MacOS:** zlib; DXVK-MacOS's dxbc-spirv: MIT. **MoltenVK:** Apache-2.0.
-- **WineMetalGL:** LGPL-3.0.
-- **Everything else:** each redistributed component keeps its own license, and the app carries them all in `share/licenses/`.
-- **Microsoft's VC++ and core-fonts installers and shader compilers (DXC, d3dcompiler_47)** are included unmodified under Microsoft's redistribution terms.
-- **Apple's Metal Shader Converter and, in the x86_64 build, D3DMetal (Game Porting Toolkit)** are included unmodified and Apple-signed under Apple's license.
+| | |
+|---|---|
+| [docs/CHANGES.md](docs/CHANGES.md) | What's new in each release |
+| [docs/USAGE.md](docs/USAGE.md) | Running programs, and every switch |
+| [docs/FEATURES.md](docs/FEATURES.md) | What's included, how it works on macOS, and limitations |
+| [docs/X86_64.md](docs/X86_64.md) | The x86_64 build (`MetalSharp-Wine-x86_64.app`, under Rosetta 2, with D3DMetal) |
+| [docs/BUILDING.md](docs/BUILDING.md) | The sources and how to build |
+| [docs/LICENSES.md](docs/LICENSES.md) | Licenses. MetalSharp Wine's own material is [AGPL-3.0](LICENSE) |

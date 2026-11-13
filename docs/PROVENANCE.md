@@ -75,7 +75,7 @@ Patches 0141–0143 and 0159–0161 come from the port of Valve's [Proton](https
 | 0159 anti-cheat runtime exports | Valve's Wine: the ntdll exports Valve's EasyAntiCheat and BattlEye runtimes import, ported to Wine 11.20 |
 | 0160–0161 loading the Linux module host | Written for the port's Linux module host |
 
-Patches 0144–0157 are fixes to MetalSharp Wine found by running Wine's test suite, and 0158 sets the version to 7.0.
+Patches 0144–0157 are fixes to MetalSharp Wine found by running Wine's test suite, 0158 set the version to 7.0, 0162 sets it to 6.5, the version that release ships as, and 0163 fixes Steam's browser flags after Steam's November 2026 update.
 
 The Linux module host itself (`source/linuxhost`, built into `lib/linuxhost`) is written for the port and developed in metalsharp/Proton's `darwin/linuxhost`; the branch is that directory's history.
 

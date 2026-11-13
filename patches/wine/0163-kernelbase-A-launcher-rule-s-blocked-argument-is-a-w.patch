@@ -1,0 +1,58 @@
+From bedddb0c7bc06510cf98b6a229061b91fae9eacb Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Thu, 12 Nov 2026 23:22:32 -0700
+Subject: [PATCH 163/163] kernelbase: A launcher rule's blocked argument is a whole
+ argument.
+
+Steam's web helper is started with --disable-gpu-early-init since Steam's
+November 2026 update, which matched the Steam rule's blocked --disable-gpu
+as a substring, so none of the rule's arguments were added: without
+--no-sandbox, the web helper's sandboxed storage service exits at once and
+is started again and again, and Steam's window never comes up under FEX.
+A blocked argument ending in '=' is still a prefix.
+---
+ dlls/kernelbase/launchers.c | 21 ++++++++++++++++++++-
+ 1 file changed, 20 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/kernelbase/launchers.c b/dlls/kernelbase/launchers.c
+index feea2cd5d73..eccc07f3844 100644
+--- a/dlls/kernelbase/launchers.c
++++ b/dlls/kernelbase/launchers.c
+@@ -101,6 +101,25 @@ static BOOL string_contains_ci( const WCHAR *string, const WCHAR *needle )
+     return FALSE;
+ }
+ 
++/* MetalSharp: whether the command line has the argument `arg`. One ending in '=' is a prefix
++ * ("--type=" matches any type); another must be the whole argument, so "--disable-gpu" is not
++ * "--disable-gpu-early-init", which Steam's web helper has since November 2026. */
++static BOOL cmd_line_has_arg( const WCHAR *cmd_line, const WCHAR *arg )
++{
++    SIZE_T len = lstrlenW( arg );
++    const WCHAR *p;
++
++    if (!cmd_line || !len) return FALSE;
++    if (arg[len - 1] == '=') return string_contains_ci( cmd_line, arg );
++    for (p = cmd_line; *p; p++)
++    {
++        if (wcsnicmp( p, arg, len )) continue;
++        if (p > cmd_line && p[-1] != ' ' && p[-1] != '\t' && p[-1] != '"') continue;
++        if (!p[len] || p[len] == ' ' || p[len] == '\t' || p[len] == '"' || p[len] == '=') return TRUE;
++    }
++    return FALSE;
++}
++
+ static BOOL process_matches( const WCHAR *app_name, const WCHAR *cmd_line,
+                              const struct launcher_process_policy *policy )
+ {
+@@ -148,7 +167,7 @@ const WCHAR *get_launcher_process_args( const WCHAR *app_name, const WCHAR *cmd_
+             string_contains_ci( cmd_line, policy->excluded_path_alt ))
+             return NULL;
+         for (j = 0; j < ARRAY_SIZE(policy->blocked_args) && policy->blocked_args[j]; j++)
+-            if (string_contains_ci( cmd_line, policy->blocked_args[j] )) return NULL;
++            if (cmd_line_has_arg( cmd_line, policy->blocked_args[j] )) return NULL;
+         return policy->append_args;
+     }
+ 
+-- 
+2.54.0 (Apple Git-157)
+
