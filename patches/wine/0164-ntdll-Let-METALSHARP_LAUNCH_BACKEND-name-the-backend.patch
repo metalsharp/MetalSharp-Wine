@@ -1,0 +1,94 @@
+From ed24bc12e4f45979e2dcb0cf528a5a5fca565d16 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Thu, 12 Nov 2026 21:33:26 -0700
+Subject: [PATCH 164/166] ntdll: Let METALSHARP_LAUNCH_BACKEND name the backend
+ over launch.env.
+
+A game played from Linux Steam (MetalSharp Wine's darwin/steamvm bridge) is
+started with METALSHARP_LAUNCH_BACKEND naming the backend of the
+compatibility tool chosen there: mullion, dxvk, vkd3d or wine. A game
+folder's .metalsharp/launch.env is what MetalSharp last started the game
+with, not what was chosen for this launch, so the backend it names must not
+stand: a game set up for DXVK in MetalSharp and played with Steam's Mullion
+tool ran on DXVK.
+
+Once launch.env is applied, GRAPHICS_BACKEND is put back to the backend asked
+for (left out for Mullion, Wine's default) and ACTIVE_GRAPHICS_BACKEND is
+removed; the file's other variables stay. launch.local.env, the user's own,
+is applied after that and keeps the last word, and the variable is then made
+to name the backend the program ends up with, so that the programs it starts
+run on the same one. Without the variable, or with any other value, nothing
+changes.
+---
+ dlls/ntdll/unix/env.c | 50 ++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 49 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/ntdll/unix/env.c b/dlls/ntdll/unix/env.c
+index 262ad955690..44ad69d8648 100644
+--- a/dlls/ntdll/unix/env.c
++++ b/dlls/ntdll/unix/env.c
+@@ -1561,12 +1561,60 @@ static void add_appcompat_environment( WCHAR **env, SIZE_T *pos, SIZE_T *size, c
+     free( data );
+ }
+ 
++/* the backend the environment names, in METALSHARP_LAUNCH_BACKEND's names: read the way graphics_policy.c reads it */
++static const char *launch_backend_in_force(void)
++{
++    const char *name = getenv( "GRAPHICS_BACKEND" );
++
++    if (!name || !name[0]) name = getenv( "ACTIVE_GRAPHICS_BACKEND" );
++    if (!name) return "mullion";
++    if (!strcmp( name, "dxvk" )) return "dxvk";
++    if (!strcmp( name, "vkd3d" )) return "vkd3d";
++    if (!strcmp( name, "wine" ) || !strcmp( name, "d3dmetal" )) return "wine";  /* as parse_graphics_backend */
++    return "mullion";  /* dxmt, and what Wine does not know and so runs on its default */
++}
++
+ /* launch.env, which MetalSharp writes at each launch, then launch.local.env, which it never writes: the user's own
+- * variables for the programs of the folder (a debugging option, say), applied over it */
++ * variables for the programs of the folder (a debugging option, say), applied over it.
++ *
++ * A game played from Linux Steam (darwin/steamvm) is started with METALSHARP_LAUNCH_BACKEND naming the backend of
++ * the compatibility tool chosen there: mullion, dxvk, vkd3d or wine. launch.env is what MetalSharp last started the
++ * game with, not what was chosen for this launch, so the backend it names must not stand: 9 Kings, set up for DXVK
++ * in MetalSharp and played with Steam's Mullion tool, ran on DXVK. The backend is put back to the one asked for
++ * once launch.env is applied (the file's other variables stay), and before launch.local.env, which is the user's
++ * own and keeps the last word. "mullion" is Wine's default, chosen by neither variable being set
++ * (graphics_policy.c reads GRAPHICS_BACKEND, then ACTIVE_GRAPHICS_BACKEND when that is empty); the others are
++ * GRAPHICS_BACKEND's own names. Either way the result is what such a launch has when there is no launch.env,
++ * ACTIVE_GRAPHICS_BACKEND included: Steam's launches never set it. The variable is read from the Unix environment,
++ * which a child process inherits whatever Windows environment it is given, and is put back as well, so that a
++ * file removing it does not turn this off for the program's children. Any other value, and a launch without
++ * the variable, changes nothing.
++ *
++ * launch.local.env is read from the program's own folder only, but a backend it names is meant for the game, and
++ * the game is often another program in another folder (a launcher at the game's root starting
++ * Binaries/Win64/Game.exe): left naming Steam's backend, the variable put that one back in the child, which then
++ * ran on a different backend from the program that started it. So once launch.local.env is applied the variable
++ * is made to name the backend this program ends up with, read the way graphics_policy.c reads it, and the children
++ * keep the user's choice as they do in a launch without the variable. */
+ static void add_launch_environment( WCHAR **env, SIZE_T *pos, SIZE_T *size, const WCHAR *image )
+ {
++    static const char * const backends[] = { "mullion", "dxvk", "vkd3d", "wine" };
++    const char *asked = getenv( "METALSHARP_LAUNCH_BACKEND" ), *backend = NULL;
++    unsigned int i;
++
++    /* the names are constants: the value itself may be gone once the file has been applied */
++    for (i = 0; asked && i < ARRAY_SIZE(backends); i++)
++        if (!strcmp( asked, backends[i] )) backend = backends[i];
++
+     add_launch_environment_file( env, pos, size, image, "launch.env" );
++    if (backend)
++    {
++        set_launch_var( env, pos, size, "GRAPHICS_BACKEND", strcmp( backend, "mullion" ) ? backend : NULL );
++        set_launch_var( env, pos, size, "ACTIVE_GRAPHICS_BACKEND", NULL );
++    }
+     add_launch_environment_file( env, pos, size, image, "launch.local.env" );
++    /* put back whatever the files did to it, and naming launch.local.env's backend if that named one */
++    if (backend) set_launch_var( env, pos, size, "METALSHARP_LAUNCH_BACKEND", launch_backend_in_force() );
+ }
+ 
+ static void append_envA( WCHAR **env, SIZE_T *pos, SIZE_T *size, const char *name, const char *value )
+-- 
+2.54.0 (Apple Git-157)
+

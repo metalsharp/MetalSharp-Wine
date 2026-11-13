@@ -7,6 +7,7 @@ zsh $S/build-deps.sh
 zsh $S/build-wine.sh
 zsh $S/build-fex.sh
 zsh $S/build-tests.sh
+zsh $S/stage-steamvm.sh
 source $S/env.sh
 zsh $S/audit-macho.sh $ROOT/deps/prefix $ROOT/install
 zsh $S/package.sh

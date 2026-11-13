@@ -1,0 +1,42 @@
+From a6e94870e9bba55ddfbd0ad180a57c979d91d13e Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Thu, 12 Nov 2026 21:33:26 -0700
+Subject: [PATCH 165/166] explorer: Open only folders when
+ METALSHARP_EXPLORER_FOLDER_ONLY is set.
+
+explorer.exe runs ShellExecuteW on an argument that is not a folder. MetalSharp
+Wine's Linux Steam bridge opens folders a virtual machine names, and checks
+each is a folder inside a shared library first; the guest can still replace
+the folder with a file between that check and explorer's own. With
+METALSHARP_EXPLORER_FOLDER_ONLY set, which the bridge sets, explorer exits
+instead of launching such a path.
+---
+ programs/explorer/explorer.c | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/programs/explorer/explorer.c b/programs/explorer/explorer.c
+index 185414417c9..3cb36cd4bd0 100644
+--- a/programs/explorer/explorer.c
++++ b/programs/explorer/explorer.c
+@@ -931,8 +931,18 @@ int WINAPI wWinMain(HINSTANCE hinstance,
+         ExitProcess(EXIT_FAILURE);
+     }
+     if(parameters.root[0] && !PathIsDirectoryW(parameters.root))
++    {
++        /* A caller that only ever means to show a folder (MetalSharp's Linux Steam bridge, which opens
++         * folders a virtual machine names) sets this, so that a path which is not a folder, or stopped
++         * being one after the caller checked it, is never launched. */
++        if (GetEnvironmentVariableW( L"METALSHARP_EXPLORER_FOLDER_ONLY", NULL, 0 ))
++        {
++            WARN( "%s is not a folder, not opening it\n", debugstr_w(parameters.root) );
++            ExitProcess(EXIT_FAILURE);
++        }
+         if(ShellExecuteW(NULL,NULL,parameters.root,NULL,NULL,SW_SHOWDEFAULT) > (HINSTANCE)32)
+             ExitProcess(EXIT_SUCCESS);
++    }
+     init_info.dwSize = sizeof(INITCOMMONCONTROLSEX);
+     init_info.dwICC = ICC_USEREX_CLASSES | ICC_BAR_CLASSES | ICC_COOL_CLASSES;
+     if(!InitCommonControlsEx(&init_info))
+-- 
+2.54.0 (Apple Git-157)
+

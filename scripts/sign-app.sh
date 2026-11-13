@@ -10,7 +10,9 @@
 set -e
 S=${0:A:h}
 source $S/env.sh
-D=$ROOT/dist/metalsharp-wine-7.0-arm64
+D=$ROOT/dist/metalsharp-wine-7.0-pre1-arm64
+# The release's name. The bundle's version is its number alone (macOS reads it as numbers): 7.0.
+VERSION=7.0-pre1
 APP=$ROOT/dist/MetalSharp-Wine.app
 BUNDLE_ID=${BUNDLE_ID:-com.metalsharp.wine}
 IDENTITY=${SIGN_IDENTITY:--}
@@ -71,9 +73,9 @@ cat > $APP/Contents/Info.plist <<EOF
   <key>CFBundleName</key><string>MetalSharp Wine</string>
   <key>CFBundleDisplayName</key><string>MetalSharp Wine</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>7.0</string>
-  <key>CFBundleVersion</key><string>7.0</string>
-  <key>CFBundleGetInfoString</key><string>MetalSharp Wine 7.0 (Wine 11.20, arm64, FEX)</string>
+  <key>CFBundleShortVersionString</key><string>${VERSION%%-*}</string>
+  <key>CFBundleVersion</key><string>${VERSION%%-*}</string>
+  <key>CFBundleGetInfoString</key><string>MetalSharp Wine $VERSION (Wine 11.20, arm64, FEX)</string>
   <key>LSMinimumSystemVersion</key><string>15.0</string>
   <key>LSApplicationCategoryType</key><string>public.app-category.games</string>
 </dict></plist>
@@ -121,11 +123,18 @@ for f in $(find $APP/Contents/lib $APP/Contents/MacOS $APP/Contents/share/metals
   # Apple-signed libraries (Metal Shader Converter's libmetalirconverter.dylib) keep Apple's signature: its
   # license allows shipping it but not modifying it, and Apple-signed code passes notarization as is.
   codesign -dv --verbose=2 $f 2>&1 | grep -qx 'Authority=Software Signing' && continue
+  # krunkit (the Linux Steam microVM, stage-steamvm.sh; bin/krunkit in the dist, which is here) needs the
+  # hypervisor entitlement and nothing else
+  [[ $f == $APP/Contents/MacOS/krunkit ]] && { codesign $opts --entitlements $APP/Contents/share/steamvm/krunkit.entitlements $f; continue; }
+  # its network helper and bridge daemon need no entitlement at all (the daemon reads what the guest sends)
+  [[ $f == $APP/Contents/MacOS/(gvproxy|metalsharp-vmd) ]] && { codesign $opts $f; continue; }
   case "$(file -b $f)" in
     *Mach-O*executable*) codesign $opts --entitlements $ENT_BASE $f ;;
     *Mach-O*) codesign $opts $f ;;
   esac
 done
+# Linux Steam's window (stage-steamvm.sh) is an application inside this one: sealed before the outer bundle
+[[ -d $APP/Contents/share/steamvm/LinuxSteam.app ]] && codesign $opts $APP/Contents/share/steamvm/LinuxSteam.app
 codesign $opts --entitlements $ENT $LOADER_APP
 codesign $opts --entitlements $ENT $APP/Contents/MacOS/wine
 codesign $opts --entitlements $ENT $APP

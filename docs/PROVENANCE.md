@@ -97,6 +97,21 @@ The Linux module host itself (`source/linuxhost`, built into `lib/linuxhost`) is
 | Metal Shader Converter library (`libmetalirconverter.dylib`, 4.0 beta 3) | Apple Inc. | Apple's Software License Agreement for Metal Shader Converter (proprietary) | Unmodified and Apple-signed, from metalsharp/VKD3D-Proton-MacOS's `deps-metal-shaderconverter-4.0b3` release |
 | D3DMetal (Game Porting Toolkit 4.0 beta 3; x86_64 build only) | Apple Inc. | Apple's Game Porting Toolkit license (proprietary, non-commercial distribution) | Unmodified and Apple-signed, from Apple's Game Porting Toolkit |
 
+### The Linux Steam microVM runtime
+
+`share/steamvm/metalsharp-steam` runs Valve's arm64 Linux Steam client in a Debian 13 virtual machine. The bundle carries what the virtual machine needs to run, staged by `scripts/stage-steamvm.sh`, all native arm64:
+
+| Component | From | License | How it gets here |
+|---|---|---|---|
+| krunkit 1.3.2 (`bin/krunkit`) | containers/krunkit | Apache-2.0 | Homebrew's arm64 build, relocated to `@rpath` and re-signed with the hypervisor entitlement |
+| libkrun 1.19.8 (`lib/libkrun.1.dylib`) | containers/libkrun | Apache-2.0 | Homebrew's arm64 build, relocated; its MoltenVK is the bundle's own |
+| libepoxy 1.5.10 (`lib/libepoxy.0.dylib`) | anholt/libepoxy | MIT | Homebrew's arm64 build, relocated |
+| EFI firmware (`share/krunkit/KRUN_EFI.silent.fd`) | EDK II, as shipped with krunkit | BSD-2-Clause-Patent | Unmodified, from Homebrew's krunkit |
+| gvproxy 0.9.0 (`bin/gvproxy`) | containers/gvisor-tap-vsock | Apache-2.0 | The upstream release binary (SHA-256 checked), arm64 slice |
+| `metalsharp-vmd`, `metalsharp-steam`, `share/steamvm/LinuxSteam.app` (Steam's window), `share/steamvm/mtsp-pickfolder.exe` (the folder browser of `library choose`, a Windows arm64 program), `share/steamvm/guest/` | written for the port | AGPL-3.0 | `source/steamvm`, developed in metalsharp/Proton's `darwin/steamvm` |
+
+Debian and the Steam client are not redistributed. `metalsharp-steam` downloads the Debian 13 cloud image from cloud.debian.org (checked against Debian's SHA-512 list) and Valve's Steam client packages from Valve's update servers (each checked against the SHA-256 in Valve's manifest), on the user's Mac.
+
 ### Apple's Metal Shader Converter
 
 `lib/libmetalirconverter.dylib` is Apple's Metal Shader Converter library. It is proprietary and the only closed-source component in the bundle. MoltenVK loads it at runtime to convert the DXIL shaders of the VKD3D-Proton lane (`GRAPHICS_BACKEND=vkd3d`) into Metal libraries, which skips compiling MSL text at run time ([MSC-BRIDGE-CONTRACT.md](MSC-BRIDGE-CONTRACT.md)). It is used for nothing else. `METALSHARP_MSC=0` turns it off, and if it is missing, shaders go through SPIR-V as before.

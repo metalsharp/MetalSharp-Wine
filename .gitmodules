@@ -36,3 +36,7 @@
 	path = src/linuxhost
 	url = https://github.com/metalsharp/MetalSharp-Wine.git
 	branch = source/linuxhost
+[submodule "src/steamvm"]
+	path = src/steamvm
+	url = https://github.com/metalsharp/MetalSharp-Wine.git
+	branch = source/steamvm

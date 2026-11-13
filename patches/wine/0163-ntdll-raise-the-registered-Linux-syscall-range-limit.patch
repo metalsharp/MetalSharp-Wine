@@ -1,0 +1,29 @@
+From 2980ef6434c367330b50a3d08df2c0ba2cc3e34c Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@Averys-Mac-Mini.local>
+Date: Wed, 11 Nov 2026 18:42:22 -0700
+Subject: [PATCH 163/166] ntdll: raise the registered Linux-syscall-range limit
+ from 32 to 512
+
+A heavily obfuscated library (EAC's anti-cheat client) maps and runs many
+executable regions and registers each as a syscall range; 32 overflowed,
+leaving later ranges' syscalls routed to Wine instead of the host handler.
+---
+ dlls/ntdll/signal_arm64ec.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/dlls/ntdll/signal_arm64ec.c b/dlls/ntdll/signal_arm64ec.c
+index 9a3a8555bd5..0cd20cd3efc 100644
+--- a/dlls/ntdll/signal_arm64ec.c
++++ b/dlls/ntdll/signal_arm64ec.c
+@@ -1352,7 +1352,7 @@ __ASM_GLOBAL_FUNC( "#KiUserEmulationDispatcher",
+ static struct linux_syscall_range
+ {
+     ULONG_PTR start, end, handler;
+-} linux_syscall_ranges[32];
++} linux_syscall_ranges[512];  /* an obfuscated library (EAC) maps and runs many executable regions, each a range */
+ static LONG linux_syscall_range_count;
+ 
+ /***********************************************************************
+-- 
+2.54.0 (Apple Git-157)
+

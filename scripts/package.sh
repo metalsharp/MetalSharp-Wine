@@ -3,7 +3,7 @@
 # All dependency references become @rpath, absolute rpaths are removed, binaries are re-signed.
 set -e
 source ${0:A:h}/env.sh
-NAME=${1:-metalsharp-wine-7.0-arm64}
+NAME=${1:-metalsharp-wine-7.0-pre1-arm64}
 D=$ROOT/dist/$NAME
 rm -rf $D; mkdir -p $D
 rsync -a $ROOT/install/ $D/
@@ -50,6 +50,12 @@ if [[ -x $ROOT/deps/cabextract/cabextract ]]; then
   cp $ROOT/deps/cabextract/cabextract $D/bin/
   mkdir -p $D/share/licenses/cabextract; cp $ROOT/deps/cabextract/LICENSE.* $D/share/licenses/cabextract/
 fi
+# The Linux Steam microVM runtime (scripts/stage-steamvm.sh): krunkit, libkrun, gvproxy, the EFI firmware, the bridge
+# daemon and share/steamvm/metalsharp-steam, the command that sets Linux Steam up. Its licenses come with it.
+# Its programs go in bin/ with Wine's: sign-app.sh moves bin's Mach-O programs to Contents/MacOS and makes
+# Contents/bin a link to it, so metalsharp-steam finds krunkit, gvproxy and metalsharp-vmd at ../../bin either
+# way, libkrun in lib/ (krunkit's @executable_path/../lib) and the firmware in share/krunkit.
+if [[ -d $ROOT/deps/steamvm ]]; then rsync -a $ROOT/deps/steamvm/ $D/; fi
 mkdir -p $D/libexec/gstreamer-1.0 $D/share/vulkan/icd.d
 cp $PREFIX/libexec/gstreamer-1.0/gst-plugin-scanner $D/libexec/gstreamer-1.0/
 sed 's#"library_path": *"[^"]*"#"library_path": "../../../lib/libMoltenVK.dylib"#' \
@@ -93,7 +99,10 @@ for f in $(find $D -type f \( -name '*.dylib' -o -name '*.so' -o -perm -u+x \));
   want=$(rpath_for $f)
   [[ -n $want ]] && ! otool -l $f | grep -q "path $want " && args+=(-add_rpath $want)
   (( $#args )) && install_name_tool $args $f 2>/dev/null
-  codesign -f -s - $f 2>/dev/null
+  # krunkit creates the virtual machine: without the hypervisor entitlement Hypervisor.framework refuses it
+  if [[ $f == $D/bin/krunkit ]]; then codesign -f -s - --entitlements $D/share/steamvm/krunkit.entitlements $f 2>/dev/null
+  else codesign -f -s - $f 2>/dev/null
+  fi
 done
 
 # Launcher: point GStreamer and the Vulkan loader inside the bundle, then run the real loader.

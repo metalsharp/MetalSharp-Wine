@@ -94,6 +94,14 @@ ___
 
 `WINEPREFIX=~/Games/my-prefix $WINE "C:\\Program Files (x86)\\Steam\\steam.exe"` 
 
+5.1) _**Linux Steam (new in 7.0-pre1, experimental): Valve's arm64 Linux Steam client in a small Linux virtual machine, with its library folder on the Mac. One command downloads Debian 13 and the Steam client, builds the virtual machine and starts it:**_
+
+`/Applications/MetalSharp-Wine.app/Contents/share/steamvm/metalsharp-steam`
+
+(`metalsharp-steam help` lists the rest: `setup --library <folder>`, `install` (the setup for a program to run without a terminal, as MetalSharp does), `start`, `stop`, `status` and `status --json`, `show`, `url steam://...`, `ssh`, and `library list`, `library choose`, `library add <folder>`, `library remove <folder>` for the Mac folders Steam keeps games in. Steam's screen opens in a Mac window of its own, `share/steamvm/LinuxSteam.app`. "Browse local files" opens the folder in Wine's file explorer on the Mac, and web links open in the Mac browser. The virtual machine runs on Hypervisor.framework as native arm64 code, without Rosetta.)
+
+Play on a Windows game runs it on the Mac with MetalSharp Wine, through the "MetalSharp" compatibility tools this adds to Steam: MetalSharp (Mullion), the default for every game, and MetalSharp (DXVK), (VKD3D) and (WineD3D), chosen per game in its Properties > Compatibility. The game's prefix is the one Steam keeps for it (`steamapps/compatdata/<id>/pfx` in its library), or, with `METALSHARP_GAME_PREFIX=<prefix>` set, that one prefix for every game (MetalSharp sets it to its Steam prefix, `~/.metalsharp/prefix-steam`, whose Windows user is the Mac user's name); Steam's Stop then ends the game's own processes and nothing else of that prefix. Its output goes to `logs/game.log` in `~/.metalsharp/vm`. A game MetalSharp starts through Linux Steam runs on the backend chosen in MetalSharp: MetalSharp leaves it in `launch-intent/<appid>` of the run folder for the next two minutes. The tool chosen in Steam wins over the backend named in a game folder's `.metalsharp/launch.env` file (the rest of that file still applies); the user's own `.metalsharp/launch.local.env` there wins over both, for the game's program and the programs it starts. A running game goes on when the virtual machine is stopped or restarted. `METALSHARP_VM_LAUNCH=off` turns this off: the Mac then runs nothing for Steam.
+
 6) _**Useful switches, set before the $WINE command like WINEPREFIX:**_ 
 
 * Direct3D: Mullion on Metal is the default. For x86_64 games, GRAPHICS_BACKEND=dxvk uses DXVK-macOS (D3D9/10/11 on MoltenVK) and GRAPHICS_BACKEND=vkd3d uses VKD3D-Proton (D3D12 on MoltenVK). GRAPHICS_BACKEND=wine uses Wine’s own wined3d.
@@ -125,6 +133,7 @@ ___
 | Fonts | Metric-compatible Arial, Times New Roman and Courier New files (renamed Liberation) in every prefix's `C:\windows\Fonts`. CJK Windows families are mapped to the macOS system fonts |
 | Controllers | winebus with SDL2 and IOHID (XInput and DirectInput) |
 | Tools | `innoextract` 1.9 (Inno Setup / GOG installers) and `cabextract` 1.11 |
+| Linux Steam (experimental) | `share/steamvm/metalsharp-steam` sets up and runs Valve's arm64 Linux Steam client in a Debian 13 microVM: krunkit 1.3.2 and libkrun 1.19.8 on Hypervisor.framework, gvproxy 0.9.0 for networking, and the `metalsharp-vmd` bridge daemon, which does on the Mac what Steam in the guest asks for: it opens folders and web links, and starts Windows games with MetalSharp Wine when they are played with a MetalSharp compatibility tool. Folders and games only inside the shared libraries: the guest chooses which `.exe` there is run, and nothing else about how it is run. Steam's window is `share/steamvm/LinuxSteam.app` |
 | Compatibility | WineForge's launcher fixes (Steam, Epic, EA, Ubisoft, Battle.net, Rockstar), PE patches and the native Steam bridge. Rockstar's launcher runs on Mullion with WFDXCompat's launcher companion. `HideWineExports` hides Wine from programs that refuse to run under it (the PlayStation PC SDK in Sony's ports) |
 | Displays and windows | Display modes Apple silicon reports without the "safe" flag are listed. A hung window no longer stops other windows painting, and child windows owned by another process are drawn. Wine comes to the front when it shows a window |
 | Fullscreen and mouse | WineForge's **native macOS fullscreen** (macOS 27: fullscreen games get their own Space, and cursor confinement survives switching apps). ELDEN RING and MetalFX games stay out of it (the `NativeFullscreen` Mac Driver option). Fullscreen games keep the cursor in their window, and Cmd+left click toggles that for any window and **GCMouse raw input** (Elvin Hayatov's WineHQ MR !11799), with MetalSharp's fix-up: raw GCMouse moves the game hasn't read yet are summed, like ordinary mouse moves, instead of costing a wineserver round trip at every report of a high-polling-rate mouse (Wine patches 0038, 0039, 0065) |
@@ -145,6 +154,7 @@ The modified sources are kept in this repository as branches, and `main` links t
 | `src/winemetalgl` | [`source/winemetalgl`](../../tree/source/winemetalgl) | WineMetalGL's arm64 Wine module |
 | `src/wfdxcompat` | [`source/wfdxcompat`](../../tree/source/wfdxcompat) | WineForge DXCompat, built ARM64EC for Mullion: the Rockstar launcher companion |
 | `src/linuxhost` | [`source/linuxhost`](../../tree/source/linuxhost) | The Linux module host: runs the x86_64 Linux code Easy Anti-Cheat's EOS bootstrapper loads into itself. Developed in [metalsharp/Proton](https://github.com/metalsharp/Proton) (`darwin/linuxhost`) |
+| `src/steamvm` | [`source/steamvm`](../../tree/source/steamvm) | The Linux Steam microVM bridge: the host daemon (`metalsharp-vmd`), the `metalsharp-steam` setup command and the files it installs in the guest. Developed in [metalsharp/Proton](https://github.com/metalsharp/Proton) (`darwin/steamvm`) |
 | `src/mullion` | [aaf2tbz/mullion](https://github.com/aaf2tbz/mullion) `metalsharp-2.1-main` | Mullion (DXMT fork). Developed there and sent upstream to [dttdrv/mullion](https://github.com/dttdrv/mullion) as pull requests |
 | `src/dxvk-macos` | [metalsharp/DXVK-MacOS](https://github.com/metalsharp/DXVK-MacOS) `main` | DXVK-MacOS 3.1, DXVK 3.1.1 ported to MoltenVK: the `GRAPHICS_BACKEND=dxvk` lane, built as ARM64X |
 | `src/vkd3d-proton` | [metalsharp/VKD3D-Proton-MacOS](https://github.com/metalsharp/VKD3D-Proton-MacOS) `main` | VKD3D-Proton macOS: the `GRAPHICS_BACKEND=vkd3d` lane (D3D12 on Vulkan, with DXVK's DXGI and D3D10/11) and MetalSharp's MoltenVK, as patches on the upstream projects |
@@ -195,6 +205,7 @@ The add-ons have their own scripts:
 - `build-winemetalgl.sh`
 - `build-wfdxcompat.sh` (after `build-mullion.sh`)
 - `build-linuxhost.sh`
+- `stage-steamvm.sh` (the Linux Steam microVM runtime; needs Homebrew's `krunkit`, which brings `libkrun` and `libepoxy`)
 - `stage-moltenvk.sh` and `stage-vkd3d-proton.sh` (built in `src/vkd3d-proton` with its own scripts)
 - `build-dxvk-macos.sh` then `stage-dxvk.sh`
 - `stage-shader-compilers.sh`
@@ -249,5 +260,6 @@ The bundle is signed with the hardened runtime, as notarization requires. Wine m
 - **VKD3D-Proton:** LGPL-2.1. **DXVK and DXVK-MacOS:** zlib; DXVK-MacOS's dxbc-spirv: MIT. **MoltenVK:** Apache-2.0.
 - **WineMetalGL:** LGPL-3.0.
 - **Everything else:** each redistributed component keeps its own license, and the app carries them all in `share/licenses/`.
+- **The Linux Steam microVM runtime:** krunkit, libkrun and gvproxy: Apache-2.0. libepoxy: MIT. The EFI firmware (EDK II): BSD-2-Clause-Patent. Debian and Valve's Steam client are not in the bundle; `metalsharp-steam` downloads them from Debian and Valve on the user's Mac.
 - **Microsoft's VC++ and core-fonts installers and shader compilers (DXC, d3dcompiler_47)** are included unmodified under Microsoft's redistribution terms.
 - **Apple's Metal Shader Converter and, in the x86_64 build, D3DMetal (Game Porting Toolkit)** are included unmodified and Apple-signed under Apple's license.
