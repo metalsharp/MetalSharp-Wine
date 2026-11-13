@@ -931,8 +931,18 @@ int WINAPI wWinMain(HINSTANCE hinstance,
         ExitProcess(EXIT_FAILURE);
     }
     if(parameters.root[0] && !PathIsDirectoryW(parameters.root))
+    {
+        /* A caller that only ever means to show a folder (MetalSharp's Linux Steam bridge, which opens
+         * folders a virtual machine names) sets this, so that a path which is not a folder, or stopped
+         * being one after the caller checked it, is never launched. */
+        if (GetEnvironmentVariableW( L"METALSHARP_EXPLORER_FOLDER_ONLY", NULL, 0 ))
+        {
+            WARN( "%s is not a folder, not opening it\n", debugstr_w(parameters.root) );
+            ExitProcess(EXIT_FAILURE);
+        }
         if(ShellExecuteW(NULL,NULL,parameters.root,NULL,NULL,SW_SHOWDEFAULT) > (HINSTANCE)32)
             ExitProcess(EXIT_SUCCESS);
+    }
     init_info.dwSize = sizeof(INITCOMMONCONTROLSEX);
     init_info.dwICC = ICC_USEREX_CLASSES | ICC_BAR_CLASSES | ICC_COOL_CLASSES;
     if(!InitCommonControlsEx(&init_info))
