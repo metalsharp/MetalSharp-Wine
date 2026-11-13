@@ -1,0 +1,283 @@
+#!/usr/bin/python3 -IS
+"""mtsp-launch: what Steam runs when a game is played with a MetalSharp compatibility tool.
+
+    mtsp-launch [--tool metalsharp-<backend>] <verb> <program.exe> [arguments...]
+
+Steam starts it through the launcher in the tool's folder (mtsp-compat writes those folders), which
+says which tool it is. The game does not run in this virtual machine: this asks the Mac (metalsharp-vmd,
+over virtio-vsock) to run it with MetalSharp Wine, stays for as long as the game runs so that Steam
+shows it as running, and ends with the game's exit status. Steam's Stop ends this program with a
+signal, and the Mac is told to end the game. The same signal comes when the virtual machine shuts
+down; the Mac is not told then, and the game goes on there.
+
+Verbs:
+    waitforexitandrun   the game: run on the Mac
+    run                 answered here with status 0, nothing runs. Steam uses it for its driver queries
+                        when it starts and for a game's install script before each Play; this version
+                        does not run those on the Mac.
+    anything else       status 1
+
+The graphics backend asked for is the tool's; GRAPHICS_BACKEND=<name> %command% in the game's launch
+options is put into this program's environment by Steam and wins over it. What is asked for here also
+wins over the backend named in a game folder's .metalsharp/launch.env file (written by the MetalSharp
+application on the Mac, which keeps the backend it last started the game with there): the Mac starts
+the game with METALSHARP_LAUNCH_BACKEND, and MetalSharp Wine puts that backend back once it has
+applied the file. The file's other variables still apply, and the user's own
+.metalsharp/launch.local.env in that folder still has the last word.
+
+Exit status: the game's; 1 when the Mac refused or could not be reached, with the reason on standard
+error (Steam's log); 0 when the connection to the Mac was lost while the game ran (the game goes on).
+"""
+import sys
+
+# "run" comes several times for every tool each time Steam starts: answer before anything else is loaded
+ARGS = sys.argv[1:]
+TOOL = None
+if len(ARGS) >= 2 and ARGS[0] == "--tool":
+    TOOL = ARGS[1]
+    ARGS = ARGS[2:]
+if ARGS and ARGS[0] == "run":
+    sys.exit(0)
+
+import json
+import os
+import signal
+import socket
+
+HOST_CID = 2            # the hypervisor side of virtio-vsock
+PORT = 5000             # the port krunkit maps to the daemon's UNIX socket
+REPLY_TIMEOUT = 15      # seconds for the Mac to say the game has started (it answers within 5)
+STOP_TIMEOUT = 15       # seconds to wait, after Steam's Stop, for the Mac to say the game has ended
+MAX_LINE = 8192         # a reply is one short line
+# a tool's folder name without "metalsharp-" -> the backend's name in the request
+TOOLS = {"mullion": "mullion", "dxvk": "dxvk", "vkd3d": "vkd3d", "wined3d": "wine"}
+# what GRAPHICS_BACKEND can say: MetalSharp Wine's own names for the backends, and the tools' names.
+# Wine has no D3DMetal on Apple silicon and uses its own Direct3D when asked for it; so does this.
+NAMES = {"mullion": "mullion", "dxmt": "mullion", "dxvk": "dxvk", "vkd3d": "vkd3d",
+         "wine": "wine", "wined3d": "wine", "d3dmetal": "wine"}
+
+
+class Stopped(Exception):
+    """Steam's Stop (or the virtual machine going down): raised by the signal handler wherever the
+    program is."""
+
+    def __init__(self, signum):
+        Exception.__init__(self)
+        self.signum = signum
+
+
+def complain(text):
+    sys.stderr.write("mtsp-launch: %s\n" % text)
+    sys.stderr.flush()
+
+
+SIGNALS = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
+STOPPING = False
+
+
+def on_signal(signum, frame):
+    # The first signal is the one that counts. Two often come together (the process group and this
+    # program are both signalled; a session that ends sends TERM and HUP), and a second one raised
+    # while the first is being dealt with would cut the telling of the Mac short. (The handler stays
+    # in place and does nothing: Python reports a signal whose handler was taken away in between as
+    # an error of whatever was running.)
+    global STOPPING
+    if STOPPING:
+        return
+    STOPPING = True
+    raise Stopped(signum)
+
+
+def going_down():
+    """Is the virtual machine shutting down or restarting? Its programs are all ended then, this one
+    among them, and that is not Steam's Stop: the game on the Mac is to go on."""
+    if os.path.exists("/run/nologin"):
+        return True
+    import subprocess
+    try:
+        state = subprocess.run(["/usr/bin/systemctl", "is-system-running"], env={"PATH": "/usr/bin:/bin"},
+                               stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                               timeout=3).stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return state.strip() == b"stopping"
+
+
+def backend():
+    chosen = TOOLS.get((TOOL or "metalsharp-mullion")[len("metalsharp-"):], "mullion")
+    asked = os.environ.get("GRAPHICS_BACKEND", "")
+    if asked:
+        if asked.lower() in NAMES:
+            chosen = NAMES[asked.lower()]
+        else:
+            complain("GRAPHICS_BACKEND=%s is not a backend of MetalSharp Wine (dxmt, dxvk, vkd3d, wine); "
+                     "using %s" % (asked[:40], chosen))
+    return chosen
+
+
+def digits(name, most):
+    value = os.environ.get(name, "")
+    return value if value.isascii() and value.isdigit() and len(value) <= most else ""
+
+
+def build_request(exe, args):
+    """The request, as one line of bytes. Paths are sent as the Mac knows them: Steam names its own
+    default library by its path in here, where steamapps is a link into the Mac's shared folder."""
+    appid = digits("STEAM_COMPAT_APP_ID", 10) or digits("SteamAppId", 10)
+    data = os.environ.get("STEAM_COMPAT_DATA_PATH", "")
+    if not appid or not data:
+        raise ValueError("Steam did not say which game this is (STEAM_COMPAT_APP_ID, STEAM_COMPAT_DATA_PATH)")
+    req = {
+        "op": "launch",
+        "backend": backend(),
+        "exe": os.path.realpath(exe),
+        "args": args,
+        "cwd": os.path.realpath(os.getcwd()),
+        "appid": appid,
+        "gameid": digits("SteamGameId", 20) or appid,
+        "compat_data": os.path.realpath(data),
+    }
+    # nothing else of this environment goes to the Mac: it describes this Linux system (LD_PRELOAD and
+    # the rest), not the one the game runs on
+    return json.dumps(req, ensure_ascii=False).encode("utf-8") + b"\n"
+
+
+def connect():
+    # the only other place a request can go: a UNIX socket, for testing this program without a Mac
+    test = os.environ.get("MTSP_LAUNCH_TEST_SOCKET")
+    if test:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        target = test
+    else:
+        s = socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM)
+        target = (HOST_CID, PORT)
+    s.settimeout(5)
+    try:
+        s.connect(target)
+    except BaseException:
+        s.close()
+        raise
+    return s
+
+
+class Lines:
+    """The daemon's replies, a line at a time."""
+
+    def __init__(self, sock):
+        self.sock = sock
+        self.data = b""
+
+    def read(self, timeout):
+        """One reply as a dict; None when the connection ended (or the wait did) without one."""
+        self.sock.settimeout(timeout)
+        while b"\n" not in self.data:
+            if len(self.data) > MAX_LINE:
+                return None
+            try:
+                chunk = self.sock.recv(4096)
+            except socket.timeout:
+                return None
+            except OSError:
+                return None
+            if not chunk:
+                return None
+            self.data += chunk
+        line, self.data = self.data.split(b"\n", 1)
+        try:
+            reply = json.loads(line.decode("utf-8"))
+        except ValueError:
+            return None
+        return reply if isinstance(reply, dict) else None
+
+
+def exit_status(reply):
+    code = reply.get("exit")
+    return code if isinstance(code, int) and not isinstance(code, bool) and 0 <= code <= 255 else 1
+
+
+def play(exe, args):
+    name = os.path.basename(exe)
+    try:
+        line = build_request(exe, args)
+    except (UnicodeError, ValueError, OSError) as e:
+        complain("cannot ask the Mac to run %s: %s" % (name, e))
+        return 1
+    sock = None
+    replies = None
+    started = False
+    try:
+        for signum in SIGNALS:
+            signal.signal(signum, on_signal)
+        try:
+            sock = connect()
+            sock.sendall(line)
+        except OSError as e:
+            complain("cannot reach MetalSharp on the Mac to run %s: %s" % (name, e))
+            return 1
+        replies = Lines(sock)
+        reply = replies.read(REPLY_TIMEOUT)
+        if reply is None:
+            complain("MetalSharp on the Mac did not answer the request to run %s" % name)
+            return 1
+        if not reply.get("ok"):
+            complain("the Mac did not run %s: %s" % (name, str(reply.get("error", "no reason given"))[:300]))
+            return 1
+        if "exit" in reply:               # it ended before the daemon could say it had started
+            return exit_status(reply)
+        started = True
+        reply = replies.read(None)        # for as long as the game runs
+        if reply is None:
+            # the connection is gone (the daemon or the virtual machine's link restarted), not the game:
+            # the Mac keeps it running, and there is nothing to report
+            return 0
+        if not reply.get("ok"):
+            complain("%s on the Mac: %s" % (name, str(reply.get("error", "no reason given"))[:300]))
+            return 1
+        return exit_status(reply)
+    except Stopped as stop:
+        # Stop in Steam, unless it is the virtual machine going down. A second signal changes nothing
+        # from here on (the handler saw to that); the waits below are bounded.
+        if sock is not None and not going_down():
+            try:
+                sock.settimeout(5)
+                sock.sendall(b'{"op":"stop"}\n')
+                # Steam takes this program's end as the game's (it syncs the saves then): wait for the
+                # Mac to say that the game is gone
+                if replies is None:
+                    replies = Lines(sock)
+                reply = replies.read(STOP_TIMEOUT)
+                if reply is not None and not started and reply.get("ok") and "exit" not in reply:
+                    replies.read(STOP_TIMEOUT)      # that was "started"; the next one is the end
+            except OSError:
+                pass
+        return 128 + stop.signum
+    finally:
+        if sock is not None:
+            try:
+                sock.close()
+            except OSError:
+                pass
+
+
+def main():
+    if TOOL is not None and not (TOOL.startswith("metalsharp-") and TOOL[len("metalsharp-"):] in TOOLS):
+        complain("%s is not a MetalSharp compatibility tool" % TOOL[:80])
+        return 1
+    if not ARGS:
+        sys.stderr.write(__doc__)
+        return 1
+    verb = ARGS[0]
+    if verb != "waitforexitandrun":
+        complain("the verb %s is not supported" % verb[:40])
+        return 1
+    if len(ARGS) < 2:
+        complain("waitforexitandrun needs a program")
+        return 1
+    try:
+        return play(ARGS[1], ARGS[2:])
+    except Stopped as stop:               # as it was leaving anyway
+        return 128 + stop.signum
+
+
+if __name__ == "__main__":
+    sys.exit(main())

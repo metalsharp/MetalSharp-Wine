@@ -1,0 +1,59 @@
+#!/usr/bin/env python3
+"""mtsp-bridge: ask the Mac host to do a desktop action for the guest.
+
+    mtsp-bridge ping
+    mtsp-bridge open-path /Users/me/SteamLibrary/steamapps/common/Game
+    mtsp-bridge open-url https://store.steampowered.com/
+    mtsp-bridge choose-library
+
+Sends one JSON line to the host daemon (metalsharp-vmd) over virtio-vsock and prints its reply.
+Exit status: 0 the host did it, 1 the host refused, 2 the host could not be reached.
+"""
+import json
+import socket
+import sys
+
+HOST_CID = 2      # the hypervisor side of virtio-vsock
+PORT = 5000       # the port krunkit maps to the daemon's UNIX socket
+
+
+def request(req, timeout=5):
+    s = socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM)
+    s.settimeout(timeout)
+    try:
+        s.connect((HOST_CID, PORT))
+        s.sendall(json.dumps(req).encode() + b"\n")
+        data = b""
+        while b"\n" not in data and len(data) < 8192:
+            chunk = s.recv(4096)
+            if not chunk:
+                break
+            data += chunk
+        return json.loads(data.decode())
+    finally:
+        s.close()
+
+
+def main(argv):
+    if len(argv) == 2 and argv[1] == "ping":
+        req = {"op": "ping"}
+    elif len(argv) == 3 and argv[1] == "open-path":
+        req = {"op": "open-path", "path": argv[2]}
+    elif len(argv) == 3 and argv[1] == "open-url":
+        req = {"op": "open-url", "url": argv[2]}
+    elif len(argv) == 2 and argv[1] == "choose-library":
+        req = {"op": "choose-library"}
+    else:
+        sys.stderr.write(__doc__)
+        return 2
+    try:
+        reply = request(req)
+    except (OSError, ValueError) as e:
+        sys.stderr.write("mtsp-bridge: host not reachable: %s\n" % e)
+        return 2
+    print(json.dumps(reply))
+    return 0 if reply.get("ok") else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

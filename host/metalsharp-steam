@@ -1,0 +1,866 @@
+#!/bin/bash
+# metalsharp-steam: Linux Steam for MetalSharp Wine, in a small Linux virtual machine on this Mac.
+#
+#   metalsharp-steam                 set up if needed, start, and open Steam's window
+#   metalsharp-steam setup [--library DIR] [--disk-gb N]
+#   metalsharp-steam install          setup with the defaults, for a program to run without a terminal:
+#                                     '==> ' lines say how far it is, and a failure is one last line and
+#                                     a non-zero status
+#   metalsharp-steam start | stop | status | show
+#   metalsharp-steam status --json    {"installed", "vm_running", "steam_running", "installing"}, at once
+#   metalsharp-steam url steam://... send a link to the running Steam client
+#   metalsharp-steam library list    the folders of this Mac that Steam keeps games in, with their Wine drives
+#   metalsharp-steam library choose       pick another folder for Steam in Wine's folder browser, and add it
+#   metalsharp-steam library add DIR      let Steam use another folder (a Steam library on another disk, say)
+#   metalsharp-steam library remove DIR   stop sharing a folder with Steam (its files stay where they are)
+#   metalsharp-steam ssh [command]   a shell in the virtual machine
+#
+# The first run downloads Debian 13 (arm64) and Valve's arm64 Linux Steam client, builds the virtual
+# machine and starts it. Steam's library folders are folders on the Mac, shared with the virtual machine
+# at the same paths, so what Steam installs there is on the Mac for MetalSharp Wine. The first one (set
+# at setup) holds Steam's own default library; "library choose" and "library add" share more, and
+# restart the virtual machine if it is running. Everything runs as native arm64 code: the virtual
+# machine uses Hypervisor.framework, and Rosetta is not used anywhere.
+#
+# Steam shows its storage the way Wine sees it. The drives are those of MetalSharp's Steam prefix
+# (~/.metalsharp/prefix-steam), or of this command's own small prefix when there is none: a library is
+# named after the Wine drive it is on ("Drive C"), and its space is that of the Mac disk it is on. Set up
+# without --library, the default library is C:\SteamLibrary of the Steam prefix (drive_c/SteamLibrary), on
+# the Mac's own disk; without that prefix it is ~/SteamLibrary-Linux.
+#
+# Settings (environment): METALSHARP_VM_DIR (default ~/.metalsharp/vm), METALSHARP_VM_RUN (default
+# ~/.metalsharp/run), METALSHARP_VM_CPUS (4), METALSHARP_VM_MEMORY_MB (4096), METALSHARP_VM_SSH_PORT
+# (2222), METALSHARP_VM_VNC_PORT (5901), METALSHARP_WINE (the wine command; default the one this copy
+# of MetalSharp Wine has), METALSHARP_STEAM_PREFIX (default ~/.metalsharp/prefix-steam),
+# METALSHARP_VM_LAUNCH (off: the Mac runs no games for Steam; a game played with a MetalSharp tool then
+# ends at once, with the reason in Steam's log), METALSHARP_VM_WINEDEBUG (Wine's debug channels for
+# those games, as WINEDEBUG takes them; default -all, no output), METALSHARP_VM_LANG (the locale those
+# games run in, such as de_DE.UTF-8; default the one this command is started in, or the Mac's),
+# METALSHARP_GAME_PREFIX (one Wine prefix every game runs in, such as MetalSharp's Steam prefix; default
+# none: each game runs in the prefix Steam keeps for it; there, the Windows user is the Mac user's name).
+#
+# A game played in Steam with one of the "MetalSharp" compatibility tools (Mullion is the default for
+# every game) runs on the Mac with that wine command, in the prefix Steam keeps for the game
+# (steamapps/compatdata/<id>/pfx in its library) or in METALSHARP_GAME_PREFIX when that is set; what it prints is in logs/game.log of the virtual
+# machine's folder. The tool names the graphics backend, and the tool chosen in Steam wins over the
+# backend named in a game folder's .metalsharp/launch.env file (the MetalSharp application writes one
+# for the games it has set up; the file's other variables still apply). Only the user's own
+# .metalsharp/launch.local.env in that folder wins over both. A game goes on running on the Mac when
+# the virtual machine is stopped or restarted; Steam finds it again at the next Play.
+set -u
+umask 077
+# The language games run in is the user's, not the C locale this script works in: taken here, before
+# the next line, and handed to the bridge daemon (which starts the games) in its configuration.
+USER_LANG=${LC_ALL:-${LC_MESSAGES:-${LANG:-}}}
+export LC_ALL=C
+
+SELF=$0
+while [ -L "$SELF" ]; do   # run through a symbolic link: find the real file
+  target=$(readlink "$SELF")
+  case "$target" in /*) SELF=$target;; *) SELF=$(dirname "$SELF")/$target;; esac
+done
+HERE=$(cd "$(dirname "$SELF")" && pwd -P)
+ROOT=$(cd "$HERE/../.." && pwd -P)          # the release tree, or MetalSharp-Wine.app/Contents
+VM=${METALSHARP_VM_DIR:-$HOME/.metalsharp/vm}
+RUN=${METALSHARP_VM_RUN:-$HOME/.metalsharp/run}
+CPUS=${METALSHARP_VM_CPUS:-4}
+MEMORY=${METALSHARP_VM_MEMORY_MB:-4096}
+SSH_PORT=${METALSHARP_VM_SSH_PORT:-2222}
+VNC_PORT=${METALSHARP_VM_VNC_PORT:-5901}
+IMAGE_URL=https://cloud.debian.org/images/cloud/trixie/latest
+IMAGE=debian-13-generic-arm64.tar.xz
+GUEST_IP=192.168.127.2                      # what gvproxy leases to the MAC address below
+GUEST_MAC=5a:94:ef:e4:0c:ee
+LOGS=$VM/logs
+WINE=${METALSHARP_WINE:-$ROOT/bin/wine}
+LAUNCH=${METALSHARP_VM_LAUNCH:-on}
+# The Wine prefix that says how Wine sees storage: its drives name Steam's libraries, and its folder
+# browser chooses them. MetalSharp's Steam prefix when there is one, else the prefix made here for the
+# file explorer.
+STEAM_PREFIX=${METALSHARP_STEAM_PREFIX:-$HOME/.metalsharp/prefix-steam}
+if [ -d "$STEAM_PREFIX/dosdevices" ]; then WINE_VIEW_PREFIX=$STEAM_PREFIX; else WINE_VIEW_PREFIX=$VM/utility-pfx; fi
+WINE_DEBUG=${METALSHARP_VM_WINEDEBUG:-}
+GAME_PREFIX=${METALSHARP_GAME_PREFIX:-}
+
+say()  { printf '%s\n' "$*"; }
+step() { printf '==> %s\n' "$*"; }
+die()  { printf 'metalsharp-steam: %s\n' "$*" >&2; [ -z "$NOTIFY" ] || notify "$*"; exit 1; }
+# notify TEXT: a message box on the Mac, for a run nobody is watching in a terminal (Steam's "Add Drive")
+NOTIFY=
+notify() {
+  /usr/bin/osascript -e 'on run a' -e 'display dialog (item 1 of a) with title "Steam" buttons {"OK"} default button 1 giving up after 60' \
+      -e 'end run' -- "$1" >/dev/null 2>&1
+}
+
+case "$CPUS$MEMORY$SSH_PORT$VNC_PORT" in *[!0-9]*) die "the METALSHARP_VM_ numbers must be whole numbers";; esac
+[ "$(id -u)" != 0 ] || die "run this as yourself, not as root"
+# these paths go into option lists, a JSON file and process matches: keep them plain
+case "$VM$RUN" in /*) ;; *) die "METALSHARP_VM_DIR and METALSHARP_VM_RUN must be absolute paths";; esac
+case "$VM$RUN" in *[!A-Za-z0-9/._-]*) die "the virtual machine's folders may only have letters, digits and / . _ - in their paths: $VM, $RUN";; esac
+case "$GAME_PREFIX" in ''|/*) ;; *) die "METALSHARP_GAME_PREFIX must be an absolute path";; esac
+
+# The programs of this copy of MetalSharp Wine. In the release tree they are in bin/; in MetalSharp-Wine.app
+# the Mach-O programs are in Contents/MacOS, and Contents/bin is a link to it: either way bin/ finds them.
+tool() {
+  if [ -x "$ROOT/bin/$1" ]; then printf '%s\n' "$ROOT/bin/$1"; else printf '%s\n' "$ROOT/MacOS/$1"; fi
+}
+
+vm_ssh() {
+  ssh -F /dev/null -i "$VM/id_ed25519" -p "$SSH_PORT" -o IdentitiesOnly=yes -o BatchMode=yes -o ServerAliveInterval=15 \
+      -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$VM/known_hosts" \
+      -o ConnectTimeout=10 -o LogLevel=ERROR steam@127.0.0.1 "$@"
+}
+
+# running <pidfile>: is the process the pid file names still the one that was started with that pid file?
+# (after a restart of the Mac the number can belong to anything, another krunkit included)
+running() {
+  local pid
+  pid=$(cat "$1" 2>/dev/null) || return 1
+  case "$pid" in ''|*[!0-9]*) return 1;; esac
+  ps -p "$pid" -o command= 2>/dev/null | grep -qF -- "$1"
+}
+vm_running() { running "$RUN/krunkit.pid"; }
+bridge_up() { [ -S "$RUN/launch.sock" ] && printf '{"op": "ping"}\n' | nc -U -w 3 "$RUN/launch.sock" 2>/dev/null | grep -q '"ok": true'; }
+
+# one metalsharp-steam at a time changes the virtual machine
+lock() {
+  local holder
+  [ -z "${LOCKED:-}" ] || return 0
+  if ! mkdir "$RUN/busy" 2>/dev/null; then
+    holder=$(cat "$RUN/busy/pid" 2>/dev/null)
+    if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null; then die "another metalsharp-steam (pid $holder) is working on the virtual machine"; fi
+    rm -f "$RUN/busy/pid"; rmdir "$RUN/busy" 2>/dev/null; mkdir "$RUN/busy" || die "cannot take $RUN/busy"
+  fi
+  echo $$ > "$RUN/busy/pid"
+  LOCKED=1
+  trap 'rm -f "$RUN/busy/pid"; rmdir "$RUN/busy" 2>/dev/null; [ -z "${INSTALLING:-}" ] || rm -f "$RUN/installing"' EXIT
+  trap 'exit 130' INT TERM
+}
+
+# The folders of the Mac that are shared with the virtual machine: $VM/libraries, one path a line. The
+# first is the primary library, where Steam's own default library lives. (Earlier versions had the one
+# folder in $VM/library.) Only plain absolute paths count, as they go into command lines and a JSON file.
+MAX_LIBRARIES=16                            # what the bridge daemon reads from its configuration
+libraries() {
+  if [ ! -f "$VM/libraries" ] && [ -s "$VM/library" ]; then
+    cp "$VM/library" "$VM/libraries.new" 2>/dev/null && mv "$VM/libraries.new" "$VM/libraries"
+  fi
+  [ -f "$VM/libraries" ] && grep -E '^/[A-Za-z0-9/._+-]*$' "$VM/libraries"
+}
+library() { libraries | head -n 1; }
+
+# overlap A B: is one of the two folders the other one, or inside it?
+overlap() {
+  case "$1/" in "$2/"*) return 0;; esac
+  case "$2/" in "$1/"*) return 0;; esac
+  return 1
+}
+
+# check_library DIR [create]: is DIR a folder that may be shared with the virtual machine? Its real path
+# is left in LIB.
+check_library() {
+  local lib=$1 own
+  case "$lib" in /*) ;; *) die "the library must be an absolute path: $lib";; esac
+  # the path goes into the guest's file system table and several command lines: keep it plain
+  case "$lib" in *[!A-Za-z0-9/._+-]*) die "the library path may only have letters, digits and / . _ + - in it: $lib";; esac
+  if [ "${2:-}" = create ]; then mkdir -p "$lib" || die "cannot create $lib"; fi
+  [ -d "$lib" ] || die "$lib is not a folder"
+  lib=$(cd "$lib" && pwd -P) || die "cannot open $lib"
+  case "$lib" in *[!A-Za-z0-9/._+-]*) die "the library path resolves to one with other characters: $lib";; esac
+  # the folder is mounted at the same path in the virtual machine, and the Mac opens folders inside it for
+  # the guest: it has to be a folder of its own, not a system folder or a whole disk
+  case "$lib" in /Users/*/*|/Volumes/*/*) ;; *) die "the library must be a folder inside your home folder or on a disk under /Volumes: $lib";; esac
+  # and the guest must not get at the virtual machine's own files (its disk, keys and bridge settings)
+  for own in "$VM" "$RUN"; do
+    own=$(cd "$own" 2>/dev/null && pwd -P) || continue
+    overlap "$lib" "$own" && die "the library cannot be the folder the virtual machine itself is kept in, or one around it: $lib"
+  done
+  LIB=$lib
+}
+
+# wine_drive_label PATH: "Drive X" for the Wine drive the folder is on, as the prefix above has its
+# drives. A folder that Windows Steam in that prefix has as a library keeps the drive Windows Steam knows
+# it by (the same folder can be reached through several drives, and Z: is all of the Mac). Otherwise it
+# is the drive whose folder is the longest one PATH is in (C: before Z:). Prints nothing when no drive has it.
+wine_drive_label() {
+  local path=$1 link target name best= letter= line win drive rest
+  local known="$WINE_VIEW_PREFIX/drive_c/Program Files (x86)/Steam/config/libraryfolders.vdf"
+  if [ -f "$known" ]; then
+    while IFS= read -r line; do
+      case "$line" in *'"path"'*) ;; *) continue;; esac
+      win=${line#*\"path\"}; win=${win#*\"}; win=${win%\"*}
+      drive=$(printf '%s' "${win%%:*}" | tr 'A-Z' 'a-z')
+      case "$drive" in [a-z]) ;; *) continue;; esac
+      rest=$(printf '%s' "${win#*:}" | tr -s '\\' '/')
+      target=$(cd "$WINE_VIEW_PREFIX/dosdevices/$drive:/$rest" 2>/dev/null && pwd -P) || continue
+      case "$target" in //*) target=/${target#"${target%%[!/]*}"};; esac    # through Z: it can begin with //
+      if [ "$target" = "$path" ]; then letter=$drive; break; fi
+    done < "$known"
+  fi
+  [ -z "$letter" ] || { printf 'Drive %s\n' "$(printf '%s' "$letter" | tr 'a-z' 'A-Z')"; return; }
+  for link in "$WINE_VIEW_PREFIX"/dosdevices/[A-Za-z]:; do
+    target=$(cd "$link" 2>/dev/null && pwd -P) || continue     # also when nothing matches the pattern
+    case "$path/" in "${target%/}/"*) ;; *) continue;; esac
+    if [ -z "$letter" ] || [ ${#target} -gt ${#best} ]; then
+      best=$target; name=${link##*/}; letter=${name%:}
+    fi
+  done
+  [ -z "$letter" ] || printf 'Drive %s\n' "$(printf '%s' "$letter" | tr 'a-z' 'A-Z')"
+}
+
+# shell_quote TEXT: TEXT as one single-quoted word for the guest's shell (a ' becomes '\'')
+shell_quote() {
+  local quoted
+  quoted=\'${1//\'/\'\\\'\'}\'
+  printf '%s' "$quoted"
+}
+
+is_set_up() { [ -f "$VM/setup-done" ] && [ -f "$VM/disk.raw" ] && [ -n "$(library)" ]; }
+
+preflight() {
+  [ "$(uname -m)" = arm64 ] || die "this needs an Apple silicon Mac"
+  [ "$(sysctl -n kern.hv_support 2>/dev/null)" = 1 ] || die "this Mac does not offer Hypervisor.framework"
+  local f
+  for f in krunkit gvproxy metalsharp-vmd; do
+    [ -x "$(tool $f)" ] || die "$(tool $f) is missing; this copy of MetalSharp Wine was built without the Steam virtual machine"
+  done
+  for f in share/krunkit/KRUN_EFI.silent.fd share/steamvm/guest/mtsp-bridge; do
+    [ -e "$ROOT/$f" ] || die "$ROOT/$f is missing; this copy of MetalSharp Wine was built without the Steam virtual machine"
+  done
+  mkdir -p "$VM" "$RUN" "$LOGS" || die "cannot create $VM"
+  [ ${#RUN} -le 80 ] || die "$RUN is too long a path for sockets; set METALSHARP_VM_RUN to a shorter one"
+}
+
+# ---- first-time setup ----
+
+fetch_image() {
+  local dir=$VM/image sum
+  [ -f "$VM/disk.raw" ] && return 0
+  mkdir -p "$dir"
+  step "Downloading Debian 13 (arm64)"
+  curl -fsSL --retry 3 -o "$dir/SHA512SUMS" "$IMAGE_URL/SHA512SUMS" || die "cannot download the Debian checksums"
+  sum=$(awk -v f="$IMAGE" '$2 == f {print $1}' "$dir/SHA512SUMS")
+  [ ${#sum} -eq 128 ] || die "the Debian checksum list does not name $IMAGE"
+  # a progress bar in a terminal; a program reading the output (MetalSharp) gets the stages only
+  if [ -t 2 ]; then progress=-#; else progress=-sS; fi
+  curl -fL $progress --retry 3 -C - -o "$dir/$IMAGE" "$IMAGE_URL/$IMAGE" || die "cannot download the Debian image"
+  if [ "$(shasum -a 512 "$dir/$IMAGE" | cut -d' ' -f1)" != "$sum" ]; then
+    rm -f "$dir/$IMAGE"
+    die "the Debian image does not match its checksum; run this again to download it afresh"
+  fi
+  step "Unpacking the disk image"
+  rm -f "$dir/disk.raw"
+  tar -xJf "$dir/$IMAGE" -C "$dir" disk.raw || die "cannot unpack the Debian image"
+  # grow the (sparse) disk; the guest enlarges its root file system to fit on first boot
+  dd if=/dev/null of="$dir/disk.raw" bs=1048576 seek=$((DISK_GB * 1024)) 2>/dev/null || die "cannot size the disk image"
+  mv "$dir/disk.raw" "$VM/disk.raw"
+  rm -rf "$dir"
+}
+
+make_keys() {
+  if [ ! -f "$VM/id_ed25519" ]; then
+    ssh-keygen -q -t ed25519 -N '' -C metalsharp-vm -f "$VM/id_ed25519" || die "cannot create an SSH key"
+  fi
+  if [ ! -s "$VM/vnc-password.txt" ]; then
+    LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 8 > "$VM/vnc-password.txt"
+  fi
+}
+
+# The seed disk cloud-init reads on first boot: the steam user (with this Mac user's uid, so files in the
+# shared library belong to the same user on both sides), the packages Steam's client needs, and the share.
+make_seed() {
+  local dir=$VM/seed lib
+  lib=$(library)
+  [ -f "$VM/seed.iso" ] && return 0
+  rm -rf "$dir"; mkdir -p "$dir"
+  printf 'instance-id: metalsharp-steam-%s\nlocal-hostname: metalsharp\n' "$(date +%s)" > "$dir/meta-data"
+  cat > "$dir/user-data" <<EOF
+#cloud-config
+users:
+  - name: steam
+    uid: $(id -u)
+    shell: /bin/bash
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    ssh_authorized_keys:
+      - $(cat "$VM/id_ed25519.pub")
+package_update: true
+packages: [ca-certificates, curl, dbus-user-session, dbus-x11, fonts-dejavu, gcc, libc6-dev, fonts-liberation, fonts-noto-cjk,
+  libasound2t64, libatk-bridge2.0-0t64, libcups2t64, libcurl4t64, libdrm2, libegl1, libfontconfig1, libfreetype6,
+  libgbm1, libgl1, libgl1-mesa-dri, libgles2, libglx-mesa0, libgtk-3-0t64, libgtk2.0-0t64, libibus-1.0-5, libnm0,
+  libnspr4, libnss3, libopenal1, libpulse0, libsdl2-2.0-0, libsdl3-0, libusb-1.0-0, libva2, libvulkan1,
+  libxcb-cursor0, libxcb-xinerama0, libxcomposite1, libxdamage1, libxkbcommon-x11-0, libxkbcommon0, libxrandr2,
+  libxss1, libxtst6, lsof, openbox, procps, python3, python3-dbus, python3-gi, python3-xlib, tigervnc-common,
+  tigervnc-standalone-server, tigervnc-tools, unzip, x11-utils, x11-xserver-utils, xdg-user-dirs, xdg-utils, xterm,
+  xz-utils, zenity]
+runcmd:
+  - mkdir -p '$lib'
+  - sed -i '/^steamlib /d' /etc/fstab
+  - echo 'steamlib $lib virtiofs rw,nosuid,nodev,nofail 0 0' >> /etc/fstab
+  - mount -a
+  - loginctl enable-linger steam
+EOF
+  hdiutil makehybrid -quiet -o "$VM/seed.iso" -iso -joliet -default-volume-name cidata "$dir" || die "cannot build the seed disk"
+  rm -rf "$dir"
+}
+
+# json_string TEXT: TEXT as a JSON string, quotes included. Fails for text with control characters.
+json_string() {
+  local s=$1
+  case "$s" in *[[:cntrl:]]*) return 1;; esac
+  s=${s//\\/\\\\}
+  s=${s//\"/\\\"}
+  printf '"%s"' "$s"
+}
+
+# The locale games run in, as a LANG value: the one this command was started with, or, started from the
+# Finder or the Dock (where no locale is set), the Mac's language and region. Prints nothing when neither
+# gives a plain name; the daemon then leaves the choice to Wine.
+user_lang() {
+  local lang=${METALSHARP_VM_LANG:-$USER_LANG} region
+  case "$lang" in ''|C|POSIX|C.*)
+    lang=$(/usr/bin/defaults read -g AppleLocale 2>/dev/null)
+    lang=${lang%%@*}
+    # the Mac can name a script between language and region (zh-Hans_CN): a locale name has no place for it
+    case "$lang" in *-*_*) region=${lang##*_}; lang=${lang%%-*}_$region;; esac
+    case "$lang" in [a-z][a-z]_[A-Z][A-Z]|[a-z][a-z][a-z]_[A-Z][A-Z]) lang=$lang.UTF-8;; *) lang=;; esac;;
+  esac
+  case "$lang" in *[!A-Za-z0-9_.@-]*) lang=;; esac
+  printf '%s' "$lang"
+}
+
+# The settings that decide what the Mac runs for Steam go on to what this command starts and what later
+# runs this command again without a terminal's environment: the bridge daemon (Steam's "Add Drive") and
+# Steam's window (its Library menu). Without this they would write the configuration below anew with
+# the defaults, in the C locale.
+METALSHARP_VM_LANG=$(user_lang)
+export METALSHARP_WINE="$WINE" METALSHARP_VM_LAUNCH="$LAUNCH" METALSHARP_STEAM_PREFIX="$STEAM_PREFIX"
+export METALSHARP_VM_WINEDEBUG="$WINE_DEBUG" METALSHARP_VM_LANG METALSHARP_GAME_PREFIX="$GAME_PREFIX"
+
+# What the bridge daemon may do for the guest: open folders inside the libraries; run this command as
+# "library choose" when Steam's "Add Drive" asks for a folder; and run a game that is in a library, with
+# the wine command, the locale, Wine's debug channels and the log file named here, when it is played in
+# Steam with a MetalSharp compatibility tool. The daemon reads this at every request, so it is replaced in one step, and written
+# again whenever the list changes and at every start.
+write_bridge_config() {
+  local p roots= more= value sep
+  sep=',
+ '
+  while IFS= read -r p; do
+    [ -n "$p" ] && roots="$roots${roots:+, }\"$p\""
+  done <<EOF
+$(libraries)
+EOF
+  # without a "wine" here the daemon uses the wine next to itself
+  case "$WINE" in /*)
+    if [ -x "$WINE" ] && value=$(json_string "$WINE"); then more="$more$sep\"wine\": $value"; fi;;
+  esac
+  [ -z "$METALSHARP_VM_LANG" ] || more="$more$sep\"lang\": \"$METALSHARP_VM_LANG\""
+  if [ -n "$WINE_DEBUG" ] && value=$(json_string "$WINE_DEBUG"); then more="$more$sep\"wine_debug\": $value"; fi
+  more="$more$sep\"launch_log\": \"$LOGS/game.log\""
+  # games are only run for Steam when this says so; METALSHARP_VM_LAUNCH=off leaves it out
+  [ "$LAUNCH" = off ] || more="$more$sep\"launch\": \"on\""
+  # One prefix for every game (MetalSharp's Steam prefix), whose Windows profile is the Mac user's: the
+  # MetalSharp application runs Wine there as this user.
+  if [ -n "$GAME_PREFIX" ] && value=$(json_string "$GAME_PREFIX"); then
+    more="$more$sep\"game_prefix\": $value"
+    case "$(id -un)" in
+      ''|*[!A-Za-z0-9._-]*) say "    (the Mac user name $(id -un) cannot be a Windows user name here; games run as steamuser)";;
+      *) more="$more$sep\"game_user\": \"$(id -un)\"";;
+    esac
+  fi
+  printf '{"shared_roots": [%s],\n "file_manager": "wine",\n "wine_prefix": "%s",\n "steam_command": "%s"%s}\n' \
+      "$roots" "$VM/utility-pfx" "$HERE/metalsharp-steam" "$more" > "$VM/bridge.json.new" &&
+    mv "$VM/bridge.json.new" "$VM/bridge.json"
+}
+
+# The Wine prefix the bridge opens folders with (Wine's file explorer). Without it folders open in Finder.
+make_utility_prefix() {
+  [ -d "$VM/utility-pfx/drive_c" ] && return 0
+  [ -x "$WINE" ] || { say "    (Wine is not there: $WINE; folders will open in Finder)"; return 0; }
+  step "Creating the Wine prefix for the file explorer"
+  WINEPREFIX="$VM/utility-pfx" WINEDEBUG=-all "$WINE" wineboot -u > "$LOGS/utility-pfx.log" 2>&1 ||
+    say "    (Wine could not create it, see $LOGS/utility-pfx.log; folders will open in Finder)"
+}
+
+# The guest's half of the bridge. Copied at setup and again at every start, so that a virtual machine set
+# up by an earlier release runs this release's scripts.
+push_guest_files() {
+  vm_ssh 'rm -rf /tmp/mtsp-guest && mkdir /tmp/mtsp-guest' || die "cannot reach the virtual machine"
+  scp -q -F /dev/null -i "$VM/id_ed25519" -P "$SSH_PORT" -o IdentitiesOnly=yes -o BatchMode=yes -o UserKnownHostsFile="$VM/known_hosts" \
+      -o LogLevel=ERROR "$ROOT"/share/steamvm/guest/* steam@127.0.0.1:/tmp/mtsp-guest/ || die "cannot copy the guest files"
+  vm_ssh 'cd /tmp/mtsp-guest && sudo rm -f /usr/local/bin/zenity /usr/local/bin/mtsp-portal &&
+          sudo install -m 755 mtsp-bridge xdg-open mtsp-filemanager1 mtsp-steamhook mtsp-steam-url mtsp-windows mtsp-libraries mtsp-launch mtsp-compat /usr/local/bin/ &&
+          sudo install -m 755 start-desktop.sh /usr/local/bin/mtsp-start-desktop &&
+          sudo install -d /usr/local/lib/metalsharp && sudo install -m 644 fetch-steam.py unpack-steam.py /usr/local/lib/metalsharp/' ||
+    die "cannot install the guest files"
+  # Steam's first library shows the disk its games are on (mtsp-statfs.c). Built here, in the guest; a
+  # virtual machine set up before this was added gets the compiler now. Without it Steam still works and
+  # shows the virtual machine's own disk for that library.
+  vm_ssh 'cd /tmp/mtsp-guest && { command -v cc >/dev/null || sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q gcc libc6-dev >/dev/null 2>&1; } &&
+          cc -O2 -shared -fPIC -o mtsp-statfs.so mtsp-statfs.c -ldl && sudo install -m 755 mtsp-statfs.so /usr/local/lib/metalsharp/' ||
+    say "    (could not build mtsp-statfs.so: Steam will show the virtual machine's disk for its first library)"
+  vm_ssh 'rm -rf /tmp/mtsp-guest'
+}
+
+install_guest() {
+  step "Waiting for the virtual machine to finish its first boot (installs packages; a few minutes)"
+  vm_ssh 'cloud-init status --wait >/dev/null 2>&1; s=$(cloud-init status 2>&1); case "$s" in *done*) ;; *) echo "$s"; exit 1;; esac' ||
+    die "the first boot did not finish cleanly; see $LOGS/console.log"
+  vm_ssh "mountpoint -q '$(library)'" || die "the library folder is not shared into the virtual machine"
+  step "Installing the bridge in the virtual machine"
+  push_guest_files
+  vm_ssh 'mkdir -p ~/.vnc && tigervncpasswd -f > ~/.vnc/passwd && chmod 600 ~/.vnc/passwd' < "$VM/vnc-password.txt" ||
+    die "cannot set the screen password"
+  vm_ssh mtsp-bridge ping >/dev/null || die "the virtual machine cannot reach the bridge on the Mac"
+  if ! vm_ssh 'test -f ~/.local/share/Steam/.mtsp-unpacked'; then
+    step "Downloading Valve's arm64 Linux Steam client"
+    vm_ssh 'python3 -I /usr/local/lib/metalsharp/fetch-steam.py && python3 -I /usr/local/lib/metalsharp/unpack-steam.py' ||
+      die "cannot install the Steam client"
+  fi
+}
+
+setup() {
+  local lib=${LIBRARY:-$(library)} c
+  preflight
+  if [ -z "$lib" ]; then
+    # C:\SteamLibrary of MetalSharp's Steam prefix: on the Mac's own disk, and Drive C for Wine and Steam alike
+    if [ "$WINE_VIEW_PREFIX" = "$STEAM_PREFIX" ] && c=$(cd "$STEAM_PREFIX/drive_c" 2>/dev/null && pwd -P); then
+      lib=$c/SteamLibrary
+    else
+      lib=$HOME/SteamLibrary-Linux
+    fi
+  fi
+  check_library "$lib" create
+  lib=$LIB
+  if is_set_up; then
+    [ "$lib" = "$(library)" ] || die "already set up with the library $(library); remove $VM to start over"
+    say "Already set up (library: $(library))."
+    return 0
+  fi
+  lock
+  vm_running && die "a virtual machine is already running; metalsharp-steam stop first"
+  rm -f "$VM/library"
+  printf '%s\n' "$lib" > "$VM/libraries"
+  step "Setting up Linux Steam (library: $lib)"
+  make_keys
+  fetch_image
+  rm -f "$VM/known_hosts" "$VM/seed.iso" "$VM/efi-vars"   # a new machine has a new identity
+  make_seed
+  write_bridge_config
+  make_utility_prefix
+  boot || exit 1
+  install_guest
+  touch "$VM/setup-done"
+  step "Set up."
+}
+
+# ---- running ----
+
+# stop what a failed start left behind, so the next start begins clean
+boot_failed() {
+  vm_running && kill "$(cat "$RUN/krunkit.pid")" 2>/dev/null
+  running "$RUN/gvproxy.pid" && kill "$(cat "$RUN/gvproxy.pid")" 2>/dev/null
+  die "$@"
+}
+
+# Mount the shared folders in the guest, each at its Mac path. $RUN/shared has what this virtual machine
+# was started with ("tag path" a line). Only the first has a line in the guest's file system table, and
+# that line is from when the virtual machine was set up: when another folder is the primary one now, the
+# line is written anew, and what it mounted at the old folder's path gives way to that folder's own share.
+mount_shares() {
+  local tag p line script=
+  [ -f "$RUN/shared" ] || printf 'steamlib %s\n' "$(library)" > "$RUN/shared"   # started by an earlier version
+  while read -r tag p; do
+    if [ "$tag" = steamlib ]; then
+      line="steamlib $p virtiofs rw,nosuid,nodev,nofail 0 0"
+      script="$script grep -qxF '$line' /etc/fstab || { sudo sed -i '/^steamlib /d' /etc/fstab; echo '$line' | sudo tee -a /etc/fstab >/dev/null; };"
+    fi
+    script="$script sudo mkdir -p '$p'; have=\$(findmnt -n -o SOURCE -M '$p' | tail -n 1);
+      if [ \"\$have\" != $tag ]; then
+        [ -z \"\$have\" ] || sudo umount '$p';
+        sudo mount -t virtiofs -o rw,nosuid,nodev $tag '$p' ||
+          { echo '    (cannot share $p with the virtual machine)'; [ $tag != steamlib ] || bad=1; };
+      fi;"
+  done < "$RUN/shared"
+  vm_ssh "bad=0; $script exit \$bad"
+}
+
+boot() {
+  local i p tag n=0
+  local -a shares
+  # the bridge daemon owns its socket and outlives virtual machines (see stop); a second copy stands down
+  # by itself
+  if ! bridge_up; then
+    nohup "$(tool metalsharp-vmd)" --socket "$RUN/launch.sock" --config "$VM/bridge.json" >> "$LOGS/bridge.log" 2>&1 &
+    for i in 1 2 3 4 5 6 7 8 9 10; do bridge_up && break; sleep 0.3; done
+    bridge_up || die "the bridge daemon did not start; see $LOGS/bridge.log"
+  fi
+  if vm_running; then
+    vm_ssh true 2>/dev/null || die "the virtual machine is running but does not answer; run: metalsharp-steam stop"
+    mount_shares || die "the library folder is not shared into the virtual machine; run: metalsharp-steam stop"
+    return 0
+  fi
+  # one shared folder for each library; what is shared is fixed for as long as the virtual machine runs
+  : > "$RUN/shared.new"
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    if [ ! -d "$p" ]; then
+      [ "$n" -gt 0 ] || die "the library folder $p is not there (is its disk connected?)"
+      say "    ($p is not there, is its disk connected? Steam runs without that library this time)"
+      continue
+    fi
+    tag=steamlib; [ "$n" -eq 0 ] || tag=steamlib$n
+    shares[${#shares[@]}]=--device
+    shares[${#shares[@]}]="virtio-fs,sharedDir=$p,mountTag=$tag"
+    printf '%s %s\n' "$tag" "$p" >> "$RUN/shared.new"
+    n=$((n + 1))
+  done <<EOF
+$(libraries)
+EOF
+  [ "$n" -gt 0 ] || die "no library folder is set; run: metalsharp-steam setup"
+  step "Starting the virtual machine"
+  if running "$RUN/gvproxy.pid"; then kill "$(cat "$RUN/gvproxy.pid")" 2>/dev/null; sleep 1; fi
+  rm -f "$RUN/gvproxy.sock" "$RUN/gvproxy-api.sock" "$RUN/gvproxy.pid" "$RUN/krunkit.pid"
+  mv "$RUN/shared.new" "$RUN/shared"
+  nohup "$(tool gvproxy)" -listen-vfkit "unixgram://$RUN/gvproxy.sock" -listen "unix://$RUN/gvproxy-api.sock" \
+      -ssh-port "$SSH_PORT" -pid-file "$RUN/gvproxy.pid" > "$LOGS/gvproxy.log" 2>&1 &
+  for i in 1 2 3 4 5 6 7 8 9 10; do [ -S "$RUN/gvproxy.sock" ] && break; sleep 0.3; done
+  [ -S "$RUN/gvproxy.sock" ] || boot_failed "the network helper did not start (is port $SSH_PORT in use?); see $LOGS/gvproxy.log"
+
+  nohup "$(tool krunkit)" --cpus "$CPUS" --memory "$MEMORY" --pidfile "$RUN/krunkit.pid" --log-file "$LOGS/krunkit.log" \
+      --bootloader "efi,variable-store=$VM/efi-vars,create" \
+      --device "virtio-blk,path=$VM/disk.raw,format=raw" \
+      --device "virtio-blk,path=$VM/seed.iso,format=raw" \
+      "${shares[@]}" \
+      --device "virtio-vsock,port=5000,socketURL=$RUN/launch.sock,listen" \
+      --device "virtio-net,type=unixgram,path=$RUN/gvproxy.sock,mac=$GUEST_MAC,offloading=on,vfkitMagic=on" \
+      --device "virtio-serial,logFilePath=$LOGS/console.log" > "$LOGS/krunkit.out" 2>&1 &
+  for i in $(seq 1 90); do
+    if vm_ssh true 2>/dev/null; then break; fi
+    sleep 2
+    [ "$i" -lt 5 ] || vm_running || boot_failed "the virtual machine stopped; see $LOGS/krunkit.out and $LOGS/console.log"
+  done
+  vm_ssh true || boot_failed "the virtual machine did not come up; see $LOGS/console.log"
+  mount_shares || boot_failed "the library folder is not shared into the virtual machine; see $LOGS/console.log"
+  # the guest's screen, on this Mac only
+  curl -fsS --unix-socket "$RUN/gvproxy-api.sock" -X POST http://gvproxy/services/forwarder/expose \
+      -d "{\"local\":\"127.0.0.1:$VNC_PORT\",\"remote\":\"$GUEST_IP:5901\"}" >/dev/null ||
+    say "    (could not forward the screen to port $VNC_PORT; is it in use?)"
+}
+
+# Have Steam keep its default library in the primary folder and know the other folders, each named after
+# its Wine drive. The guest program changes nothing while Steam is running.
+register_libraries() {
+  local p label args= plain=
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    label=$(wine_drive_label "$p")
+    [ -z "$label" ] || args="$args --label $(shell_quote "$label")"
+    args="$args '$p'"
+    plain="$plain '$p'"
+  done <<EOF
+$(libraries)
+EOF
+  # a virtual machine set up by a version before the labels has a program that takes the folders only
+  vm_ssh "if [ -x /usr/local/bin/mtsp-libraries ]; then
+            if grep -q -e --label /usr/local/bin/mtsp-libraries; then /usr/local/bin/mtsp-libraries$args;
+            else /usr/local/bin/mtsp-libraries$plain; fi;
+          else echo '    (this virtual machine was set up by an earlier version: Steam keeps its default library inside it)'; fi" ||
+    say "    (Steam's library folders could not be brought up to date)"
+}
+
+# Give Steam the MetalSharp compatibility tools, which run a game on the Mac, with Mullion the default
+# for every game unless the user chose another default. The guest program changes nothing while Steam is
+# running.
+register_compat_tools() {
+  vm_ssh /usr/local/bin/mtsp-compat || say "    (Steam's compatibility tools could not be brought up to date)"
+}
+
+start() {
+  preflight
+  is_set_up || setup
+  is_set_up || exit 1
+  [ -d "$(library)" ] || die "the library folder $(library) is not there (is its disk connected?)"
+  lock
+  write_bridge_config
+  boot || exit 1
+  push_guest_files
+  register_libraries
+  register_compat_tools
+  step "Starting Steam"
+  vm_ssh /usr/local/bin/mtsp-start-desktop || die "cannot start Steam in the virtual machine"
+}
+
+# Steam's window: a Mac application that shows the guest's screen and signs in to it by itself
+show() {
+  vm_running || die "the virtual machine is not running; metalsharp-steam start"
+  [ -d "$HERE/LinuxSteam.app" ] || die "$HERE/LinuxSteam.app is missing"
+  # the application runs "<steam-command> library choose" for the user, which writes the bridge's
+  # configuration and restarts the virtual machine: it needs all of this run's settings
+  open -a "$HERE/LinuxSteam.app" --env "METALSHARP_VM_DIR=$VM" --env "METALSHARP_VM_RUN=$RUN" \
+      --env "METALSHARP_VM_CPUS=$CPUS" --env "METALSHARP_VM_MEMORY_MB=$MEMORY" \
+      --env "METALSHARP_VM_SSH_PORT=$SSH_PORT" --env "METALSHARP_VM_VNC_PORT=$VNC_PORT" \
+      --env "METALSHARP_WINE=$WINE" --env "METALSHARP_VM_LAUNCH=$LAUNCH" --env "METALSHARP_STEAM_PREFIX=$STEAM_PREFIX" \
+      --env "METALSHARP_VM_WINEDEBUG=$WINE_DEBUG" --env "METALSHARP_VM_LANG=$METALSHARP_VM_LANG" \
+      --env "METALSHARP_GAME_PREFIX=$GAME_PREFIX" --args --port "$VNC_PORT" --password-file "$VM/vnc-password.txt" \
+      --ssh-port "$SSH_PORT" --ssh-key "$VM/id_ed25519" --known-hosts "$VM/known_hosts" \
+      --steam-command "$HERE/metalsharp-steam"
+}
+
+# Games that were played from Steam run on the Mac and go on when the virtual machine stops. Before it
+# does, the bridge daemon lets go of their connections ("detach"): Steam's programs are ended in the
+# guest then, and the daemon would take that for Steam's Stop and end the games. The daemon says how
+# many games it has; while there are any it is left running, so that the next Play of one finds the
+# game instead of starting a second copy in the same prefix. With none it is ended, and the next start
+# brings up this release's daemon with this run's settings.
+stop() {
+  local i games= p
+  mkdir -p "$RUN" || die "cannot create $RUN"
+  # a setup that is still running ("install", from the MetalSharp application) gives way: what it has done
+  # so far stays, and the next install goes on from there
+  if p=$(installer) && [ "$p" != $$ ]; then
+    say "    (stopping the Linux Steam setup that is running: pid $p)"
+    pkill -TERM -P "$p" 2>/dev/null; kill "$p" 2>/dev/null
+    for i in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$p" 2>/dev/null || break; pkill -TERM -P "$p" 2>/dev/null; sleep 1; done
+  fi
+  lock
+  if [ -S "$RUN/launch.sock" ]; then
+    games=$(printf '{"op": "detach"}\n' | nc -U -w 3 "$RUN/launch.sock" 2>/dev/null | sed -n 's/.*"games": \([0-9][0-9]*\).*/\1/p')
+  fi
+  if vm_running; then
+    step "Shutting the virtual machine down"
+    vm_ssh 'sudo systemctl poweroff' 2>/dev/null
+    for i in $(seq 1 30); do vm_running || break; sleep 1; done
+    if vm_running; then
+      kill "$(cat "$RUN/krunkit.pid")" 2>/dev/null
+      for i in 1 2 3 4 5 6 7 8 9 10; do vm_running || break; sleep 1; done
+      vm_running && kill -9 "$(cat "$RUN/krunkit.pid")" 2>/dev/null
+    fi
+  fi
+  running "$RUN/gvproxy.pid" && kill "$(cat "$RUN/gvproxy.pid")" 2>/dev/null
+  if [ "${games:-0}" -gt 0 ]; then
+    say "    (games started from Steam are still running on the Mac: $games; Steam finds them again when it is next started)"
+  else
+    pkill -U "$(id -u)" -f "metalsharp-vmd --socket $RUN/launch.sock " 2>/dev/null
+  fi
+  rm -f "$RUN/krunkit.pid" "$RUN/gvproxy.pid" "$RUN/gvproxy.sock" "$RUN/gvproxy-api.sock" "$RUN/shared" "$RUN/shared.new"
+  say "Stopped."
+}
+
+# installer: the process id of a running "install", if there is one
+installer() {
+  local p
+  p=$(cat "$RUN/installing" 2>/dev/null) || return 1
+  case "$p" in ''|*[!0-9]*) return 1;; esac
+  kill -0 "$p" 2>/dev/null && ps -p "$p" -o command= 2>/dev/null | grep -q metalsharp-steam || return 1
+  printf '%s\n' "$p"
+}
+
+# Setup for the MetalSharp application: no terminal, no questions, the stages as '==> ' lines on the
+# output, and when it fails, the reason as the last line (on standard error) and status 1. The default
+# library is MetalSharp's Steam prefix's C:\SteamLibrary. Run again after a failure or a stop, it goes on
+# from where it was.
+install() {
+  local p
+  preflight
+  if is_set_up; then say "Already set up (library: $(library))."; return 0; fi
+  if p=$(installer); then die "Linux Steam is being set up already (pid $p)"; fi
+  printf '%s\n' $$ > "$RUN/installing" || die "cannot write $RUN/installing"
+  INSTALLING=1
+  trap 'rm -f "$RUN/installing"' EXIT
+  trap 'exit 130' INT TERM
+  setup
+}
+
+# steam_up: is Steam's client running in the virtual machine? Asked over ssh, and given up on after two
+# seconds (a virtual machine that is starting or busy answers late, and the caller cannot wait).
+steam_up() {
+  local p i
+  vm_ssh 'pgrep -u "$(id -u)" -x steam >/dev/null' < /dev/null > /dev/null 2>&1 &
+  p=$!
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    if ! kill -0 "$p" 2>/dev/null; then wait "$p"; return; fi
+    sleep 0.1
+  done
+  kill "$p" 2>/dev/null; wait "$p" 2>/dev/null
+  return 1
+}
+
+# for the MetalSharp application: what there is, in one line of JSON, without waiting on anything long
+status_json() {
+  local installed=false vm=false steam=false installing=false
+  is_set_up && installed=true
+  installer > /dev/null && installing=true
+  if vm_running; then
+    vm=true
+    steam_up && steam=true
+  fi
+  printf '{"installed":%s,"vm_running":%s,"steam_running":%s,"installing":%s}\n' "$installed" "$vm" "$steam" "$installing"
+}
+
+status() {
+  if [ "${1:-}" = --json ]; then status_json; return 0; fi
+  if ! is_set_up; then say "Not set up. Run: metalsharp-steam setup"; return 1; fi
+  say "Library: $(library)"
+  libraries | sed -n '2,$s/^/Also shared: /p'
+  if vm_running; then
+    say "Virtual machine: running (pid $(cat "$RUN/krunkit.pid"))"
+    if vm_ssh 'pgrep -u "$(id -u)" -x steam >/dev/null' 2>/dev/null; then say "Steam: running"; else say "Steam: not running"; fi
+  else
+    say "Virtual machine: stopped"
+  fi
+}
+
+# ---- library folders ----
+
+library_usage() { die "usage: metalsharp-steam library list | choose | add DIR | remove DIR"; }
+
+# what is shared is fixed when the virtual machine starts: a change needs it stopped and started again
+library_changed() {
+  if vm_running; then
+    say "$1; restarting the virtual machine so that Steam sees the change (Steam restarts too)."
+    [ -z "$NOTIFY" ] || { notify "$1. Steam is restarting to show it; its window comes back in about a minute." & }
+    stop
+    start
+  else
+    say "$1; Steam will see the change the next time it starts."
+  fi
+}
+
+library_add() {
+  local p n=0
+  is_set_up || die "not set up yet; run: metalsharp-steam setup"
+  preflight
+  check_library "$1"
+  lock
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    [ "$LIB" != "$p" ] || die "$LIB is a Steam library already: it is $(wine_drive_label "$p") in Steam's storage settings"
+    case "$LIB/" in "$p/"*) die "$LIB is inside the library $p";; esac
+    case "$p/" in "$LIB/"*) die "$LIB has the library $p inside it";; esac
+    n=$((n + 1))
+  done <<EOF
+$(libraries)
+EOF
+  [ "$n" -lt "$MAX_LIBRARIES" ] || die "there are $MAX_LIBRARIES libraries already"
+  printf '%s\n' "$LIB" >> "$VM/libraries" || die "cannot write $VM/libraries"
+  write_bridge_config
+  library_changed "Added the library $LIB"
+}
+
+# Choose the folder in Wine's folder browser, as Wine sees the Mac's disks (C:, and its other drives), then
+# add it as "library add" does. Ends with status 1 when nothing was chosen or the folder cannot be used.
+library_choose() {
+  local exe=$HERE/mtsp-pickfolder.exe out status picked real
+  [ -t 1 ] || NOTIFY=1        # started by Steam's "Add Drive" or the Mac application: say what happened in a box
+  is_set_up || die "not set up yet; run: metalsharp-steam setup"
+  preflight
+  [ -x "$WINE" ] || die "Wine is not there ($WINE), so its folder browser cannot be shown; use: metalsharp-steam library add DIR"
+  [ -f "$exe" ] || die "$exe is missing, so Wine's folder browser cannot be shown; use: metalsharp-steam library add DIR"
+  # one folder browser at a time (Steam's "Add Drive" can be pressed again while one is open)
+  if ! mkdir "$RUN/choosing" 2>/dev/null; then
+    kill -0 "$(cat "$RUN/choosing/pid" 2>/dev/null)" 2>/dev/null && die "the folder browser is open already"
+    rm -f "$RUN/choosing/pid"; rmdir "$RUN/choosing" 2>/dev/null; mkdir "$RUN/choosing" || die "cannot take $RUN/choosing"
+  fi
+  echo $$ > "$RUN/choosing/pid"
+  # Wine in the user's own language (this script runs in the C locale); only what the program prints is read
+  out=$(unset LC_ALL; WINEPREFIX="$WINE_VIEW_PREFIX" WINEDEBUG=-all "$WINE" "$exe" < /dev/null 2>> "$LOGS/pickfolder.log")
+  status=$?
+  rm -f "$RUN/choosing/pid"; rmdir "$RUN/choosing" 2>/dev/null
+  picked=$(printf '%s\n' "$out" | tr -d '\r' | grep '^/' | head -n 1)
+  if [ "$status" -ne 0 ] || [ -z "$picked" ]; then
+    [ "$status" -ne 3 ] || die "this Wine cannot say where the chosen folder is on the Mac; use: metalsharp-steam library add DIR"
+    say "No folder was chosen."
+    exit 1
+  fi
+  # Wine names the folder through its drive (.../dosdevices/c:/...): the folder itself
+  real=$(cd "$picked" 2>/dev/null && pwd -P) || die "the chosen folder cannot be opened: $picked"
+  case "$real" in //*) real=/${real#"${real%%[!/]*}"};; esac    # through Z: (the whole Mac) it can begin with //
+  library_add "$real"
+}
+
+# takes the folder off the list; nothing in the folder is deleted
+library_remove() {
+  local dir=$1 real p found=
+  case "$dir" in /*) ;; *) die "the library must be an absolute path: $dir";; esac
+  while [ "$dir" != "${dir%/}" ] && [ "$dir" != / ]; do dir=${dir%/}; done
+  real=$(cd "$dir" 2>/dev/null && pwd -P) || real=$dir    # its disk may be gone: then the path as given
+  is_set_up || die "not set up yet; run: metalsharp-steam setup"
+  preflight
+  lock
+  p=$(library)
+  if [ "$dir" = "$p" ] || [ "$real" = "$p" ]; then die "$p is the primary library, where Steam itself keeps its files; it cannot be removed"; fi
+  : > "$VM/libraries.new" || die "cannot write $VM/libraries.new"
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    if [ "$p" = "$dir" ] || [ "$p" = "$real" ]; then found=$p; else printf '%s\n' "$p" >> "$VM/libraries.new"; fi
+  done <<EOF
+$(libraries)
+EOF
+  if [ -z "$found" ]; then rm -f "$VM/libraries.new"; die "$dir is not a library (see: metalsharp-steam library list)"; fi
+  mv "$VM/libraries.new" "$VM/libraries" || die "cannot write $VM/libraries"
+  write_bridge_config
+  library_changed "Removed the library $found (its files are still there)"
+}
+
+library_list() {
+  local p label
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    label=$(wine_drive_label "$p")
+    if [ -n "$label" ]; then say "$p  ($label)"; else say "$p"; fi
+  done <<EOF
+$(libraries)
+EOF
+}
+
+library_cmd() {
+  case "${1:-}" in
+    list)   [ $# -eq 1 ] || library_usage
+            is_set_up || die "not set up yet; run: metalsharp-steam setup"
+            library_list;;
+    choose) [ $# -eq 1 ] || library_usage; library_choose;;
+    add)    [ $# -eq 2 ] && [ -n "$2" ] || library_usage; library_add "$2";;
+    remove) [ $# -eq 2 ] && [ -n "$2" ] || library_usage; library_remove "$2";;
+    *)      library_usage;;
+  esac
+}
+
+send_url() {
+  local url=${1:-} quoted
+  case "$url" in steam://*|steamlink://*) ;; *) die "usage: metalsharp-steam url steam://...";; esac
+  [ ${#url} -le 2048 ] || die "the link is too long"
+  # one single-quoted argument for the remote shell: a ' in the link becomes '\''
+  quoted=\'${url//\'/\'\\\'\'}\'
+  vm_ssh "/usr/local/bin/mtsp-steam-url $quoted"
+}
+
+cmd=${1:-run}
+[ $# -gt 0 ] && shift
+LIBRARY=; DISK_GB=32
+case "$cmd" in
+  setup)
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --library) [ $# -ge 2 ] || die "--library needs a folder"; LIBRARY=$2; shift 2;;
+        --disk-gb) [ $# -ge 2 ] || die "--disk-gb needs a number"; DISK_GB=$2; shift 2;;
+        *) die "unknown option $1";;
+      esac
+    done
+    case "$DISK_GB" in ''|*[!0-9]*) die "--disk-gb needs a whole number";; esac
+    [ "$DISK_GB" -ge 16 ] || die "the disk needs at least 16 GB"
+    setup;;
+  run)    start && show;;
+  start)  start;;
+  install) [ $# -eq 0 ] || die "install takes no options (setup has them)"
+          install;;
+  stop)   stop;;
+  status) [ $# -eq 0 ] || [ "$1" = --json ] || die "usage: metalsharp-steam status [--json]"
+          status "$@";;
+  show)   show;;
+  url)    send_url "$@";;
+  library) library_cmd "$@";;
+  ssh)    vm_ssh "$@";;
+  -h|--help|help) awk 'NR > 1 { if (!/^#/) exit; sub(/^# ?/, ""); print }' "$SELF";;
+  *) die "unknown command $cmd (try: metalsharp-steam help)";;
+esac

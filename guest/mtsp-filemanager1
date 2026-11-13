@@ -1,0 +1,60 @@
+#!/usr/bin/env python3
+"""org.freedesktop.FileManager1 for the Steam guest: "show in file manager" goes to the Mac.
+
+Applications that want a folder shown call this D-Bus interface instead of running xdg-open. The guest
+has no file manager, so this service owns the name on the session bus and forwards each request to the
+Mac host through mtsp-bridge, where Wine's file explorer opens the folder.
+"""
+import os
+import subprocess
+from urllib.parse import unquote, urlsplit
+
+import dbus
+import dbus.mainloop.glib
+import dbus.service
+from gi.repository import GLib
+
+BRIDGE = "/usr/local/bin/mtsp-bridge"
+NAME = "org.freedesktop.FileManager1"
+
+
+def show(uris):
+    """Open each distinct folder once. The share has the same path in the guest, so the folder the host
+    will open can be worked out here; the requests are spaced out on a timer so the D-Bus reply is not
+    held up and the host's rate limit is respected."""
+    targets = []
+    for uri in uris:
+        uri = str(uri)
+        path = unquote(urlsplit(uri).path) if uri.startswith("file://") else uri
+        target = path if os.path.isdir(path) else os.path.dirname(path)
+        if target and target not in targets:
+            targets.append(target)
+    for n, target in enumerate(targets[:4]):  # a handful at most; never a storm of windows
+        GLib.timeout_add(700 * n, lambda t=target: subprocess.call([BRIDGE, "open-path", t], stdout=subprocess.DEVNULL) and False)
+
+
+class FileManager(dbus.service.Object):
+    @dbus.service.method(NAME, in_signature="ass", out_signature="")
+    def ShowFolders(self, uris, startup_id):
+        show(uris)
+
+    @dbus.service.method(NAME, in_signature="ass", out_signature="")
+    def ShowItems(self, uris, startup_id):
+        show(uris)
+
+    @dbus.service.method(NAME, in_signature="ass", out_signature="")
+    def ShowItemProperties(self, uris, startup_id):
+        show(uris)
+
+
+def main():
+    dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
+    bus = dbus.SessionBus()
+    name = dbus.service.BusName(NAME, bus, do_not_queue=True)
+    FileManager(bus, "/org/freedesktop/FileManager1")
+    GLib.MainLoop().run()
+    del name
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,59 @@
+#!/usr/bin/env python3
+"""xdg-open for the Steam guest: desktop actions go to the Mac.
+
+Installed as /usr/local/bin/xdg-open, ahead of the real one in Steam's PATH. Folders and files are
+opened on the Mac (Wine's file explorer), web links in the Mac browser. Anything the host refuses or
+this shim does not understand is handed to the distribution's xdg-open, when there is one.
+"""
+import os
+import subprocess
+import sys
+from urllib.parse import unquote, urlsplit
+
+BRIDGE = "/usr/local/bin/mtsp-bridge"
+REAL = "/usr/bin/xdg-open"
+
+
+def log(msg):
+    try:
+        with open(os.path.expanduser("~/xdg-open-shim.log"), "a") as f:
+            f.write(msg + "\n")
+    except OSError:
+        pass
+
+
+def fallback(argv):
+    if os.access(REAL, os.X_OK):
+        os.execv(REAL, [REAL] + argv[1:])
+    return 4  # xdg-open: the action failed
+
+
+def main(argv):
+    if len(argv) != 2:
+        return fallback(argv)
+    target = argv[1]
+    log("xdg-open %r" % target)
+    scheme = urlsplit(target).scheme.lower() if "://" in target else ""
+    if scheme in ("http", "https"):
+        op = ["open-url", target]
+    elif scheme == "file":
+        op = ["open-path", unquote(urlsplit(target).path)]
+    elif scheme == "":
+        op = ["open-path", os.path.abspath(target)]
+    else:
+        return fallback(argv)
+    res = subprocess.run([BRIDGE] + op, stdout=subprocess.PIPE, universal_newlines=True)
+    log("  -> %s rc=%d %s" % (op[0], res.returncode, res.stdout.strip()))
+    if res.returncode == 0:
+        return 0
+    if op[0] == "open-path" and "not inside a shared folder" in res.stdout:
+        # the folder lives only in the Linux VM; the Mac cannot show it, so say so rather than do nothing
+        subprocess.call(["zenity", "--info", "--title=Steam", "--width=420",
+                         "--text=This folder is inside the Linux VM, not on the Mac:\n" + op[1]],
+                        stderr=subprocess.DEVNULL)
+        return 0
+    return fallback(argv)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

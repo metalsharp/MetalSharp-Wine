@@ -1,0 +1,540 @@
+#!/usr/bin/env python3
+# mtsp-windows: the guest half of "one Mac window per Steam window".
+#
+# The guest screen is one big framebuffer. This agent keeps Steam's top-level windows laid out on it so
+# that they never overlap, and tells the Mac app (metalsharp-steamview) where each one is; the Mac shows
+# every guest window as the crop of the framebuffer that is that window's rectangle.
+#
+# It is started by the Mac app over ssh and speaks newline-delimited JSON on stdin/stdout:
+#   guest -> Mac   {"ev":"hello","screen":[W,H]}
+#                  {"ev":"window","id":N,"x":X,"y":Y,"w":W,"h":H,"title":"...","kind":"normal"|"dialog"|"popup",
+#                   "parent":ID_OR_0,"min":[w,h]|null,"max":[w,h]|null}      (an upsert)
+#                  {"ev":"gone","id":N}
+#                  {"ev":"active","id":N}
+#                  {"ev":"screen","screen":[W,H]}     (only if the screen is resized while running)
+#   Mac -> guest   {"op":"activate","id":N}  {"op":"close","id":N}  {"op":"resize","id":N,"w":W,"h":H}  {"op":"open"}
+# It exits when stdin closes.
+#
+# Several copies may run at once (one per Mac app connection). Every copy reports; only ONE does layout:
+# the one holding an exclusive flock on $XDG_RUNTIME_DIR/mtsp-windows.lock. The others retry the lock once
+# a second, so when the holder exits another takes over, and it reads the slots the previous holder
+# assigned from mtsp-windows.slots so nothing jumps. Layout is also idempotent (a window is only moved
+# when it is not where its slot says), so even a brief overlap of two holders could not make them fight.
+import errno
+import fcntl
+import json
+import os
+import select
+import signal
+import subprocess
+import sys
+import time
+
+from Xlib import X, display, error
+from Xlib.protocol import event
+
+GAP = 320           # free pixels kept between two managed windows (menus and tooltips hang over the edges)
+MARGIN = 160        # free pixels kept at the left and top of the screen, for the same reason
+MIN_MANAGED = 50    # Steam's helper windows are smaller than this
+SETTLE = 0.3        # a window that moved by itself is put back once it has been still this long
+HOLD_MAX = 1.0      # a new window is reported at the latest this long after it appeared
+OPEN_CMD = ["/usr/local/bin/mtsp-steam-url", "steam://open/main"]
+
+P_MIN_SIZE, P_MAX_SIZE = 16, 32     # WM_NORMAL_HINTS flags
+
+
+def now():
+    return time.monotonic()
+
+
+class Agent:
+    def __init__(self):
+        self.d = display.Display(os.environ.get("DISPLAY") or ":1")
+        # Errors for requests without a reply (a window that vanished) arrive here; they are never fatal.
+        self.d.set_error_handler(lambda *a: None)
+        self.root = self.d.screen().root
+        a = self.d.intern_atom
+        self.A_CLIENT_LIST = a("_NET_CLIENT_LIST")
+        self.A_ACTIVE = a("_NET_ACTIVE_WINDOW")
+        self.A_CLOSE = a("_NET_CLOSE_WINDOW")
+        self.A_MOVERESIZE = a("_NET_MOVERESIZE_WINDOW")
+        self.A_NAME = a("_NET_WM_NAME")
+        self.A_UTF8 = a("UTF8_STRING")
+        self.A_TYPE = a("_NET_WM_WINDOW_TYPE")
+        self.DIALOG_TYPES = {a("_NET_WM_WINDOW_TYPE_DIALOG"), a("_NET_WM_WINDOW_TYPE_UTILITY"),
+                             a("_NET_WM_WINDOW_TYPE_SPLASH")}
+        self.root.change_attributes(event_mask=X.SubstructureNotifyMask | X.PropertyChangeMask |
+                                    X.StructureNotifyMask)
+        g = self.root.get_geometry()
+        self.screen = (g.width, g.height)
+
+        self.sent = {}          # id -> the window message last written to the Mac
+        self.sent_active = None
+        self.selected = set()   # client windows whose events we asked for
+        self.first_seen = {}    # id -> time the window was first seen
+        self.geom = {}          # id -> (x, y, w, h) at the last scan
+        self.geom_time = {}     # id -> time that rectangle last changed
+        self.wins = {}          # id -> dict, the managed windows at the last scan, in client-list order
+        self.order = []
+        self.popups = {}
+        self.popup_parents = {} # popup id -> the parent first chosen for it (kept while that window lives)
+        self.active = 0
+
+        rt = os.environ.get("XDG_RUNTIME_DIR") or "/tmp"
+        suffix = "" if os.environ.get("XDG_RUNTIME_DIR") else "-%d" % os.getuid()
+        self.lock_path = os.path.join(rt, "mtsp-windows%s.lock" % suffix)
+        self.slots_path = os.path.join(rt, "mtsp-windows%s.slots" % suffix)
+        self.lock_fd = None
+        self.owner = False
+        self.lock_tried = 0.0
+        self.slots = {}         # id -> (x, y): where layout wants the window (owner only)
+        self.moved = {}         # id -> (time, attempts, target) of the last move request
+        self.want_size = {}     # id -> (w, h) asked for by a resize op, not yet applied
+        self.want_sent = {}     # id -> time that resize was requested from the window manager
+        self.frames = {}        # id -> (x, y, extra w, extra h) of the window manager's frame around it
+        self.inbuf = b""
+
+    # ---- output ------------------------------------------------------------------------------------
+
+    def emit(self, obj):
+        try:
+            sys.stdout.write(json.dumps(obj, separators=(",", ":")) + "\n")
+            sys.stdout.flush()
+        except (BrokenPipeError, OSError, ValueError):
+            os._exit(0)
+
+    # ---- X helpers ---------------------------------------------------------------------------------
+
+    def prop(self, win, atom, kind=X.AnyPropertyType):
+        try:
+            p = win.get_full_property(atom, kind)
+        except (error.XError, RuntimeError, ValueError, TypeError):
+            return None
+        return p.value if p is not None else None
+
+    def client_message(self, wid, atom, data):
+        data = [int(v) & 0xFFFFFFFF for v in data] + [0] * (5 - len(data))
+        ev = event.ClientMessage(window=wid, client_type=atom, data=(32, data))
+        self.root.send_event(ev, event_mask=X.SubstructureRedirectMask | X.SubstructureNotifyMask)
+
+    def moveresize(self, wid, x=None, y=None, w=None, h=None):
+        # openbox honours this for its (undecorated) managed windows; source indication 2 = a pager/tool.
+        # x, y place the outer (frame) corner, which is the content corner unless the client has a border;
+        # w, h are the content size.
+        flags = (0 if x is None else 1 << 8) | (0 if y is None else 1 << 9) | \
+                (0 if w is None else 1 << 10) | (0 if h is None else 1 << 11) | (2 << 12)
+        self.client_message(wid, self.A_MOVERESIZE, [X.NorthWestGravity | flags, x or 0, y or 0, w or 0, h or 0])
+
+    def title(self, win):
+        v = self.prop(win, self.A_NAME, self.A_UTF8)
+        if v is None:
+            v = self.prop(win, self.d.get_atom("WM_NAME"))
+        if v is None:
+            return ""
+        if isinstance(v, (bytes, bytearray)):
+            v = bytes(v).decode("utf-8", "replace")
+        elif not isinstance(v, str):
+            return ""
+        return v.replace("\x00", "")[:512]
+
+    def describe_client(self, wid):
+        """The managed window's record, or None when it is unmapped, tiny or gone."""
+        win = self.d.create_resource_object("window", wid)
+        try:
+            at = win.get_attributes()
+            if at.map_state != X.IsViewable:
+                return None
+            g = win.get_geometry()
+            if g.width < MIN_MANAGED or g.height < MIN_MANAGED:
+                return None
+            t = self.root.translate_coords(win, 0, 0)
+            # The top-level ancestor is openbox's frame; it is override-redirect and must not count as a popup.
+            frame, w = win, win
+            for _ in range(8):
+                q = w.query_tree()
+                if q.parent is None or q.parent.id == self.root.id:
+                    frame = w
+                    break
+                w = q.parent
+            fg = frame.get_geometry()
+            types = self.prop(win, self.A_TYPE, X.AnyPropertyType) or []
+            try:
+                tf = win.get_wm_transient_for()
+            except (error.XError, RuntimeError, ValueError, TypeError):
+                tf = None
+            try:
+                hints = win.get_wm_normal_hints()
+            except (error.XError, RuntimeError, ValueError, TypeError):
+                hints = None
+        except error.XError:
+            return None
+        mn = mx = None
+        if hints is not None:
+            if hints.flags & P_MIN_SIZE and hints.min_width > 0 and hints.min_height > 0:
+                mn = [int(hints.min_width), int(hints.min_height)]
+            if hints.flags & P_MAX_SIZE and hints.max_width > 0 and hints.max_height > 0:
+                mx = [int(hints.max_width), int(hints.max_height)]
+        dialog = tf is not None or any(int(a) in self.DIALOG_TYPES for a in types)
+        if wid not in self.selected:
+            self.selected.add(wid)
+            win.change_attributes(event_mask=X.PropertyChangeMask | X.StructureNotifyMask)
+        return {"id": wid, "x": int(t.x), "y": int(t.y), "w": int(g.width), "h": int(g.height),
+                "title": self.title(win), "kind": "dialog" if dialog else "normal",
+                "parent": int(tf.id) if tf is not None else 0, "min": mn, "max": mx, "frame": frame.id,
+                "fgeom": (int(fg.x), int(fg.y), max(0, int(fg.width) + 2 * int(fg.border_width) - int(g.width)),
+                          max(0, int(fg.height) + 2 * int(fg.border_width) - int(g.height)))}
+
+    # ---- scanning ----------------------------------------------------------------------------------
+
+    def scan(self):
+        t = now()
+        try:
+            g = self.root.get_geometry()
+            if (g.width, g.height) != self.screen:
+                self.screen = (g.width, g.height)
+                self.emit({"ev": "screen", "screen": list(self.screen)})
+            ids = [int(i) for i in (self.prop(self.root, self.A_CLIENT_LIST, X.AnyPropertyType) or [])]
+            act = self.prop(self.root, self.A_ACTIVE, X.AnyPropertyType)
+            children = self.root.query_tree().children
+        except error.XError:
+            return
+        wins, order, frames, fgeom = {}, [], set(), {}
+        for wid in ids:
+            if wid in wins:
+                continue
+            rec = self.describe_client(wid)
+            if rec is None:
+                continue
+            frames.add(rec.pop("frame"))
+            fgeom[wid] = rec.pop("fgeom")
+            wins[wid] = rec
+            order.append(wid)
+        for rec in wins.values():           # a dialog's parent is only useful if the Mac knows that window
+            if rec["parent"] not in wins or rec["parent"] == rec["id"]:
+                rec["parent"] = 0
+        self.wins, self.order, self.frames = wins, order, fgeom
+        self.selected &= set(ids)
+        self.active = int(act[0]) if act is not None and len(act) and int(act[0]) in wins else 0
+
+        popups = {}
+        for c in children:
+            if c.id in frames or c.id in wins:
+                continue
+            try:
+                at = c.get_attributes()
+                if not at.override_redirect or at.map_state != X.IsViewable or at.win_class != X.InputOutput:
+                    continue
+                g = c.get_geometry()
+            except error.XError:
+                continue
+            if g.width < 2 or g.height < 2:
+                continue
+            x, y = int(g.x) + int(g.border_width), int(g.y) + int(g.border_width)
+            popups[c.id] = {"id": c.id, "x": x, "y": y, "w": int(g.width), "h": int(g.height), "title": "",
+                            "kind": "popup", "parent": 0, "min": None, "max": None}
+        for pid, rec in popups.items():
+            parent = self.popup_parents.get(pid)
+            if parent not in wins:
+                parent = self.popup_parent(rec)
+            rec["parent"] = parent
+        self.popup_parents = {pid: rec["parent"] for pid, rec in popups.items() if rec["parent"]}
+        self.popups = popups
+
+        for wid, rec in list(wins.items()) + list(popups.items()):
+            r = (rec["x"], rec["y"], rec["w"], rec["h"])
+            if self.geom.get(wid) != r:
+                self.geom[wid] = r
+                self.geom_time[wid] = t
+            self.first_seen.setdefault(wid, t)
+        for wid in list(self.first_seen):
+            if wid not in wins and wid not in popups:
+                for m in (self.first_seen, self.geom, self.geom_time, self.moved, self.want_size, self.want_sent):
+                    m.pop(wid, None)
+
+    def popup_parent(self, p):
+        """The managed window a popup belongs to: the one it overlaps most, else the active one, else the nearest."""
+        best, area = 0, 0
+        for wid in self.order:
+            w = self.wins[wid]
+            ox = min(p["x"] + p["w"], w["x"] + w["w"]) - max(p["x"], w["x"])
+            oy = min(p["y"] + p["h"], w["y"] + w["h"]) - max(p["y"], w["y"])
+            if ox > 0 and oy > 0 and ox * oy > area:
+                best, area = wid, ox * oy
+        if best or self.active:
+            return best or self.active
+        dist = None
+        for wid in self.order:
+            w = self.wins[wid]
+            dx = max(w["x"] - (p["x"] + p["w"]), p["x"] - (w["x"] + w["w"]), 0)
+            dy = max(w["y"] - (p["y"] + p["h"]), p["y"] - (w["y"] + w["h"]), 0)
+            if dist is None or dx + dy < dist:
+                best, dist = wid, dx + dy
+        return best
+
+    # ---- layout (lock holder only) -----------------------------------------------------------------
+
+    def try_lock(self):
+        t = now()
+        if self.owner or t - self.lock_tried < 1.0:
+            return
+        self.lock_tried = t
+        try:
+            if self.lock_fd is None:
+                self.lock_fd = os.open(self.lock_path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
+            fcntl.flock(self.lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return
+        self.owner = True
+        try:
+            with open(self.slots_path) as f:
+                saved = json.load(f)
+            self.slots = {int(k): (int(v[0]), int(v[1])) for k, v in saved.items()}
+        except (OSError, ValueError, TypeError, IndexError, KeyError, AttributeError):
+            self.slots = {}
+
+    def save_slots(self):
+        try:
+            tmp = self.slots_path + ".%d" % os.getpid()
+            with open(tmp, "w") as f:
+                json.dump({str(k): list(v) for k, v in self.slots.items()}, f)
+            os.replace(tmp, self.slots_path)
+        except OSError:
+            pass
+
+    def fits(self, x, y, w, h, placed):
+        if x < MARGIN or y < MARGIN or x + w > self.screen[0] or y + h > self.screen[1]:
+            return False
+        for (px, py, pw, ph) in placed:
+            if x < px + pw + GAP and px < x + w + GAP and y < py + ph + GAP and py < y + h + GAP:
+                return False
+        return True
+
+    def find_slot(self, w, h, placed):
+        """First free place for a w x h window, filling rows from the top left. Returns (x, y, w, h); the
+        size comes back smaller when the window can only fit shrunk."""
+        cands = {(MARGIN, MARGIN)}
+        for (px, py, pw, ph) in placed:
+            cands.update([(px + pw + GAP, py), (px, py + ph + GAP), (px + pw + GAP, MARGIN), (MARGIN, py + ph + GAP)])
+        cands = sorted(cands, key=lambda c: (c[1], c[0]))
+        for (x, y) in cands:
+            if self.fits(x, y, w, h, placed):
+                return x, y, w, h
+        best = None
+        for (x, y) in cands:
+            sw, sh = min(w, self.screen[0] - x), min(h, self.screen[1] - y)
+            if sw >= MIN_MANAGED and sh >= MIN_MANAGED and self.fits(x, y, sw, sh, placed):
+                if best is None or sw * sh > best[2] * best[3]:
+                    best = (x, y, sw, sh)
+        if best:
+            return best
+        return MARGIN, MARGIN, min(w, self.screen[0] - MARGIN), min(h, self.screen[1] - MARGIN)
+
+    def layout(self):
+        """Give every managed window a slot (kept for as long as it stays valid, so windows do not jump
+        around) and move the ones that are not in theirs. Returns True while something is still pending.
+        Slots and the rectangles kept apart are those of the frames (content plus any client border)."""
+        t = now()
+        placed, changed, pending = [], False, False
+        for wid in list(self.slots):
+            if wid not in self.wins:
+                del self.slots[wid]
+                changed = True
+        for wid in self.order:
+            w = self.wins[wid]
+            fx, fy, ew, eh = self.frames[wid]
+            sent = self.want_sent.get(wid)
+            if sent is not None and (self.geom_time.get(wid, 0) > sent or t - sent > 0.7):
+                # The resize was answered (perhaps rounded to the client's size steps) or ignored.
+                self.want_size.pop(wid, None)
+                self.want_sent.pop(wid, None)
+            ww, wh = self.want_size.get(wid, (w["w"], w["h"]))
+            slot = self.slots.get(wid)
+            fresh = False
+            if slot is None or not self.fits(slot[0], slot[1], ww + ew, wh + eh, placed):
+                x, y, fw, fh = self.find_slot(ww + ew, wh + eh, placed)
+                ww, wh = max(1, fw - ew), max(1, fh - eh)
+                fresh = slot != (x, y)
+                slot = self.slots[wid] = (x, y)
+                changed = changed or fresh
+                if fresh:
+                    self.moved.pop(wid, None)
+            placed.append((slot[0], slot[1], ww + ew, wh + eh))
+            need_move = (fx, fy) != slot
+            need_size = (ww, wh) != (w["w"], w["h"])
+            if wid in self.want_size and not need_size:
+                del self.want_size[wid]
+                self.want_sent.pop(wid, None)
+            if not need_move and not need_size:
+                self.moved.pop(wid, None)
+                continue
+            last = self.moved.get(wid)
+            target = (slot[0], slot[1], ww, wh)
+            if last and last[2] == target:
+                if last[1] >= 6:
+                    continue                # the window manager will not do it (fullscreen, say); leave it
+                if t - last[0] < 0.5:
+                    pending = True
+                    continue
+            elif not fresh and wid not in self.want_size and t - self.first_seen.get(wid, t) > 0.05 \
+                    and t - self.geom_time.get(wid, 0) < SETTLE:
+                pending = True              # it is moving by itself (Steam drags its own title bar): wait
+                continue
+            self.moveresize(wid, slot[0] if need_move else None, slot[1] if need_move else None,
+                            ww if need_size else None, wh if need_size else None)
+            self.moved[wid] = (t, last[1] + 1 if last and last[2] == target else 1, target)
+            if wid in self.want_size:
+                self.want_sent.setdefault(wid, t)
+            pending = True
+        if changed:
+            self.save_slots()
+        self.d.flush()
+        return pending
+
+    # ---- reporting ---------------------------------------------------------------------------------
+
+    def report(self):
+        """Write what changed. Returns True while a new window is being held back until it is laid out."""
+        t = now()
+        held = False
+        current = {}
+        for wid in self.order:
+            rec = self.wins[wid]
+            if wid not in self.sent:
+                age = t - self.first_seen.get(wid, t)
+                if self.owner:
+                    ready = self.slots.get(wid) == self.frames[wid][:2] and wid not in self.want_size
+                else:
+                    ready = t - self.geom_time.get(wid, t) >= SETTLE
+                if not ready and age < HOLD_MAX:
+                    held = True
+                    continue
+            current[wid] = rec
+        for wid, rec in self.popups.items():
+            if rec["parent"] and rec["parent"] not in current:
+                rec = dict(rec, parent=0)
+            current[wid] = rec
+        for wid in list(self.sent):
+            if wid not in current:
+                del self.sent[wid]
+                self.emit({"ev": "gone", "id": wid})
+        for wid, rec in current.items():
+            if self.sent.get(wid) != rec:
+                self.sent[wid] = dict(rec)
+                self.emit(dict(ev="window", **rec))
+        active = self.active if self.active in current else 0
+        if self.active in self.wins and not active:
+            active = self.sent_active       # the focused window is still being held back; say so with it
+        if active is not None and active != self.sent_active:
+            self.sent_active = active
+            self.emit({"ev": "active", "id": active})
+        return held
+
+    # ---- operations from the Mac -------------------------------------------------------------------
+
+    def handle(self, line):
+        try:
+            msg = json.loads(line.decode("utf-8"))
+            op = msg.get("op")
+        except (ValueError, AttributeError, UnicodeDecodeError):
+            return
+        if op == "open":
+            try:
+                subprocess.Popen(OPEN_CMD, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL, start_new_session=True)
+            except OSError:
+                pass
+            return
+        wid = msg.get("id")
+        if isinstance(wid, bool) or not isinstance(wid, int) or wid not in self.wins:
+            return                          # only windows we reported as managed can be acted on
+        if op == "activate":
+            self.client_message(wid, self.A_ACTIVE, [2, X.CurrentTime, 0])
+            self.d.create_resource_object("window", wid).configure(stack_mode=X.Above)
+        elif op == "close":
+            self.client_message(wid, self.A_CLOSE, [X.CurrentTime, 2])
+        elif op == "resize":
+            w, h = msg.get("w"), msg.get("h")
+            if not all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in (w, h)):
+                return
+            rec = self.wins[wid]
+            w, h = int(w), int(h)
+            if rec["max"]:
+                w, h = min(w, rec["max"][0]), min(h, rec["max"][1])
+            if rec["min"]:
+                w, h = max(w, rec["min"][0]), max(h, rec["min"][1])
+            fx, fy, ew, eh = self.frames[wid]
+            ox, oy = self.slots.get(wid, (fx, fy)) if self.owner else (fx, fy)
+            w = max(1, min(w, self.screen[0] - ox - ew))
+            h = max(1, min(h, self.screen[1] - oy - eh))
+            if self.owner:
+                # Layout applies it, after first moving any neighbour the bigger window would land on.
+                self.want_size[wid] = (w, h)
+                self.want_sent.pop(wid, None)
+                self.moved.pop(wid, None)
+            elif (w, h) != (rec["w"], rec["h"]):
+                self.moveresize(wid, w=w, h=h)
+        self.d.flush()
+
+    def read_stdin(self):
+        try:
+            chunk = os.read(0, 65536)
+        except OSError as e:
+            if e.errno in (errno.EAGAIN, errno.EINTR):
+                return True
+            return False
+        if not chunk:
+            return False
+        self.inbuf += chunk
+        if len(self.inbuf) > 1 << 20 and b"\n" not in self.inbuf:
+            self.inbuf = b""
+        while b"\n" in self.inbuf:
+            line, self.inbuf = self.inbuf.split(b"\n", 1)
+            if line.strip():
+                try:
+                    self.handle(line)
+                except error.XError:
+                    pass
+        return True
+
+    # ---- main loop ---------------------------------------------------------------------------------
+
+    def run(self):
+        self.emit({"ev": "hello", "screen": list(self.screen)})
+        xfd = self.d.fileno()
+        dirty, busy, last_scan = True, False, 0.0
+        while True:
+            n = self.d.pending_events()
+            while n:
+                for _ in range(n):
+                    self.d.next_event()
+                dirty = True
+                n = self.d.pending_events()
+            t = now()
+            if dirty or t - last_scan >= (0.1 if busy else 1.0):
+                dirty, last_scan = False, t
+                self.try_lock()
+                self.scan()
+                busy = self.layout() if self.owner else False
+                busy = self.report() or busy
+                continue                    # pick up whatever arrived while scanning before sleeping
+            r, _, _ = select.select([0, xfd], [], [], 0.1 if busy else 1.0)
+            if 0 in r:
+                if not self.read_stdin():
+                    return
+                dirty = True
+
+
+def main():
+    signal.signal(signal.SIGCHLD, signal.SIG_IGN)       # the "open" helper is never waited for
+    signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+    try:
+        Agent().run()
+    except (error.ConnectionClosedError, error.DisplayConnectionError, error.DisplayNameError) as e:
+        sys.stderr.write("mtsp-windows: X display: %s\n" % e)
+        sys.exit(1)
+    except KeyboardInterrupt:
+        pass
+
+
+if __name__ == "__main__":
+    main()

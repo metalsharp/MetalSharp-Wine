@@ -1,0 +1,19 @@
+#!/bin/bash
+# mtsp-steam-url: hand a steam:// link to the Steam client running in this guest.
+#   mtsp-steam-url steam://run/1245620
+# A second copy of the client forwards its command line to the running one and exits; that is how Steam
+# itself handles links. Only steam:// and steamlink:// links are accepted.
+url=$1
+case "$url" in
+    steam://*|steamlink://*) ;;
+    *) echo "mtsp-steam-url: not a steam:// link" >&2; exit 2;;
+esac
+[ ${#url} -le 2048 ] || { echo "mtsp-steam-url: link too long" >&2; exit 2; }
+S=$HOME/.local/share/Steam
+pgrep -u "$(id -u)" -x steam >/dev/null || { echo "mtsp-steam-url: Steam is not running" >&2; exit 3; }
+export DISPLAY=${DISPLAY:-:1} STEAM_RUNTIME=0 LD_LIBRARY_PATH=$S/steamrtarm64:$S/steamrtarm64/libs:$S/linuxarm64
+cd "$S" || exit 3
+timeout 20 ./steamrtarm64/steam -cef-disable-gpu "$url" >/dev/null 2>&1
+rc=$?
+[ $rc -eq 124 ] && echo "mtsp-steam-url: Steam did not take the link within 20 seconds" >&2
+exit $rc

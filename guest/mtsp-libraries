@@ -1,0 +1,413 @@
+#!/usr/bin/env python3
+"""mtsp-libraries: keep Steam's library folders on the Mac.
+
+    mtsp-libraries [--label NAME] PRIMARY [[--label NAME] EXTRA ...]
+
+Every folder is one of the Mac that is shared into this virtual machine at the same path. The host
+(metalsharp-steam) runs this before it starts Steam.
+
+PRIMARY becomes Steam's own default library: ~/.local/share/Steam/steamapps is made a symbolic link to
+PRIMARY/steamapps (what was in it is moved there first), so Steam installs to the Mac's disk and its
+Storage page shows that disk, not the virtual machine's. When the link is to another folder's steamapps
+(the Mac has a new primary folder) it is pointed at PRIMARY/steamapps; the games in the old folder are
+not moved, and Steam still has them if that folder is one of the EXTRAs.
+
+--label NAME names the folder that follows it in Steam's list, as the Wine drive it is on ("Drive C").
+PRIMARY's name goes to Steam's own entry, "0". A folder without --label keeps the name it has.
+
+Each EXTRA is added to Steam's list of library folders (config/libraryfolders.vdf). Folders of the Mac
+(/Users/..., /Volumes/...) that are in Steam's list but are no longer given here are taken off the list;
+no file in them is touched.
+
+Nothing is changed while Steam is running, and nothing at all before Steam is installed.
+"""
+import os
+import re
+import shutil
+import sys
+
+STEAM = os.path.expanduser("~/.local/share/Steam")
+APPS = os.path.join(STEAM, "steamapps")
+CONFIG = os.path.join(STEAM, "config", "libraryfolders.vdf")
+PLAIN = re.compile(r"/[A-Za-z0-9/._+-]*\Z")     # what the host allows in a library path
+MAC_ROOTS = ("/Users/", "/Volumes/")
+LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._()+-]{0,63}\Z")   # a name the host gives a library
+
+
+def note(text):
+    print("mtsp-libraries: " + text)
+    sys.stdout.flush()
+
+
+def steam_running():
+    me = os.getuid()
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit():
+            continue
+        try:
+            if os.stat("/proc/" + pid).st_uid != me:
+                continue
+            with open("/proc/%s/comm" % pid) as f:
+                if f.read().strip() == "steam":
+                    return True
+        except OSError:
+            pass
+    return False
+
+
+def shared(folder):
+    """Is the Mac's folder really there? Without its mount the path is an empty folder on this disk."""
+    return os.path.ismount(folder)
+
+
+# ---- the default library ----
+
+def move_into(src, dst):
+    """Move what is in src into dst without replacing anything. Returns the entries that had to stay."""
+    kept = []
+    for name in sorted(os.listdir(src)):
+        s, d = os.path.join(src, name), os.path.join(dst, name)
+        if not os.path.lexists(d):
+            try:
+                shutil.move(s, d)
+            except (OSError, shutil.Error) as e:
+                note("cannot move %s: %s" % (s, e))
+                kept.append(s)
+        elif os.path.isdir(s) and not os.path.islink(s) and os.path.isdir(d) and not os.path.islink(d):
+            below = move_into(s, d)
+            if below:
+                kept += below
+            else:
+                os.rmdir(s)
+        else:
+            kept.append(s)
+    return kept
+
+
+def link_default_library(primary):
+    target = os.path.join(primary, "steamapps")
+    os.makedirs(target, exist_ok=True)
+    if os.path.islink(APPS):
+        old = os.readlink(APPS)
+        if old == target:
+            return True
+        os.remove(APPS)                      # a link to somewhere else: nothing of Steam's is in a link
+        note("Steam's default library is now %s (it was %s; what is in there stays there)" % (target, old))
+    elif os.path.isdir(APPS):
+        kept = move_into(APPS, target)
+        if kept:
+            # these are already in the Mac's folder under the same name; the guest's copies stay, aside
+            aside = APPS + ".in-vm"
+            n = 1
+            while os.path.lexists(aside):
+                n += 1
+                aside = "%s.in-vm-%d" % (APPS, n)
+            os.rename(APPS, aside)
+            note("warning: %d item(s) are already in %s and were left in %s: %s"
+                 % (len(kept), target, aside, ", ".join(os.path.relpath(k, APPS) for k in kept[:8])))
+        else:
+            os.rmdir(APPS)
+        note("Steam's default library is now %s" % target)
+    elif os.path.lexists(APPS):
+        note("warning: %s is not a folder; left alone" % APPS)
+        return False
+    os.symlink(target, APPS)
+    return True
+
+
+# ---- Steam's text key/value files ("key" "value" and "key" { ... }) ----
+
+class VdfError(ValueError):
+    pass
+
+
+def vdf_tokens(text):
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if c.isspace():
+            i += 1
+        elif text.startswith("//", i):
+            while i < n and text[i] != "\n":
+                i += 1
+        elif c in "{}":
+            yield c, None
+            i += 1
+        elif c == '"':
+            j = i + 1
+            while j < n and text[j] != '"':
+                j += 2 if text[j] == "\\" else 1
+            if j >= n:
+                raise VdfError("a quoted string does not end")
+            yield "s", text[i + 1:j]         # kept as written, escapes and all
+            i = j + 1
+        else:
+            j = i
+            while j < n and not text[j].isspace() and text[j] not in '{}"':
+                j += 1
+            yield "s", text[i:j]
+            i = j
+
+
+def vdf_parse(text):
+    """A list of [key, value]; a value is a string (as written in the file) or such a list."""
+    root = []
+    stack = [root]
+    key = None
+    for kind, s in vdf_tokens(text):
+        if kind == "s":
+            if key is None:
+                key = s
+            else:
+                stack[-1].append([key, s])
+                key = None
+        elif kind == "{":
+            if key is None:
+                raise VdfError("a { without a name")
+            block = []
+            stack[-1].append([key, block])
+            stack.append(block)
+            key = None
+        else:
+            if key is not None or len(stack) == 1:
+                raise VdfError("a } out of place")
+            stack.pop()
+    if key is not None or len(stack) != 1:
+        raise VdfError("the file ends in the middle of a block")
+    return root
+
+
+def vdf_dump(nodes, depth=0):
+    tabs = "\t" * depth
+    out = []
+    for key, value in nodes:
+        if isinstance(value, list):
+            out.append('%s"%s"\n%s{\n%s%s}\n' % (tabs, key, tabs, vdf_dump(value, depth + 1), tabs))
+        else:
+            out.append('%s"%s"\t\t"%s"\n' % (tabs, key, value))
+    return "".join(out)
+
+
+def vdf_get(nodes, name):
+    for key, value in nodes:
+        if key.lower() == name:
+            return value
+    return None
+
+
+def unescape(raw):
+    return re.sub(r"\\(.)", lambda m: {"n": "\n", "t": "\t"}.get(m.group(1), m.group(1)), raw)
+
+
+def same(path):
+    return os.path.normpath(path)
+
+
+def write_atomic(path, text, like=None):
+    """Replace path with text in one step, with the owner and mode of the file it replaces (or of like)."""
+    try:
+        st = os.stat(path if os.path.exists(path) else like) if (os.path.exists(path) or like) else None
+    except OSError:
+        st = None
+    tmp = "%s.mtsp-%d" % (path, os.getpid())
+    try:
+        with open(tmp, "w", encoding="utf-8", newline="") as f:
+            f.write(text)
+            f.flush()
+            if st is not None:
+                os.fchmod(f.fileno(), st.st_mode & 0o7777)
+                try:
+                    os.fchown(f.fileno(), st.st_uid, st.st_gid)
+                except OSError:
+                    pass
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def new_entry(path):
+    # Steam fills in the content id and the sizes itself the next time it starts
+    return [["path", path], ["label", ""], ["contentid", "0"], ["totalsize", "0"],
+            ["update_clean_bytes_tally", "0"], ["time_last_update_verified", "0"], ["apps", []]]
+
+
+def set_label(entry, label):
+    """Name a library folder; True if that changed the entry."""
+    for node in entry:
+        if node[0].lower() == "label" and isinstance(node[1], str):
+            if node[1] == label:
+                return False
+            node[1] = label
+            return True
+    entry.insert(1 if entry and entry[0][0].lower() == "path" else len(entry), ["label", label])
+    return True
+
+
+def label_in_folder(folder, label):
+    """A library folder other than Steam's own has its name in a file of its own (libraryfolder.vdf), and
+    that is the name Steam goes by. Steam writes the file itself when there is none. True if it changed."""
+    path = os.path.join(folder, "libraryfolder.vdf")
+    if not os.path.isfile(path):
+        return False
+    try:
+        with open(path, encoding="utf-8", newline="") as f:
+            root = vdf_parse(f.read())
+        block = vdf_get(root, "libraryfolder")
+        if not isinstance(block, list) or not set_label(block, label):
+            return False
+        write_atomic(path, vdf_dump(root))
+        return True
+    except (OSError, ValueError) as e:
+        note("warning: cannot name the library folder %s (%s): %s" % (folder, path, e))
+        return False
+
+
+def update_library_list(primary, extras, mounted, labels):
+    """extras: every extra library the Mac lists; mounted: the ones that are shared right now;
+    labels: the names the host gave, by folder."""
+    if os.path.exists(CONFIG):
+        try:
+            with open(CONFIG, encoding="utf-8", newline="") as f:
+                before = f.read()
+        except UnicodeDecodeError:
+            raise VdfError("not UTF-8 text")
+        root = vdf_parse(before)
+        folders = vdf_get(root, "libraryfolders")
+        if not isinstance(folders, list):
+            raise VdfError('no "libraryfolders" block')
+    else:
+        if not mounted and labels.get(primary) is None:
+            return
+        # Steam has not run yet: its own library is entry 0, and Steam completes the rest
+        before = None
+        folders = [["0", new_entry(STEAM)]]
+        root = [["libraryfolders", folders]]
+
+    wanted = set(same(p) for p in extras)
+    seen = set()
+    removed = False
+    for node in list(folders):
+        key, value = node
+        if not key.isdigit() or not isinstance(value, list):
+            continue
+        raw = vdf_get(value, "path")
+        if not isinstance(raw, str):
+            continue
+        path = same(unescape(raw))
+        if int(key) == 0:
+            seen.add(path)
+            continue
+        gone = path.startswith(MAC_ROOTS) and path not in wanted    # removed on the Mac (or the default library again)
+        if gone or (path in seen and path.startswith(MAC_ROOTS)):
+            folders.remove(node)
+            removed = True
+            note("took %s off Steam's list of library folders%s" % (path, "" if gone else " (it was there twice)"))
+        else:
+            seen.add(path)
+    if removed:                                  # Steam numbers the folders 0, 1, 2, ... without gaps
+        n = 0
+        for node in folders:
+            if node[0].isdigit() and isinstance(node[1], list):
+                node[0] = str(n)
+                n += 1
+    for path in mounted:
+        if same(path) in seen or same(path) == same(primary):
+            continue
+        used = [int(k) for k, v in folders if k.isdigit()]
+        folders.append([str(max(used) + 1 if used else 0), new_entry(path)])
+        seen.add(same(path))
+        note("added %s to Steam's list of library folders" % path)
+    # the names: the primary folder's is that of Steam's own library, entry 0
+    for key, value in folders:
+        if not key.isdigit() or not isinstance(value, list):
+            continue
+        raw = vdf_get(value, "path")
+        if not isinstance(raw, str):
+            continue
+        label = labels.get(primary) if int(key) == 0 else labels.get(same(unescape(raw)))
+        if label is None:
+            continue
+        changed = set_label(value, label)
+        if int(key) != 0 and label_in_folder(unescape(raw), label):
+            changed = True
+        if changed:
+            note('Steam\'s library folder %s is named "%s"' % (unescape(raw), label))
+
+    after = vdf_dump(root)
+    if before is not None and vdf_parse(before) == vdf_parse(after):
+        return
+    os.makedirs(os.path.dirname(CONFIG), exist_ok=True)
+    write_atomic(CONFIG, after)
+    # Steam keeps a copy next to its default library
+    if os.path.isdir(APPS):
+        try:
+            write_atomic(os.path.join(APPS, "libraryfolders.vdf"), after, like=CONFIG)
+        except OSError as e:
+            note("warning: cannot write the copy in %s: %s" % (APPS, e))
+
+
+def main(argv):
+    args = argv[1:]
+    if not args or args[0] in ("-h", "--help"):
+        sys.stderr.write(__doc__)
+        return 2
+    folders, labels, label = [], {}, None
+    i = 0
+    while i < len(args):
+        p = args[i]
+        i += 1
+        if p == "--label":
+            if i >= len(args) or label is not None or not LABEL.match(args[i]):
+                sys.stderr.write("mtsp-libraries: --label needs a plain name, and a folder after it\n")
+                return 2
+            label = args[i]
+            i += 1
+            continue
+        if not PLAIN.match(p) or not same(p).startswith(MAC_ROOTS) or same(p).count("/") < 3:
+            sys.stderr.write("mtsp-libraries: not a shared folder of the Mac: %r\n" % p)
+            return 2
+        folders.append(p)
+        if label is not None:
+            labels[same(p)] = label
+            label = None
+    if label is not None or not folders:
+        sys.stderr.write("mtsp-libraries: --label needs a plain name, and a folder after it\n")
+        return 2
+    primary, extras = same(folders[0]), [same(p) for p in folders[1:]]
+    if not os.path.isdir(STEAM) or steam_running():
+        return 0
+    if not shared(primary):
+        note("warning: %s is not shared into the virtual machine; Steam's libraries are left as they are" % primary)
+        return 1
+    status = 0
+    try:
+        if not link_default_library(primary):
+            status = 1
+    except OSError as e:
+        note("warning: cannot move Steam's default library to %s: %s" % (primary, e))
+        status = 1
+    mounted = []
+    for p in extras:
+        if not shared(p):
+            note("warning: %s is not shared into the virtual machine right now; skipped" % p)
+            continue
+        try:
+            os.makedirs(os.path.join(p, "steamapps"), exist_ok=True)
+            mounted.append(p)
+        except OSError as e:
+            note("warning: cannot use %s: %s" % (p, e))
+    try:
+        update_library_list(primary, extras, mounted, labels)
+    except (OSError, VdfError) as e:
+        note("warning: Steam's list of library folders was left alone (%s): %s" % (CONFIG, e))
+        status = 1
+    return status
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

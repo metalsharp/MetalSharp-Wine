@@ -1,0 +1,169 @@
+#!/usr/bin/env python3
+"""mtsp-steamhook: Steam's "Add Drive" opens Wine's folder browser on the Mac.
+
+Steam's "Add Drive" asks Steam's built-in folder chooser for a folder. In this guest that chooser does
+not come up, and a folder chosen inside the guest would be the wrong thing anyway: the drives a person
+has are the Mac's, as Wine shows them. So this agent replaces that one call in Steam's interface. It
+talks to Steam's browser engine over its debugging port (which start-desktop.sh turns on; it listens
+inside the guest only), and in every Steam page it makes SteamClient.System.OpenFileDialog, when asked
+for a folder, call back here instead; the request then goes to the Mac through mtsp-bridge, where
+Wine's folder browser opens and the chosen folder becomes a Steam library. The virtual machine restarts
+to share that folder, so Steam's own call is answered with "nothing chosen". Requests for a file are
+left to Steam.
+
+This leans on names inside Steam's interface. If a Steam update changes them, "Add Drive" goes back to
+doing nothing and the Mac application's Library menu is the way to add a folder.
+"""
+import base64
+import json
+import os
+import select
+import socket
+import struct
+import subprocess
+import time
+import urllib.request
+
+PORT = 8080
+BRIDGE = "/usr/local/bin/mtsp-bridge"
+BINDING = "mtspChooseLibrary"
+HOOK = """(() => {
+  const s = window.SteamClient && SteamClient.System;
+  if (!s || typeof s.OpenFileDialog !== 'function' || s.OpenFileDialog.mtsp) return 0;
+  const steams = s.OpenFileDialog.bind(s);
+  const ours = (o) => {
+    if (o && o.bChooseDirectory && typeof window.%s === 'function') { window.%s(''); return Promise.resolve(''); }
+    return steams(o);
+  };
+  ours.mtsp = true;
+  try { s.OpenFileDialog = ours; } catch (e) { return -1; }
+  return s.OpenFileDialog === ours ? 1 : -1;
+})()""" % (BINDING, BINDING)
+
+
+class Page:
+    """One debugging connection to one Steam page."""
+
+    def __init__(self, url):
+        rest = url.split("://", 1)[1]
+        path = "/" + rest.split("/", 1)[1]
+        self.sock = socket.create_connection(("127.0.0.1", PORT), timeout=5)
+        key = base64.b64encode(os.urandom(16)).decode()
+        self.sock.sendall(("GET %s HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                           "Sec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n" % (path, PORT, key)).encode())
+        self.buf = b""
+        while b"\r\n\r\n" not in self.buf:
+            more = self.sock.recv(4096)
+            if not more or len(self.buf) > 65536:
+                raise OSError("no websocket")
+            self.buf += more
+        head, self.buf = self.buf.split(b"\r\n\r\n", 1)
+        if b" 101 " not in head.split(b"\r\n", 1)[0]:
+            raise OSError("no websocket")
+        self.sock.settimeout(5)
+        self.message = b""
+        self.n = 0
+        self.send("Runtime.addBinding", {"name": BINDING})
+
+    def send(self, method, params):
+        self.n += 1
+        data = json.dumps({"id": self.n, "method": method, "params": params}).encode()
+        mask = os.urandom(4)
+        if len(data) < 126:
+            head = bytes([0x81, 0x80 | len(data)])
+        elif len(data) < 65536:
+            head = bytes([0x81, 0xfe]) + struct.pack(">H", len(data))
+        else:
+            head = bytes([0x81, 0xff]) + struct.pack(">Q", len(data))
+        self.sock.sendall(head + mask + bytes(b ^ mask[i & 3] for i, b in enumerate(data)))
+
+    def hook(self):
+        self.send("Runtime.evaluate", {"expression": HOOK, "returnByValue": True})
+
+    def read(self):
+        """Take in what has arrived; the complete messages, parsed. Raises OSError when the page is gone."""
+        more = self.sock.recv(65536)
+        if not more:
+            raise OSError("closed")
+        self.buf += more
+        out = []
+        while True:
+            if len(self.buf) < 2:
+                break
+            n, at = self.buf[1] & 0x7f, 2
+            if n == 126:
+                if len(self.buf) < 4:
+                    break
+                n, at = struct.unpack(">H", self.buf[2:4])[0], 4
+            elif n == 127:
+                if len(self.buf) < 10:
+                    break
+                n, at = struct.unpack(">Q", self.buf[2:10])[0], 10
+            if n > 1 << 24:
+                raise OSError("oversized frame")
+            if len(self.buf) < at + n:
+                break
+            first, payload, self.buf = self.buf[0], self.buf[at:at + n], self.buf[at + n:]
+            op = first & 0x0f
+            if op == 8:
+                raise OSError("closed")
+            if op in (0, 1):
+                self.message += payload
+                if first & 0x80:
+                    try:
+                        out.append(json.loads(self.message))
+                    except ValueError:
+                        pass
+                    self.message = b""
+        return out
+
+
+def targets():
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:%d/json" % PORT, timeout=3) as r:
+            return [t for t in json.load(r) if t.get("type") == "page" and t.get("webSocketDebuggerUrl")]
+    except (OSError, ValueError):
+        return []
+
+
+def main():
+    pages = {}          # target id -> Page
+    last_scan = last_ask = 0.0
+    while True:
+        now = time.monotonic()
+        if now - last_scan >= 2:
+            last_scan = now
+            seen = targets()
+            for t in seen:
+                if t["id"] not in pages:
+                    try:
+                        pages[t["id"]] = Page(t["webSocketDebuggerUrl"])
+                    except OSError:
+                        continue
+            live = {t["id"] for t in seen}
+            for gone in [i for i in pages if i not in live]:
+                pages.pop(gone).sock.close()
+            for i in list(pages):       # again and again: a page that reloads loses the replacement
+                try:
+                    pages[i].hook()
+                except OSError:
+                    pages.pop(i).sock.close()
+        socks = {p.sock: i for i, p in pages.items()}
+        ready = select.select(list(socks), [], [], 1.0)[0] if socks else (time.sleep(1.0) or [])
+        for s in ready:
+            i = socks[s]
+            try:
+                messages = pages[i].read()
+            except OSError:
+                pages.pop(i).sock.close()
+                continue
+            for m in messages:
+                if m.get("method") == "Runtime.bindingCalled" and m.get("params", {}).get("name") == BINDING:
+                    if time.monotonic() - last_ask >= 2:      # one press, one folder browser
+                        last_ask = time.monotonic()
+                        subprocess.Popen([BRIDGE, "choose-library"], stdin=subprocess.DEVNULL,
+                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+if __name__ == "__main__":
+    main()

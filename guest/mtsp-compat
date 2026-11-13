@@ -1,0 +1,336 @@
+#!/usr/bin/env python3
+"""mtsp-compat: give Steam the MetalSharp compatibility tools, and make Mullion the default one.
+
+    mtsp-compat
+
+A game played with one of these tools runs on the Mac with MetalSharp Wine (mtsp-launch asks the Mac
+for it). There is one tool for each graphics backend of MetalSharp Wine, each a folder in
+~/.local/share/Steam/compatibilitytools.d that Steam lists by its display name in Settings >
+Compatibility and in a game's Properties > Compatibility:
+
+    metalsharp-mullion   MetalSharp (Mullion)    Direct3D on Metal, the default
+    metalsharp-dxvk      MetalSharp (DXVK)       Direct3D 9 to 11 on Vulkan
+    metalsharp-vkd3d     MetalSharp (VKD3D)      Direct3D 12 on Vulkan
+    metalsharp-wined3d   MetalSharp (WineD3D)    Wine's own Direct3D
+
+MetalSharp Wine has DXMT as another name for Mullion, and no D3DMetal on Apple silicon, so there is no
+tool for either.
+
+The tool is what Steam asks MetalSharp Wine for, and what the game runs with: the tool chosen here
+wins over the backend named in a game folder's .metalsharp/launch.env file (written by the MetalSharp
+application on the Mac for the games it has set up; the file's other variables still apply). Only
+the user's own .metalsharp/launch.local.env file in that folder wins over both.
+
+Steam's default tool for every game is entry "0" of CompatToolMapping in config/config.vdf. When the
+file has no such entry it is added, naming metalsharp-mullion; an entry that is there is the user's
+choice (or an earlier run's) and stays as it is. Nothing else in the file changes, not a byte. Steam
+writes the file first, when someone has signed in; until then there is nothing to add the entry to.
+
+Nothing is changed while Steam is running (it reads all of this when it starts, and writes config.vdf
+when it ends), and nothing at all before Steam is installed. The host (metalsharp-steam) runs this
+before it starts Steam, and so does the guest's start script each time Steam restarts itself.
+"""
+import os
+import sys
+
+STEAM = os.path.expanduser("~/.local/share/Steam")
+TOOLS_DIR = os.path.join(STEAM, "compatibilitytools.d")
+CONFIG = os.path.join(STEAM, "config", "config.vdf")
+STUB = "/usr/local/bin/mtsp-launch"
+# folder name -> display name; the folder name is also what config.vdf calls the tool
+TOOLS = (
+    ("metalsharp-mullion", "MetalSharp (Mullion)"),
+    ("metalsharp-dxvk", "MetalSharp (DXVK)"),
+    ("metalsharp-vkd3d", "MetalSharp (VKD3D)"),
+    ("metalsharp-wined3d", "MetalSharp (WineD3D)"),
+)
+DEFAULT_TOOL = "metalsharp-mullion"
+PRIORITY = "75"         # what Steam gives its own default; Valve's and the user's per-game choices are higher
+MAPPING = ("InstallConfigStore", "Software", "Valve", "Steam", "CompatToolMapping")
+
+TOOL_VDF = '''"compatibilitytools"
+{
+	"compat_tools"
+	{
+		"%s"
+		{
+			"install_path"		"."
+			"display_name"		"%s"
+			"from_oslist"		"windows"
+			"to_oslist"		"linux"
+		}
+	}
+}
+'''
+# no "require_tool_appid": the tool needs nothing of Steam's (no runtime, no Proton), so Steam downloads nothing for it
+MANIFEST_VDF = '''"manifest"
+{
+	"version"		"2"
+	"commandline"		"/mtsp-launch %verb%"
+}
+'''
+# Steam runs this with the verb and the game; the folder it is in says which tool was chosen
+LAUNCHER = '''#!/bin/sh
+d=${0%/*}; exec ''' + STUB + ''' --tool "${d##*/}" "$@"
+'''
+
+
+def note(text):
+    print("mtsp-compat: " + text)
+    sys.stdout.flush()
+
+
+def steam_running():
+    me = os.getuid()
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit():
+            continue
+        try:
+            if os.stat("/proc/" + pid).st_uid != me:
+                continue
+            with open("/proc/%s/comm" % pid) as f:
+                if f.read().strip() == "steam":
+                    return True
+        except OSError:
+            pass
+    return False
+
+
+def write_atomic(path, data, mode, like=None):
+    """Replace path with data (bytes) in one step; with the owner and mode of like when it is given."""
+    tmp = "%s.mtsp-%d" % (path, os.getpid())
+    try:
+        with open(tmp, "wb") as f:
+            f.write(data)
+            f.flush()
+            if like is not None:
+                mode = like.st_mode & 0o7777
+                try:
+                    os.fchown(f.fileno(), like.st_uid, like.st_gid)
+                except OSError:
+                    pass
+            os.fchmod(f.fileno(), mode)
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
+# ---- the tool folders ----
+
+def put(path, text, mode):
+    """Make path a plain file with this text and mode; True if that changed anything."""
+    data = text.encode("ascii")
+    try:
+        if not os.path.islink(path):
+            with open(path, "rb") as f:
+                same = f.read() == data
+            if same:
+                if os.stat(path).st_mode & 0o7777 != mode:
+                    os.chmod(path, mode)
+                    return True
+                return False
+    except OSError:
+        pass
+    write_atomic(path, data, mode)
+    return True
+
+
+def install_tools():
+    changed = []
+    for name, display in TOOLS:
+        folder = os.path.join(TOOLS_DIR, name)
+        if os.path.islink(folder) or (os.path.lexists(folder) and not os.path.isdir(folder)):
+            note("warning: %s is not a folder; left alone, so Steam has no %s" % (folder, display))
+            continue
+        os.makedirs(folder, exist_ok=True)
+        new = [put(os.path.join(folder, "compatibilitytool.vdf"), TOOL_VDF % (name, display), 0o644),
+               put(os.path.join(folder, "toolmanifest.vdf"), MANIFEST_VDF, 0o644),
+               put(os.path.join(folder, "mtsp-launch"), LAUNCHER, 0o755)]
+        if any(new):
+            changed.append(display)
+    if changed:
+        note("Steam's compatibility tools are up to date: %s" % ", ".join(changed))
+
+
+# ---- Steam's text key/value files ("key" "value" and "key" { ... }) ----
+#
+# The file is not parsed and written out again, which would lay all of it out anew: the one block that is
+# needed is found by position, and the new entry is put into the text there.
+
+class VdfError(ValueError):
+    pass
+
+
+def vdf_tokens(text):
+    """(kind, string, start, end) for each token; kind is "s" (a string, as written), "{" or "}"."""
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if c.isspace():
+            i += 1
+        elif text.startswith("//", i):
+            while i < n and text[i] != "\n":
+                i += 1
+        elif c in "{}":
+            yield c, None, i, i + 1
+            i += 1
+        elif c == '"':
+            j = i + 1
+            while j < n and text[j] != '"':
+                j += 2 if text[j] == "\\" else 1
+            if j >= n:
+                raise VdfError("a quoted string does not end")
+            yield "s", text[i + 1:j], i, j + 1
+            i = j + 1
+        else:
+            j = i
+            while j < n and not text[j].isspace() and text[j] not in '{}"':
+                j += 1
+            yield "s", text[i:j], i, j
+            i = j
+
+
+class Block:
+    def __init__(self, key, key_at):
+        self.key = key
+        self.key_at = key_at    # where the block's name starts in the text
+        self.close_at = None    # where its } is
+        self.items = []         # (key, a string or a Block)
+
+    def find(self, name):
+        for key, value in self.items:
+            if key.lower() == name.lower():
+                return value
+        return None
+
+
+def vdf_blocks(text):
+    """The whole file as a Block without a name, with the positions the edit needs."""
+    root = Block(None, 0)
+    stack = [root]
+    key = None
+    for kind, s, start, end in vdf_tokens(text):
+        if kind == "s":
+            if key is None:
+                key = (s, start)
+            else:
+                stack[-1].items.append((key[0], s))
+                key = None
+        elif kind == "{":
+            if key is None:
+                raise VdfError("a { without a name")
+            block = Block(key[0], key[1])
+            stack[-1].items.append((key[0], block))
+            stack.append(block)
+            key = None
+        else:
+            if key is not None or len(stack) == 1:
+                raise VdfError("a } out of place")
+            stack.pop().close_at = start
+    if key is not None or len(stack) != 1:
+        raise VdfError("the file ends in the middle of a block")
+    return root
+
+
+def line_start(text, at):
+    return text.rfind("\n", 0, at) + 1
+
+
+def add_default_mapping(text):
+    """config.vdf's text with the default tool added, or None when it already names a default tool."""
+    block = vdf_blocks(text).find(MAPPING[0])
+    if not isinstance(block, Block):
+        raise VdfError('no "%s" block' % MAPPING[0])
+    missing = []
+    for depth, name in enumerate(MAPPING[1:], 1):
+        below = block.find(name)
+        if below is None:
+            missing = list(MAPPING[depth:])
+            break
+        if not isinstance(below, Block):
+            raise VdfError('"%s" is not a block' % name)
+        block = below
+    if not missing and block.find("0") is not None:
+        return None
+    # written the way Steam lays the file out: a tab for each level, the braces on lines of their own
+    start = line_start(text, block.key_at)
+    indent = text[start:block.key_at]
+    if indent.strip():
+        raise VdfError('"%s" does not start its line' % block.key)
+    eol = "\r\n" if "\r\n" in text else "\n"
+    lines = []
+    for name in missing + ["0"]:
+        indent += "\t"
+        lines += ['%s"%s"' % (indent, name), indent + "{"]
+    for key, value in (("name", DEFAULT_TOOL), ("config", ""), ("priority", PRIORITY)):
+        lines.append('%s\t"%s"\t\t"%s"' % (indent, key, value))
+    for name in missing + ["0"]:
+        lines.append(indent + "}")
+        indent = indent[:-1]
+    new = eol.join(lines) + eol
+    # before the block's }, on lines of their own
+    at = line_start(text, block.close_at)
+    if text[at:block.close_at].strip():
+        at = block.close_at
+        new = eol + new + indent
+    return text[:at] + new + text[at:]
+
+
+def set_default_tool():
+    try:
+        with open(CONFIG, "rb") as f:
+            like = os.fstat(f.fileno())
+            before = f.read()
+    except FileNotFoundError:
+        return 0        # Steam has not written it yet (nobody has signed in)
+    # as bytes that are not UTF-8 would come back unchanged; Steam writes UTF-8
+    text = before.decode("utf-8", "surrogateescape")
+    after = add_default_mapping(text)
+    if after is None:
+        return 0
+    # make sure of the result before it replaces Steam's file: it reads as a file with the entry in it
+    block = vdf_blocks(after)
+    for name in MAPPING + ("0",):
+        block = block.find(name) if isinstance(block, Block) else None
+    if not isinstance(block, Block) or block.find("name") != DEFAULT_TOOL:
+        raise VdfError("the default tool could not be added")
+    write_atomic(CONFIG, after.encode("utf-8", "surrogateescape"), 0o600, like=like)
+    note("%s is Steam's default compatibility tool" % dict(TOOLS)[DEFAULT_TOOL])
+    return 0
+
+
+def main(argv):
+    if len(argv) != 1:
+        sys.stderr.write(__doc__)
+        return 2
+    if not os.path.isdir(STEAM):
+        return 0
+    try:
+        if steam_running():
+            return 0
+    except OSError as e:
+        note("warning: cannot tell whether Steam is running (%s); nothing changed" % e)
+        return 1
+    status = 0
+    try:
+        install_tools()
+    except OSError as e:
+        note("warning: cannot write Steam's compatibility tools (%s): %s" % (TOOLS_DIR, e))
+        status = 1
+    if not os.path.isfile(os.path.join(TOOLS_DIR, DEFAULT_TOOL, "toolmanifest.vdf")):
+        return status   # a default that is not there would leave every game without a tool
+    try:
+        set_default_tool()
+    except (OSError, VdfError) as e:
+        note("warning: Steam's default compatibility tool was left alone (%s): %s" % (CONFIG, e))
+        status = 1
+    return status
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
