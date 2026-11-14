@@ -554,6 +554,51 @@ static void destroy_cocoa_window(struct macdrv_win_data *data)
 
 
 /***********************************************************************
+ *              macdrv_is_remote_child
+ *
+ * MetalSharp: whether hwnd is a child window whose parent belongs to another process (Edge WebView2's window in
+ * its host's). It has no Cocoa window: it draws into a remote layer, which the top-level window's process hosts
+ * where the child is.
+ */
+BOOL macdrv_is_remote_child(HWND hwnd)
+{
+    HWND parent = NtUserGetAncestor(hwnd, GA_PARENT);
+    DWORD pid = 0;
+
+    if (!parent || parent == NtUserGetDesktopWindow()) return FALSE;
+    if (!NtUserGetWindowThread(parent, &pid)) return FALSE;
+    return pid && pid != GetCurrentProcessId();
+}
+
+
+/* tell the top-level window's process where to show the remote layer, and that it changed */
+static void notify_remote_host(struct macdrv_win_data *data)
+{
+    HWND root = NtUserGetAncestor(data->hwnd, GA_ROOT);
+
+    if (!data->remote_context_id || !root || root == data->hwnd) return;
+    if (data->remote_host && data->remote_host != root)
+        NtUserPostMessage(data->remote_host, WM_MACDRV_REMOVE_REMOTE_CHILD, 0, data->remote_context_id);
+    data->remote_host = root;
+    NtUserPostMessage(root, WM_MACDRV_UPDATE_REMOTE_CHILD, (WPARAM)data->hwnd, data->remote_context_id);
+}
+
+
+/***********************************************************************
+ *              macdrv_ensure_remote_child
+ */
+void macdrv_ensure_remote_child(struct macdrv_win_data *data)
+{
+    if (!data->remote_child)
+    {
+        data->remote_child = macdrv_create_remote_child(&data->remote_context_id);
+        TRACE("win %p remote layer context %u\n", data->hwnd, data->remote_context_id);
+    }
+    notify_remote_host(data);
+}
+
+
+/***********************************************************************
  *              macdrv_create_win_data
  *
  * Create a Mac data window structure for an existing window.
@@ -1423,6 +1468,14 @@ void macdrv_DestroyWindow(HWND hwnd)
 
     destroy_cocoa_window(data);
 
+    if (data->remote_child)
+    {
+        if (data->remote_host)
+            NtUserPostMessage(data->remote_host, WM_MACDRV_REMOVE_REMOTE_CHILD, 0, data->remote_context_id);
+        macdrv_destroy_remote_child(data->remote_child);
+        data->remote_child = NULL;
+    }
+
     /* MS HACK 22435 */
     if (data->d3dmetal_client_surfaces) CFRelease(data->d3dmetal_client_surfaces);
 
@@ -1715,6 +1768,34 @@ LRESULT macdrv_WindowMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             release_win_data(data);
         }
         return 0;
+    case WM_MACDRV_UPDATE_REMOTE_CHILD:
+        if ((data = get_win_data(hwnd)))
+        {
+            HWND child = (HWND)wp;
+            RECT rect;
+            BOOL visible = NtUserIsWindowVisible(child) &&
+                           NtUserGetWindowRect(child, &rect, NtUserGetWinMonitorDpi(hwnd, MDT_RAW_DPI));
+
+            if (!visible) SetRectEmpty(&rect);
+            else OffsetRect(&rect, -data->rects.visible.left, -data->rects.visible.top);
+            TRACE("WM_MACDRV_UPDATE_REMOTE_CHILD child %p context %u rect %s visible %u\n", child,
+                  (unsigned int)lp, wine_dbgstr_rect(&rect), visible);
+            if (data->cocoa_window)
+                macdrv_window_set_remote_child_host(data->cocoa_window, (unsigned int)lp, cgrect_from_rect(rect),
+                                                    visible);
+            release_win_data(data);
+        }
+        return 0;
+    case WM_MACDRV_SET_REMOTE_CURSOR:
+        macdrv_set_remote_cursor_index(wp);
+        return 0;
+    case WM_MACDRV_REMOVE_REMOTE_CHILD:
+        if ((data = get_win_data(hwnd)))
+        {
+            if (data->cocoa_window) macdrv_window_release_ca_layer_host_view(data->cocoa_window, (unsigned int)lp);
+            release_win_data(data);
+        }
+        return 0;
     case WM_MACDRV_RELEASE_REMOTE_LAYER:
         if ((data = get_win_data(hwnd)))
         {
@@ -1755,7 +1836,8 @@ BOOL macdrv_WindowPosChanging(HWND hwnd, UINT swp_flags, BOOL shaped, const stru
     if (!data && !(data = macdrv_create_win_data(hwnd, rects))) return FALSE; /* use default surface */
     data->shaped = shaped;
 
-    ret = !!data->cocoa_window; /* use default surface if we don't have a window */
+    /* use default surface if we don't have a window, unless the window draws into a remote layer */
+    ret = data->cocoa_window || macdrv_is_remote_child(hwnd);
     release_win_data(data);
 
     return ret;
@@ -1807,6 +1889,7 @@ void macdrv_WindowPosChanged(HWND hwnd, HWND insert_after, HWND owner_hint, UINT
     TRACE("win %p/%p new_rects %s style %08x flags %08x surface %p\n", hwnd, data->cocoa_window,
           debugstr_window_rects(new_rects), new_style, swp_flags, surface);
 
+    if (data->remote_child) notify_remote_host(data);
     if (!data->cocoa_window) goto done;
 
     if (data->on_screen)

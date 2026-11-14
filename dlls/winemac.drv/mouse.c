@@ -723,12 +723,67 @@ static BOOL get_icon_info(HICON handle, ICONINFOEXW *ret)
 /***********************************************************************
  *              SetCursor (MACDRV.@)
  */
+/***********************************************************************
+ *              set_remote_cursor
+ *
+ * MetalSharp: the cursor of a window inside a remote child (window.c) is shown by the process of the top-level
+ * window hosting it, the one macOS shows the cursor of: sent there as one of the NSCursor names (0 hides it, a
+ * cursor with no system name shows the arrow), as the handle means nothing in that process.
+ */
+static void set_remote_cursor(HWND remote, HCURSOR cursor)
+{
+    HWND root = NtUserGetAncestor(remote, GA_ROOT);
+    CFStringRef name = NULL;
+    WPARAM index = 0;
+    unsigned int i;
+
+    if (cursor)
+    {
+        ICONINFOEXW info;
+
+        info.cbSize = sizeof(info);
+        if (get_icon_info(cursor, &info))
+        {
+            name = copy_system_cursor_name(&info);
+            NtGdiDeleteObjectApp(info.hbmColor);
+            NtGdiDeleteObjectApp(info.hbmMask);
+        }
+        index = 1; /* arrowCursor */
+        for (i = 0; name && i < ARRAY_SIZE(cocoa_cursor_names); i++)
+            if (CFEqual(name, cocoa_cursor_names[i])) index = i + 1;
+        if (name) CFRelease(name);
+    }
+    TRACE("remote child %p cursor %p -> %u for %p\n", remote, cursor, (unsigned int)index, root);
+    if (root && root != remote) NtUserPostMessage(root, WM_MACDRV_SET_REMOTE_CURSOR, index, 0);
+}
+
+
+/***********************************************************************
+ *              macdrv_set_remote_cursor_index
+ *
+ * In the hosting process: show the cursor a remote child asked for (set_remote_cursor).
+ */
+void macdrv_set_remote_cursor_index(WPARAM index)
+{
+    if (!index) macdrv_set_cursor(NULL, NULL);
+    else if (index <= ARRAY_SIZE(cocoa_cursor_names)) macdrv_set_cursor(cocoa_cursor_names[index - 1], NULL);
+}
+
+
 void macdrv_SetCursor(HWND hwnd, HCURSOR cursor)
 {
     CFStringRef cursor_name = NULL;
     CFArrayRef cursor_frames = NULL;
+    HWND remote;
 
     TRACE("%p %p\n", hwnd, cursor);
+
+    for (remote = hwnd; remote && remote != NtUserGetDesktopWindow(); remote = NtUserGetAncestor(remote, GA_PARENT))
+    {
+        if (!macdrv_is_remote_child(remote)) continue;
+        set_remote_cursor(remote, cursor);
+        return;
+    }
 
     if (cursor)
     {

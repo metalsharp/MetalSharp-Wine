@@ -108,6 +108,7 @@ typedef struct macdrv_opaque_metal_view* macdrv_metal_view;
 typedef struct macdrv_opaque_metal_layer* macdrv_metal_layer;
 typedef struct macdrv_opaque_metal_swapchain* macdrv_metal_swapchain;
 typedef struct macdrv_opaque_status_item* macdrv_status_item;
+typedef struct macdrv_opaque_remote_child* macdrv_remote_child;
 struct macdrv_event;
 struct macdrv_query;
 
@@ -553,6 +554,12 @@ extern macdrv_metal_layer macdrv_swapchain_get_layer(macdrv_metal_swapchain swap
 extern void macdrv_destroy_swapchain(macdrv_metal_swapchain swapchain);
 extern void macdrv_window_create_ca_layer_host_view(macdrv_window w, unsigned int context_id);
 extern void macdrv_window_release_ca_layer_host_view(macdrv_window w, unsigned int context_id);
+/* MetalSharp: a window whose parent is in another process (Edge WebView2's) draws into a remote layer, which the
+ * parent's process hosts in its window. */
+extern macdrv_remote_child macdrv_create_remote_child(unsigned int *context_id);
+extern void macdrv_remote_child_set_image(macdrv_remote_child child, CGImageRef image);
+extern void macdrv_destroy_remote_child(macdrv_remote_child child);
+extern void macdrv_window_set_remote_child_host(macdrv_window w, unsigned int context_id, CGRect frame, int visible);
 extern void macdrv_create_remote_layer(void* hwnd, unsigned int context_id);
 extern void macdrv_release_remote_layer(void* hwnd, unsigned int context_id);
 extern bool macdrv_get_view_backing_size(macdrv_view v, int backing_size[2]);
