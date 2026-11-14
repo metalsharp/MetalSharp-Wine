@@ -80,7 +80,10 @@ static const struct launcher_process_policy launcher_process_policies[] =
         {L"--type=", L"--in-process-gpu", NULL},
         L" --in-process-gpu",
     },
-    /* WineForge-Internal: launcher-compat/ubisoft-connect-in-process-gpu-v1. */
+    /* WineForge-Internal: launcher-compat/ubisoft-connect-in-process-gpu-v1.
+     * MetalSharp: and SwiftShader for WebGL only, as for Steam's web helper. Otherwise Ubisoft Connect's browser
+     * (upc.exe itself) draws its UI through ANGLE on Direct3D 11, and its window stops updating under FEX. Only the
+     * browser gets these, so its renderers (UplayWebCore.exe --type=...) are left as they are. */
     {
         L"upc.exe",
         L"\\Program Files (x86)\\Ubisoft\\Ubisoft Game Launcher\\",
@@ -88,7 +91,13 @@ static const struct launcher_process_policy launcher_process_policies[] =
         NULL,
         NULL,
         {L"--type=", L"--in-process-gpu", NULL},
-        L" --in-process-gpu",
+        L" --no-sandbox"
+        L" --in-process-gpu"
+        L" --disable-gpu"
+        L" --disable-d3d11"
+        L" --enable-unsafe-swiftshader"
+        L" --use-gl=angle"
+        L" --use-angle=swiftshader-webgl",
     },
 };
 
