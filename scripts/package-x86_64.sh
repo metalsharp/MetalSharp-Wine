@@ -43,6 +43,7 @@
 #   WINEMETALGL=<install-x86_64/winemetalgl> VCRUN_X64=<Microsoft's x64 VC++ runtime DLLs> DEPS_SRC=<deps/src-x86_64:deps/src> LICENSES_EXTRA=<dir of license folders> (share/licenses)
 #   D3DMETAL=<GPTK 4.0 beta 3: dir with external/ and wine/> D3DMETAL_GPTK3=<GPTK 3.0: the same, from redist/lib> MEDIA=<x86_64 GStreamer/FFmpeg prefix> SIGN_IDENTITY="Developer ID Application: ..." \
 #   VERSION=<the MetalSharp Wine release, e.g. 5.1> [TIMESTAMP=1: secure timestamps, which notarization needs] \
+#   [WINE_MONO_X86=<wine-mono-11.3.99-x86.tar.xz>: else downloaded] \
 #     scripts/package-x86_64.sh <output dir>
 set -euo pipefail
 
@@ -286,6 +287,22 @@ cp -p "$C/Resources/$ICON.icns" "$C/share/wine/$ICON.icns"
 # the first time a program there loads WebView2Loader.dll, and it installs the WebView2 Runtime from Microsoft.
 mkdir -p "$C/share/wine/webview2"
 cp -p "$HERE/../resources/webview2/MicrosoftEdgeWebview2Setup.exe" "$C/share/wine/webview2/"
+# Wine Mono 11.3.99 (Wine Mono's main at c019b64ba8; its x86 package, with the x86 and x86_64 runtimes), unpacked in
+# share/wine/mono as the FEX build carries it (fetch-addons.sh). mscoree runs .NET programs on it, and wineboot upgrades
+# a prefix's own older Wine Mono through its support package. WINE_MONO_X86 names the tarball if it is already here;
+# otherwise it comes from MetalSharp Wine's wine-mono-11.3.99 release. Checked against that release's SHA256SUMS.
+MONO_VERSION=11.3.99
+MONO_TAR="${WINE_MONO_X86:-$WORK/wine-mono-$MONO_VERSION-x86.tar.xz}"
+if [ ! -f "$MONO_TAR" ]; then
+  mkdir -p "$(dirname "$MONO_TAR")"
+  curl -fsSL -o "$MONO_TAR" \
+    "https://github.com/metalsharp/MetalSharp-Wine/releases/download/wine-mono-$MONO_VERSION/wine-mono-$MONO_VERSION-x86.tar.xz"
+fi
+[ "$(shasum -a 256 "$MONO_TAR" | cut -d' ' -f1)" = 7414edf5784d3fd2632f8b936fcfca3c0cb10e476fb6ad30f7e9204526c255cb ] ||
+  { echo "checksum mismatch: $MONO_TAR" >&2; exit 1; }
+rm -rf "$C/share/wine/mono"
+mkdir -p "$C/share/wine/mono"
+tar -xf "$MONO_TAR" -C "$C/share/wine/mono"
 
 # --- licenses: everything the app redistributes, in share/licenses (runtime/wine/share/licenses when installed) ----
 #   DEPS_SRC: MetalSharp Wine's deps/src-x86_64 (what build-deps-x86_64.sh built: FFmpeg, GStreamer, GLib, ...) and
