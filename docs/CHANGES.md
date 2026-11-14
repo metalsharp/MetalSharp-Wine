@@ -5,6 +5,7 @@ The [release notes](https://github.com/metalsharp/MetalSharp-Wine/releases) have
 ## Unreleased
 
 - Steam's window no longer freezes under FEX after it loads. Its web helper runs SwiftShader for WebGL only (`--use-angle=swiftshader-webgl`), as on the x86_64 runtime, instead of compositing Steam's UI through ANGLE on SwiftShader (Wine patch 0164).
+- Ubisoft Connect no longer freezes under FEX. Its browser (`upc.exe`) gets the same arguments as Steam's web helper and draws its UI in software, instead of through ANGLE on Direct3D 11 (Wine patch 0165).
 
 ## 6.5
 
