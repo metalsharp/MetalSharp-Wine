@@ -1,0 +1,568 @@
+From 8ffe13ea241b40157974659e77579fd0d09ee6d9 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@Averys-Mac-Mini.local>
+Date: Sat, 14 Nov 2026 12:07:42 -0700
+Subject: [PATCH 61/61] win32u, winemac.drv: a child window in another process
+ than its parent draws through a remote layer
+
+Edge WebView2 draws its browser into a child window of its host's window,
+from its own process (msedgewebview2.exe). winemac gives only top-level
+windows a Cocoa window, and a child draws into its top-level window's
+surface, which is in the host's process: WebView2's window stayed white.
+
+win32u gives a child window whose parent belongs to another process a
+surface of its own, as a top-level window gets; the server already
+stops a DC's walk up at a window with a surface, so its own children
+draw into it. winemac flushes that surface into a CALayer exported
+through a remote CAContext, and tells the top-level window on every
+move, resize, show and hide; the top-level window's process hosts it
+with a CALayerHost at the child's place. Input already reaches the
+child, through the server. The child's cursor is shown by the host's
+process, which macOS shows the cursor of: sent as an NSCursor name.
+---
+ dlls/win32u/window.c            |  20 +++++-
+ dlls/winemac.drv/cocoa_window.m | 123 ++++++++++++++++++++++++++++++++
+ dlls/winemac.drv/macdrv.h       |  11 +++
+ dlls/winemac.drv/macdrv_cocoa.h |   7 ++
+ dlls/winemac.drv/mouse.c        |  55 ++++++++++++++
+ dlls/winemac.drv/surface.c      |  49 +++++++++++++
+ dlls/winemac.drv/window.c       |  85 +++++++++++++++++++++-
+ 7 files changed, 346 insertions(+), 4 deletions(-)
+
+diff --git a/dlls/win32u/window.c b/dlls/win32u/window.c
+index 8966e6e9..24957e40 100644
+--- a/dlls/win32u/window.c
++++ b/dlls/win32u/window.c
+@@ -2185,9 +2185,22 @@ static BOOL get_surface_rect( const RECT *visible_rect, RECT *surface_rect )
+     return TRUE;
+ }
+ 
++/* MetalSharp: whether hwnd is a child window whose parent belongs to another process (Edge WebView2's window in
++ * its host's, a CEF or Chromium browser embedded the same way). It draws into a surface of its own, which the
++ * driver shows in the host's window: its parent's surface is in the other process. */
++static BOOL is_foreign_child( HWND hwnd, HWND parent )
++{
++    DWORD pid = 0;
++
++    if (!parent || parent == get_desktop_window()) return FALSE;
++    if (!get_window_thread( parent, &pid )) return FALSE;
++    return pid && pid != GetCurrentProcessId();
++}
++
+ static BOOL get_default_window_surface( HWND hwnd, const RECT *surface_rect, struct window_surface **surface )
+ {
+     struct window_surface *previous;
++    BOOL foreign_child = is_foreign_child( hwnd, NtUserGetAncestor( hwnd, GA_PARENT ) );
+     WND *win;
+ 
+     TRACE( "hwnd %p, surface_rect %s, surface %p\n", hwnd, wine_dbgstr_rect( surface_rect ), surface );
+@@ -2199,7 +2212,7 @@ static BOOL get_default_window_surface( HWND hwnd, const RECT *surface_rect, str
+         window_surface_add_ref( (*surface = previous) );
+         TRACE( "trying to reuse previous surface %p\n", previous );
+     }
+-    else if (!win->parent || win->parent == get_desktop_window())
++    else if (!win->parent || win->parent == get_desktop_window() || foreign_child)
+     {
+         *surface = &dummy_surface;  /* provide a default surface for top-level windows */
+         window_surface_add_ref( *surface );
+@@ -2217,7 +2230,7 @@ static BOOL get_default_window_surface( HWND hwnd, const RECT *surface_rect, str
+ static struct window_surface *get_window_surface( HWND hwnd, UINT swp_flags, BOOL create_layered,
+                                                   struct window_rects *rects, RECT *surface_rect )
+ {
+-    BOOL shaped, needs_surface, create_opaque, is_layered, is_child;
++    BOOL shaped, needs_surface, create_opaque, is_layered, is_child, foreign_child;
+     HWND parent = NtUserGetAncestor( hwnd, GA_PARENT );
+     struct window_surface *new_surface;
+     struct window_rects monitor_rects;
+@@ -2229,6 +2242,7 @@ static struct window_surface *get_window_surface( HWND hwnd, UINT swp_flags, BOO
+     style = NtUserGetWindowLongW( hwnd, GWL_STYLE );
+     ex_style = NtUserGetWindowLongW( hwnd, GWL_EXSTYLE );
+     is_child = parent && parent != NtUserGetDesktopWindow();
++    foreign_child = is_child && is_foreign_child( hwnd, parent );
+ 
+     if (is_child) get_win_monitor_dpi( parent, &raw_dpi );
+     else monitor_dpi_from_rect( rects->window, get_thread_dpi(), &raw_dpi );
+@@ -2241,7 +2255,7 @@ static struct window_surface *get_window_surface( HWND hwnd, UINT swp_flags, BOO
+     else monitor_rects = map_window_rects_virt_to_raw( *rects, get_thread_dpi() );
+ 
+     if (!user_driver->pWindowPosChanging( hwnd, swp_flags, shaped, &monitor_rects )) needs_surface = FALSE;
+-    else if (is_child) needs_surface = FALSE;
++    else if (is_child && !foreign_child) needs_surface = FALSE;
+     else if (swp_flags & SWP_HIDEWINDOW) needs_surface = FALSE;
+     else if (swp_flags & SWP_SHOWWINDOW) needs_surface = TRUE;
+     else needs_surface = !!(style & WS_VISIBLE);
+diff --git a/dlls/winemac.drv/cocoa_window.m b/dlls/winemac.drv/cocoa_window.m
+index 768b3716..2a66636d 100644
+--- a/dlls/winemac.drv/cocoa_window.m
++++ b/dlls/winemac.drv/cocoa_window.m
+@@ -293,6 +293,7 @@ - (void) setMetalViewHidden:(BOOL)hidden;
+     - (void) setMetalViewExclusionRect:(CGRect)rect;
+     - (void) addCALayerHostViewWithContextId:(CAContextID)contextId;
+     - (void) removeCALayerHostView:(CAContextID)contextId;
++    - (void) setRemoteChildHost:(CAContextID)contextId frame:(CGRect)frame visible:(BOOL)visible;
+ 
+ @end
+ 
+@@ -712,6 +713,35 @@ - (void) addCALayerHostViewWithContextId:(CAContextID)contextId
+         [(WineWindow*)self.window windowDidDrawContent];
+     }
+ 
++    /* MetalSharp: the remote layer of a child window in another process (Edge WebView2's), at the child's place */
++    - (void) setRemoteChildHost:(CAContextID)contextId frame:(CGRect)frame visible:(BOOL)visible
++    {
++        CALayerHost* host;
++
++        if (!_caLayerHosts)
++            _caLayerHosts = [[NSMutableDictionary alloc] init];
++
++        [CATransaction begin];
++        [CATransaction setDisableActions:YES];
++        if (!(host = [_caLayerHosts objectForKey:@(contextId)]))
++        {
++            host = [CALayerHost layer];
++            [host setContextId:contextId];
++            host.anchorPoint = CGPointZero;
++            host.masksToBounds = YES;
++            host.zPosition = 1;
++            host.magnificationFilter = kCAFilterNearest;
++            host.contentsScale = retina_on ? 2.0 : 1.0;
++            [self.layer addSublayer:host];
++            [_caLayerHosts setObject:host forKey:@(contextId)];
++        }
++        host.frame = frame;
++        host.hidden = !visible;
++        [CATransaction commit];
++
++        [(WineWindow*)self.window windowDidDrawContent];
++    }
++
+     - (void) removeCALayerHostView:(CAContextID)contextId
+     {
+         NSNumber* key = @(contextId);
+@@ -4099,6 +4129,99 @@ void macdrv_destroy_swapchain(macdrv_metal_swapchain swapchain)
+     [(id<WineMetalSwapChain>)swapchain release];
+ }
+ 
++/* MetalSharp: a child window whose parent is in another process draws into this layer, exported through a remote
++ * CAContext for the parent's process to host (macdrv_window_set_remote_child_host). */
++@interface WineRemoteChild : NSObject
++{
++@public
++    CAContext* context;
++    CALayer* layer;
++    CAContextID contextId;
++}
++@end
++
++@implementation WineRemoteChild
++
++- (void) dealloc
++{
++    [context setLayer:nil];
++    [context release];
++    [layer release];
++    [super dealloc];
++}
++
++@end
++
++macdrv_remote_child macdrv_create_remote_child(unsigned int *context_id)
++{
++    __block WineRemoteChild* child = nil;
++
++    OnMainThread(^{
++        child = [[WineRemoteChild alloc] init];
++        child->layer = [[CALayer alloc] init];
++        child->layer.anchorPoint = CGPointZero;
++        child->layer.position = CGPointZero;
++        child->layer.magnificationFilter = kCAFilterNearest;
++        child->layer.contentsScale = retina_on ? 2.0 : 1.0;
++        child->context = [[CAContext contextWithCGSConnection:CGSMainConnectionID()
++                                                      options:[NSDictionary dictionary]] retain];
++        [child->context setLayer:child->layer];
++        child->contextId = [child->context contextId];
++    });
++
++    if (!child->context || !child->contextId)
++    {
++        OnMainThreadAsync(^{ [child release]; });
++        return NULL;
++    }
++    *context_id = child->contextId;
++    return (macdrv_remote_child)child;
++}
++
++void macdrv_remote_child_set_image(macdrv_remote_child c, CGImageRef image)
++{
++    WineRemoteChild* child = (WineRemoteChild*)c;
++
++    CGImageRetain(image);
++    [child retain];
++    OnMainThreadAsync(^{
++        CGRect bounds = cgrect_mac_from_win(CGRectMake(0, 0, CGImageGetWidth(image), CGImageGetHeight(image)));
++
++        [CATransaction begin];
++        [CATransaction setDisableActions:YES];
++        child->layer.bounds = bounds;
++        child->layer.position = CGPointZero;
++        child->layer.contents = (id)image;
++        [CATransaction commit];
++        CGImageRelease(image);
++        [child release];
++    });
++}
++
++void macdrv_destroy_remote_child(macdrv_remote_child c)
++{
++    WineRemoteChild* child = (WineRemoteChild*)c;
++
++    OnMainThreadAsync(^{ [child release]; });
++}
++
++void macdrv_window_set_remote_child_host(macdrv_window w, unsigned int context_id, CGRect frame, int visible)
++{
++@autoreleasepool
++{
++    WineWindow* window = (WineWindow*)w;
++
++    OnMainThreadAsync(^{
++        NSView* content_view = [window contentView];
++
++        if ([content_view isKindOfClass:[WineContentView class]])
++            [(WineContentView*)content_view setRemoteChildHost:context_id
++                                                         frame:cgrect_mac_from_win(frame)
++                                                       visible:visible];
++    });
++}
++}
++
+ void macdrv_window_create_ca_layer_host_view(macdrv_window w, unsigned int context_id)
+ {
+ @autoreleasepool
+diff --git a/dlls/winemac.drv/macdrv.h b/dlls/winemac.drv/macdrv.h
+index cf56cad8..0304d2d4 100644
+--- a/dlls/winemac.drv/macdrv.h
++++ b/dlls/winemac.drv/macdrv.h
+@@ -99,6 +99,9 @@ static inline RECT rect_from_cgrect(CGRect cgrect)
+     WM_MACDRV_ACTIVATE_ON_FOLLOWING_FOCUS,
+     WM_MACDRV_CREATE_REMOTE_LAYER,
+     WM_MACDRV_RELEASE_REMOTE_LAYER,
++    WM_MACDRV_UPDATE_REMOTE_CHILD,
++    WM_MACDRV_REMOVE_REMOTE_CHILD,
++    WM_MACDRV_SET_REMOTE_CURSOR,
+ };
+ 
+ struct macdrv_thread_data
+@@ -194,6 +197,11 @@ extern BOOL macdrv_SystemParametersInfo(UINT action, UINT int_param, void *ptr_p
+     unsigned int        minimized : 1;          /* is window minimized? */
+     unsigned int        fullscreen : 1;         /* is the window visible rect fullscreen? (unrelated to native AppKit/Cocoa fullscreen) */
+ 
++    /* MetalSharp: a window whose parent is in another process draws into this remote layer (window.c) */
++    macdrv_remote_child remote_child;
++    unsigned int        remote_context_id;
++    HWND                remote_host;            /* the top-level window hosting it */
++
+     /* MS HACK 22435 */
+     CFMutableArrayRef   d3dmetal_client_surfaces;
+ };
+@@ -209,6 +217,9 @@ extern BOOL macdrv_SystemParametersInfo(UINT action, UINT int_param, void *ptr_p
+ extern BOOL macdrv_client_surface_acquire_metal_swapchain(struct macdrv_client_surface *surface);
+ 
+ extern struct macdrv_win_data *get_win_data(HWND hwnd);
++extern BOOL macdrv_is_remote_child(HWND hwnd);
++extern void macdrv_ensure_remote_child(struct macdrv_win_data *data);
++extern void macdrv_set_remote_cursor_index(WPARAM index);
+ extern void release_win_data(struct macdrv_win_data *data);
+ extern void init_win_context(void);
+ extern macdrv_window macdrv_get_cocoa_window(HWND hwnd, BOOL require_on_screen);
+diff --git a/dlls/winemac.drv/macdrv_cocoa.h b/dlls/winemac.drv/macdrv_cocoa.h
+index a7ba3f4d..fbc3723c 100644
+--- a/dlls/winemac.drv/macdrv_cocoa.h
++++ b/dlls/winemac.drv/macdrv_cocoa.h
+@@ -108,6 +108,7 @@
+ typedef struct macdrv_opaque_metal_layer* macdrv_metal_layer;
+ typedef struct macdrv_opaque_metal_swapchain* macdrv_metal_swapchain;
+ typedef struct macdrv_opaque_status_item* macdrv_status_item;
++typedef struct macdrv_opaque_remote_child* macdrv_remote_child;
+ struct macdrv_event;
+ struct macdrv_query;
+ 
+@@ -553,6 +554,12 @@ extern void macdrv_order_cocoa_window(macdrv_window w, macdrv_window prev,
+ extern void macdrv_destroy_swapchain(macdrv_metal_swapchain swapchain);
+ extern void macdrv_window_create_ca_layer_host_view(macdrv_window w, unsigned int context_id);
+ extern void macdrv_window_release_ca_layer_host_view(macdrv_window w, unsigned int context_id);
++/* MetalSharp: a window whose parent is in another process (Edge WebView2's) draws into a remote layer, which the
++ * parent's process hosts in its window. */
++extern macdrv_remote_child macdrv_create_remote_child(unsigned int *context_id);
++extern void macdrv_remote_child_set_image(macdrv_remote_child child, CGImageRef image);
++extern void macdrv_destroy_remote_child(macdrv_remote_child child);
++extern void macdrv_window_set_remote_child_host(macdrv_window w, unsigned int context_id, CGRect frame, int visible);
+ extern void macdrv_create_remote_layer(void* hwnd, unsigned int context_id);
+ extern void macdrv_release_remote_layer(void* hwnd, unsigned int context_id);
+ extern bool macdrv_get_view_backing_size(macdrv_view v, int backing_size[2]);
+diff --git a/dlls/winemac.drv/mouse.c b/dlls/winemac.drv/mouse.c
+index d861e3bb..26086f07 100644
+--- a/dlls/winemac.drv/mouse.c
++++ b/dlls/winemac.drv/mouse.c
+@@ -723,13 +723,68 @@ static BOOL get_icon_info(HICON handle, ICONINFOEXW *ret)
+ /***********************************************************************
+  *              SetCursor (MACDRV.@)
+  */
++/***********************************************************************
++ *              set_remote_cursor
++ *
++ * MetalSharp: the cursor of a window inside a remote child (window.c) is shown by the process of the top-level
++ * window hosting it, the one macOS shows the cursor of: sent there as one of the NSCursor names (0 hides it, a
++ * cursor with no system name shows the arrow), as the handle means nothing in that process.
++ */
++static void set_remote_cursor(HWND remote, HCURSOR cursor)
++{
++    HWND root = NtUserGetAncestor(remote, GA_ROOT);
++    CFStringRef name = NULL;
++    WPARAM index = 0;
++    unsigned int i;
++
++    if (cursor)
++    {
++        ICONINFOEXW info;
++
++        info.cbSize = sizeof(info);
++        if (get_icon_info(cursor, &info))
++        {
++            name = copy_system_cursor_name(&info);
++            NtGdiDeleteObjectApp(info.hbmColor);
++            NtGdiDeleteObjectApp(info.hbmMask);
++        }
++        index = 1; /* arrowCursor */
++        for (i = 0; name && i < ARRAY_SIZE(cocoa_cursor_names); i++)
++            if (CFEqual(name, cocoa_cursor_names[i])) index = i + 1;
++        if (name) CFRelease(name);
++    }
++    TRACE("remote child %p cursor %p -> %u for %p\n", remote, cursor, (unsigned int)index, root);
++    if (root && root != remote) NtUserPostMessage(root, WM_MACDRV_SET_REMOTE_CURSOR, index, 0);
++}
++
++
++/***********************************************************************
++ *              macdrv_set_remote_cursor_index
++ *
++ * In the hosting process: show the cursor a remote child asked for (set_remote_cursor).
++ */
++void macdrv_set_remote_cursor_index(WPARAM index)
++{
++    if (!index) macdrv_set_cursor(NULL, NULL);
++    else if (index <= ARRAY_SIZE(cocoa_cursor_names)) macdrv_set_cursor(cocoa_cursor_names[index - 1], NULL);
++}
++
++
+ void macdrv_SetCursor(HWND hwnd, HCURSOR cursor)
+ {
+     CFStringRef cursor_name = NULL;
+     CFArrayRef cursor_frames = NULL;
++    HWND remote;
+ 
+     TRACE("%p %p\n", hwnd, cursor);
+ 
++    for (remote = hwnd; remote && remote != NtUserGetDesktopWindow(); remote = NtUserGetAncestor(remote, GA_PARENT))
++    {
++        if (!macdrv_is_remote_child(remote)) continue;
++        set_remote_cursor(remote, cursor);
++        return;
++    }
++
+     if (cursor)
+     {
+         ICONINFOEXW info;
+diff --git a/dlls/winemac.drv/surface.c b/dlls/winemac.drv/surface.c
+index 39481149..2b886908 100644
+--- a/dlls/winemac.drv/surface.c
++++ b/dlls/winemac.drv/surface.c
+@@ -87,6 +87,45 @@ static BOOL macdrv_surface_flush(struct window_surface *window_surface, const RE
+     CGImageRef image;
+     struct macdrv_win_data *data;
+ 
++    /* MetalSharp: a window whose parent is in another process has no Cocoa window: its pixels go to its remote
++     * layer, copied, as Core Animation reads them later on the main thread while GDI keeps drawing */
++    if (!surface->window)
++    {
++        if ((data = get_win_data(window_surface->hwnd)))
++        {
++            int width = data->rects.visible.right - data->rects.visible.left;
++            int height = data->rects.visible.bottom - data->rects.visible.top;
++            int src_stride = color_info->bmiHeader.biSizeImage / abs(color_info->bmiHeader.biHeight);
++            CGDataProviderRef provider;
++            BYTE *dst;
++            int y;
++
++            if (data->remote_child)
++            {
++                width = min(max(width, 1), color_info->bmiHeader.biWidth);
++                height = min(max(height, 1), abs(color_info->bmiHeader.biHeight));
++                if ((provider = data_provider_create(width * 4 * height, (void **)&dst)))
++                {
++                    for (y = 0; y < height; y++)
++                        memcpy(dst + y * width * 4, (const BYTE *)color_bits + y * src_stride, width * 4);
++                    colorspace = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
++                    image = CGImageCreate(width, height, 8, 32, width * 4, colorspace,
++                                          kCGImageAlphaNoneSkipFirst | kCGBitmapByteOrder32Little, provider, NULL,
++                                          retina_on, kCGRenderingIntentDefault);
++                    CGColorSpaceRelease(colorspace);
++                    CGDataProviderRelease(provider);
++                    if (image)
++                    {
++                        macdrv_remote_child_set_image(data->remote_child, image);
++                        CGImageRelease(image);
++                    }
++                }
++            }
++            release_win_data(data);
++        }
++        return TRUE;
++    }
++
+     colorspace = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+     image = CGImageCreate(color_info->bmiHeader.biWidth, abs(color_info->bmiHeader.biHeight), 8, 32,
+                           color_info->bmiHeader.biSizeImage / abs(color_info->bmiHeader.biHeight), colorspace,
+@@ -234,6 +273,16 @@ BOOL macdrv_CreateWindowSurface(HWND hwnd, BOOL layered, const RECT *surface_rec
+ 
+     if ((previous = *surface) && previous->funcs == &macdrv_surface_funcs) return TRUE;
+     if (!(data = get_win_data(hwnd))) return TRUE; /* use default surface */
++    /* MetalSharp: a window whose parent is in another process draws into a remote layer (window.c) */
++    if (!data->cocoa_window)
++    {
++        if (!macdrv_is_remote_child(hwnd))
++        {
++            release_win_data(data);
++            return TRUE;
++        }
++        macdrv_ensure_remote_child(data);
++    }
+     if (previous) window_surface_release(previous);
+ 
+     if (layered)
+diff --git a/dlls/winemac.drv/window.c b/dlls/winemac.drv/window.c
+index b654c868..8ffd9108 100644
+--- a/dlls/winemac.drv/window.c
++++ b/dlls/winemac.drv/window.c
+@@ -553,6 +553,51 @@ static void destroy_cocoa_window(struct macdrv_win_data *data)
+ }
+ 
+ 
++/***********************************************************************
++ *              macdrv_is_remote_child
++ *
++ * MetalSharp: whether hwnd is a child window whose parent belongs to another process (Edge WebView2's window in
++ * its host's). It has no Cocoa window: it draws into a remote layer, which the top-level window's process hosts
++ * where the child is.
++ */
++BOOL macdrv_is_remote_child(HWND hwnd)
++{
++    HWND parent = NtUserGetAncestor(hwnd, GA_PARENT);
++    DWORD pid = 0;
++
++    if (!parent || parent == NtUserGetDesktopWindow()) return FALSE;
++    if (!NtUserGetWindowThread(parent, &pid)) return FALSE;
++    return pid && pid != GetCurrentProcessId();
++}
++
++
++/* tell the top-level window's process where to show the remote layer, and that it changed */
++static void notify_remote_host(struct macdrv_win_data *data)
++{
++    HWND root = NtUserGetAncestor(data->hwnd, GA_ROOT);
++
++    if (!data->remote_context_id || !root || root == data->hwnd) return;
++    if (data->remote_host && data->remote_host != root)
++        NtUserPostMessage(data->remote_host, WM_MACDRV_REMOVE_REMOTE_CHILD, 0, data->remote_context_id);
++    data->remote_host = root;
++    NtUserPostMessage(root, WM_MACDRV_UPDATE_REMOTE_CHILD, (WPARAM)data->hwnd, data->remote_context_id);
++}
++
++
++/***********************************************************************
++ *              macdrv_ensure_remote_child
++ */
++void macdrv_ensure_remote_child(struct macdrv_win_data *data)
++{
++    if (!data->remote_child)
++    {
++        data->remote_child = macdrv_create_remote_child(&data->remote_context_id);
++        TRACE("win %p remote layer context %u\n", data->hwnd, data->remote_context_id);
++    }
++    notify_remote_host(data);
++}
++
++
+ /***********************************************************************
+  *              macdrv_create_win_data
+  *
+@@ -1423,6 +1468,14 @@ void macdrv_DestroyWindow(HWND hwnd)
+ 
+     destroy_cocoa_window(data);
+ 
++    if (data->remote_child)
++    {
++        if (data->remote_host)
++            NtUserPostMessage(data->remote_host, WM_MACDRV_REMOVE_REMOTE_CHILD, 0, data->remote_context_id);
++        macdrv_destroy_remote_child(data->remote_child);
++        data->remote_child = NULL;
++    }
++
+     /* MS HACK 22435 */
+     if (data->d3dmetal_client_surfaces) CFRelease(data->d3dmetal_client_surfaces);
+ 
+@@ -1715,6 +1768,34 @@ LRESULT macdrv_WindowMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+             release_win_data(data);
+         }
+         return 0;
++    case WM_MACDRV_UPDATE_REMOTE_CHILD:
++        if ((data = get_win_data(hwnd)))
++        {
++            HWND child = (HWND)wp;
++            RECT rect;
++            BOOL visible = NtUserIsWindowVisible(child) &&
++                           NtUserGetWindowRect(child, &rect, NtUserGetWinMonitorDpi(hwnd, MDT_RAW_DPI));
++
++            if (!visible) SetRectEmpty(&rect);
++            else OffsetRect(&rect, -data->rects.visible.left, -data->rects.visible.top);
++            TRACE("WM_MACDRV_UPDATE_REMOTE_CHILD child %p context %u rect %s visible %u\n", child,
++                  (unsigned int)lp, wine_dbgstr_rect(&rect), visible);
++            if (data->cocoa_window)
++                macdrv_window_set_remote_child_host(data->cocoa_window, (unsigned int)lp, cgrect_from_rect(rect),
++                                                    visible);
++            release_win_data(data);
++        }
++        return 0;
++    case WM_MACDRV_SET_REMOTE_CURSOR:
++        macdrv_set_remote_cursor_index(wp);
++        return 0;
++    case WM_MACDRV_REMOVE_REMOTE_CHILD:
++        if ((data = get_win_data(hwnd)))
++        {
++            if (data->cocoa_window) macdrv_window_release_ca_layer_host_view(data->cocoa_window, (unsigned int)lp);
++            release_win_data(data);
++        }
++        return 0;
+     case WM_MACDRV_RELEASE_REMOTE_LAYER:
+         if ((data = get_win_data(hwnd)))
+         {
+@@ -1755,7 +1836,8 @@ BOOL macdrv_WindowPosChanging(HWND hwnd, UINT swp_flags, BOOL shaped, const stru
+     if (!data && !(data = macdrv_create_win_data(hwnd, rects))) return FALSE; /* use default surface */
+     data->shaped = shaped;
+ 
+-    ret = !!data->cocoa_window; /* use default surface if we don't have a window */
++    /* use default surface if we don't have a window, unless the window draws into a remote layer */
++    ret = data->cocoa_window || macdrv_is_remote_child(hwnd);
+     release_win_data(data);
+ 
+     return ret;
+@@ -1807,6 +1889,7 @@ void macdrv_WindowPosChanged(HWND hwnd, HWND insert_after, HWND owner_hint, UINT
+     TRACE("win %p/%p new_rects %s style %08x flags %08x surface %p\n", hwnd, data->cocoa_window,
+           debugstr_window_rects(new_rects), new_style, swp_flags, surface);
+ 
++    if (data->remote_child) notify_remote_host(data);
+     if (!data->cocoa_window) goto done;
+ 
+     if (data->on_screen)
+-- 
+2.54.0 (Apple Git-157)
+

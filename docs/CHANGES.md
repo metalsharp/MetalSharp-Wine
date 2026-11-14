@@ -7,6 +7,10 @@ The [release notes](https://github.com/metalsharp/MetalSharp-Wine/releases) have
 - Steam's window no longer freezes under FEX after it loads. Its web helper runs SwiftShader for WebGL only (`--use-angle=swiftshader-webgl`), as on the x86_64 runtime, instead of compositing Steam's UI through ANGLE on SwiftShader (Wine patch 0164).
 - Ubisoft Connect no longer freezes under FEX. Its browser (`upc.exe`) gets the same arguments as Steam's web helper and draws its UI in software, instead of through ANGLE on Direct3D 11 (Wine patch 0165).
 - Every Chromium-based program (CEF, Chrome, Edge/WebView2, and the Rockstar, EA and Battle.net launchers) draws its UI in software with the arguments Steam and Ubisoft Connect get, so none of them freezes under FEX the way those two did (Wine patch 0166).
+- Programs built on Microsoft Edge WebView2, such as NoHesi Launcher, work on both builds:
+  - **The runtime:** the first time such a program runs in a prefix, Wine installs the WebView2 Runtime from Microsoft with the bootstrapper the app now carries. This takes about a minute, once per prefix.
+  - **No DirectComposition:** WebView2 draws without DirectComposition, which Wine lacks.
+  - **x86_64:** the x86_64 build also gets the software drawing every Chromium browser gets under FEX. WebView2's window, a child of its program's window drawn from another process, now shows there, with its cursor (Wine patches 0167, x86_64 0060–0061).
 
 ## 6.5
 

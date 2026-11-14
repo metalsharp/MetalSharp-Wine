@@ -75,7 +75,7 @@ Patches 0141–0143 and 0159–0161 come from the port of Valve's [Proton](https
 | 0159 anti-cheat runtime exports | Valve's Wine: the ntdll exports Valve's EasyAntiCheat and BattlEye runtimes import, ported to Wine 11.20 |
 | 0160–0161 loading the Linux module host | Written for the port's Linux module host |
 
-Patches 0144–0157 are fixes to MetalSharp Wine found by running Wine's test suite, 0158 set the version to 7.0, 0162 sets it to 6.5, the version that release ships as, 0163 fixes Steam's browser flags after Steam's November 2026 update, 0164 has Steam's web helper run SwiftShader for WebGL only, 0165 does the same for Ubisoft Connect's browser, and 0166 for every Chromium browser.
+Patches 0144–0157 are fixes to MetalSharp Wine found by running Wine's test suite, 0158 set the version to 7.0, 0162 sets it to 6.5, the version that release ships as, 0163 fixes Steam's browser flags after Steam's November 2026 update, 0164 has Steam's web helper run SwiftShader for WebGL only, 0165 does the same for Ubisoft Connect's browser, 0166 for every Chromium browser, and 0167 installs the Edge WebView2 Runtime for the programs that use it and keeps WebView2 off DirectComposition.
 
 The Linux module host itself (`source/linuxhost`, built into `lib/linuxhost`) is written for the port and developed in metalsharp/Proton's `darwin/linuxhost`; the branch is that directory's history.
 
@@ -94,6 +94,7 @@ The Linux module host itself (`source/linuxhost`, built into `lib/linuxhost`) is
 | WineMetalGL | MetalSharp | LGPL 3.0 | `source/winemetalgl` branch |
 | GStreamer, FreeType, GnuTLS, SDL2, FFmpeg and the other libraries in `deps/` | Their authors | Their own licenses | Unmodified upstream releases |
 | DXC, d3dcompiler_47 | Microsoft | Microsoft redistribution terms | Unmodified redistributables |
+| Edge WebView2 Evergreen bootstrapper (`share/wine/webview2`) | Microsoft | Microsoft Edge WebView2 distribution terms | Unmodified; it downloads the WebView2 Runtime from Microsoft when a program needs it |
 | Metal Shader Converter library (`libmetalirconverter.dylib`, 4.0 beta 3) | Apple Inc. | Apple's Software License Agreement for Metal Shader Converter (proprietary) | Unmodified and Apple-signed, from metalsharp/VKD3D-Proton-MacOS's `deps-metal-shaderconverter-4.0b3` release |
 | D3DMetal (Game Porting Toolkit 4.0 beta 3; x86_64 build only) | Apple Inc. | Apple's Game Porting Toolkit license (proprietary, non-commercial distribution) | Unmodified and Apple-signed, from Apple's Game Porting Toolkit |
 

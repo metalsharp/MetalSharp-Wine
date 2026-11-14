@@ -45,6 +45,9 @@ fi
 # Proton's per-game rules (Wine patch 0141 applies them to the programs Steam starts). metalsharp/Proton
 # generates the file from its launcher with appcompat/extract.py; resources/ keeps a copy.
 mkdir -p $D/share/proton; cp $ROOT/resources/appcompat.env $D/share/proton/appcompat.env
+# Microsoft's Edge WebView2 Evergreen bootstrapper, unmodified (Wine patch 0167): kernelbase runs it in a prefix the
+# first time a program there loads WebView2Loader.dll, and it installs the WebView2 Runtime from Microsoft.
+mkdir -p $D/share/wine/webview2; cp $ROOT/resources/webview2/MicrosoftEdgeWebview2Setup.exe $D/share/wine/webview2/
 # cabextract (scripts/build-cabextract.sh), for Microsoft cabinet installers (corefonts, VC++)
 if [[ -x $ROOT/deps/cabextract/cabextract ]]; then
   cp $ROOT/deps/cabextract/cabextract $D/bin/
