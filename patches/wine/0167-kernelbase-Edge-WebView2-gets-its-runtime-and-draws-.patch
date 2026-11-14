@@ -1,8 +1,8 @@
 From 59b8f6aa08d28b53ebd99e810298c887e899d292 Mon Sep 17 00:00:00 2001
 From: Avery Felts <averyfelts@Averys-Mac-Mini.local>
 Date: Sat, 14 Nov 2026 12:07:52 -0700
-Subject: [PATCH] kernelbase: Edge WebView2 gets its runtime, and draws without
- DirectComposition
+Subject: [PATCH 167/168] kernelbase: Edge WebView2 gets its runtime, and draws
+ without DirectComposition
 
 Drawing in software (patch 0166), Edge WebView2 (NoHesi Launcher)
 presents through DirectComposition, which Wine does not have

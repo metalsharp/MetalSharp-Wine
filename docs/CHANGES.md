@@ -10,7 +10,8 @@ The [release notes](https://github.com/metalsharp/MetalSharp-Wine/releases) have
 - Programs built on Microsoft Edge WebView2, such as NoHesi Launcher, work on both builds:
   - **The runtime:** the first time such a program runs in a prefix, Wine installs the WebView2 Runtime from Microsoft with the bootstrapper the app now carries. This takes about a minute, once per prefix.
   - **No DirectComposition:** WebView2 draws without DirectComposition, which Wine lacks.
-  - **x86_64:** the x86_64 build also gets the software drawing every Chromium browser gets under FEX. WebView2's window, a child of its program's window drawn from another process, now shows there, with its cursor (Wine patches 0167, x86_64 0060–0061).
+  - **x86_64:** the x86_64 build also gets the software drawing every Chromium browser gets under FEX.
+  - **WebView2's window** (a child of its program's window, drawn from another process) now shows, with its cursor, on both builds (Wine patches 0167–0168, x86_64 0060–0061).
 
 ## 6.5
 
