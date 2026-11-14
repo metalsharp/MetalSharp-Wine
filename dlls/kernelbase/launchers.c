@@ -29,12 +29,20 @@ struct launcher_process_policy
     const WCHAR *append_args;
 };
 
+/* MetalSharp: what every Chromium browser (CEF, Chrome, Edge/WebView2) gets: no sandbox, the GPU in process and off,
+ * and SwiftShader for WebGL only, so its UI composites in software. With the GPU on, or all of ANGLE on SwiftShader,
+ * Chromium draws its UI through ANGLE (Direct3D 11, or SwiftShader's GL) into its windows, and under FEX those windows
+ * stop updating: the program looks frozen while its threads sit idle (Steam's web helper, Ubisoft Connect). */
+#define CHROMIUM_SOFTWARE_ARGS \
+    L" --no-sandbox --in-process-gpu --disable-gpu --disable-d3d11 --enable-unsafe-swiftshader --use-gl=angle" \
+    L" --use-angle=swiftshader-webgl"
+/* A command line that already has them. */
+#define CHROMIUM_SOFTWARE_MARKER L"--use-angle=swiftshader-webgl"
+
 static const struct launcher_process_policy launcher_process_policies[] =
 {
-    /* WineForge-Internal: launcher-compat/steam-cef-swiftshader-v1.
-     * MetalSharp: SwiftShader for WebGL only (swiftshader-webgl), as MetalSharp's x86_64 runtime starts Steam's
-     * web helper. With all of ANGLE on SwiftShader the browser composites through ANGLE into its windows, which
-     * stop updating under FEX: Steam's window freezes and its watchdog kills the renderers as unresponsive. */
+    /* WineForge-Internal: launcher-compat/steam-cef-swiftshader-v1. Every web helper process, as MetalSharp's x86_64
+     * runtime starts them. */
     {
         L"steamwebhelper.exe",
         L"\\Steam\\bin\\cef\\",
@@ -42,13 +50,7 @@ static const struct launcher_process_policy launcher_process_policies[] =
         NULL,
         NULL,
         {L"--type=crashpad-handler", L"--disable-gpu", NULL},
-        L" --no-sandbox"
-        L" --in-process-gpu"
-        L" --disable-gpu"
-        L" --disable-d3d11"
-        L" --enable-unsafe-swiftshader"
-        L" --use-gl=angle"
-        L" --use-angle=swiftshader-webgl",
+        CHROMIUM_SOFTWARE_ARGS,
     },
     /* WineForge-Internal: launcher-compat/rockstar-cef-in-process-gpu-v1. */
     {
@@ -57,8 +59,8 @@ static const struct launcher_process_policy launcher_process_policies[] =
         L"/Rockstar Games/Social Club/",
         NULL,
         NULL,
-        {L"--type=", L"--in-process-gpu", NULL},
-        L" --in-process-gpu",
+        {L"--type=", CHROMIUM_SOFTWARE_MARKER, NULL},
+        CHROMIUM_SOFTWARE_ARGS,
     },
     /* WineForge-Internal: launcher-compat/ea-app-in-process-gpu-v1. */
     {
@@ -67,8 +69,8 @@ static const struct launcher_process_policy launcher_process_policies[] =
         L"/Program Files/Electronic Arts/EA Desktop/",
         L"\\compatibility32\\",
         L"/compatibility32/",
-        {L"--type=", L"--in-process-gpu", NULL},
-        L" --in-process-gpu",
+        {L"--type=", CHROMIUM_SOFTWARE_MARKER, NULL},
+        CHROMIUM_SOFTWARE_ARGS,
     },
     /* WineForge-Internal: launcher-compat/battlenet-in-process-gpu-v1. */
     {
@@ -77,27 +79,19 @@ static const struct launcher_process_policy launcher_process_policies[] =
         L"/Program Files (x86)/Battle.net/",
         NULL,
         NULL,
-        {L"--type=", L"--in-process-gpu", NULL},
-        L" --in-process-gpu",
+        {L"--type=", CHROMIUM_SOFTWARE_MARKER, NULL},
+        CHROMIUM_SOFTWARE_ARGS,
     },
-    /* WineForge-Internal: launcher-compat/ubisoft-connect-in-process-gpu-v1.
-     * MetalSharp: and SwiftShader for WebGL only, as for Steam's web helper. Otherwise Ubisoft Connect's browser
-     * (upc.exe itself) draws its UI through ANGLE on Direct3D 11, and its window stops updating under FEX. Only the
-     * browser gets these, so its renderers (UplayWebCore.exe --type=...) are left as they are. */
+    /* WineForge-Internal: launcher-compat/ubisoft-connect-in-process-gpu-v1. Its browser is upc.exe itself; its
+     * renderers (UplayWebCore.exe --type=...) are left as they are. */
     {
         L"upc.exe",
         L"\\Program Files (x86)\\Ubisoft\\Ubisoft Game Launcher\\",
         L"/Program Files (x86)/Ubisoft/Ubisoft Game Launcher/",
         NULL,
         NULL,
-        {L"--type=", L"--in-process-gpu", NULL},
-        L" --no-sandbox"
-        L" --in-process-gpu"
-        L" --disable-gpu"
-        L" --disable-d3d11"
-        L" --enable-unsafe-swiftshader"
-        L" --use-gl=angle"
-        L" --use-angle=swiftshader-webgl",
+        {L"--type=", CHROMIUM_SOFTWARE_MARKER, NULL},
+        CHROMIUM_SOFTWARE_ARGS,
     },
 };
 
@@ -183,10 +177,9 @@ const WCHAR *get_launcher_process_args( const WCHAR *app_name, const WCHAR *cmd_
         return policy->append_args;
     }
 
-    /* MetalSharp: any other Chromium browser process. Its GPU process can't draw into the
-     * browser's windows on macOS (they stay blank), so keep the GPU thread in process. */
-    if (!string_contains_ci( cmd_line, L"--type=" ) && !string_contains_ci( cmd_line, L"--in-process-gpu" ) &&
+    /* MetalSharp: any other Chromium browser process (its children take their settings from it). */
+    if (!string_contains_ci( cmd_line, L"--type=" ) && !cmd_line_has_arg( cmd_line, CHROMIUM_SOFTWARE_MARKER ) &&
         is_chromium_browser( app_name ))
-        return L" --in-process-gpu";
+        return CHROMIUM_SOFTWARE_ARGS;
     return NULL;
 }
