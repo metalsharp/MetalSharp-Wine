@@ -29,6 +29,7 @@
 #include "winternl.h"
 #include "ddk/ntddk.h"
 #include "kernelbase.h"
+#include "launchers.h"
 #include "wine/list.h"
 #include "wine/asm.h"
 #include "wine/debug.h"
@@ -573,6 +574,7 @@ HMODULE WINAPI DECLSPEC_HOTPATCH LoadLibraryExW( LPCWSTR name, HANDLE file, DWOR
         SetLastError( ERROR_INVALID_PARAMETER );
         return 0;
     }
+    ensure_webview2_runtime( name );
     RtlInitUnicodeString( &str, name );
     if (str.Length && str.Buffer[str.Length/sizeof(WCHAR) - 1] != ' ') return load_library( &str, flags );
 

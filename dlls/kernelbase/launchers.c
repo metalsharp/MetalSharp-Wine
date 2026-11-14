@@ -15,8 +15,12 @@
 #include "windef.h"
 #include "winbase.h"
 #include "winternl.h"
+#include "winreg.h"
+#include "wine/debug.h"
 
 #include "launchers.h"
+
+WINE_DEFAULT_DEBUG_CHANNEL(process);
 
 struct launcher_process_policy
 {
@@ -182,4 +186,131 @@ const WCHAR *get_launcher_process_args( const WCHAR *app_name, const WCHAR *cmd_
         is_chromium_browser( app_name ))
         return CHROMIUM_SOFTWARE_ARGS;
     return NULL;
+}
+
+/* MetalSharp: drawing in software, Edge WebView2 presents through DirectComposition, which Wine does not have
+ * (DCompositionCreateDevice is E_NOTIMPL), and fails a CHECK there unless ForceSWDCompWhenDCompFallbackRequired is
+ * off. Chromium takes only its last --disable-features, so the feature joins that one's list, or comes in a new one.
+ * Returns a new command line (from the process heap), or NULL when it has the feature already. */
+WCHAR *chromium_disable_dcomp_fallback( const WCHAR *cmd_line )
+{
+    static const WCHAR feature[] = L"ForceSWDCompWhenDCompFallbackRequired";
+    static const WCHAR option[] = L"--disable-features=";
+    SIZE_T option_len = ARRAY_SIZE(option) - 1, feature_len = ARRAY_SIZE(feature) - 1;
+    SIZE_T len = lstrlenW( cmd_line ), at, n;
+    const WCHAR *p, *last = NULL, *end;
+    WCHAR *ret;
+
+    if (string_contains_ci( cmd_line, feature )) return NULL;
+    for (p = cmd_line; *p; p++)
+        if (!wcsnicmp( p, option, option_len ) && (p == cmd_line || p[-1] == ' ' || p[-1] == '\t' || p[-1] == '"'))
+            last = p;
+    if (!(ret = RtlAllocateHeap( GetProcessHeap(), 0, (len + 2 + option_len + feature_len + 1) * sizeof(WCHAR) )))
+        return NULL;
+    if (!last)
+    {
+        lstrcpyW( ret, cmd_line );
+        lstrcatW( ret, L" " );
+        lstrcatW( ret, option );
+        lstrcatW( ret, feature );
+        return ret;
+    }
+    for (end = last + option_len; *end && *end != ' ' && *end != '\t' && *end != '"'; end++) ;
+    at = end - cmd_line;
+    memcpy( ret, cmd_line, at * sizeof(WCHAR) );
+    n = at;
+    if (end > last + option_len) ret[n++] = ',';
+    memcpy( ret + n, feature, feature_len * sizeof(WCHAR) );
+    lstrcpyW( ret + n + feature_len, end );
+    return ret;
+}
+
+/* MetalSharp: Edge WebView2's loader needs the WebView2 Runtime, which a Wine prefix doesn't have: a program then
+ * fails, NoHesi Launcher (.NET) with "Couldn't find a compatible Webview2 Runtime installation". When a program
+ * loads WebView2Loader.dll in a prefix without the runtime, Microsoft's Evergreen bootstrapper, which MetalSharp
+ * Wine carries in its data directory (webview2/MicrosoftEdgeWebview2Setup.exe), installs it first: it downloads the
+ * runtime from Microsoft, about a minute. A named mutex keeps processes from installing it at once. */
+static BOOL webview2_runtime_installed( void )
+{
+    static const WCHAR key[] = L"SOFTWARE\\Microsoft\\EdgeUpdate\\Clients\\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}";
+    static const HKEY roots[] = { HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER };
+    WCHAR version[64];
+    DWORD size, type;
+    unsigned int i;
+    BOOL ret = FALSE;
+    HKEY hkey;
+
+    for (i = 0; i < ARRAY_SIZE(roots) && !ret; i++)
+    {
+        if (RegOpenKeyExW( roots[i], key, 0, KEY_QUERY_VALUE | KEY_WOW64_32KEY, &hkey )) continue;
+        size = sizeof(version) - sizeof(WCHAR);
+        memset( version, 0, sizeof(version) );
+        if (!RegQueryValueExW( hkey, L"pv", NULL, &type, (BYTE *)version, &size ) && type == REG_SZ &&
+            version[0] && wcscmp( version, L"0.0.0.0" ))
+            ret = TRUE;
+        RegCloseKey( hkey );
+    }
+    return ret;
+}
+
+/* runs the bootstrapper, unless another process is or the runtime is there by now */
+static void install_webview2_runtime( const WCHAR *reason )
+{
+    static const WCHAR setup_name[] = L"\\webview2\\MicrosoftEdgeWebview2Setup.exe";
+    WCHAR data[MAX_PATH], setup[MAX_PATH], cmdline[MAX_PATH + 32];
+    STARTUPINFOW si = { sizeof(si) };
+    PROCESS_INFORMATION pi;
+    const WCHAR *dir;
+    HANDLE mutex;
+    DWORD len;
+
+    len = GetEnvironmentVariableW( L"WINEDATADIR", data, ARRAY_SIZE(data) );
+    if (!len || len >= ARRAY_SIZE(data)) return;
+    dir = wcsncmp( data, L"\\??\\", 4 ) ? data : data + 4;
+    if (lstrlenW( dir ) + ARRAY_SIZE(setup_name) > ARRAY_SIZE(setup)) return;
+    lstrcpyW( setup, dir );
+    lstrcatW( setup, setup_name );
+    if (GetFileAttributesW( setup ) == INVALID_FILE_ATTRIBUTES)
+    {
+        WARN( "no WebView2 Runtime, and no %s to install it\n", debugstr_w(setup) );
+        return;
+    }
+
+    if ((mutex = CreateMutexW( NULL, FALSE, L"MetalSharpWebView2RuntimeSetup" )))
+        WaitForSingleObject( mutex, 15 * 60 * 1000 );
+    if (!webview2_runtime_installed())
+    {
+        lstrcpyW( cmdline, L"\"" );
+        lstrcatW( cmdline, setup );
+        lstrcatW( cmdline, L"\" /silent /install" );
+        WARN( "%s needs the WebView2 Runtime: installing it\n", debugstr_w(reason) );
+        if (CreateProcessW( setup, cmdline, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi ))
+        {
+            WaitForSingleObject( pi.hProcess, 10 * 60 * 1000 );
+            CloseHandle( pi.hThread );
+            CloseHandle( pi.hProcess );
+        }
+        else WARN( "could not start %s: %lu\n", debugstr_w(setup), GetLastError() );
+    }
+    if (mutex)
+    {
+        ReleaseMutex( mutex );
+        CloseHandle( mutex );
+    }
+}
+
+/* a program loading the WebView2 loader, which waits for the runtime to install */
+void ensure_webview2_runtime( const WCHAR *name )
+{
+    static const WCHAR loader[] = L"webview2loader";
+    static LONG checked;
+    const WCHAR *base = name, *p;
+
+    if (!name) return;
+    for (p = name; *p; p++) if (*p == '\\' || *p == '/') base = p + 1;
+    if (wcsnicmp( base, loader, ARRAY_SIZE(loader) - 1 )) return;
+    p = base + ARRAY_SIZE(loader) - 1;
+    if (*p && wcsicmp( p, L".dll" )) return;
+    if (InterlockedCompareExchange( &checked, 1, 0 )) return;
+    if (!webview2_runtime_installed()) install_webview2_runtime( name );
 }

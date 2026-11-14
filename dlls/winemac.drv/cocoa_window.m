@@ -271,6 +271,7 @@ static inline BOOL stage_manager_enabled(void)
     - (WineMetalView*) newMetalViewWithDevice:(id<MTLDevice>)device;
     - (void) addCALayerHostViewWithContextId:(CAContextID)contextId;
     - (void) removeCALayerHostView:(CAContextID)contextId;
+    - (void) setRemoteChildHost:(CAContextID)contextId frame:(CGRect)frame visible:(BOOL)visible;
 
 @end
 
@@ -613,6 +614,35 @@ static inline BOOL stage_manager_enabled(void)
 
         [self.layer addSublayer:host];
         [_caLayerHosts setObject:host forKey:@(contextId)];
+
+        [(WineWindow*)self.window windowDidDrawContent];
+    }
+
+    /* MetalSharp: the remote layer of a child window in another process (Edge WebView2's), at the child's place */
+    - (void) setRemoteChildHost:(CAContextID)contextId frame:(CGRect)frame visible:(BOOL)visible
+    {
+        CALayerHost* host;
+
+        if (!_caLayerHosts)
+            _caLayerHosts = [[NSMutableDictionary alloc] init];
+
+        [CATransaction begin];
+        [CATransaction setDisableActions:YES];
+        if (!(host = [_caLayerHosts objectForKey:@(contextId)]))
+        {
+            host = [CALayerHost layer];
+            [host setContextId:contextId];
+            host.anchorPoint = CGPointZero;
+            host.masksToBounds = YES;
+            host.zPosition = 1;
+            host.magnificationFilter = kCAFilterNearest;
+            host.contentsScale = retina_on ? 2.0 : 1.0;
+            [self.layer addSublayer:host];
+            [_caLayerHosts setObject:host forKey:@(contextId)];
+        }
+        host.frame = frame;
+        host.hidden = !visible;
+        [CATransaction commit];
 
         [(WineWindow*)self.window windowDidDrawContent];
     }
@@ -3887,6 +3917,93 @@ void macdrv_destroy_swapchain(id<WineMetalSwapChain> swapchain)
 @autoreleasepool
 {
     [swapchain release];
+}
+}
+
+/* MetalSharp: a child window whose parent is in another process draws into this layer, exported through a remote
+ * CAContext for the parent's process to host (macdrv_window_set_remote_child_host). */
+@interface WineRemoteChild : NSObject
+{
+@public
+    CAContext* context;
+    CALayer* layer;
+    CAContextID contextId;
+}
+@end
+
+@implementation WineRemoteChild
+
+- (void) dealloc
+{
+    [context setLayer:nil];
+    [context release];
+    [layer release];
+    [super dealloc];
+}
+
+@end
+
+WineRemoteChild *macdrv_create_remote_child(unsigned int *context_id)
+{
+    __block WineRemoteChild* child = nil;
+
+    OnMainThread(^{
+        child = [[WineRemoteChild alloc] init];
+        child->layer = [[CALayer alloc] init];
+        child->layer.anchorPoint = CGPointZero;
+        child->layer.position = CGPointZero;
+        child->layer.magnificationFilter = kCAFilterNearest;
+        child->layer.contentsScale = retina_on ? 2.0 : 1.0;
+        child->context = [[CAContext contextWithCGSConnection:CGSMainConnectionID()
+                                                      options:[NSDictionary dictionary]] retain];
+        [child->context setLayer:child->layer];
+        child->contextId = [child->context contextId];
+    });
+
+    if (!child->context || !child->contextId)
+    {
+        OnMainThreadAsync(^{ [child release]; });
+        return NULL;
+    }
+    *context_id = child->contextId;
+    return child;
+}
+
+void macdrv_remote_child_set_image(WineRemoteChild *child, CGImageRef image)
+{
+    CGImageRetain(image);
+    [child retain];
+    OnMainThreadAsync(^{
+        CGRect bounds = cgrect_mac_from_win(CGRectMake(0, 0, CGImageGetWidth(image), CGImageGetHeight(image)));
+
+        [CATransaction begin];
+        [CATransaction setDisableActions:YES];
+        child->layer.bounds = bounds;
+        child->layer.position = CGPointZero;
+        child->layer.contents = (id)image;
+        [CATransaction commit];
+        CGImageRelease(image);
+        [child release];
+    });
+}
+
+void macdrv_destroy_remote_child(WineRemoteChild *child)
+{
+    OnMainThreadAsync(^{ [child release]; });
+}
+
+void macdrv_window_set_remote_child_host(WineWindow *window, unsigned int context_id, CGRect frame, int visible)
+{
+@autoreleasepool
+{
+    OnMainThreadAsync(^{
+        NSView* content_view = [window contentView];
+
+        if ([content_view isKindOfClass:[WineContentView class]])
+            [(WineContentView*)content_view setRemoteChildHost:context_id
+                                                         frame:cgrect_mac_from_win(frame)
+                                                       visible:visible];
+    });
 }
 }
 
