@@ -282,6 +282,10 @@ fi
 # Programs run from the x86_64 install's runtime/wine/bin/wine, outside any app bundle: winemac.drv shows them with
 # share/wine/MetalSharp-Wine.icns in the Dock (MetalSharp Wine's fix), as the app's own programs show its icon
 cp -p "$C/Resources/$ICON.icns" "$C/share/wine/$ICON.icns"
+# Microsoft's Edge WebView2 Evergreen bootstrapper, unmodified (wine-x86_64 patch 0060): kernelbase runs it in a prefix
+# the first time a program there loads WebView2Loader.dll, and it installs the WebView2 Runtime from Microsoft.
+mkdir -p "$C/share/wine/webview2"
+cp -p "$HERE/../resources/webview2/MicrosoftEdgeWebview2Setup.exe" "$C/share/wine/webview2/"
 
 # --- licenses: everything the app redistributes, in share/licenses (runtime/wine/share/licenses when installed) ----
 #   DEPS_SRC: MetalSharp Wine's deps/src-x86_64 (what build-deps-x86_64.sh built: FFmpeg, GStreamer, GLib, ...) and
