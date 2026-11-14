@@ -31,7 +31,10 @@ struct launcher_process_policy
 
 static const struct launcher_process_policy launcher_process_policies[] =
 {
-    /* WineForge-Internal: launcher-compat/steam-cef-swiftshader-v1. */
+    /* WineForge-Internal: launcher-compat/steam-cef-swiftshader-v1.
+     * MetalSharp: SwiftShader for WebGL only (swiftshader-webgl), as MetalSharp's x86_64 runtime starts Steam's
+     * web helper. With all of ANGLE on SwiftShader the browser composites through ANGLE into its windows, which
+     * stop updating under FEX: Steam's window freezes and its watchdog kills the renderers as unresponsive. */
     {
         L"steamwebhelper.exe",
         L"\\Steam\\bin\\cef\\",
@@ -45,7 +48,7 @@ static const struct launcher_process_policy launcher_process_policies[] =
         L" --disable-d3d11"
         L" --enable-unsafe-swiftshader"
         L" --use-gl=angle"
-        L" --use-angle=swiftshader",
+        L" --use-angle=swiftshader-webgl",
     },
     /* WineForge-Internal: launcher-compat/rockstar-cef-in-process-gpu-v1. */
     {
