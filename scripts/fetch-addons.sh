@@ -1,10 +1,12 @@
 #!/bin/zsh
 # Wine Mono and Wine Gecko at the versions this Wine expects (dlls/mscoree, dlls/appwiz.cpl),
 # installed into install/share/wine/{mono,gecko} so prefixes use them without a download.
-#   Mono 11.3.0 arm64 package: arm64, x86 and x86_64 runtimes (every process kind here).
+#   Mono 11.3.99 arm64 package (Wine Mono main at c019b64ba8, from MetalSharp Wine's wine-mono-11.3.99
+#   release): arm64, x86 and x86_64 runtimes (every process kind here).
 #   Gecko 2.47.4 x86 and x86_64: there is no ARM64 Gecko, so native ARM64 programs get no
 #   MSHTML engine; x86_64 (ARM64EC) and i386 (WoW64) programs do.
-# The tarballs are checked against the MSIs' SHA-256 values that Wine itself pins.
+# Mono's tarball is checked against the SHA-256 in that release's SHA256SUMS; Gecko's against the
+# MSIs' SHA-256 values that Wine itself pins.
 set -e
 source ${0:A:h}/env.sh
 D=$ROOT/downloads/addons
@@ -15,10 +17,9 @@ fetch() {  # fetch <url> <file>
 check() {  # check <file> <sha256>
   [[ $(shasum -a 256 $D/$1 | cut -d' ' -f1) == $2 ]] || { echo "checksum mismatch: $1" >&2; exit 1; }
 }
-MONO=11.3.0 GECKO=2.47.4
-fetch https://github.com/madewokherd/wine-mono/releases/download/wine-mono-$MONO wine-mono-$MONO-arm64.tar.xz
-fetch https://github.com/madewokherd/wine-mono/releases/download/wine-mono-$MONO wine-mono-$MONO-arm64.msi
-check wine-mono-$MONO-arm64.msi b0c47d374efaf22cbff76cb10488ac2d1627b067e085aef7acec573884120e0f
+MONO=11.3.99 GECKO=2.47.4
+fetch https://github.com/metalsharp/MetalSharp-Wine/releases/download/wine-mono-$MONO wine-mono-$MONO-arm64.tar.xz
+check wine-mono-$MONO-arm64.tar.xz 11e23407e394607975ce619d324f1f9be6821ce7e922c6caff4a67af12904ae6
 for a in x86 x86_64; do
   fetch https://dl.winehq.org/wine/wine-gecko/$GECKO wine-gecko-$GECKO-$a.tar.xz
   fetch https://dl.winehq.org/wine/wine-gecko/$GECKO wine-gecko-$GECKO-$a.msi
