@@ -12,6 +12,11 @@ The [release notes](https://github.com/metalsharp/MetalSharp-Wine/releases) have
   - **No DirectComposition:** WebView2 draws without DirectComposition, which Wine lacks.
   - **x86_64:** the x86_64 build also gets the software drawing every Chromium browser gets under FEX.
   - **WebView2's window** (a child of its program's window, drawn from another process) now shows, with its cursor, on both builds (Wine patches 0167–0168, x86_64 0060–0061).
+- Wine Mono 11.3.99, its main branch at `c019b64ba8` (11.3.0 and the 57 commits after it), on both builds. The packages are in MetalSharp Wine's [`wine-mono-11.3.99`](https://github.com/metalsharp/MetalSharp-Wine/releases/tag/wine-mono-11.3.99) release (Wine patches 0170, x86_64 0063).
+- Assetto Corsa's launcher works on both builds:
+  - **Its assemblies:** `HKCU\Software\Wine\AppDefaults\<program>.exe\Mono` `PrivatePath` adds folders a .NET program's assemblies are found in. MetalSharp sets `launcher\support` for Assetto Corsa, where the launcher keeps `CEF3.dll` (Wine patches 0169, x86_64 0062).
+  - **Its culture and menus:** Wine Mono 11.3.99 lets it change its starting culture's number format, and its menus no longer freeze.
+  - **Under FEX:** freed memory is no longer treated as DEP-promoted when it's reused. Mono's JIT code there had been left non-executable, so the launcher crashed in CEF startup (FEX 0035).
 
 ## 6.5
 

@@ -1,0 +1,156 @@
+From 4507e8b18eb4cca759bee7a180d64f697def52cb Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@Averys-Mac-Mini.local>
+Date: Sat, 14 Nov 2026 15:51:47 -0700
+Subject: [PATCH 169/170] mscoree: a program's AppDefaults Mono key adds
+ folders its assemblies are found in
+
+HKCU\Software\Wine\AppDefaults\<program>.exe\Mono's PrivatePath (folders relative to the program's,
+separated by ';') is added to the folders from the <probing privatePath> of the program's .config.
+Mono resolves the types a class names when it loads the class, before a program's own
+AssemblyResolve handler runs, so a program that keeps its assemblies in a subfolder and finds them
+from that handler on .NET failed to start: Assetto Corsa's launcher keeps CEF3.dll in
+launcher\support (TypeLoadException for AC.Launcher.App's field ACshf). Empty entries in a
+privatePath list no longer read past its end.
+---
+ dlls/mscoree/corruntimehost.c | 103 +++++++++++++++++++++++++---------
+ 1 file changed, 77 insertions(+), 26 deletions(-)
+
+diff --git a/dlls/mscoree/corruntimehost.c b/dlls/mscoree/corruntimehost.c
+index 394bf663ed1..7333b5a6dcd 100644
+--- a/dlls/mscoree/corruntimehost.c
++++ b/dlls/mscoree/corruntimehost.c
+@@ -1400,10 +1400,84 @@ static void FixupVTable(HMODULE hmodule)
+         ERR("failed to read CLR headers, hr=%lx\n", hr);
+ }
+ 
++/* The program's PrivatePath in HKCU\Software\Wine\AppDefaults\<program>.exe\Mono, if it has one. */
++static WCHAR *get_app_private_path(const WCHAR *filename)
++{
++    const WCHAR *name = wcsrchr(filename, '\\');
++    WCHAR key_name[MAX_PATH + 64];
++    DWORD type, size = 0;
++    WCHAR *value = NULL;
++    HKEY key;
++
++    name = name ? name + 1 : filename;
++    if (wcslen(name) >= MAX_PATH) return NULL;
++    swprintf(key_name, ARRAY_SIZE(key_name), L"Software\\Wine\\AppDefaults\\%s\\Mono", name);
++    if (RegOpenKeyExW(HKEY_CURRENT_USER, key_name, 0, KEY_QUERY_VALUE, &key)) return NULL;
++    if (!RegQueryValueExW(key, L"PrivatePath", NULL, &type, NULL, &size) && type == REG_SZ && size &&
++        (value = calloc(1, size + sizeof(WCHAR))) &&
++        RegQueryValueExW(key, L"PrivatePath", NULL, &type, (BYTE *)value, &size))
++    {
++        free(value);
++        value = NULL;
++    }
++    RegCloseKey(key);
++    return value;
++}
++
++/* The folders the program's assemblies are looked for in besides its own: the <probing privatePath>
++ * of its .config, then the PrivatePath of its AppDefaults\<program>.exe\Mono key. Both are lists of
++ * folders relative to the program's, separated by ';'. Mono resolves the types a class names when it
++ * loads the class, before a program's own AssemblyResolve handler runs, so a program that keeps its
++ * assemblies in a subfolder and finds them from that handler on .NET (Assetto Corsa's launcher)
++ * needs the folder named here. */
++static void set_private_path(const WCHAR *filename, const WCHAR *config_file, const WCHAR *config_paths)
++{
++    static const WCHAR scW[] = {';',0};
++    WCHAR *app_paths = get_app_private_path(filename), *paths, *temp, *save, **priv_path;
++    SIZE_T config_len = config_paths ? wcslen(config_paths) : 0;
++    SIZE_T app_len = app_paths ? wcslen(app_paths) : 0, dir_size, count = 1, i = 0;
++
++    if (app_len) TRACE("adding %s to the private path\n", debugstr_w(app_paths));
++    if ((!config_len && !app_len) || !(paths = malloc((config_len + 1 + app_len + 1) * sizeof(WCHAR))))
++    {
++        free(app_paths);
++        return;
++    }
++    if (config_len) memcpy(paths, config_paths, config_len * sizeof(WCHAR));
++    paths[config_len] = ';';
++    if (app_len) memcpy(paths + config_len + 1, app_paths, app_len * sizeof(WCHAR));
++    paths[config_len + 1 + app_len] = 0;
++    free(app_paths);
++
++    for (temp = paths; *temp; temp++)
++        if (*temp == ';') count++;
++    dir_size = (wcsrchr(config_file, '\\') - config_file) + 1;
++    if (!(priv_path = calloc(count + 1, sizeof(WCHAR *))))
++    {
++        free(paths);
++        return;
++    }
++    /* wcstok skips empty entries, so there are at most count */
++    for (temp = wcstok_s(paths, scW, &save); temp && i < count; temp = wcstok_s(NULL, scW, &save))
++    {
++        if (!(priv_path[i] = malloc((dir_size + wcslen(temp) + 1) * sizeof(WCHAR)))) break;
++        memcpy(priv_path[i], config_file, dir_size * sizeof(WCHAR));
++        wcscpy(priv_path[i] + dir_size, temp);
++        i++;
++    }
++    free(paths);
++    if (!i)
++    {
++        free(priv_path);
++        return;
++    }
++    if (InterlockedCompareExchangePointer((void **)&private_path, priv_path, NULL))
++        ERR("private_path was already set\n");
++}
++
+ __int32 WINAPI _CorExeMain(void)
+ {
+     static const WCHAR dotconfig[] = {'.','c','o','n','f','i','g',0};
+-    static const WCHAR scW[] = {';',0};
+     int exit_code;
+     int argc;
+     char **argv;
+@@ -1412,14 +1486,12 @@ __int32 WINAPI _CorExeMain(void)
+     MonoImageOpenStatus status;
+     MonoAssembly *assembly=NULL;
+     void *attach_cookie;
+-    WCHAR filename[MAX_PATH], config_file[MAX_PATH], *temp, **priv_path;
+-    SIZE_T config_file_dir_size;
++    WCHAR filename[MAX_PATH], config_file[MAX_PATH];
+     char *filenameA;
+     ICLRRuntimeInfo *info;
+     RuntimeHost *host;
+     parsed_config_file parsed_config;
+     HRESULT hr;
+-    int i, number_of_private_paths = 0;
+ 
+     get_utf8_args(&argc, &argv);
+ 
+@@ -1440,28 +1512,7 @@ __int32 WINAPI _CorExeMain(void)
+     wcscat(config_file, dotconfig);
+ 
+     hr = parse_config_file(config_file, &parsed_config);
+-    if (SUCCEEDED(hr) && parsed_config.private_path && parsed_config.private_path[0])
+-    {
+-        WCHAR *save;
+-        for(i = 0; parsed_config.private_path[i] != 0; i++)
+-            if (parsed_config.private_path[i] == ';') number_of_private_paths++;
+-        if (parsed_config.private_path[wcslen(parsed_config.private_path) - 1] != ';') number_of_private_paths++;
+-        config_file_dir_size = (wcsrchr(config_file, '\\') - config_file) + 1;
+-        priv_path = malloc((number_of_private_paths + 1) * sizeof(WCHAR *));
+-        /* wcstok ignores trailing semicolons */
+-        temp = wcstok_s(parsed_config.private_path, scW, &save);
+-        for (i = 0; i < number_of_private_paths; i++)
+-        {
+-            priv_path[i] = malloc((config_file_dir_size + wcslen(temp) + 1) * sizeof(WCHAR));
+-            memcpy(priv_path[i], config_file, config_file_dir_size * sizeof(WCHAR));
+-            wcscpy(priv_path[i] + config_file_dir_size, temp);
+-            temp = wcstok_s(NULL, scW, &save);
+-        }
+-        priv_path[number_of_private_paths] = NULL;
+-        if (InterlockedCompareExchangePointer((void **)&private_path, priv_path, NULL))
+-            ERR("private_path was already set\n");
+-    }
+-
++    set_private_path(filename, config_file, SUCCEEDED(hr) ? parsed_config.private_path : NULL);
+     free_parsed_config_file(&parsed_config);
+ 
+     hr = get_runtime_info(filename, NULL, NULL, NULL, 0, 0, FALSE, &info);
+-- 
+2.54.0 (Apple Git-157)
+

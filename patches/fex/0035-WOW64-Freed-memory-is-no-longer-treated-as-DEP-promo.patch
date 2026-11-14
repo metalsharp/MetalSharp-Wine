@@ -1,0 +1,44 @@
+From 7efebf348ed7748315e3355e1b6513300d7d41e6 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@Averys-Mac-Mini.local>
+Date: Sat, 14 Nov 2026 15:44:18 -0700
+Subject: [PATCH 35/35] WOW64: Freed memory is no longer treated as
+ DEP-promoted when reused
+
+With DEP disabled, readable pages count as executable and are recorded as DEP-promoted, so
+trapping one for writes keeps it non-executable (PAGE_READONLY/PAGE_READWRITE). A free removed the
+range from the executable intervals but not from the promoted ones. Memory allocated there again as
+PAGE_EXECUTE_READWRITE (Mono's JIT reuses freed pages this way) was then trapped without execute,
+and running the code there raised an execute fault: Assetto Corsa's .NET launcher crashed in CEF
+startup. A free now drops the range from the promoted intervals, and so does an explicit execute
+protection.
+---
+ Source/Windows/Common/InvalidationTracker.cpp | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/Source/Windows/Common/InvalidationTracker.cpp b/Source/Windows/Common/InvalidationTracker.cpp
+index e5e0cd889ce..77ac638f4ea 100644
+--- a/Source/Windows/Common/InvalidationTracker.cpp
++++ b/Source/Windows/Common/InvalidationTracker.cpp
+@@ -66,6 +66,9 @@ void InvalidationTracker::HandleMemoryProtectionNotification(uint64_t Address, u
+       }
+       if (DEPDisabled && !HasExec) {
+         DEPPromotedIntervals.Insert(ProtInterval);
++      } else {
++        // Asked for execute outright: trapping it for writes has to keep execute.
++        DEPPromotedIntervals.Remove(ProtInterval);
+       }
+       return true;
+     } else if (XIntervals.Intersect(ProtInterval)) {
+@@ -221,6 +224,9 @@ void InvalidationTracker::InvalidateAlignedInterval(uint64_t Address, uint64_t S
+     std::unique_lock Lock(IntervalsLock);
+     XIntervals.Remove({AlignedBase, AlignedBase + AlignedSize});
+     RWXIntervals.Remove({AlignedBase, AlignedBase + AlignedSize});
++    // Memory allocated here later starts fresh: left promoted, a page allocated executable would be trapped
++    // for writes without its execute permission (Mono's JIT reuses freed pages this way).
++    DEPPromotedIntervals.Remove({AlignedBase, AlignedBase + AlignedSize});
+   }
+ }
+ 
+-- 
+2.54.0 (Apple Git-157)
+

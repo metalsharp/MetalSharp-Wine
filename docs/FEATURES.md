@@ -21,7 +21,7 @@ It runs ARM64, x86_64 and 32-bit x86 Windows programs, with Direct3D 9 through 1
 | OpenGL | **WineMetalGL 3.9.0** (OpenGL 4.6 on Metal), the default, with MetalFX upscaling and a frame rate limit (`WINEMETALGL_MAX_FRAME_RATE`). `OPENGL_BACKEND=wine` selects Wine's own, whose Vulkan renderer now runs at feature level 10 and above on MoltenVK |
 | Vulkan | MoltenVK 1.4.3 (MetalSharp build from VKD3D-Proton-MacOS: the pipeline cache is saved during long compiles and keyed on the shader sources, and compiled Metal libraries and binary archives are cached) |
 | Media | FFmpeg 8.0 (LGPL, VideoToolbox/AudioToolbox) and GStreamer 1.26 |
-| .NET / HTML | Wine Mono 11.3.0 (arm64, x86, x86_64) and Wine Gecko 2.47.4 (x86, x86_64) |
+| .NET / HTML | Wine Mono 11.3.99, its main at c019b64ba8 (arm64, x86, x86_64) and Wine Gecko 2.47.4 (x86, x86_64) |
 | Sync | msync (shared-memory synchronization; on by default, `WINEMSYNC=0` turns it off) |
 | Fonts | Metric-compatible Arial, Times New Roman and Courier New files (renamed Liberation) in every prefix's `C:\windows\Fonts`. CJK Windows families are mapped to the macOS system fonts |
 | Controllers | winebus with SDL2 and IOHID (XInput and DirectInput) |

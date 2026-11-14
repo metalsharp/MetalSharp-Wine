@@ -1,0 +1,52 @@
+From 606e0c37e83b60b6084ad0e944156c19f6492990 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@Averys-Mac-Mini.local>
+Date: Sat, 14 Nov 2026 15:51:47 -0700
+Subject: [PATCH 63/63] mscoree, appwiz.cpl: Wine Mono 11.3.99
+
+Wine Mono's main at c019b64ba8 (11.3.0 and the 57 commits after it): Framework Mono updates,
+among them .NET's private default-culture fields a program sets to change its starting culture
+(Assetto Corsa's launcher threw "Instance is read-only" without them) and a WPF hang in that
+launcher's menus, and the x86 floating point to uint conversion fix. The MSIs' SHA-256 values
+are pinned for both packages (x86, arm64).
+---
+ dlls/appwiz.cpl/addons.c       | 6 +++---
+ dlls/mscoree/mscoree_private.h | 2 +-
+ 2 files changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/dlls/appwiz.cpl/addons.c b/dlls/appwiz.cpl/addons.c
+index a01fd0f0..73fca60f 100644
+--- a/dlls/appwiz.cpl/addons.c
++++ b/dlls/appwiz.cpl/addons.c
+@@ -56,13 +56,13 @@ WINE_DEFAULT_DEBUG_CHANNEL(appwizcpl);
+ #define GECKO_SHA "???"
+ #endif
+ 
+-#define MONO_VERSION "11.3.0"
++#define MONO_VERSION "11.3.99"
+ #if defined(__i386__) || defined(__x86_64__)
+ #define MONO_ARCH "x86"
+-#define MONO_SHA "df2dfc1665c2511882e7cabd56eafd0c0a3d94e5a7e86f969277f6c189d418d3"
++#define MONO_SHA "a4e31f2cacdd79c41cf0899e5e5f23af6bc871ed6462d50716e32cd3a024adeb"
+ #elif defined(__aarch64__)
+ #define MONO_ARCH "arm64"
+-#define MONO_SHA "b0c47d374efaf22cbff76cb10488ac2d1627b067e085aef7acec573884120e0f"
++#define MONO_SHA "92d7bb14f91ec7958447ba6182f8e9705db8291df51cfebbcb13355bfd7b62e7"
+ #else
+ #define MONO_ARCH ""
+ #define MONO_SHA "???"
+diff --git a/dlls/mscoree/mscoree_private.h b/dlls/mscoree/mscoree_private.h
+index f4638b9a..3a53b94a 100644
+--- a/dlls/mscoree/mscoree_private.h
++++ b/dlls/mscoree/mscoree_private.h
+@@ -45,7 +45,7 @@ extern HRESULT assembly_get_runtime_version(ASSEMBLY *assembly, LPSTR *version);
+ extern HRESULT assembly_get_vtable_fixups(ASSEMBLY *assembly, VTableFixup **fixups, DWORD *count);
+ extern HRESULT assembly_get_native_entrypoint(ASSEMBLY *assembly, NativeEntryPointFunc *func);
+ 
+-#define WINE_MONO_VERSION "11.3.0"
++#define WINE_MONO_VERSION "11.3.99"
+ 
+ /* Mono embedding */
+ typedef struct _MonoDomain MonoDomain;
+-- 
+2.54.0 (Apple Git-157)
+
