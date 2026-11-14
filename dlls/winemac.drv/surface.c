@@ -85,6 +85,45 @@ static BOOL macdrv_surface_flush(struct window_surface *window_surface, const RE
     CGImageRef image;
     struct macdrv_win_data *data;
 
+    /* MetalSharp: a window whose parent is in another process has no Cocoa window: its pixels go to its remote
+     * layer, copied, as Core Animation reads them later on the main thread while GDI keeps drawing */
+    if (!surface->window)
+    {
+        if ((data = get_win_data(window_surface->hwnd)))
+        {
+            int width = data->rects.visible.right - data->rects.visible.left;
+            int height = data->rects.visible.bottom - data->rects.visible.top;
+            int src_stride = color_info->bmiHeader.biSizeImage / abs(color_info->bmiHeader.biHeight);
+            CGDataProviderRef provider;
+            BYTE *dst;
+            int y;
+
+            if (data->remote_child)
+            {
+                width = min(max(width, 1), color_info->bmiHeader.biWidth);
+                height = min(max(height, 1), abs(color_info->bmiHeader.biHeight));
+                if ((provider = data_provider_create(width * 4 * height, (void **)&dst)))
+                {
+                    for (y = 0; y < height; y++)
+                        memcpy(dst + y * width * 4, (const BYTE *)color_bits + y * src_stride, width * 4);
+                    colorspace = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+                    image = CGImageCreate(width, height, 8, 32, width * 4, colorspace,
+                                          kCGImageAlphaNoneSkipFirst | kCGBitmapByteOrder32Little, provider, NULL,
+                                          retina_on, kCGRenderingIntentDefault);
+                    CGColorSpaceRelease(colorspace);
+                    CGDataProviderRelease(provider);
+                    if (image)
+                    {
+                        macdrv_remote_child_set_image(data->remote_child, image);
+                        CGImageRelease(image);
+                    }
+                }
+            }
+            release_win_data(data);
+        }
+        return TRUE;
+    }
+
     colorspace = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
     image = CGImageCreate(color_info->bmiHeader.biWidth, abs(color_info->bmiHeader.biHeight), 8, 32,
                           color_info->bmiHeader.biSizeImage / abs(color_info->bmiHeader.biHeight), colorspace,
@@ -233,6 +272,16 @@ BOOL macdrv_CreateWindowSurface(HWND hwnd, BOOL layered, const RECT *surface_rec
 
     if ((previous = *surface) && previous->funcs == &macdrv_surface_funcs) return TRUE;
     if (!(data = get_win_data(hwnd))) return TRUE; /* use default surface */
+    /* MetalSharp: a window whose parent is in another process draws into a remote layer (window.c) */
+    if (!data->cocoa_window)
+    {
+        if (!macdrv_is_remote_child(hwnd))
+        {
+            release_win_data(data);
+            return TRUE;
+        }
+        macdrv_ensure_remote_child(data);
+    }
     if (previous) window_surface_release(previous);
 
     if (layered)

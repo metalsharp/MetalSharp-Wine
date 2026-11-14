@@ -136,6 +136,9 @@ enum macdrv_window_messages
     WM_MACDRV_ACTIVATE_ON_FOLLOWING_FOCUS,
     WM_MACDRV_CREATE_REMOTE_LAYER,
     WM_MACDRV_RELEASE_REMOTE_LAYER,
+    WM_MACDRV_UPDATE_REMOTE_CHILD,
+    WM_MACDRV_REMOVE_REMOTE_CHILD,
+    WM_MACDRV_SET_REMOTE_CURSOR,
 };
 
 struct macdrv_thread_data
@@ -242,6 +245,11 @@ struct macdrv_win_data
     unsigned int        per_pixel_alpha : 1;    /* is window using per-pixel alpha? */
     unsigned int        minimized : 1;          /* is window minimized? */
     unsigned int        fullscreen : 1;         /* is the window visible rect fullscreen? (unrelated to native AppKit/Cocoa fullscreen) */
+
+    /* MetalSharp: a window whose parent is in another process draws into this remote layer (window.c) */
+    WineRemoteChild    *remote_child;
+    unsigned int        remote_context_id;
+    HWND                remote_host;            /* the top-level window hosting it */
 };
 
 struct macdrv_client_surface
@@ -255,6 +263,9 @@ extern struct macdrv_client_surface *impl_from_client_surface(struct client_surf
 extern bool macdrv_client_surface_acquire_metal_swapchain(struct macdrv_client_surface *surface);
 
 extern struct macdrv_win_data *get_win_data(HWND hwnd);
+extern bool macdrv_is_remote_child(HWND hwnd);
+extern void macdrv_ensure_remote_child(struct macdrv_win_data *data);
+extern void macdrv_set_remote_cursor_index(WPARAM index);
 extern void release_win_data(struct macdrv_win_data *data);
 extern void init_win_context(void);
 extern WineWindow *macdrv_get_cocoa_window(HWND hwnd, bool require_on_screen);

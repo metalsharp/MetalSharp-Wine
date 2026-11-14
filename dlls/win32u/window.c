@@ -2202,9 +2202,22 @@ static BOOL get_surface_rect( const RECT *visible_rect, RECT *surface_rect )
     return TRUE;
 }
 
+/* MetalSharp: whether hwnd is a child window whose parent belongs to another process (Edge WebView2's window in
+ * its host's, a CEF or Chromium browser embedded the same way). It draws into a surface of its own, which the
+ * driver shows in the host's window: its parent's surface is in the other process. */
+static BOOL is_foreign_child( HWND hwnd, HWND parent )
+{
+    DWORD pid = 0;
+
+    if (!parent || parent == get_desktop_window()) return FALSE;
+    if (!get_window_thread( parent, &pid )) return FALSE;
+    return pid && pid != GetCurrentProcessId();
+}
+
 static BOOL get_default_window_surface( HWND hwnd, const RECT *surface_rect, struct window_surface **surface )
 {
     struct window_surface *previous;
+    BOOL foreign_child = is_foreign_child( hwnd, NtUserGetAncestor( hwnd, GA_PARENT ) );
     WND *win;
 
     TRACE( "hwnd %p, surface_rect %s, surface %p\n", hwnd, wine_dbgstr_rect( surface_rect ), surface );
@@ -2216,7 +2229,7 @@ static BOOL get_default_window_surface( HWND hwnd, const RECT *surface_rect, str
         window_surface_add_ref( (*surface = previous) );
         TRACE( "trying to reuse previous surface %p\n", previous );
     }
-    else if (!win->parent || win->parent == get_desktop_window())
+    else if (!win->parent || win->parent == get_desktop_window() || foreign_child)
     {
         *surface = &dummy_surface;  /* provide a default surface for top-level windows */
         window_surface_add_ref( *surface );
@@ -2234,7 +2247,7 @@ static BOOL get_default_window_surface( HWND hwnd, const RECT *surface_rect, str
 static struct window_surface *get_window_surface( HWND hwnd, UINT swp_flags, BOOL create_layered,
                                                   struct window_rects *rects, RECT *surface_rect )
 {
-    BOOL shaped, needs_surface, create_opaque, is_layered, is_child;
+    BOOL shaped, needs_surface, create_opaque, is_layered, is_child, foreign_child;
     HWND parent = NtUserGetAncestor( hwnd, GA_PARENT );
     struct window_surface *new_surface;
     struct window_rects monitor_rects;
@@ -2246,6 +2259,7 @@ static struct window_surface *get_window_surface( HWND hwnd, UINT swp_flags, BOO
     style = NtUserGetWindowLongW( hwnd, GWL_STYLE );
     ex_style = NtUserGetWindowLongW( hwnd, GWL_EXSTYLE );
     is_child = parent && parent != NtUserGetDesktopWindow();
+    foreign_child = is_child && is_foreign_child( hwnd, parent );
 
     if (is_child) get_win_monitor_dpi( parent, &raw_dpi );
     else monitor_dpi_from_rect( rects->window, get_thread_dpi(), &raw_dpi );
@@ -2258,7 +2272,7 @@ static struct window_surface *get_window_surface( HWND hwnd, UINT swp_flags, BOO
     else monitor_rects = map_window_rects_virt_to_raw( *rects, get_thread_dpi() );
 
     if (!user_driver->pWindowPosChanging( hwnd, swp_flags, shaped, &monitor_rects )) needs_surface = FALSE;
-    else if (is_child) needs_surface = FALSE;
+    else if (is_child && !foreign_child) needs_surface = FALSE;
     else if (swp_flags & SWP_HIDEWINDOW) needs_surface = FALSE;
     else if (swp_flags & SWP_SHOWWINDOW) needs_surface = TRUE;
     else needs_surface = !!(style & WS_VISIBLE);
@@ -2353,7 +2367,8 @@ static BOOL apply_window_pos( HWND hwnd, HWND insert_after, UINT swp_flags, stru
     if (!(swp_flags & SWP_HIDEWINDOW))
     {
         win = get_win_ptr( parent );
-        if (win == WND_OTHER_PROCESS) shm_surface = TRUE;
+        /* MetalSharp: unless the driver gave the window a surface of its own (winemac's remote layer) */
+        if (win == WND_OTHER_PROCESS) shm_surface = !new_surface || new_surface == &dummy_surface;
         else if (win && win != WND_DESKTOP) release_win_ptr( win );
     }
 

@@ -92,6 +92,7 @@ DECLARE_CLASS(WineMetalView);
 DECLARE_CLASS(WineOpenGLContext);
 DECLARE_CLASS(WineStatusItem);
 DECLARE_CLASS(WineWindow);
+DECLARE_CLASS(WineRemoteChild);
 DECLARE_CLASS(CAMetalLayer);
 DECLARE_PROTO(MTLDevice);
 DECLARE_PROTO(WineMetalSwapChain);
@@ -521,6 +522,13 @@ extern CAMetalLayer *macdrv_swapchain_get_layer(WineMetalSwapChain_id swapchain)
 extern void macdrv_destroy_swapchain(WineMetalSwapChain_id swapchain);
 extern void macdrv_window_create_ca_layer_host_view(WineWindow *window, unsigned int context_id);
 extern void macdrv_window_release_ca_layer_host_view(WineWindow *window, unsigned int context_id);
+
+/* MetalSharp: a window whose parent is in another process (Edge WebView2's) draws into a remote layer, which the
+ * parent's process hosts in its window. */
+extern WineRemoteChild *macdrv_create_remote_child(unsigned int *context_id);
+extern void macdrv_remote_child_set_image(WineRemoteChild *child, CGImageRef image);
+extern void macdrv_destroy_remote_child(WineRemoteChild *child);
+extern void macdrv_window_set_remote_child_host(WineWindow *window, unsigned int context_id, CGRect frame, int visible);
 extern void macdrv_create_remote_layer(void* hwnd, unsigned int context_id);
 extern void macdrv_release_remote_layer(void* hwnd, unsigned int context_id);
 extern bool macdrv_get_view_backing_size(WineContentView *view, int backing_size[2]);
