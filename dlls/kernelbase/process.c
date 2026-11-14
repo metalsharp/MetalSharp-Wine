@@ -642,6 +642,17 @@ BOOL WINAPI DECLSPEC_HOTPATCH CreateProcessInternalW( HANDLE token, const WCHAR 
             goto done;
         }
         if (old_cmdline != cmd_line) HeapFree( GetProcessHeap(), 0, old_cmdline );
+        /* a Chromium browser drawing in software */
+        if (wcsstr( append_args, L"--use-angle=swiftshader-webgl" ))
+        {
+            WCHAR *merged = chromium_disable_dcomp_fallback( tidy_cmdline );
+
+            if (merged)
+            {
+                HeapFree( GetProcessHeap(), 0, tidy_cmdline );
+                tidy_cmdline = merged;
+            }
+        }
     }
 
     if (get_metalsharp_launch( app_name, chosen, ARRAY_SIZE(chosen), launch_args, ARRAY_SIZE(launch_args) ))

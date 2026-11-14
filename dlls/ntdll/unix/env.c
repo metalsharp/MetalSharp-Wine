@@ -2105,21 +2105,25 @@ static BOOL wide_starts_with_ascii( const WCHAR *str, const char *prefix )
     return TRUE;
 }
 
-/* MetalSharp: Chromium's GPU process (CEF, Chrome, Edge/WebView2) can't draw into the browser
- * process's windows on macOS, which leaves them blank, so a Chromium browser process started
- * directly gets --in-process-gpu. kernelbase does the same for one started by CreateProcess. */
-static WCHAR **chromium_in_process_gpu( WCHAR **wargv )
+/* MetalSharp: a Chromium browser (CEF, Chrome, Edge/WebView2) started directly gets what kernelbase gives one started
+ * by CreateProcess (launchers.c): no sandbox, the GPU in process and off, and SwiftShader for WebGL only, so its UI
+ * composites in software. */
+static WCHAR **chromium_software_drawing( WCHAR **wargv )
 {
     static const char *const markers[] = { "libcef.dll", "chrome_elf.dll", "msedge_elf.dll" };
-    static const char flag[] = "--in-process-gpu";
+    static const char *const flags[] = { "--no-sandbox", "--in-process-gpu", "--disable-gpu", "--disable-d3d11",
+                                         "--enable-unsafe-swiftshader", "--use-gl=angle",
+                                         "--use-angle=swiftshader-webgl" };
     const WCHAR *name = wargv[0], *p;
-    WCHAR path[MAX_PATH], **ret;
+    WCHAR path[MAX_PATH], **ret, *text;
     unsigned int argc, i, j, dir_len;
+    size_t chars = 0;
     char *unix_name;
     BOOL found = FALSE;
 
     for (argc = 1; wargv[argc]; argc++)
-        if (wide_starts_with_ascii( wargv[argc], "--type=" ) || wide_starts_with_ascii( wargv[argc], flag ))
+        if (wide_starts_with_ascii( wargv[argc], "--type=" ) ||
+            wide_starts_with_ascii( wargv[argc], "--use-angle=swiftshader-webgl" ))
             return wargv;
     for (p = wargv[0]; *p; p++) if (*p == '\\' || *p == '/') name = p + 1;
     dir_len = name - wargv[0];
@@ -2135,13 +2139,19 @@ static WCHAR **chromium_in_process_gpu( WCHAR **wargv )
     }
     if (!found) return wargv;
 
+    for (i = 0; i < ARRAY_SIZE(flags); i++) chars += strlen( flags[i] ) + 1;
     /* the old array stays allocated: its strings are still referenced */
-    if (!(ret = malloc( (argc + 2) * sizeof(*ret) + sizeof(flag) * sizeof(WCHAR) ))) return wargv;
+    if (!(ret = malloc( (argc + ARRAY_SIZE(flags) + 1) * sizeof(*ret) + chars * sizeof(WCHAR) ))) return wargv;
     memcpy( ret, wargv, argc * sizeof(*ret) );
-    ret[argc] = (WCHAR *)(ret + argc + 2);
-    for (j = 0; j < sizeof(flag); j++) ret[argc][j] = (unsigned char)flag[j];
-    ret[argc + 1] = NULL;
-    TRACE( "Chromium browser %s: adding %s\n", debugstr_w(wargv[0]), flag );
+    text = (WCHAR *)(ret + argc + ARRAY_SIZE(flags) + 1);
+    for (i = 0; i < ARRAY_SIZE(flags); i++)
+    {
+        ret[argc + i] = text;
+        for (j = 0; flags[i][j]; j++) *text++ = (unsigned char)flags[i][j];
+        *text++ = 0;
+    }
+    ret[argc + ARRAY_SIZE(flags)] = NULL;
+    TRACE( "Chromium browser %s: drawing in software\n", debugstr_w(wargv[0]) );
     return ret;
 }
 #endif
@@ -2225,7 +2235,7 @@ static RTL_USER_PROCESS_PARAMETERS *build_initial_params( void **module )
 
     main_wargv = build_wargv( get_dos_path( nt_name.Buffer ));
 #ifdef __APPLE__
-    main_wargv = chromium_in_process_gpu( main_wargv );
+    main_wargv = chromium_software_drawing( main_wargv );
 #endif
     cmdline = build_command_line( main_wargv );
 
