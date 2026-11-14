@@ -66,6 +66,9 @@ void InvalidationTracker::HandleMemoryProtectionNotification(uint64_t Address, u
       }
       if (DEPDisabled && !HasExec) {
         DEPPromotedIntervals.Insert(ProtInterval);
+      } else {
+        // Asked for execute outright: trapping it for writes has to keep execute.
+        DEPPromotedIntervals.Remove(ProtInterval);
       }
       return true;
     } else if (XIntervals.Intersect(ProtInterval)) {
@@ -221,6 +224,9 @@ void InvalidationTracker::InvalidateAlignedInterval(uint64_t Address, uint64_t S
     std::unique_lock Lock(IntervalsLock);
     XIntervals.Remove({AlignedBase, AlignedBase + AlignedSize});
     RWXIntervals.Remove({AlignedBase, AlignedBase + AlignedSize});
+    // Memory allocated here later starts fresh: left promoted, a page allocated executable would be trapped
+    // for writes without its execute permission (Mono's JIT reuses freed pages this way).
+    DEPPromotedIntervals.Remove({AlignedBase, AlignedBase + AlignedSize});
   }
 }
 
