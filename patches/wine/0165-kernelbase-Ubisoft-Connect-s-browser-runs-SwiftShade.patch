@@ -1,0 +1,50 @@
+From 7155759bfd8af5687b5ca50e922f03dbdf594138 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Sat, 14 Nov 2026 08:14:41 -0700
+Subject: [PATCH 165/165] kernelbase: Ubisoft Connect's browser runs SwiftShader for
+ WebGL only.
+
+Ubisoft Connect's Chromium browser (upc.exe) drew its UI through ANGLE on
+Direct3D 11, and under FEX its window stops updating: the browser and
+renderers sit idle and Ubisoft Connect looks frozen. It now gets the
+arguments Steam's web helper gets: no sandbox, the GPU in process and off,
+and SwiftShader for WebGL only (--use-angle=swiftshader-webgl), so its UI
+composites in software.
+---
+ dlls/kernelbase/launchers.c | 13 +++++++++++--
+ 1 file changed, 11 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/kernelbase/launchers.c b/dlls/kernelbase/launchers.c
+index 9ed1e7908f1..7432edbfdec 100644
+--- a/dlls/kernelbase/launchers.c
++++ b/dlls/kernelbase/launchers.c
+@@ -80,7 +80,10 @@ static const struct launcher_process_policy launcher_process_policies[] =
+         {L"--type=", L"--in-process-gpu", NULL},
+         L" --in-process-gpu",
+     },
+-    /* WineForge-Internal: launcher-compat/ubisoft-connect-in-process-gpu-v1. */
++    /* WineForge-Internal: launcher-compat/ubisoft-connect-in-process-gpu-v1.
++     * MetalSharp: and SwiftShader for WebGL only, as for Steam's web helper. Otherwise Ubisoft Connect's browser
++     * (upc.exe itself) draws its UI through ANGLE on Direct3D 11, and its window stops updating under FEX. Only the
++     * browser gets these, so its renderers (UplayWebCore.exe --type=...) are left as they are. */
+     {
+         L"upc.exe",
+         L"\\Program Files (x86)\\Ubisoft\\Ubisoft Game Launcher\\",
+@@ -88,7 +91,13 @@ static const struct launcher_process_policy launcher_process_policies[] =
+         NULL,
+         NULL,
+         {L"--type=", L"--in-process-gpu", NULL},
+-        L" --in-process-gpu",
++        L" --no-sandbox"
++        L" --in-process-gpu"
++        L" --disable-gpu"
++        L" --disable-d3d11"
++        L" --enable-unsafe-swiftshader"
++        L" --use-gl=angle"
++        L" --use-angle=swiftshader-webgl",
+     },
+ };
+ 
+-- 
+2.54.0 (Apple Git-157)
+
