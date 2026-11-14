@@ -13,5 +13,7 @@
 #define __WINE_KERNELBASE_LAUNCHERS_H
 
 const WCHAR *get_launcher_process_args( const WCHAR *app_name, const WCHAR *cmd_line );
+WCHAR *chromium_disable_dcomp_fallback( const WCHAR *cmd_line );
+void ensure_webview2_runtime( const WCHAR *name );
 
 #endif
