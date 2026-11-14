@@ -2,6 +2,10 @@
 
 The [release notes](https://github.com/metalsharp/MetalSharp-Wine/releases) have the full list for each release.
 
+## Unreleased
+
+- Steam's window no longer freezes under FEX after it loads. Its web helper runs SwiftShader for WebGL only (`--use-angle=swiftshader-webgl`), as on the x86_64 runtime, instead of compositing Steam's UI through ANGLE on SwiftShader (Wine patch 0164).
+
 ## 6.5
 
 Both builds. Proton's Wine changes and the test-suite fixes are the arm64 build's; Mullion and VKD3D-Proton-MacOS 5.4 are both builds'.

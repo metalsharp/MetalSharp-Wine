@@ -1,0 +1,44 @@
+From 7afa52b10bbc83d1bddcb3e0f40b56ac4fc4f96b Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Fri, 13 Nov 2026 18:15:49 -0700
+Subject: [PATCH 164/164] kernelbase: Steam's web helper runs SwiftShader for WebGL
+ only.
+
+With --use-angle=swiftshader all of ANGLE is SwiftShader, and Chromium
+composites Steam's UI through ANGLE into its windows. Under FEX those
+windows stop updating: Steam's window freezes with the browser and
+renderers idle, and Steam's watchdog kills the renderers as unresponsive.
+--use-angle=swiftshader-webgl, as MetalSharp's x86_64 runtime starts the
+web helper, keeps SwiftShader for WebGL and composites in software.
+---
+ dlls/kernelbase/launchers.c | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/kernelbase/launchers.c b/dlls/kernelbase/launchers.c
+index eccc07f3844..9ed1e7908f1 100644
+--- a/dlls/kernelbase/launchers.c
++++ b/dlls/kernelbase/launchers.c
+@@ -31,7 +31,10 @@ struct launcher_process_policy
+ 
+ static const struct launcher_process_policy launcher_process_policies[] =
+ {
+-    /* WineForge-Internal: launcher-compat/steam-cef-swiftshader-v1. */
++    /* WineForge-Internal: launcher-compat/steam-cef-swiftshader-v1.
++     * MetalSharp: SwiftShader for WebGL only (swiftshader-webgl), as MetalSharp's x86_64 runtime starts Steam's
++     * web helper. With all of ANGLE on SwiftShader the browser composites through ANGLE into its windows, which
++     * stop updating under FEX: Steam's window freezes and its watchdog kills the renderers as unresponsive. */
+     {
+         L"steamwebhelper.exe",
+         L"\\Steam\\bin\\cef\\",
+@@ -45,7 +48,7 @@ static const struct launcher_process_policy launcher_process_policies[] =
+         L" --disable-d3d11"
+         L" --enable-unsafe-swiftshader"
+         L" --use-gl=angle"
+-        L" --use-angle=swiftshader",
++        L" --use-angle=swiftshader-webgl",
+     },
+     /* WineForge-Internal: launcher-compat/rockstar-cef-in-process-gpu-v1. */
+     {
+-- 
+2.54.0 (Apple Git-157)
+
