@@ -213,9 +213,13 @@ static BOOL invalid_bc_usage(DXGI_FORMAT format, UINT bind, UINT misc)
 
 /* D3DMetal returns E_NOTIMPL from IDXGIResource::GetSharedHandle, so resources created with
  * D3D11_RESOURCE_MISC_SHARED can't be shared at all. Custom Shaders Patch's shared textures, and the
- * No Hesi server script's car paint built on them, then fail. Within one process a shared handle
- * only has to name the resource: GetSharedHandle hands out a handle for it, and OpenSharedResource on
- * the same device returns the resource itself. Another process or device can't open these handles. */
+ * No Hesi server script's car paint built on them, then fail; so does CSP's loader for encrypted
+ * (KN5ENC) cars, which makes their textures on a device of its own and opens them on AC's, leaving
+ * other players' cars in the KN5's blue placeholder textures. Within one process a shared handle only
+ * has to name the resource: GetSharedHandle hands out a handle for it, and OpenSharedResource returns
+ * the resource itself, on any device, since D3DMetal's devices share one Metal device and a resource
+ * works on each (the application synchronizes them, as D3D11 requires). Another process can't open
+ * these handles. */
 static const GUID shared_tracker_guid =
     {0x6b3e1d42, 0x9a57, 0x4c1e, {0x8f, 0x2d, 0x31, 0x7a, 0x05, 0xc4, 0x9e, 0x61}};
 
@@ -223,7 +227,6 @@ struct shared_entry
 {
     HANDLE handle;
     ID3D11Resource *resource;  /* weak: the tracker removes the entry when the resource goes */
-    ID3D11Device *device;      /* weak, for comparison only */
 };
 
 static SRWLOCK shared_lock = SRWLOCK_INIT;
@@ -374,7 +377,6 @@ static HRESULT STDMETHODCALLTYPE emulated_get_shared_handle(IDXGIResource *iface
     struct shared_tracker *tracker;
     struct shared_entry *entries;
     ID3D11Resource *resource;
-    ID3D11Device *device;
     unsigned int i;
     HRESULT hr;
 
@@ -404,7 +406,6 @@ static HRESULT STDMETHODCALLTYPE emulated_get_shared_handle(IDXGIResource *iface
     }
     tracker->IUnknown_iface.lpVtbl = &tracker_vtbl;
     tracker->refcount = 1;
-    ID3D11Resource_GetDevice(resource, &device);
 
     AcquireSRWLockExclusive(&shared_lock);
     if (shared_count == shared_capacity)
@@ -417,7 +418,6 @@ static HRESULT STDMETHODCALLTYPE emulated_get_shared_handle(IDXGIResource *iface
         {
             ReleaseSRWLockExclusive(&shared_lock);
             HeapFree(GetProcessHeap(), 0, tracker);
-            if (device) ID3D11Device_Release(device);
             ID3D11Resource_Release(resource);
             return E_OUTOFMEMORY;
         }
@@ -428,25 +428,23 @@ static HRESULT STDMETHODCALLTYPE emulated_get_shared_handle(IDXGIResource *iface
     next_shared_handle += 4;
     shared_entries[shared_count].handle = tracker->handle;
     shared_entries[shared_count].resource = resource;
-    shared_entries[shared_count].device = device;
     ++shared_count;
     ReleaseSRWLockExclusive(&shared_lock);
 
-    /* the resource holds the tracker and releases it when it is destroyed, removing the entry */
+    /* the resource holds the tracker and releases it when it is destroyed, removing the entry; if it
+     * doesn't take it, our release below frees the tracker and removes the entry right away, as an
+     * entry the resource could outlive must not stay */
     hr = ID3D11Resource_SetPrivateDataInterface(resource, &shared_tracker_guid, &tracker->IUnknown_iface);
+    *handle = tracker->handle;
     IUnknown_Release(&tracker->IUnknown_iface);
+    ID3D11Resource_Release(resource);
     if (FAILED(hr))
     {
-        /* without the tracker the entry could outlive the resource, so don't share it */
-        if (device) ID3D11Device_Release(device);
-        ID3D11Resource_Release(resource);
+        *handle = NULL;
         return original ? original(iface, handle) : hr;
     }
-    *handle = tracker->handle;
     if (InterlockedIncrement(&shared_logged) == 1)
         OutputDebugStringA("d3d11 frontend: emulating shared handles within the process\n");
-    if (device) ID3D11Device_Release(device);
-    ID3D11Resource_Release(resource);
     return S_OK;
 }
 
@@ -455,15 +453,12 @@ typedef HRESULT (STDMETHODCALLTYPE *open_shared_fn)(void *, HANDLE, REFIID, void
 static HRESULT STDMETHODCALLTYPE emulated_open_shared_resource(void *device, HANDLE handle, REFIID iid, void **out)
 {
     open_shared_fn original = find_original(open_shared_hooks, device);
-    ID3D11Device *d3d_device;
     unsigned int i;
     HRESULT hr = E_INVALIDARG;
     BOOL found = FALSE;
 
     if (!out) return E_INVALIDARG;
     *out = NULL;
-    if (FAILED(IUnknown_QueryInterface((IUnknown *)device, &IID_ID3D11Device, (void **)&d3d_device)))
-        return original ? original(device, handle, iid, out) : E_INVALIDARG;
 
     /* the query runs under the lock so the resource can't be destroyed in between */
     AcquireSRWLockShared(&shared_lock);
@@ -471,12 +466,10 @@ static HRESULT STDMETHODCALLTYPE emulated_open_shared_resource(void *device, HAN
     {
         if (shared_entries[i].handle != handle) continue;
         found = TRUE;
-        if (shared_entries[i].device == d3d_device)
-            hr = ID3D11Resource_QueryInterface(shared_entries[i].resource, iid, out);
+        hr = ID3D11Resource_QueryInterface(shared_entries[i].resource, iid, out);
         break;
     }
     ReleaseSRWLockShared(&shared_lock);
-    ID3D11Device_Release(d3d_device);
     if (found) return hr;
     return original ? original(device, handle, iid, out) : E_INVALIDARG;
 }
