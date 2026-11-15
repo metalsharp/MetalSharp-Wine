@@ -1,0 +1,58 @@
+From 798bafc4fe9bcf564424fe730997678be013c1c1 Mon Sep 17 00:00:00 2001
+From: Mason <masond3v@protonmail.com>
+Date: Sun, 15 Nov 2026 12:55:15 -0500
+Subject: [PATCH] ntdll: Load DXCompat's D3D11 frontend in front of D3DMetal's
+ d3d11.
+
+The frontend loads D3DMetal's d3d11 as wfdxbackend-d3d11 and applies the D3D11
+runtime's validation D3DMetal lacks (see source/wfdxcompat).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ dlls/ntdll/unix/wfdxcompat_loader.c | 10 +++++++++-
+ 1 file changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/ntdll/unix/wfdxcompat_loader.c b/dlls/ntdll/unix/wfdxcompat_loader.c
+index 22dd5d196a..08bff216b9 100644
+--- a/dlls/ntdll/unix/wfdxcompat_loader.c
++++ b/dlls/ntdll/unix/wfdxcompat_loader.c
+@@ -75,6 +75,8 @@ BOOL is_wfdxcompat_frontend_module_name( const char *path )
+     const char *name = module_basename( path );
+ 
+     return !strcasecmp( name, "d3d12.dll" ) ||
++           /* MetalSharp: D3D11 frontend, gives D3DMetal's GenerateMips the D3D11 runtime's checks */
++           !strcasecmp( name, "d3d11.dll" ) ||
+            (wfdxcompat_launcher_runtime_enabled() &&
+             !strcasecmp( name, "wfdx-launchers-v1.dll" ));
+ }
+@@ -84,7 +86,9 @@ BOOL is_wfdxcompat_backend_module_name( const char *path )
+     const char *name = module_basename( path );
+ 
+     return !strcasecmp( name, "wfdxbackend-d3d12.dll" ) ||
+-           !strcasecmp( name, "wfdxbackend-d3d12.so" );
++           !strcasecmp( name, "wfdxbackend-d3d12.so" ) ||
++           !strcasecmp( name, "wfdxbackend-d3d11.dll" ) ||
++           !strcasecmp( name, "wfdxbackend-d3d11.so" );
+ }
+ 
+ BOOL wfdxcompat_launcher_runtime_available(void)
+@@ -127,12 +131,16 @@ char *resolve_wfdxcompat_frontend_pe_path( const char *module, USHORT machine )
+ char *resolve_wfdxcompat_backend_pe_path( const char *module )
+ {
+     if (!is_wfdxcompat_backend_module_name( module ) || !d3dmetal_graphics_backend_enabled()) return NULL;
++    if (!strncasecmp( module_basename( module ), "wfdxbackend-d3d11.", 18 ))
++        return resolve_d3dmetal_pe_path( "d3d11.dll" );
+     return resolve_d3dmetal_pe_path( "d3d12.dll" );
+ }
+ 
+ char *resolve_wfdxcompat_backend_unixlib_path( const char *module )
+ {
+     if (!is_wfdxcompat_backend_module_name( module ) || !d3dmetal_graphics_backend_enabled()) return NULL;
++    if (!strncasecmp( module_basename( module ), "wfdxbackend-d3d11.", 18 ))
++        return resolve_d3dmetal_unixlib_path( "d3d11.so" );
+     return resolve_d3dmetal_unixlib_path( "d3d12.so" );
+ }
+ 
+-- 
+2.54.0 (Apple Git-157)
+
