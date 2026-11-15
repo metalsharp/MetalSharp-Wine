@@ -48,6 +48,12 @@ mkdir -p $D/share/proton; cp $ROOT/resources/appcompat.env $D/share/proton/appco
 # Microsoft's Edge WebView2 Evergreen bootstrapper, unmodified (Wine patch 0167): kernelbase runs it in a prefix the
 # first time a program there loads WebView2Loader.dll, and it installs the WebView2 Runtime from Microsoft.
 mkdir -p $D/share/wine/webview2; cp $ROOT/resources/webview2/MicrosoftEdgeWebview2Setup.exe $D/share/wine/webview2/
+# MetalVR (scripts/build-metalvr.sh): install/ has bin/metalvrd and lib/metalvr already; its licenses, and those of
+# ALVR and OpenComposite, go with the rest
+if [[ -d $D/lib/metalvr ]]; then
+  mkdir -p $D/share/licenses/metalvr
+  cp -R $D/lib/metalvr/LICENSE $D/lib/metalvr/LICENSE.ALVR $D/lib/metalvr/OpenComposite $D/share/licenses/metalvr/
+fi
 # cabextract (scripts/build-cabextract.sh), for Microsoft cabinet installers (corefonts, VC++)
 if [[ -x $ROOT/deps/cabextract/cabextract ]]; then
   cp $ROOT/deps/cabextract/cabextract $D/bin/
