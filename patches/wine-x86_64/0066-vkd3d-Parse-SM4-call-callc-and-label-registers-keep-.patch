@@ -1,0 +1,101 @@
+From 5bd939701d114d66aa1c568195cb59c101496ccb Mon Sep 17 00:00:00 2001
+From: Mason <masond3v@protonmail.com>
+Date: Sun, 15 Nov 2026 10:19:57 -0500
+Subject: [PATCH 66/66] vkd3d: Parse SM4 call, callc and label registers; keep
+ D3DReflect working when scanning fails.
+
+Wine 11's D3DReflect goes through vkd3d-shader's scan, which rejected shaders
+with subroutine calls (opcode 0x4, register type 0xa) and returned
+E_OUTOFMEMORY. Wine 10's own reflection never parsed instructions. Custom
+Shaders Patch reflects such shaders.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libs/vkd3d/libs/vkd3d-shader/tpf.c       | 18 ++++++++++++++++++
+ libs/vkd3d/libs/vkd3d-utils/reflection.c | 13 +++++++++++--
+ 2 files changed, 29 insertions(+), 2 deletions(-)
+
+diff --git a/libs/vkd3d/libs/vkd3d-shader/tpf.c b/libs/vkd3d/libs/vkd3d-shader/tpf.c
+index ea75c599a2..052029e1b8 100644
+--- a/libs/vkd3d/libs/vkd3d-shader/tpf.c
++++ b/libs/vkd3d/libs/vkd3d-shader/tpf.c
+@@ -167,6 +167,8 @@ enum vkd3d_sm4_opcode
+     VKD3D_SM4_OP_AND                              = 0x01,
+     VKD3D_SM4_OP_BREAK                            = 0x02,
+     VKD3D_SM4_OP_BREAKC                           = 0x03,
++    VKD3D_SM4_OP_CALL                             = 0x04,
++    VKD3D_SM4_OP_CALLC                            = 0x05,
+     VKD3D_SM4_OP_CASE                             = 0x06,
+     VKD3D_SM4_OP_CONTINUE                         = 0x07,
+     VKD3D_SM4_OP_CONTINUEC                        = 0x08,
+@@ -407,6 +409,7 @@ enum vkd3d_sm4_register_type
+     VKD3D_SM4_RT_RESOURCE                = 0x07,
+     VKD3D_SM4_RT_CONSTBUFFER             = 0x08,
+     VKD3D_SM4_RT_IMMCONSTBUFFER          = 0x09,
++    VKD3D_SM4_RT_LABEL                   = 0x0a,
+     VKD3D_SM4_RT_PRIMID                  = 0x0b,
+     VKD3D_SM4_RT_DEPTHOUT                = 0x0c,
+     VKD3D_SM4_RT_NULL                    = 0x0d,
+@@ -802,6 +805,17 @@ static void shader_sm4_read_conditional_op(struct vkd3d_shader_instruction *ins,
+             VKD3D_SHADER_CONDITIONAL_OP_NZ : VKD3D_SHADER_CONDITIONAL_OP_Z;
+ }
+ 
++static void shader_sm4_read_callc(struct vkd3d_shader_instruction *ins, uint32_t opcode,
++        uint32_t opcode_token, const uint32_t *tokens, unsigned int token_count, struct vkd3d_shader_sm4_parser *tpf)
++{
++    const uint32_t *end = &tokens[token_count];
++
++    tpf_read_src_operand(tpf, &tokens, end, VSIR_DATA_U32, &ins->src[0]);
++    tpf_read_src_operand(tpf, &tokens, end, VSIR_DATA_OPAQUE, &ins->src[1]);
++    ins->flags = (opcode_token & VKD3D_SM4_CONDITIONAL_NZ) ?
++            VKD3D_SHADER_CONDITIONAL_OP_NZ : VKD3D_SHADER_CONDITIONAL_OP_Z;
++}
++
+ static void shader_sm4_read_case_condition(struct vkd3d_shader_instruction *ins, uint32_t opcode,
+         uint32_t opcode_token, const uint32_t *tokens, unsigned int token_count, struct vkd3d_shader_sm4_parser *tpf)
+ {
+@@ -1455,6 +1469,9 @@ static void init_sm4_lookup_tables(struct vkd3d_sm4_lookup_tables *lookup)
+         {VKD3D_SM4_OP_CONTINUEC,                        VSIR_OP_CONTINUEP,                        "",     "u",
+                 shader_sm4_read_conditional_op, true},
+         {VKD3D_SM4_OP_CUT,                              VSIR_OP_CUT,                              "",     ""},
++        {VKD3D_SM4_OP_CALL,                             VSIR_OP_CALL,                             "",     "O"},
++        {VKD3D_SM4_OP_CALLC,                            VSIR_OP_CALLNZ,                           "",     "uO",
++                shader_sm4_read_callc, true},
+         {VKD3D_SM4_OP_DEFAULT,                          VSIR_OP_DEFAULT,                          "",     ""},
+         {VKD3D_SM4_OP_DERIV_RTX,                        VSIR_OP_DSX,                              "f",    "f"},
+         {VKD3D_SM4_OP_DERIV_RTY,                        VSIR_OP_DSY,                              "f",    "f"},
+@@ -1727,6 +1744,7 @@ static void init_sm4_lookup_tables(struct vkd3d_sm4_lookup_tables *lookup)
+         {VKD3D_SM4_RT_RESOURCE,                VSIR_REGISTER_RESOURCE,         VKD3D_SM4_SWIZZLE_VEC4},
+         {VKD3D_SM4_RT_CONSTBUFFER,             VSIR_REGISTER_CONSTBUFFER,      VKD3D_SM4_SWIZZLE_VEC4},
+         {VKD3D_SM4_RT_IMMCONSTBUFFER,          VSIR_REGISTER_IMMCONSTBUFFER,   VKD3D_SM4_SWIZZLE_VEC4},
++        {VKD3D_SM4_RT_LABEL,                   VSIR_REGISTER_LABEL,            VKD3D_SM4_SWIZZLE_NONE},
+         {VKD3D_SM4_RT_PRIMID,                  VSIR_REGISTER_PRIMID,           VKD3D_SM4_SWIZZLE_NONE},
+         {VKD3D_SM4_RT_DEPTHOUT,                VSIR_REGISTER_DEPTHOUT,         VKD3D_SM4_SWIZZLE_VEC4},
+         {VKD3D_SM4_RT_NULL,                    VSIR_REGISTER_NULL,             VKD3D_SM4_SWIZZLE_INVALID},
+diff --git a/libs/vkd3d/libs/vkd3d-utils/reflection.c b/libs/vkd3d/libs/vkd3d-utils/reflection.c
+index db5a9852e1..f460c31c35 100644
+--- a/libs/vkd3d/libs/vkd3d-utils/reflection.c
++++ b/libs/vkd3d/libs/vkd3d-utils/reflection.c
+@@ -1760,8 +1760,17 @@ static HRESULT d3d12_reflection_init(struct d3d12_reflection *reflection,
+ 
+     if ((ret = vkd3d_shader_scan(&compile_info, NULL)) < 0)
+     {
+-        vkd3d_shader_free_dxbc(&dxbc_desc);
+-        return hresult_from_vkd3d_result(ret);
++        /* Native reflection does not parse the shader's instructions, and
++         * applications (e.g. Assetto Corsa's Custom Shaders Patch) reflect
++         * shaders using instructions vkd3d-shader can't parse yet. Keep the
++         * RDEF/STAT information rather than failing the whole call. */
++        WARN("Failed to scan shader, ret %d; signatures will be empty.\n", ret);
++        memset(&reflection->signature_info.input, 0, sizeof(reflection->signature_info.input));
++        memset(&reflection->signature_info.output, 0, sizeof(reflection->signature_info.output));
++        memset(&reflection->signature_info.patch_constant, 0, sizeof(reflection->signature_info.patch_constant));
++        reflection->thread_group_size_info.x = 0;
++        reflection->thread_group_size_info.y = 0;
++        reflection->thread_group_size_info.z = 0;
+     }
+ 
+     if (reflection->version >= 40)
+-- 
+2.54.0 (Apple Git-157)
+
