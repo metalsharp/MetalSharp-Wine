@@ -167,6 +167,8 @@ enum vkd3d_sm4_opcode
     VKD3D_SM4_OP_AND                              = 0x01,
     VKD3D_SM4_OP_BREAK                            = 0x02,
     VKD3D_SM4_OP_BREAKC                           = 0x03,
+    VKD3D_SM4_OP_CALL                             = 0x04,
+    VKD3D_SM4_OP_CALLC                            = 0x05,
     VKD3D_SM4_OP_CASE                             = 0x06,
     VKD3D_SM4_OP_CONTINUE                         = 0x07,
     VKD3D_SM4_OP_CONTINUEC                        = 0x08,
@@ -407,6 +409,7 @@ enum vkd3d_sm4_register_type
     VKD3D_SM4_RT_RESOURCE                = 0x07,
     VKD3D_SM4_RT_CONSTBUFFER             = 0x08,
     VKD3D_SM4_RT_IMMCONSTBUFFER          = 0x09,
+    VKD3D_SM4_RT_LABEL                   = 0x0a,
     VKD3D_SM4_RT_PRIMID                  = 0x0b,
     VKD3D_SM4_RT_DEPTHOUT                = 0x0c,
     VKD3D_SM4_RT_NULL                    = 0x0d,
@@ -798,6 +801,17 @@ static void shader_sm4_read_conditional_op(struct vkd3d_shader_instruction *ins,
         uint32_t opcode_token, const uint32_t *tokens, unsigned int token_count, struct vkd3d_shader_sm4_parser *tpf)
 {
     tpf_read_src_operand(tpf, &tokens, &tokens[token_count], VSIR_DATA_U32, &ins->src[0]);
+    ins->flags = (opcode_token & VKD3D_SM4_CONDITIONAL_NZ) ?
+            VKD3D_SHADER_CONDITIONAL_OP_NZ : VKD3D_SHADER_CONDITIONAL_OP_Z;
+}
+
+static void shader_sm4_read_callc(struct vkd3d_shader_instruction *ins, uint32_t opcode,
+        uint32_t opcode_token, const uint32_t *tokens, unsigned int token_count, struct vkd3d_shader_sm4_parser *tpf)
+{
+    const uint32_t *end = &tokens[token_count];
+
+    tpf_read_src_operand(tpf, &tokens, end, VSIR_DATA_U32, &ins->src[0]);
+    tpf_read_src_operand(tpf, &tokens, end, VSIR_DATA_OPAQUE, &ins->src[1]);
     ins->flags = (opcode_token & VKD3D_SM4_CONDITIONAL_NZ) ?
             VKD3D_SHADER_CONDITIONAL_OP_NZ : VKD3D_SHADER_CONDITIONAL_OP_Z;
 }
@@ -1455,6 +1469,9 @@ static void init_sm4_lookup_tables(struct vkd3d_sm4_lookup_tables *lookup)
         {VKD3D_SM4_OP_CONTINUEC,                        VSIR_OP_CONTINUEP,                        "",     "u",
                 shader_sm4_read_conditional_op, true},
         {VKD3D_SM4_OP_CUT,                              VSIR_OP_CUT,                              "",     ""},
+        {VKD3D_SM4_OP_CALL,                             VSIR_OP_CALL,                             "",     "O"},
+        {VKD3D_SM4_OP_CALLC,                            VSIR_OP_CALLNZ,                           "",     "uO",
+                shader_sm4_read_callc, true},
         {VKD3D_SM4_OP_DEFAULT,                          VSIR_OP_DEFAULT,                          "",     ""},
         {VKD3D_SM4_OP_DERIV_RTX,                        VSIR_OP_DSX,                              "f",    "f"},
         {VKD3D_SM4_OP_DERIV_RTY,                        VSIR_OP_DSY,                              "f",    "f"},
@@ -1727,6 +1744,7 @@ static void init_sm4_lookup_tables(struct vkd3d_sm4_lookup_tables *lookup)
         {VKD3D_SM4_RT_RESOURCE,                VSIR_REGISTER_RESOURCE,         VKD3D_SM4_SWIZZLE_VEC4},
         {VKD3D_SM4_RT_CONSTBUFFER,             VSIR_REGISTER_CONSTBUFFER,      VKD3D_SM4_SWIZZLE_VEC4},
         {VKD3D_SM4_RT_IMMCONSTBUFFER,          VSIR_REGISTER_IMMCONSTBUFFER,   VKD3D_SM4_SWIZZLE_VEC4},
+        {VKD3D_SM4_RT_LABEL,                   VSIR_REGISTER_LABEL,            VKD3D_SM4_SWIZZLE_NONE},
         {VKD3D_SM4_RT_PRIMID,                  VSIR_REGISTER_PRIMID,           VKD3D_SM4_SWIZZLE_NONE},
         {VKD3D_SM4_RT_DEPTHOUT,                VSIR_REGISTER_DEPTHOUT,         VKD3D_SM4_SWIZZLE_VEC4},
         {VKD3D_SM4_RT_NULL,                    VSIR_REGISTER_NULL,             VKD3D_SM4_SWIZZLE_INVALID},
