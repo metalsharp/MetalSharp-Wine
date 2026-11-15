@@ -252,7 +252,17 @@ static LONG change_mode( const DWORD *fields, const DWORD *width, const DWORD *h
 
 /* hook_<export>. GetWindowLongPtrA and the like are macros of the headers
  * on i386, where user32 does not export them (their entries stay unused). */
-#define X(dll, ret, name, args) static ret WINAPI hook_##name args;
+/* The hooks go into the program's import tables (and out of GetProcAddress), where its own code can detour them with
+ * an x86 jump, as Assetto Corsa's Custom Shaders Patch does to GetWindowRect. In an x86_64 process on ARM64EC that
+ * would land on ARM64 code: as hybrid patchable functions (which need external linkage) they have an x64 entry, the
+ * address the tables hold, for a detour to patch. */
+#if defined(__arm64ec__)
+#define HOOK_FUNC __attribute__((hybrid_patchable))
+#else
+#define HOOK_FUNC static
+#endif
+
+#define X(dll, ret, name, args) HOOK_FUNC ret WINAPI hook_##name args;
 HOOKS
 #undef X
 
@@ -505,7 +515,7 @@ static void place_window( HWND hwnd, int *x, int *y, int *cx, int *cy, UINT flag
 
 /* -------------------------------------------------------- display hooks */
 
-static BOOL WINAPI hook_EnumDisplaySettingsExW( LPCWSTR device, DWORD index, DEVMODEW *mode, DWORD flags )
+HOOK_FUNC BOOL WINAPI hook_EnumDisplaySettingsExW( LPCWSTR device, DWORD index, DEVMODEW *mode, DWORD flags )
 {
     if (!enabled) return EnumDisplaySettingsExW( device, index, mode, flags );
     if (!is_primary( device )) return FALSE;  /* one display */
@@ -525,7 +535,7 @@ static BOOL WINAPI hook_EnumDisplaySettingsExW( LPCWSTR device, DWORD index, DEV
     return TRUE;
 }
 
-static BOOL WINAPI hook_EnumDisplaySettingsExA( LPCSTR device, DWORD index, DEVMODEA *mode, DWORD flags )
+HOOK_FUNC BOOL WINAPI hook_EnumDisplaySettingsExA( LPCSTR device, DWORD index, DEVMODEA *mode, DWORD flags )
 {
     if (!enabled) return EnumDisplaySettingsExA( device, index, mode, flags );
     if (!is_primary_a( device )) return FALSE;  /* one display */
@@ -545,17 +555,17 @@ static BOOL WINAPI hook_EnumDisplaySettingsExA( LPCSTR device, DWORD index, DEVM
     return TRUE;
 }
 
-static BOOL WINAPI hook_EnumDisplaySettingsW( LPCWSTR device, DWORD index, DEVMODEW *mode )
+HOOK_FUNC BOOL WINAPI hook_EnumDisplaySettingsW( LPCWSTR device, DWORD index, DEVMODEW *mode )
 {
     return hook_EnumDisplaySettingsExW( device, index, mode, 0 );
 }
 
-static BOOL WINAPI hook_EnumDisplaySettingsA( LPCSTR device, DWORD index, DEVMODEA *mode )
+HOOK_FUNC BOOL WINAPI hook_EnumDisplaySettingsA( LPCSTR device, DWORD index, DEVMODEA *mode )
 {
     return hook_EnumDisplaySettingsExA( device, index, mode, 0 );
 }
 
-static LONG WINAPI hook_ChangeDisplaySettingsExW( LPCWSTR device, DEVMODEW *mode, HWND hwnd, DWORD flags, void *param )
+HOOK_FUNC LONG WINAPI hook_ChangeDisplaySettingsExW( LPCWSTR device, DEVMODEW *mode, HWND hwnd, DWORD flags, void *param )
 {
     if (!enabled) return ChangeDisplaySettingsExW( device, mode, hwnd, flags, param );
     if (!is_primary( device ))
@@ -567,7 +577,7 @@ static LONG WINAPI hook_ChangeDisplaySettingsExW( LPCWSTR device, DEVMODEW *mode
                 : change_mode( NULL, NULL, NULL, flags );
 }
 
-static LONG WINAPI hook_ChangeDisplaySettingsExA( LPCSTR device, DEVMODEA *mode, HWND hwnd, DWORD flags, void *param )
+HOOK_FUNC LONG WINAPI hook_ChangeDisplaySettingsExA( LPCSTR device, DEVMODEA *mode, HWND hwnd, DWORD flags, void *param )
 {
     if (!enabled) return ChangeDisplaySettingsExA( device, mode, hwnd, flags, param );
     if (!is_primary_a( device ))
@@ -579,12 +589,12 @@ static LONG WINAPI hook_ChangeDisplaySettingsExA( LPCSTR device, DEVMODEA *mode,
                 : change_mode( NULL, NULL, NULL, flags );
 }
 
-static LONG WINAPI hook_ChangeDisplaySettingsW( DEVMODEW *mode, DWORD flags )
+HOOK_FUNC LONG WINAPI hook_ChangeDisplaySettingsW( DEVMODEW *mode, DWORD flags )
 {
     return hook_ChangeDisplaySettingsExW( NULL, mode, NULL, flags, NULL );
 }
 
-static LONG WINAPI hook_ChangeDisplaySettingsA( DEVMODEA *mode, DWORD flags )
+HOOK_FUNC LONG WINAPI hook_ChangeDisplaySettingsA( DEVMODEA *mode, DWORD flags )
 {
     return hook_ChangeDisplaySettingsExA( NULL, mode, NULL, flags, NULL );
 }
@@ -619,13 +629,13 @@ static int seen_metric( int index, int value )
     return value;
 }
 
-static int WINAPI hook_GetSystemMetrics( int index )
+HOOK_FUNC int WINAPI hook_GetSystemMetrics( int index )
 {
     int value = GetSystemMetrics( index );
     return enabled ? seen_metric( index, value ) : value;
 }
 
-static int WINAPI hook_GetSystemMetricsForDpi( int index, UINT dpi )
+HOOK_FUNC int WINAPI hook_GetSystemMetricsForDpi( int index, UINT dpi )
 {
     int (WINAPI *real)( int, UINT ) = NULL;
     unsigned int i;
@@ -647,14 +657,14 @@ static void seen_monitor( MONITORINFO *info )
     seen_rect( &info->rcWork );
 }
 
-static BOOL WINAPI hook_GetMonitorInfoW( HMONITOR monitor, MONITORINFO *info )
+HOOK_FUNC BOOL WINAPI hook_GetMonitorInfoW( HMONITOR monitor, MONITORINFO *info )
 {
     if (!GetMonitorInfoW( monitor, info )) return FALSE;
     if (enabled) seen_monitor( info );
     return TRUE;
 }
 
-static BOOL WINAPI hook_GetMonitorInfoA( HMONITOR monitor, MONITORINFO *info )
+HOOK_FUNC BOOL WINAPI hook_GetMonitorInfoA( HMONITOR monitor, MONITORINFO *info )
 {
     if (!GetMonitorInfoA( monitor, info )) return FALSE;
     if (enabled) seen_monitor( info );
@@ -681,7 +691,7 @@ static BOOL CALLBACK seen_monitor_enum( HMONITOR monitor, HDC hdc, RECT *rect, L
     return program->proc( monitor, hdc, &seen, program->param );
 }
 
-static BOOL WINAPI hook_EnumDisplayMonitors( HDC hdc, const RECT *clip, MONITORENUMPROC proc, LPARAM param )
+HOOK_FUNC BOOL WINAPI hook_EnumDisplayMonitors( HDC hdc, const RECT *clip, MONITORENUMPROC proc, LPARAM param )
 {
     struct monitor_enum program = {proc, param};
     if (!enabled || !proc) return EnumDisplayMonitors( hdc, clip, proc, param );
@@ -689,7 +699,7 @@ static BOOL WINAPI hook_EnumDisplayMonitors( HDC hdc, const RECT *clip, MONITORE
 }
 
 /* Adapters: the primary one alone; a monitor of another: none. */
-static BOOL WINAPI hook_EnumDisplayDevicesW( LPCWSTR device, DWORD index, DISPLAY_DEVICEW *info, DWORD flags )
+HOOK_FUNC BOOL WINAPI hook_EnumDisplayDevicesW( LPCWSTR device, DWORD index, DISPLAY_DEVICEW *info, DWORD flags )
 {
     DWORD i;
 
@@ -701,7 +711,7 @@ static BOOL WINAPI hook_EnumDisplayDevicesW( LPCWSTR device, DWORD index, DISPLA
     return FALSE;
 }
 
-static BOOL WINAPI hook_EnumDisplayDevicesA( LPCSTR device, DWORD index, DISPLAY_DEVICEA *info, DWORD flags )
+HOOK_FUNC BOOL WINAPI hook_EnumDisplayDevicesA( LPCSTR device, DWORD index, DISPLAY_DEVICEA *info, DWORD flags )
 {
     DWORD i;
 
@@ -714,25 +724,25 @@ static BOOL WINAPI hook_EnumDisplayDevicesA( LPCSTR device, DWORD index, DISPLAY
 }
 
 /* Every window, point and rectangle is on the primary display. */
-static HMONITOR WINAPI hook_MonitorFromWindow( HWND hwnd, DWORD flags )
+HOOK_FUNC HMONITOR WINAPI hook_MonitorFromWindow( HWND hwnd, DWORD flags )
 {
     HMONITOR monitor = MonitorFromWindow( hwnd, flags );
     return enabled && monitor ? primary_monitor : monitor;
 }
 
-static HMONITOR WINAPI hook_MonitorFromPoint( POINT point, DWORD flags )
+HOOK_FUNC HMONITOR WINAPI hook_MonitorFromPoint( POINT point, DWORD flags )
 {
     HMONITOR monitor = MonitorFromPoint( point, flags );
     return enabled && (monitor || flags != MONITOR_DEFAULTTONULL) ? primary_monitor : monitor;
 }
 
-static HMONITOR WINAPI hook_MonitorFromRect( const RECT *rect, DWORD flags )
+HOOK_FUNC HMONITOR WINAPI hook_MonitorFromRect( const RECT *rect, DWORD flags )
 {
     HMONITOR monitor = MonitorFromRect( rect, flags );
     return enabled && monitor ? primary_monitor : monitor;
 }
 
-static int WINAPI hook_GetDeviceCaps( HDC hdc, int index )
+HOOK_FUNC int WINAPI hook_GetDeviceCaps( HDC hdc, int index )
 {
     int value = GetDeviceCaps( hdc, index );
     if (!enabled || GetDeviceCaps( hdc, TECHNOLOGY ) != DT_RASDISPLAY) return value;
@@ -750,7 +760,7 @@ static int WINAPI hook_GetDeviceCaps( HDC hdc, int index )
 
 /* --------------------------------------------------------- window hooks */
 
-static HWND WINAPI hook_CreateWindowExW( DWORD ex_style, LPCWSTR class_name, LPCWSTR name, DWORD style, int x, int y,
+HOOK_FUNC HWND WINAPI hook_CreateWindowExW( DWORD ex_style, LPCWSTR class_name, LPCWSTR name, DWORD style, int x, int y,
                                          int width, int height, HWND parent, HMENU menu, HINSTANCE instance, void *param )
 {
     BOOL in_scaled = enabled && (style & WS_CHILD) && is_scaled( parent );
@@ -778,7 +788,7 @@ static HWND WINAPI hook_CreateWindowExW( DWORD ex_style, LPCWSTR class_name, LPC
     return hwnd;
 }
 
-static HWND WINAPI hook_CreateWindowExA( DWORD ex_style, LPCSTR class_name, LPCSTR name, DWORD style, int x, int y,
+HOOK_FUNC HWND WINAPI hook_CreateWindowExA( DWORD ex_style, LPCSTR class_name, LPCSTR name, DWORD style, int x, int y,
                                          int width, int height, HWND parent, HMENU menu, HINSTANCE instance, void *param )
 {
     BOOL in_scaled = enabled && (style & WS_CHILD) && is_scaled( parent );
@@ -804,13 +814,13 @@ static HWND WINAPI hook_CreateWindowExA( DWORD ex_style, LPCSTR class_name, LPCS
     return hwnd;
 }
 
-static BOOL WINAPI hook_SetWindowPos( HWND hwnd, HWND after, int x, int y, int cx, int cy, UINT flags )
+HOOK_FUNC BOOL WINAPI hook_SetWindowPos( HWND hwnd, HWND after, int x, int y, int cx, int cy, UINT flags )
 {
     place_window( hwnd, &x, &y, &cx, &cy, flags );
     return SetWindowPos( hwnd, after, x, y, cx, cy, flags );
 }
 
-static BOOL WINAPI hook_ShowWindow( HWND hwnd, int command )
+HOOK_FUNC BOOL WINAPI hook_ShowWindow( HWND hwnd, int command )
 {
     BOOL ret = ShowWindow( hwnd, command );
     if (enabled && hwnd && GetAncestor( hwnd, GA_ROOT ) == hwnd)
@@ -821,13 +831,13 @@ static BOOL WINAPI hook_ShowWindow( HWND hwnd, int command )
     return ret;
 }
 
-static BOOL WINAPI hook_MoveWindow( HWND hwnd, int x, int y, int width, int height, BOOL repaint )
+HOOK_FUNC BOOL WINAPI hook_MoveWindow( HWND hwnd, int x, int y, int width, int height, BOOL repaint )
 {
     place_window( hwnd, &x, &y, &width, &height, 0 );
     return MoveWindow( hwnd, x, y, width, height, repaint );
 }
 
-static BOOL WINAPI hook_GetClientRect( HWND hwnd, RECT *rect )
+HOOK_FUNC BOOL WINAPI hook_GetClientRect( HWND hwnd, RECT *rect )
 {
     if (!GetClientRect( hwnd, rect )) return FALSE;
     check_covering( hwnd );
@@ -839,7 +849,7 @@ static BOOL WINAPI hook_GetClientRect( HWND hwnd, RECT *rect )
     return TRUE;
 }
 
-static BOOL WINAPI hook_GetWindowRect( HWND hwnd, RECT *rect )
+HOOK_FUNC BOOL WINAPI hook_GetWindowRect( HWND hwnd, RECT *rect )
 {
     if (!GetWindowRect( hwnd, rect )) return FALSE;
     check_covering( hwnd );
@@ -847,7 +857,7 @@ static BOOL WINAPI hook_GetWindowRect( HWND hwnd, RECT *rect )
     return TRUE;
 }
 
-static BOOL WINAPI hook_ClientToScreen( HWND hwnd, POINT *point )
+HOOK_FUNC BOOL WINAPI hook_ClientToScreen( HWND hwnd, POINT *point )
 {
     BOOL ret, scale = point && is_scaled( hwnd );
     if (scale) real_point( point );
@@ -856,7 +866,7 @@ static BOOL WINAPI hook_ClientToScreen( HWND hwnd, POINT *point )
     return ret;
 }
 
-static BOOL WINAPI hook_ScreenToClient( HWND hwnd, POINT *point )
+HOOK_FUNC BOOL WINAPI hook_ScreenToClient( HWND hwnd, POINT *point )
 {
     BOOL ret, scale = point && is_scaled( hwnd );
     if (scale) real_point( point );
@@ -865,7 +875,7 @@ static BOOL WINAPI hook_ScreenToClient( HWND hwnd, POINT *point )
     return ret;
 }
 
-static int WINAPI hook_MapWindowPoints( HWND from, HWND to, POINT *points, UINT count )
+HOOK_FUNC int WINAPI hook_MapWindowPoints( HWND from, HWND to, POINT *points, UINT count )
 {
     BOOL scale = points && screen_scaled() && (!from || is_scaled( from )) && (!to || is_scaled( to ));
     UINT i;
@@ -880,14 +890,14 @@ static int WINAPI hook_MapWindowPoints( HWND from, HWND to, POINT *points, UINT 
 
 /* --------------------------------------------------------- cursor hooks */
 
-static BOOL WINAPI hook_GetCursorPos( POINT *point )
+HOOK_FUNC BOOL WINAPI hook_GetCursorPos( POINT *point )
 {
     if (!GetCursorPos( point )) return FALSE;
     if (screen_scaled()) seen_point( point );
     return TRUE;
 }
 
-static BOOL WINAPI hook_SetCursorPos( int x, int y )
+HOOK_FUNC BOOL WINAPI hook_SetCursorPos( int x, int y )
 {
     if (screen_scaled())
     {
@@ -897,14 +907,14 @@ static BOOL WINAPI hook_SetCursorPos( int x, int y )
     return SetCursorPos( x, y );
 }
 
-static BOOL WINAPI hook_GetCursorInfo( CURSORINFO *info )
+HOOK_FUNC BOOL WINAPI hook_GetCursorInfo( CURSORINFO *info )
 {
     if (!GetCursorInfo( info )) return FALSE;
     if (screen_scaled()) seen_point( &info->ptScreenPos );
     return TRUE;
 }
 
-static BOOL WINAPI hook_ClipCursor( const RECT *rect )
+HOOK_FUNC BOOL WINAPI hook_ClipCursor( const RECT *rect )
 {
     RECT real;
     if (!rect || !screen_scaled()) return ClipCursor( rect );
@@ -913,14 +923,14 @@ static BOOL WINAPI hook_ClipCursor( const RECT *rect )
     return ClipCursor( &real );
 }
 
-static BOOL WINAPI hook_GetClipCursor( RECT *rect )
+HOOK_FUNC BOOL WINAPI hook_GetClipCursor( RECT *rect )
 {
     if (!GetClipCursor( rect )) return FALSE;
     if (screen_scaled()) seen_rect( rect );
     return TRUE;
 }
 
-static DWORD WINAPI hook_GetMessagePos( void )
+HOOK_FUNC DWORD WINAPI hook_GetMessagePos( void )
 {
     DWORD pos = GetMessagePos();
     if (!screen_scaled()) return pos;
@@ -942,28 +952,28 @@ static void seen_message( MSG *msg )
         msg->lParam = MAKELPARAM( seen_x( (short)LOWORD(msg->lParam) ), seen_y( (short)HIWORD(msg->lParam) ) );
 }
 
-static BOOL WINAPI hook_PeekMessageW( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags )
+HOOK_FUNC BOOL WINAPI hook_PeekMessageW( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags )
 {
     BOOL ret = PeekMessageW( msg, hwnd, first, last, flags );
     if (ret) seen_message( msg );
     return ret;
 }
 
-static BOOL WINAPI hook_PeekMessageA( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags )
+HOOK_FUNC BOOL WINAPI hook_PeekMessageA( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags )
 {
     BOOL ret = PeekMessageA( msg, hwnd, first, last, flags );
     if (ret) seen_message( msg );
     return ret;
 }
 
-static BOOL WINAPI hook_GetMessageW( MSG *msg, HWND hwnd, UINT first, UINT last )
+HOOK_FUNC BOOL WINAPI hook_GetMessageW( MSG *msg, HWND hwnd, UINT first, UINT last )
 {
     BOOL ret = GetMessageW( msg, hwnd, first, last );
     if (ret && ret != -1) seen_message( msg );
     return ret;
 }
 
-static BOOL WINAPI hook_GetMessageA( MSG *msg, HWND hwnd, UINT first, UINT last )
+HOOK_FUNC BOOL WINAPI hook_GetMessageA( MSG *msg, HWND hwnd, UINT first, UINT last )
 {
     BOOL ret = GetMessageA( msg, hwnd, first, last );
     if (ret && ret != -1) seen_message( msg );
@@ -1001,49 +1011,49 @@ static BOOL set_program_proc( HWND hwnd, int index, LONG_PTR proc, BOOL unicode,
     return window != NULL;
 }
 
-static LONG_PTR WINAPI hook_GetWindowLongPtrW( HWND hwnd, int index )
+HOOK_FUNC LONG_PTR WINAPI hook_GetWindowLongPtrW( HWND hwnd, int index )
 {
     LONG_PTR proc;
     return program_proc( hwnd, index, &proc ) ? proc : GetWindowLongPtrW( hwnd, index );
 }
 
-static LONG_PTR WINAPI hook_GetWindowLongPtrA( HWND hwnd, int index )
+HOOK_FUNC LONG_PTR WINAPI hook_GetWindowLongPtrA( HWND hwnd, int index )
 {
     LONG_PTR proc;
     return program_proc( hwnd, index, &proc ) ? proc : GetWindowLongPtrA( hwnd, index );
 }
 
-static LONG_PTR WINAPI hook_SetWindowLongPtrW( HWND hwnd, int index, LONG_PTR value )
+HOOK_FUNC LONG_PTR WINAPI hook_SetWindowLongPtrW( HWND hwnd, int index, LONG_PTR value )
 {
     LONG_PTR old;
     return set_program_proc( hwnd, index, value, TRUE, &old ) ? old : SetWindowLongPtrW( hwnd, index, value );
 }
 
-static LONG_PTR WINAPI hook_SetWindowLongPtrA( HWND hwnd, int index, LONG_PTR value )
+HOOK_FUNC LONG_PTR WINAPI hook_SetWindowLongPtrA( HWND hwnd, int index, LONG_PTR value )
 {
     LONG_PTR old;
     return set_program_proc( hwnd, index, value, FALSE, &old ) ? old : SetWindowLongPtrA( hwnd, index, value );
 }
 
-static LONG WINAPI hook_GetWindowLongW( HWND hwnd, int index )
+HOOK_FUNC LONG WINAPI hook_GetWindowLongW( HWND hwnd, int index )
 {
     LONG_PTR proc;
     return program_proc( hwnd, index, &proc ) ? (LONG)proc : GetWindowLongW( hwnd, index );
 }
 
-static LONG WINAPI hook_GetWindowLongA( HWND hwnd, int index )
+HOOK_FUNC LONG WINAPI hook_GetWindowLongA( HWND hwnd, int index )
 {
     LONG_PTR proc;
     return program_proc( hwnd, index, &proc ) ? (LONG)proc : GetWindowLongA( hwnd, index );
 }
 
-static LONG WINAPI hook_SetWindowLongW( HWND hwnd, int index, LONG value )
+HOOK_FUNC LONG WINAPI hook_SetWindowLongW( HWND hwnd, int index, LONG value )
 {
     LONG_PTR old;
     return set_program_proc( hwnd, index, value, TRUE, &old ) ? (LONG)old : SetWindowLongW( hwnd, index, value );
 }
 
-static LONG WINAPI hook_SetWindowLongA( HWND hwnd, int index, LONG value )
+HOOK_FUNC LONG WINAPI hook_SetWindowLongA( HWND hwnd, int index, LONG value )
 {
     LONG_PTR old;
     return set_program_proc( hwnd, index, value, FALSE, &old ) ? (LONG)old : SetWindowLongA( hwnd, index, value );
@@ -1131,7 +1141,7 @@ static void patch_modules(void)
     }
 }
 
-static FARPROC WINAPI hook_GetProcAddress( HMODULE module, LPCSTR name )
+HOOK_FUNC FARPROC WINAPI hook_GetProcAddress( HMODULE module, LPCSTR name )
 {
     FARPROC proc = GetProcAddress( module, name );
     unsigned int i;
