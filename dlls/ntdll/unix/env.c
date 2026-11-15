@@ -1040,6 +1040,8 @@ static void fit_launch_resolution( WCHAR **env, SIZE_T *pos, SIZE_T *size, const
     free( appdata );
     free( unix_name );
 
+    /* a launched game's programs are set up as it is (saved_resolution.c) */
+    if (metalsharp_launched_by()) set_launch_var( env, pos, size, "METALSHARP_LAUNCHED_BY", metalsharp_launched_by() );
     set_launch_var( env, pos, size, "METALSHARP_HIDE_WINE_EXPORTS", metalsharp_dlss_game() & 2 ? "1" : NULL );
     if (!metalsharp_dlss_game() ||
         ntdll_get_gpu_override( &vendor, &device, &description, &driver_version ) != 1 || vendor != 0x10de)
