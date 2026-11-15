@@ -19,6 +19,7 @@
 #include <d3d11_4.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <string.h>
 
 #define SLOT(type, member) (offsetof(type, member) / sizeof(void *))
 
@@ -279,10 +280,41 @@ static void wrap_device(ID3D11Device *device, ID3D11DeviceContext *immediate)
     if (context && !immediate) ID3D11DeviceContext_Release(context);
 }
 
+/* The backend is D3DMetal's d3d11 under a private name, which Wine's loader maps when it loads a
+ * Wine placeholder with that name. The placeholder ships next to this frontend, so prefixes need
+ * no copy of it; one in system32 is used first. */
+static HMODULE load_backend_module(void)
+{
+    char unix_dir[MAX_PATH], *slash;
+    WCHAR *dos_dir, path[MAX_PATH];
+    WCHAR *(CDECL *get_dos_file_name)(const char *);
+    HMODULE module;
+    DWORD len;
+
+    if ((module = LoadLibraryA("wfdxbackend-d3d11.dll"))) return module;
+
+    len = GetEnvironmentVariableA("WFDXCOMPAT_RUNTIME_DIR", unix_dir, sizeof(unix_dir));
+    if (!len || len >= sizeof(unix_dir))
+    {
+        /* <runtime>/d3dmetal-*  ->  <runtime>/wfdxcompat, as ntdll derives it */
+        len = GetEnvironmentVariableA("D3DMETAL_RUNTIME_DIR", unix_dir, sizeof(unix_dir));
+        if (!len || len >= sizeof(unix_dir) - 16) return NULL;
+        while (len > 1 && unix_dir[len - 1] == '/') unix_dir[--len] = 0;
+        if (!(slash = strrchr(unix_dir, '/')) || slash == unix_dir) return NULL;
+        strcpy(slash, "/wfdxcompat");
+    }
+    get_dos_file_name = (void *)GetProcAddress(GetModuleHandleA("kernel32.dll"), "wine_get_dos_file_name");
+    if (!get_dos_file_name || !(dos_dir = get_dos_file_name(unix_dir))) return NULL;
+    _snwprintf(path, ARRAYSIZE(path), L"%s\\x86_64-windows\\wfdxbackend-d3d11.dll", dos_dir);
+    path[ARRAYSIZE(path) - 1] = 0;
+    HeapFree(GetProcessHeap(), 0, dos_dir);
+    return LoadLibraryW(path);
+}
+
 static BOOL load_backend(void)
 {
     if (backend) return TRUE;
-    if (!(backend = LoadLibraryA("wfdxbackend-d3d11.dll"))) return FALSE;
+    if (!(backend = load_backend_module())) return FALSE;
     backend_create_device = (PFN_D3D11_CREATE_DEVICE)(void *)GetProcAddress(backend, "D3D11CreateDevice");
     backend_create_device_and_swap_chain =
             (PFN_D3D11_CREATE_DEVICE_AND_SWAP_CHAIN)(void *)GetProcAddress(backend, "D3D11CreateDeviceAndSwapChain");

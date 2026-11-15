@@ -59,8 +59,18 @@ mkdir -p "$OUT" "$STAGE" "$SENTINEL"
 "$WINEBUILD" --builtin "$OUT/wfdx-launchers-v1.dll"
 "$WINEBUILD" --dll --fake-module -m64 -F wfdx-launchers-v1.dll \
     -o "$SENTINEL/wfdx-launchers-v1.dll"
-rm -f "$OUT/d3d11.dll" "$OUT/wfdxbackend-d3d11.dll" "$OUT/wfdxcompat-core.dll" "$OUT/libwfdxcompat-core.a"
-rm -f "$STAGE/d3d11.dll" "$STAGE/wfdxbackend-d3d11.dll" "$STAGE/wfdxcompat-core.dll" "$STAGE/.DS_Store"
+# D3D11 frontend for D3DMetal: the D3D11 runtime's texture checks (src/d3d11guard). ntdll loads it for
+# d3d11.dll on the D3DMetal lane; it loads D3DMetal's d3d11 through the wfdxbackend-d3d11 placeholder
+# staged next to it, so prefixes need no copy of the placeholder.
+"$CC" -shared -O2 -Wall -Wextra -Werror \
+    "$ROOT/src/d3d11guard/frontend.c" "$ROOT/exports/d3d11guard.def" \
+    -ldxguid -o "$OUT/d3d11.dll"
+"$WINEBUILD" --builtin "$OUT/d3d11.dll"
+"$WINEBUILD" --dll --fake-module -m64 -F wfdxbackend-d3d11.dll \
+    -o "$OUT/wfdxbackend-d3d11.dll"
+rm -f "$OUT/wfdxcompat-core.dll" "$OUT/libwfdxcompat-core.a"
+rm -f "$STAGE/wfdxcompat-core.dll" "$STAGE/.DS_Store"
 cp -f "$OUT/d3d12.dll" "$OUT/d3d12core.dll" "$OUT/wfdxbackend-d3d12.dll" \
+    "$OUT/d3d11.dll" "$OUT/wfdxbackend-d3d11.dll" \
     "$OUT/wfdx-launchers-v1.dll" "$STAGE/"
 echo "staged: $STAGE"
