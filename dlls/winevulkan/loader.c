@@ -129,6 +129,52 @@ PFN_vkVoidFunction WINAPI vkGetInstanceProcAddr(VkInstance instance, const char 
     return NULL;
 }
 
+/* MetalSharp: some layers (DXVK-MacOS's D3D11 shared resources, used by Assetto Corsa's Custom
+ * Shaders Patch) call the Win32 external handle functions without having enabled their extensions,
+ * which MoltenVK can't provide. Give them functions that fail, which they handle, instead of NULL,
+ * which they jump to. */
+static VkResult WINAPI unsupported_vkGetMemoryWin32HandleKHR(VkDevice device,
+        const VkMemoryGetWin32HandleInfoKHR *info, HANDLE *handle)
+{
+    WARN("VK_KHR_external_memory_win32 is not enabled, failing.\n");
+    return VK_ERROR_FEATURE_NOT_PRESENT;
+}
+
+static VkResult WINAPI unsupported_vkGetMemoryWin32HandlePropertiesKHR(VkDevice device,
+        VkExternalMemoryHandleTypeFlagBits type, HANDLE handle, VkMemoryWin32HandlePropertiesKHR *properties)
+{
+    WARN("VK_KHR_external_memory_win32 is not enabled, failing.\n");
+    return VK_ERROR_FEATURE_NOT_PRESENT;
+}
+
+static VkResult WINAPI unsupported_vkGetSemaphoreWin32HandleKHR(VkDevice device,
+        const VkSemaphoreGetWin32HandleInfoKHR *info, HANDLE *handle)
+{
+    WARN("VK_KHR_external_semaphore_win32 is not enabled, failing.\n");
+    return VK_ERROR_FEATURE_NOT_PRESENT;
+}
+
+static VkResult WINAPI unsupported_vkImportSemaphoreWin32HandleKHR(VkDevice device,
+        const VkImportSemaphoreWin32HandleInfoKHR *info)
+{
+    WARN("VK_KHR_external_semaphore_win32 is not enabled, failing.\n");
+    return VK_ERROR_FEATURE_NOT_PRESENT;
+}
+
+static VkResult WINAPI unsupported_vkGetFenceWin32HandleKHR(VkDevice device,
+        const VkFenceGetWin32HandleInfoKHR *info, HANDLE *handle)
+{
+    WARN("VK_KHR_external_fence_win32 is not enabled, failing.\n");
+    return VK_ERROR_FEATURE_NOT_PRESENT;
+}
+
+static VkResult WINAPI unsupported_vkImportFenceWin32HandleKHR(VkDevice device,
+        const VkImportFenceWin32HandleInfoKHR *info)
+{
+    WARN("VK_KHR_external_fence_win32 is not enabled, failing.\n");
+    return VK_ERROR_FEATURE_NOT_PRESENT;
+}
+
 PFN_vkVoidFunction WINAPI vkGetDeviceProcAddr(VkDevice device, const char *name)
 {
     void *func;
@@ -160,6 +206,28 @@ PFN_vkVoidFunction WINAPI vkGetDeviceProcAddr(VkDevice device, const char *name)
             return (PFN_vkVoidFunction)vkGetFenceWin32HandleKHR;
         if (!strcmp(name, "vkImportFenceWin32HandleKHR"))
             return (PFN_vkVoidFunction)vkImportFenceWin32HandleKHR;
+    }
+
+    if (!device->extensions.has_VK_KHR_external_memory_win32)
+    {
+        if (!strcmp(name, "vkGetMemoryWin32HandleKHR"))
+            return (PFN_vkVoidFunction)unsupported_vkGetMemoryWin32HandleKHR;
+        if (!strcmp(name, "vkGetMemoryWin32HandlePropertiesKHR"))
+            return (PFN_vkVoidFunction)unsupported_vkGetMemoryWin32HandlePropertiesKHR;
+    }
+    if (!device->extensions.has_VK_KHR_external_semaphore_win32)
+    {
+        if (!strcmp(name, "vkGetSemaphoreWin32HandleKHR"))
+            return (PFN_vkVoidFunction)unsupported_vkGetSemaphoreWin32HandleKHR;
+        if (!strcmp(name, "vkImportSemaphoreWin32HandleKHR"))
+            return (PFN_vkVoidFunction)unsupported_vkImportSemaphoreWin32HandleKHR;
+    }
+    if (!device->extensions.has_VK_KHR_external_fence_win32)
+    {
+        if (!strcmp(name, "vkGetFenceWin32HandleKHR"))
+            return (PFN_vkVoidFunction)unsupported_vkGetFenceWin32HandleKHR;
+        if (!strcmp(name, "vkImportFenceWin32HandleKHR"))
+            return (PFN_vkVoidFunction)unsupported_vkImportFenceWin32HandleKHR;
     }
 
     /* Per the spec, we are only supposed to return device functions as in functions
