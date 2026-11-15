@@ -83,6 +83,11 @@ Performance is in `docs/PERFORMANCE.md`.
   - What is missing is MFC (mfc140*, mfcm140*), vcamp140 and vcruntime140_threads.
   - The app will offer the official redistributable as a download at install and stage it into the Steam prefix, then copy it into new prefixes (GOG and others), unmodified and as native DLLs.
 
+- **VR (MetalVR, `src/metalvr`):** `scripts/build-metalvr.sh` builds it and installs `bin/metalvrd` and `lib/metalvr`, which `package.sh` and `sign-app.sh` carry into the app like the rest of `install/` (`package-x86_64.sh` takes it as `METALVR`). `scripts/metalvr-prefix.sh` makes it a prefix's OpenXR runtime.
+  - Checked: the build with this repository's toolchain and macOS 15 floor (`audit-macho.sh`, strict); `metalvrd` signed with the hardened runtime and the tools' entitlements; MetalVR's Wine and OpenVR tests on these builds, against its simulated headset, on MetalSharp-Wine.app and MetalSharp-Wine-x86_64.app, with the runtime found through `metalvr-prefix.sh`'s registry entry.
+  - Not checked: a headset, a game, a Developer ID signed and notarized app with it, and `package-x86_64.sh` with `METALVR` set.
+  - Not done: no release has carried it. The MetalSharp app does not start `metalvrd`, register prefixes, or put OpenComposite's `openvr_api.dll` in place of a SteamVR game's own. A game has to be on the Mullion lane.
+
 - **Notarization:** submit `MetalSharp-Wine.app` with `xcrun notarytool` once credentials are stored, then staple the ticket.
 - **i386 needs the signed bundle.** Without the entitlement (macOS 15 to 26.3, or an unsigned build), i386 would need a guest address window across FEX and every WoW64 thunk (around 1,000 pointer-conversion sites). That isn't attempted.
 - **i386 under 16K pages:** some gdi32 tests crash, with guest ESP clobbered by a host value. Irrelevant in practice, because i386 only runs entitled, and entitled means 4K pages.

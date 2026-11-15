@@ -42,6 +42,7 @@
 #   WINE_BUILD=<the x86_64 Wine's build tree> WINE_MODULES="ntdll win32u ..." (modules rebuilt there with MetalSharp
 #   Wine's fixes, which replace the bundle's; server for the wineserver)
 #   WINEMETALGL=<install-x86_64/winemetalgl> VCRUN_X64=<Microsoft's x64 VC++ runtime DLLs> DEPS_SRC=<deps/src-x86_64:deps/src> LICENSES_EXTRA=<dir of license folders> (share/licenses)
+#   [METALVR=<MetalSharp Wine's install/ after build-metalvr.sh: bin/metalvrd and lib/metalvr>: VR, as in MetalSharp-Wine.app]
 #   D3DMETAL=<GPTK 4.0 beta 3: dir with external/ and wine/> D3DMETAL_GPTK3=<GPTK 3.0: the same, from redist/lib> MEDIA=<x86_64 GStreamer/FFmpeg prefix> SIGN_IDENTITY="Developer ID Application: ..." \
 #   VERSION=<the MetalSharp Wine release, e.g. 5.1> [TIMESTAMP=1: secure timestamps, which notarization needs] \
 #   [WINE_MONO_X86=<wine-mono-11.3.99-x86.tar.xz>: else downloaded] \
@@ -277,6 +278,16 @@ if [ -n "${WINEMETALGL:-}" ]; then
   rm -rf "$C/lib/winemetalgl"; cp -Rp "$WINEMETALGL/lib" "$C/lib/winemetalgl"
 fi
 
+# MetalVR (METALVR: MetalSharp Wine's install/ after build-metalvr.sh), as on MetalSharp Wine: the OpenXR runtime and
+# OpenComposite in lib/metalvr, x86_64 Windows code this Wine runs as it is, and metalvrd, which is arm64 like the
+# Mac it runs on, beside the x86_64 Wine. scripts/metalvr-prefix.sh makes it a prefix's runtime
+if [ -n "${METALVR:-}" ]; then
+  need "$METALVR/bin/metalvrd"
+  need "$METALVR/lib/metalvr/x86_64-windows/metalvr_openxr.dll"
+  cp -p "$METALVR/bin/metalvrd" "$C/MacOS/metalvrd"
+  rm -rf "$C/lib/metalvr"; cp -Rp "$METALVR/lib/metalvr" "$C/lib/metalvr"
+fi
+
 # Microsoft's x64 VC++ 2015-2022 runtime DLLs (VCRUN_X64, from vc_redist.x64.exe): prefixes shared with MetalSharp
 # Wine hold the ARM64X ones its installer puts in under FEX, which this Wine cannot run; the backend swaps these in
 # (ms_wine_fit_prefix_vcrun)
@@ -344,6 +355,10 @@ mkdir -p "$LIC/wine" "$LIC/zlib" "$LIC/mullion" "$LIC/dxvk-macos" "$LIC/vkd3d-pr
 cp -p "$MULLION/LICENSE" "$LIC/mullion/"
 cp -p "$DXVK"/LICENSE* "$LIC/dxvk-macos/"
 cp -p "$VKD3D"/LICENSE* "$LIC/vkd3d-proton/"
+if [ -n "${METALVR:-}" ]; then
+  mkdir -p "$LIC/metalvr"
+  cp -Rp "$METALVR/lib/metalvr/LICENSE" "$METALVR/lib/metalvr/LICENSE.ALVR" "$METALVR/lib/metalvr/OpenComposite" "$LIC/metalvr/"
+fi
 chmod -R u+w "$LIC"
 cat > "$C/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -379,6 +394,7 @@ touch "$C/share/wine/wine.inf"
   echo "dxvk-macos: $(basename "$DXVK") $(shasum -a 256 "$DXVK/x86_64-windows/dxgi.dll" | cut -c1-12), $(basename "$DXVK_I386")"
   echo "vkd3d-proton: $(cat "$VKD3D/VERSION" 2>/dev/null || basename "$VKD3D")"
   echo "moltenvk: $(basename "$MOLTENVK")"
+  [ -n "${METALVR:-}" ] && echo "metalvr: $(cat "$METALVR/lib/metalvr/VERSION")"
   [ -n "${WINE_BUILD:-}" ] && echo "wine: $(git -C "$WINE_SRC" describe --always --dirty 2>/dev/null || echo rebuilt) ($WINE_MODULES)"
   echo "media: $(ls "$MEDIA"/lib/libgstreamer-1.0.*.dylib | head -1 | xargs basename), $(ls "$MEDIA"/lib/libavcodec.*.*.dylib | head -1 | xargs basename)"
   echo "d3dmetal: $(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' \
