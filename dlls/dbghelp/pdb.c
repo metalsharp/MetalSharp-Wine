@@ -2083,6 +2083,29 @@ static enum pdb_result pdb_reader_init_DBI(struct pdb_reader *pdb)
             }
         }
     }
+
+    /* Public symbols (S_PUB32) aren't indexed by the globals' hash table, but applications
+     * (e.g. Assetto Corsa's Custom Shaders Patch) look up decorated names through
+     * SymEnumSymbols()/SymFromName(), as the previous PDB reader allowed. Expose them as
+     * public symbols, as the previous reader did. */
+    if (whole.data)
+    {
+        unsigned stream_size = pdb->toc->stream_size[whole.stream_id], offset;
+
+        for (offset = 0; offset + sizeof(cv_symbol->generic) <= stream_size;
+             offset += cv_symbol->generic.len + sizeof(cv_symbol->generic.len))
+        {
+            DWORD64 address;
+
+            if (pdb_reader_whole_stream_access_codeview_symbol(pdb, &whole, offset, &cv_symbol)) break;
+            if (cv_symbol->generic.len < sizeof(cv_symbol->generic.id)) break;
+            if (cv_symbol->generic.id != S_PUB32) continue;
+            if (pdb_reader_get_segment_address(pdb, cv_symbol->public_v3.segment, cv_symbol->public_v3.offset, &address))
+                continue;
+            symt_new_public(pdb->module, NULL, cv_symbol->public_v3.name,
+                            cv_symbol->public_v3.pubsymflags == SYMTYPE_FUNCTION, address, 1);
+        }
+    }
     pdb_reader_dispose_whole_stream(pdb, &whole);
 
     /* Note: rva is not unique */
