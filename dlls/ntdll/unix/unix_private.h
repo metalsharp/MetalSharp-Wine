@@ -366,6 +366,7 @@ extern void metalsharp_init_trace( const char *exe );
 extern void fit_saved_resolution( const char *exe, const char *appdata, const char *localappdata,
                                   const char *profile );
 extern int metalsharp_dlss_game(void);
+extern const char *metalsharp_launched_by(void);
 extern BOOL steam_cef_native_vulkan_loader( const UNICODE_STRING *nt_name, const char *module );
 /* WineForge-Internal: graphics/process-backend-policy-v1. */
 extern void init_process_graphics_backend( const WCHAR *image_path );

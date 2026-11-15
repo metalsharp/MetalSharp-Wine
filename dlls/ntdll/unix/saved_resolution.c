@@ -217,19 +217,79 @@ static BOOL write_file( const char *path, const char *data, size_t size )
     return ret;
 }
 
-/* a game MetalSharp started, whose folder has its launch.env: Steam and the programs it starts inherit
- * MetalSharp's configuration too, and Wine's own programs (explorer, services) the environment of the program
- * that started them */
+/* MetalSharp: a game MetalSharp started is set up for it (MetalFX's display, DLSS, the GPU shown) and so are the
+ * programs it starts, since a launcher's game lives in another folder (No Hesi Launcher's acs.exe, Minecraft's
+ * javaw.exe). METALSHARP_LAUNCHED_BY carries the decision down a chain of programs: unset, nothing decided yet; the
+ * game's folder; or "none". The first program of a chain that is not Wine's own decides: a game whose folder has
+ * MetalSharp's launch.env, or one MetalSharp started itself (a Sharp Library program, which gets no launch.env:
+ * GRAPHICS_BACKEND is set and nothing was decided above it). That one is taken for a launcher: it is not set up
+ * itself, as before, and the programs it starts are. The Steam client and the WebView2 runtime of a
+ * launcher's window are not games and decide "none": Steam and the programs it starts inherit MetalSharp's
+ * configuration, and its games have their own launch.env. Wine's own programs (start, explorer) pass the decision
+ * on unchanged. */
+static BOOL launched_game;
+static char launched_by[PATH_MAX];  /* the variable this program passes on, "" to leave it as it is */
+
+static BOOL is_wine_program( const char *exe )
+{
+    return strcasestr( exe, "/windows/system32/" ) || strcasestr( exe, "/windows/syswow64/" );
+}
+
+static BOOL is_launcher_helper( const char *exe )
+{
+    if (strcasestr( exe, "/microsoft/edgewebview/" ) || strcasestr( exe, "/microsoft/edge/" )) return TRUE;
+    return strcasestr( exe, "/steam/" ) && !strcasestr( exe, "/steamapps/" );
+}
+
 static BOOL is_launched_game( const char *exe )
 {
-    const char *exe_name = strrchr( exe, '/' );
+    return launched_game;
+}
+
+static void init_launched_by( const char *exe )
+{
+    const char *exe_name = strrchr( exe, '/' ), *parent = getenv( "METALSHARP_LAUNCHED_BY" );
+    const char *backend = getenv( "GRAPHICS_BACKEND" );
     char env_path[PATH_MAX];
     struct stat st;
 
-    if (!exe_name || exe_name - exe + sizeof("/.metalsharp/launch.env") > sizeof(env_path)) return FALSE;
-    snprintf( env_path, sizeof(env_path), "%.*s/.metalsharp/launch.env", (int)(exe_name - exe), exe );
-    if (stat( env_path, &st ) || !S_ISREG( st.st_mode )) return FALSE;
-    return !strcasestr( exe, "/windows/system32/" ) && !strcasestr( exe, "/windows/syswow64/" );
+    launched_game = FALSE;
+    launched_by[0] = 0;
+    if (!exe_name || is_wine_program( exe )) return;
+    if (is_launcher_helper( exe ))
+    {
+        if (parent || (backend && *backend)) strcpy( launched_by, "none" );
+        return;
+    }
+    if (exe_name - exe + sizeof("/.metalsharp/launch.env") <= sizeof(env_path) &&
+        snprintf( env_path, sizeof(env_path), "%.*s/.metalsharp/launch.env", (int)(exe_name - exe), exe ) > 0 &&
+        !stat( env_path, &st ) && S_ISREG( st.st_mode ))
+    {
+        launched_game = TRUE;
+        snprintf( launched_by, sizeof(launched_by), "%.*s", (int)(exe_name - exe), exe );
+    }
+    else if (parent && *parent && strcmp( parent, "none" ))
+    {
+        launched_game = TRUE;
+        snprintf( launched_by, sizeof(launched_by), "%s", parent );
+        MESSAGE( "MetalSharp: %s was started by the game in %s; it is set up as that game is\n", exe_name + 1,
+                 parent );
+    }
+    else if (!parent && backend && *backend)
+    {
+        /* a launcher, most likely: it keeps the display as it is (its window is no game's), and the programs it
+         * starts are set up as games */
+        snprintf( launched_by, sizeof(launched_by), "%.*s", (int)(exe_name - exe), exe );
+        MESSAGE( "MetalSharp: %s was started by MetalSharp without a launch.env; the programs it starts are set up "
+                 "as games\n", exe_name + 1 );
+    }
+    else if (parent) strcpy( launched_by, "none" );
+}
+
+/* the METALSHARP_LAUNCHED_BY this program passes on, NULL to leave the variable as it is */
+const char *metalsharp_launched_by(void)
+{
+    return launched_by[0] ? launched_by : NULL;
 }
 
 /* MetalSharp: the GPU a game is shown in Windows' device list (SetupAPI, WMI, the display adapter's registry
@@ -930,6 +990,7 @@ void fit_saved_resolution( const char *exe, const char *appdata, const char *loc
     memcpy( dir, exe, slash - exe );
     dir[slash - exe] = 0;
     metalsharp_init_trace( exe );
+    init_launched_by( exe );
     init_metalfx_scale( exe );
     init_dlss_game( exe );
     init_gpu_override( exe );
@@ -970,6 +1031,7 @@ void fit_saved_resolution( const char *exe, const char *appdata, const char *loc
 void fit_saved_resolution( const char *exe, const char *appdata, const char *localappdata, const char *profile )
 {
     metalsharp_init_trace( exe );
+    init_launched_by( exe );
     init_metalfx_scale( exe );
     init_dlss_game( exe );
     init_gpu_override( exe );
