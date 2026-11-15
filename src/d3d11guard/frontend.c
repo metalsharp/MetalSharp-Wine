@@ -1,5 +1,6 @@
 /*
- * MetalSharp D3D11 frontend for D3DMetal: GenerateMips with the D3D11 runtime's checks.
+ * MetalSharp D3D11 frontend for D3DMetal: GenerateMips with the D3D11 runtime's checks, and shared
+ * handles for resources shared within the process (see emulated_get_shared_handle).
  *
  * The D3D11 runtime only generates mips for a view of a resource created with
  * D3D11_RESOURCE_MISC_GENERATE_MIPS and D3D11_BIND_RENDER_TARGET, and ignores the call
@@ -210,46 +211,341 @@ static BOOL invalid_bc_usage(DXGI_FORMAT format, UINT bind, UINT misc)
     return TRUE;
 }
 
+/* D3DMetal returns E_NOTIMPL from IDXGIResource::GetSharedHandle, so resources created with
+ * D3D11_RESOURCE_MISC_SHARED can't be shared at all. Custom Shaders Patch's shared textures, and the
+ * No Hesi server script's car paint built on them, then fail. Within one process a shared handle
+ * only has to name the resource: GetSharedHandle hands out a handle for it, and OpenSharedResource on
+ * the same device returns the resource itself. Another process or device can't open these handles. */
+static const GUID shared_tracker_guid =
+    {0x6b3e1d42, 0x9a57, 0x4c1e, {0x8f, 0x2d, 0x31, 0x7a, 0x05, 0xc4, 0x9e, 0x61}};
+
+struct shared_entry
+{
+    HANDLE handle;
+    ID3D11Resource *resource;  /* weak: the tracker removes the entry when the resource goes */
+    ID3D11Device *device;      /* weak, for comparison only */
+};
+
+static SRWLOCK shared_lock = SRWLOCK_INIT;
+static struct shared_entry *shared_entries;
+static unsigned int shared_count, shared_capacity;
+static ULONG_PTR next_shared_handle = 0x40000000;
+static struct hook shared_handle_hooks[16], open_shared_hooks[16];
+static LONG shared_logged;
+
+struct shared_tracker
+{
+    IUnknown IUnknown_iface;
+    LONG refcount;
+    HANDLE handle;
+};
+
+static void remove_shared_entry(HANDLE handle)
+{
+    unsigned int i;
+
+    AcquireSRWLockExclusive(&shared_lock);
+    for (i = 0; i < shared_count; ++i)
+    {
+        if (shared_entries[i].handle != handle) continue;
+        shared_entries[i] = shared_entries[--shared_count];
+        break;
+    }
+    ReleaseSRWLockExclusive(&shared_lock);
+}
+
+static HRESULT STDMETHODCALLTYPE tracker_qi(IUnknown *iface, REFIID iid, void **out)
+{
+    if (IsEqualGUID(iid, &IID_IUnknown))
+    {
+        IUnknown_AddRef(iface);
+        *out = iface;
+        return S_OK;
+    }
+    *out = NULL;
+    return E_NOINTERFACE;
+}
+
+static ULONG STDMETHODCALLTYPE tracker_addref(IUnknown *iface)
+{
+    struct shared_tracker *tracker = CONTAINING_RECORD(iface, struct shared_tracker, IUnknown_iface);
+    return InterlockedIncrement(&tracker->refcount);
+}
+
+static ULONG STDMETHODCALLTYPE tracker_release(IUnknown *iface)
+{
+    struct shared_tracker *tracker = CONTAINING_RECORD(iface, struct shared_tracker, IUnknown_iface);
+    ULONG refcount = InterlockedDecrement(&tracker->refcount);
+
+    if (!refcount)
+    {
+        remove_shared_entry(tracker->handle);
+        HeapFree(GetProcessHeap(), 0, tracker);
+    }
+    return refcount;
+}
+
+static IUnknownVtbl tracker_vtbl = {tracker_qi, tracker_addref, tracker_release};
+
+static UINT resource_misc_flags(ID3D11Resource *resource)
+{
+    D3D11_RESOURCE_DIMENSION dimension;
+
+    ID3D11Resource_GetType(resource, &dimension);
+    switch (dimension)
+    {
+        case D3D11_RESOURCE_DIMENSION_BUFFER:
+        {
+            D3D11_BUFFER_DESC desc;
+            ID3D11Buffer_GetDesc((ID3D11Buffer *)resource, &desc);
+            return desc.MiscFlags;
+        }
+        case D3D11_RESOURCE_DIMENSION_TEXTURE1D:
+        {
+            D3D11_TEXTURE1D_DESC desc;
+            ID3D11Texture1D_GetDesc((ID3D11Texture1D *)resource, &desc);
+            return desc.MiscFlags;
+        }
+        case D3D11_RESOURCE_DIMENSION_TEXTURE2D:
+        {
+            D3D11_TEXTURE2D_DESC desc;
+            ID3D11Texture2D_GetDesc((ID3D11Texture2D *)resource, &desc);
+            return desc.MiscFlags;
+        }
+        case D3D11_RESOURCE_DIMENSION_TEXTURE3D:
+        {
+            D3D11_TEXTURE3D_DESC desc;
+            ID3D11Texture3D_GetDesc((ID3D11Texture3D *)resource, &desc);
+            return desc.MiscFlags;
+        }
+        default:
+            return 0;
+    }
+}
+
+typedef HRESULT (STDMETHODCALLTYPE *get_shared_handle_fn)(IDXGIResource *, HANDLE *);
+
+static ULONG refcount_of(ID3D11Resource *resource)
+{
+    ID3D11Resource_AddRef(resource);
+    return ID3D11Resource_Release(resource);
+}
+
+static ULONG dxgi_refcount_of(IDXGIResource *iface)
+{
+    IDXGIResource_AddRef(iface);
+    return IDXGIResource_Release(iface);
+}
+
+/* D3DMetal's IDXGIResource is a wrapper, a new one for each query, that holds a reference to the
+ * resource. Querying it for ID3D11Resource returns the resource but adds the reference to the
+ * wrapper, so releasing what the query returned releases the resource one time too many. Query
+ * twice and see which count the query moves; undo that and own exactly one resource reference, as
+ * the D3D11 runtime would give. */
+static ID3D11Resource *resource_from_dxgi(IDXGIResource *iface)
+{
+    ID3D11Resource *resource, *again;
+    ULONG resource_before, dxgi_before;
+
+    if (FAILED(IDXGIResource_QueryInterface(iface, &IID_ID3D11Resource, (void **)&resource)) || !resource)
+        return NULL;
+    resource_before = refcount_of(resource);
+    dxgi_before = dxgi_refcount_of(iface);
+    if (FAILED(IDXGIResource_QueryInterface(iface, &IID_ID3D11Resource, (void **)&again)) || again != resource)
+        return NULL;  /* can't tell what the queries hold, so don't share */
+    if (refcount_of(resource) != resource_before)
+    {
+        ID3D11Resource_Release(again);  /* COM's rule: the first query's reference is ours */
+        return resource;
+    }
+    if (dxgi_refcount_of(iface) != dxgi_before)
+    {
+        /* each query referenced the wrapper: drop both and take a resource reference instead */
+        IDXGIResource_Release(iface);
+        IDXGIResource_Release(iface);
+    }
+    ID3D11Resource_AddRef(resource);
+    return resource;
+}
+
+static HRESULT STDMETHODCALLTYPE emulated_get_shared_handle(IDXGIResource *iface, HANDLE *handle)
+{
+    get_shared_handle_fn original = find_original(shared_handle_hooks, iface);
+    struct shared_tracker *tracker;
+    struct shared_entry *entries;
+    ID3D11Resource *resource;
+    ID3D11Device *device;
+    unsigned int i;
+    HRESULT hr;
+
+    if (!handle) return E_INVALIDARG;
+    if (!(resource = resource_from_dxgi(iface)))
+        return original ? original(iface, handle) : E_NOTIMPL;
+    if (!(resource_misc_flags(resource) & (D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX)))
+    {
+        ID3D11Resource_Release(resource);
+        return original ? original(iface, handle) : E_INVALIDARG;
+    }
+
+    AcquireSRWLockShared(&shared_lock);
+    for (i = 0; i < shared_count; ++i)
+        if (shared_entries[i].resource == resource) { *handle = shared_entries[i].handle; break; }
+    ReleaseSRWLockShared(&shared_lock);
+    if (i < shared_count)
+    {
+        ID3D11Resource_Release(resource);
+        return S_OK;
+    }
+
+    if (!(tracker = HeapAlloc(GetProcessHeap(), 0, sizeof(*tracker))))
+    {
+        ID3D11Resource_Release(resource);
+        return E_OUTOFMEMORY;
+    }
+    tracker->IUnknown_iface.lpVtbl = &tracker_vtbl;
+    tracker->refcount = 1;
+    ID3D11Resource_GetDevice(resource, &device);
+
+    AcquireSRWLockExclusive(&shared_lock);
+    if (shared_count == shared_capacity)
+    {
+        unsigned int capacity = shared_capacity ? shared_capacity * 2 : 16;
+        entries = shared_entries
+                ? HeapReAlloc(GetProcessHeap(), 0, shared_entries, capacity * sizeof(*entries))
+                : HeapAlloc(GetProcessHeap(), 0, capacity * sizeof(*entries));
+        if (!entries)
+        {
+            ReleaseSRWLockExclusive(&shared_lock);
+            HeapFree(GetProcessHeap(), 0, tracker);
+            if (device) ID3D11Device_Release(device);
+            ID3D11Resource_Release(resource);
+            return E_OUTOFMEMORY;
+        }
+        shared_entries = entries;
+        shared_capacity = capacity;
+    }
+    tracker->handle = (HANDLE)next_shared_handle;
+    next_shared_handle += 4;
+    shared_entries[shared_count].handle = tracker->handle;
+    shared_entries[shared_count].resource = resource;
+    shared_entries[shared_count].device = device;
+    ++shared_count;
+    ReleaseSRWLockExclusive(&shared_lock);
+
+    /* the resource holds the tracker and releases it when it is destroyed, removing the entry */
+    hr = ID3D11Resource_SetPrivateDataInterface(resource, &shared_tracker_guid, &tracker->IUnknown_iface);
+    IUnknown_Release(&tracker->IUnknown_iface);
+    if (FAILED(hr))
+    {
+        /* without the tracker the entry could outlive the resource, so don't share it */
+        if (device) ID3D11Device_Release(device);
+        ID3D11Resource_Release(resource);
+        return original ? original(iface, handle) : hr;
+    }
+    *handle = tracker->handle;
+    if (InterlockedIncrement(&shared_logged) == 1)
+        OutputDebugStringA("d3d11 frontend: emulating shared handles within the process\n");
+    if (device) ID3D11Device_Release(device);
+    ID3D11Resource_Release(resource);
+    return S_OK;
+}
+
+typedef HRESULT (STDMETHODCALLTYPE *open_shared_fn)(void *, HANDLE, REFIID, void **);
+
+static HRESULT STDMETHODCALLTYPE emulated_open_shared_resource(void *device, HANDLE handle, REFIID iid, void **out)
+{
+    open_shared_fn original = find_original(open_shared_hooks, device);
+    ID3D11Device *d3d_device;
+    unsigned int i;
+    HRESULT hr = E_INVALIDARG;
+    BOOL found = FALSE;
+
+    if (!out) return E_INVALIDARG;
+    *out = NULL;
+    if (FAILED(IUnknown_QueryInterface((IUnknown *)device, &IID_ID3D11Device, (void **)&d3d_device)))
+        return original ? original(device, handle, iid, out) : E_INVALIDARG;
+
+    /* the query runs under the lock so the resource can't be destroyed in between */
+    AcquireSRWLockShared(&shared_lock);
+    for (i = 0; i < shared_count; ++i)
+    {
+        if (shared_entries[i].handle != handle) continue;
+        found = TRUE;
+        if (shared_entries[i].device == d3d_device)
+            hr = ID3D11Resource_QueryInterface(shared_entries[i].resource, iid, out);
+        break;
+    }
+    ReleaseSRWLockShared(&shared_lock);
+    ID3D11Device_Release(d3d_device);
+    if (found) return hr;
+    return original ? original(device, handle, iid, out) : E_INVALIDARG;
+}
+
+static void wrap_shared_resource(void *texture, UINT misc)
+{
+    IDXGIResource *resource;
+
+    if (!texture || !(misc & (D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX))) return;
+    if (FAILED(IUnknown_QueryInterface((IUnknown *)texture, &IID_IDXGIResource, (void **)&resource))) return;
+    patch(shared_handle_hooks, resource, SLOT(IDXGIResourceVtbl, GetSharedHandle), emulated_get_shared_handle);
+    IDXGIResource_Release(resource);
+}
+
 typedef HRESULT (STDMETHODCALLTYPE *create_tex_fn)(void *, const void *, const D3D11_SUBRESOURCE_DATA *, void **);
 
 static HRESULT STDMETHODCALLTYPE guarded_create_texture1d(void *device, const D3D11_TEXTURE1D_DESC *desc,
         const D3D11_SUBRESOURCE_DATA *data, void **texture)
 {
     create_tex_fn original = find_original(tex1d_hooks, device);
+    HRESULT hr;
     if (desc && invalid_bc_usage(desc->Format, desc->BindFlags, desc->MiscFlags)) return E_INVALIDARG;
-    return original ? original(device, desc, data, texture) : E_FAIL;
+    hr = original ? original(device, desc, data, texture) : E_FAIL;
+    if (hr == S_OK && desc && texture) wrap_shared_resource(*texture, desc->MiscFlags);
+    return hr;
 }
 
 static HRESULT STDMETHODCALLTYPE guarded_create_texture2d(void *device, const D3D11_TEXTURE2D_DESC *desc,
         const D3D11_SUBRESOURCE_DATA *data, void **texture)
 {
     create_tex_fn original = find_original(tex2d_hooks, device);
+    HRESULT hr;
     if (desc && invalid_bc_usage(desc->Format, desc->BindFlags, desc->MiscFlags)) return E_INVALIDARG;
-    return original ? original(device, desc, data, texture) : E_FAIL;
+    hr = original ? original(device, desc, data, texture) : E_FAIL;
+    if (hr == S_OK && desc && texture) wrap_shared_resource(*texture, desc->MiscFlags);
+    return hr;
 }
 
 static HRESULT STDMETHODCALLTYPE guarded_create_texture3d(void *device, const D3D11_TEXTURE3D_DESC *desc,
         const D3D11_SUBRESOURCE_DATA *data, void **texture)
 {
     create_tex_fn original = find_original(tex3d_hooks, device);
+    HRESULT hr;
     if (desc && invalid_bc_usage(desc->Format, desc->BindFlags, desc->MiscFlags)) return E_INVALIDARG;
-    return original ? original(device, desc, data, texture) : E_FAIL;
+    hr = original ? original(device, desc, data, texture) : E_FAIL;
+    if (hr == S_OK && desc && texture) wrap_shared_resource(*texture, desc->MiscFlags);
+    return hr;
 }
 
 static HRESULT STDMETHODCALLTYPE guarded_create_texture2d1(void *device, const D3D11_TEXTURE2D_DESC1 *desc,
         const D3D11_SUBRESOURCE_DATA *data, void **texture)
 {
     create_tex_fn original = find_original(tex2d1_hooks, device);
+    HRESULT hr;
     if (desc && invalid_bc_usage(desc->Format, desc->BindFlags, desc->MiscFlags)) return E_INVALIDARG;
-    return original ? original(device, desc, data, texture) : E_FAIL;
+    hr = original ? original(device, desc, data, texture) : E_FAIL;
+    if (hr == S_OK && desc && texture) wrap_shared_resource(*texture, desc->MiscFlags);
+    return hr;
 }
 
 static HRESULT STDMETHODCALLTYPE guarded_create_texture3d1(void *device, const D3D11_TEXTURE3D_DESC1 *desc,
         const D3D11_SUBRESOURCE_DATA *data, void **texture)
 {
     create_tex_fn original = find_original(tex3d1_hooks, device);
+    HRESULT hr;
     if (desc && invalid_bc_usage(desc->Format, desc->BindFlags, desc->MiscFlags)) return E_INVALIDARG;
-    return original ? original(device, desc, data, texture) : E_FAIL;
+    hr = original ? original(device, desc, data, texture) : E_FAIL;
+    if (hr == S_OK && desc && texture) wrap_shared_resource(*texture, desc->MiscFlags);
+    return hr;
 }
 
 static void wrap_device(ID3D11Device *device, ID3D11DeviceContext *immediate)
@@ -261,6 +557,7 @@ static void wrap_device(ID3D11Device *device, ID3D11DeviceContext *immediate)
     patch(tex1d_hooks, device, SLOT(ID3D11DeviceVtbl, CreateTexture1D), guarded_create_texture1d);
     patch(tex2d_hooks, device, SLOT(ID3D11DeviceVtbl, CreateTexture2D), guarded_create_texture2d);
     patch(tex3d_hooks, device, SLOT(ID3D11DeviceVtbl, CreateTexture3D), guarded_create_texture3d);
+    patch(open_shared_hooks, device, SLOT(ID3D11DeviceVtbl, OpenSharedResource), emulated_open_shared_resource);
     {
         ID3D11Device3 *device3;
         if (SUCCEEDED(ID3D11Device_QueryInterface(device, &IID_ID3D11Device3, (void **)&device3)))
@@ -271,6 +568,7 @@ static void wrap_device(ID3D11Device *device, ID3D11DeviceContext *immediate)
             patch(tex2d_hooks, device3, SLOT(ID3D11Device3Vtbl, CreateTexture2D), guarded_create_texture2d);
             patch(tex2d1_hooks, device3, SLOT(ID3D11Device3Vtbl, CreateTexture2D1), guarded_create_texture2d1);
             patch(tex3d1_hooks, device3, SLOT(ID3D11Device3Vtbl, CreateTexture3D1), guarded_create_texture3d1);
+            patch(open_shared_hooks, device3, SLOT(ID3D11Device3Vtbl, OpenSharedResource), emulated_open_shared_resource);
             ID3D11Device3_Release(device3);
         }
     }
