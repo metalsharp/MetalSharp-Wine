@@ -1008,11 +1008,29 @@ static BOOL symbol_enum_method_cb(symref_t symref, const char *name, void *user)
 {
     struct symbol_enum_method *sem = user;
 
-    sem->se->sym_info->SizeOfStruct = sizeof(SYMBOL_INFO);
-    sem->se->sym_info->MaxNameLen = sizeof(sem->se->buffer) - sizeof(SYMBOL_INFO);
+    const struct sym_enum *se = sem->se;
+    SYMBOL_INFO *si = se->sym_info;
 
-    send_symbol(sem->se, sem->pair, NULL, symref);
-    return TRUE;
+    si->SizeOfStruct = sizeof(SYMBOL_INFO);
+    si->MaxNameLen = sizeof(se->buffer) - sizeof(SYMBOL_INFO);
+
+    if (!symt_fill_sym_info_from_symref(sem->pair, NULL, symref, si)) return TRUE;
+    /* Identical functions folded by the linker share one address, hence one symref. Report
+     * each one under the name it was enumerated with, not the first one at that address. */
+    if (name && strcmp(si->Name, name))
+    {
+        unsigned len = strlen(name);
+
+        if (len >= si->MaxNameLen) len = si->MaxNameLen - 1;
+        memcpy(si->Name, name, len);
+        si->Name[len] = 0;
+        si->NameLen = len;
+    }
+    if (se->index && si->Index != se->index) return TRUE;
+    if (se->tag && si->Tag != se->tag) return TRUE;
+    if (se->addr && !(se->addr >= si->Address && se->addr < si->Address + si->Size)) return TRUE;
+    /* returning FALSE stops the enumeration, as the application's callback does */
+    return se->cb(si, si->Size, se->user);
 }
 
 static BOOL symt_enum_module(struct module_pair* pair, const WCHAR* match,
@@ -1781,6 +1799,17 @@ static BOOL find_name(struct process* pcs, struct module* module, const char* na
         if (result == MR_SUCCESS)
         {
             symt_fill_sym_info_from_symref(&pair, NULL, symref, symbol);
+            /* Identical functions folded by the linker share one address, hence one symref:
+             * report the symbol under the name that was looked up. */
+            if (strcmp(symbol->Name, name) && symbol->MaxNameLen)
+            {
+                unsigned len = strlen(name);
+
+                if (len >= symbol->MaxNameLen) len = symbol->MaxNameLen - 1;
+                memcpy(symbol->Name, name, len);
+                symbol->Name[len] = 0;
+                symbol->NameLen = len;
+            }
             return TRUE;
         }
         if (result != MR_NOT_FOUND) return FALSE;
