@@ -13,7 +13,8 @@
 #   src/dxvk-macos   DXVK-MacOS 3.1 (metalsharp/DXVK-MacOS, branch main): the GRAPHICS_BACKEND=dxvk lane, built as
 #                    ARM64X by build-dxvk-macos.sh, with its own submodules (dxbc-spirv, Vulkan and SPIR-V headers)
 #   src/metalvr      MetalVR (metalsharp/MetalVR, branch main): the OpenXR runtime and streaming server for VR
-#                    games. Pinned here; no script of this repository builds or stages it yet
+#                    games, built and installed by build-metalvr.sh with MetalVR's own scripts, which fetch the
+#                    OpenXR headers, ALVR and OpenComposite it builds against into src/metalvr/external
 #   src/wine-x86_64  with `fetch-sources.sh x86_64` only: the x86_64 Wine (Wine 11.17 + WineForge + MetalSharp,
 #                    branch source/wine-x86_64) that MetalSharp-Wine-x86_64.app is built from (docs/X86_64.md)
 # Outside a git checkout, the branches are cloned instead. patches/ has the same changes as git
