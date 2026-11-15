@@ -83,6 +83,10 @@ Performance is in `docs/PERFORMANCE.md`.
   - What is missing is MFC (mfc140*, mfcm140*), vcamp140 and vcruntime140_threads.
   - The app will offer the official redistributable as a download at install and stage it into the Steam prefix, then copy it into new prefixes (GOG and others), unmodified and as native DLLs.
 
+- **VR (MetalVR, `src/metalvr`):** the source is pinned and nothing builds or stages it yet.
+  - To ship it: build `metalvr_openxr.dll` (MinGW, x86_64) and `metalvrd` with its scripts, stage them into the app, sign `metalvrd`, and register the runtime in a prefix (`HKLM\SOFTWARE\Khronos\OpenXR\1`, `ActiveRuntime`).
+  - It needs the Mullion lane. MetalVR's tests pass on both apps against its simulated headset; no headset and no game has been run.
+
 - **Notarization:** submit `MetalSharp-Wine.app` with `xcrun notarytool` once credentials are stored, then staple the ticket.
 - **i386 needs the signed bundle.** Without the entitlement (macOS 15 to 26.3, or an unsigned build), i386 would need a guest address window across FEX and every WoW64 thunk (around 1,000 pointer-conversion sites). That isn't attempted.
 - **i386 under 16K pages:** some gdi32 tests crash, with guest ESP clobbered by a host value. Irrelevant in practice, because i386 only runs entitled, and entitled means 4K pages.
