@@ -1,0 +1,36 @@
+From c57a836306b6d9e005dba4e0f6096f4fdd23bd17 Mon Sep 17 00:00:00 2001
+From: Mason <masond3v@protonmail.com>
+Date: Sun, 15 Nov 2026 11:03:54 -0500
+Subject: [PATCH] d3dcompiler: Resolve standard includes relative to paths
+ using either separator.
+
+D3D_COMPILE_STANDARD_FILE_INCLUDE only looked for the source's folder up to
+the last backslash. Custom Shaders Patch compiles "...\\shaders/clouds.fx"
+and its includes weren't found (E4002), so its sky, clouds and post-processing
+shaders failed and Assetto Corsa's world rendered blank.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ dlls/d3dcompiler_43/compiler.c | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/d3dcompiler_43/compiler.c b/dlls/d3dcompiler_43/compiler.c
+index f5c259191b..6ddfab8f2d 100644
+--- a/dlls/d3dcompiler_43/compiler.c
++++ b/dlls/d3dcompiler_43/compiler.c
+@@ -86,7 +86,11 @@ static HRESULT WINAPI d3dcompiler_include_from_file_open(ID3DInclude *iface, D3D
+     ULONG read;
+     DWORD len;
+ 
+-    if ((initial_dir = strrchr(include->initial_filename, '\\')))
++    /* Paths may use either separator (e.g. Custom Shaders Patch's "...\\shaders/clouds.fx"). */
++    initial_dir = strrchr(include->initial_filename, '\\');
++    if (!initial_dir || (strrchr(include->initial_filename, '/') > initial_dir))
++        initial_dir = strrchr(include->initial_filename, '/');
++    if (initial_dir)
+     {
+         len = initial_dir - include->initial_filename + 1;
+         initial_dir = include->initial_filename;
+-- 
+2.54.0 (Apple Git-157)
+
