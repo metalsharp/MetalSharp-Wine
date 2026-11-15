@@ -1760,8 +1760,17 @@ static HRESULT d3d12_reflection_init(struct d3d12_reflection *reflection,
 
     if ((ret = vkd3d_shader_scan(&compile_info, NULL)) < 0)
     {
-        vkd3d_shader_free_dxbc(&dxbc_desc);
-        return hresult_from_vkd3d_result(ret);
+        /* Native reflection does not parse the shader's instructions, and
+         * applications (e.g. Assetto Corsa's Custom Shaders Patch) reflect
+         * shaders using instructions vkd3d-shader can't parse yet. Keep the
+         * RDEF/STAT information rather than failing the whole call. */
+        WARN("Failed to scan shader, ret %d; signatures will be empty.\n", ret);
+        memset(&reflection->signature_info.input, 0, sizeof(reflection->signature_info.input));
+        memset(&reflection->signature_info.output, 0, sizeof(reflection->signature_info.output));
+        memset(&reflection->signature_info.patch_constant, 0, sizeof(reflection->signature_info.patch_constant));
+        reflection->thread_group_size_info.x = 0;
+        reflection->thread_group_size_info.y = 0;
+        reflection->thread_group_size_info.z = 0;
     }
 
     if (reflection->version >= 40)
