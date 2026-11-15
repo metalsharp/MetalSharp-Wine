@@ -1158,6 +1158,29 @@ static inline BOOL stage_manager_enabled(void)
         return [self wouldBeVisible] || [self isMiniaturized];
     }
 
+    /* MetalSharp: a window shown while one of the program's fullscreen windows is up on the active
+     * space (an error dialog over a game in DXGI fullscreen, e.g. Custom Shaders Patch's "Failed to
+     * launch the race") would open under it: the game is topmost, and macOS doesn't take it out of
+     * fullscreen as Windows does when the dialog takes the focus. Keep such windows above it, as if
+     * topmost, until they're hidden. */
+    - (BOOL) floating
+    {
+        return floating || aboveFullscreen;
+    }
+
+    - (BOOL) shownOverFullscreenWindow
+    {
+        for (NSWindow* window in [NSApp windows])
+        {
+            WineWindow* other = (WineWindow*)window;
+
+            if (other == self || ![other isKindOfClass:[WineWindow class]]) continue;
+            if (other.fullscreen && [other isVisible] && [other isOnActiveSpace] && ![other isMiniaturized])
+                return YES;
+        }
+        return NO;
+    }
+
     - (NSInteger) minimumLevelForActive:(BOOL)active
     {
         NSInteger level;
@@ -1219,7 +1242,7 @@ static inline BOOL stage_manager_enabled(void)
         self.disabled = state->disabled;
         self.noForeground = state->no_foreground;
 
-        if (self.floating != state->floating)
+        if (floating != state->floating)
         {
             self.floating = state->floating;
             if (state->floating)
@@ -1660,6 +1683,11 @@ static inline BOOL stage_manager_enabled(void)
                 [NSApp unhide:nil];
             wasVisible = [self isVisible];
 
+            if (!wasVisible)
+                aboveFullscreen = !fullscreen && !self.noForeground && [self shownOverFullscreenWindow];
+            if (aboveFullscreen)
+                prev = next = nil; /* order it in front of the fullscreen window */
+
             /* MetalSharp: bring Wine to the front whenever one of its windows
                is shown, so a game or launcher doesn't open behind the app that
                started it. Windows that don't take the foreground (tooltips,
@@ -1783,6 +1811,8 @@ static inline BOOL stage_manager_enabled(void)
         WineApplicationController* controller = [WineApplicationController sharedController];
         BOOL wasVisible = [self isVisible];
         BOOL wasOnActiveSpace = [self isOnActiveSpace];
+
+        aboveFullscreen = FALSE;
 
         [self endWindowDragging];
         [controller windowWillOrderOut:self];
