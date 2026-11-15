@@ -75,6 +75,8 @@ BOOL is_wfdxcompat_frontend_module_name( const char *path )
     const char *name = module_basename( path );
 
     return !strcasecmp( name, "d3d12.dll" ) ||
+           /* MetalSharp: D3D11 frontend, gives D3DMetal's GenerateMips the D3D11 runtime's checks */
+           !strcasecmp( name, "d3d11.dll" ) ||
            (wfdxcompat_launcher_runtime_enabled() &&
             !strcasecmp( name, "wfdx-launchers-v1.dll" ));
 }
@@ -84,7 +86,9 @@ BOOL is_wfdxcompat_backend_module_name( const char *path )
     const char *name = module_basename( path );
 
     return !strcasecmp( name, "wfdxbackend-d3d12.dll" ) ||
-           !strcasecmp( name, "wfdxbackend-d3d12.so" );
+           !strcasecmp( name, "wfdxbackend-d3d12.so" ) ||
+           !strcasecmp( name, "wfdxbackend-d3d11.dll" ) ||
+           !strcasecmp( name, "wfdxbackend-d3d11.so" );
 }
 
 BOOL wfdxcompat_launcher_runtime_available(void)
@@ -127,12 +131,16 @@ char *resolve_wfdxcompat_frontend_pe_path( const char *module, USHORT machine )
 char *resolve_wfdxcompat_backend_pe_path( const char *module )
 {
     if (!is_wfdxcompat_backend_module_name( module ) || !d3dmetal_graphics_backend_enabled()) return NULL;
+    if (!strncasecmp( module_basename( module ), "wfdxbackend-d3d11.", 18 ))
+        return resolve_d3dmetal_pe_path( "d3d11.dll" );
     return resolve_d3dmetal_pe_path( "d3d12.dll" );
 }
 
 char *resolve_wfdxcompat_backend_unixlib_path( const char *module )
 {
     if (!is_wfdxcompat_backend_module_name( module ) || !d3dmetal_graphics_backend_enabled()) return NULL;
+    if (!strncasecmp( module_basename( module ), "wfdxbackend-d3d11.", 18 ))
+        return resolve_d3dmetal_unixlib_path( "d3d11.so" );
     return resolve_d3dmetal_unixlib_path( "d3d12.so" );
 }
 
