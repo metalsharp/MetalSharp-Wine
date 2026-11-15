@@ -31,6 +31,7 @@
     BOOL noForeground;
     BOOL preventsAppActivation;
     BOOL floating;
+    BOOL aboveFullscreen;
     BOOL resizable;
     BOOL maximized;
     BOOL fullscreen;
