@@ -2,6 +2,17 @@
 
 The [release notes](https://github.com/metalsharp/MetalSharp-Wine/releases) have the full list for each release.
 
+## Unreleased
+
+x86_64 build. Assetto Corsa with Custom Shaders Patch runs and joins servers (Wine 11 regressions from Wine 10):
+
+- **CSP initializes:** dbghelp's PDB reader returns public symbols again and names functions the linker folded by their own name; CSP finds Assetto Corsa's functions through them (x86_64 patch 0065).
+- **Assetto Corsa starts:** d3dx11 creates shader resource views from files, memory and resources, and saves textures to memory and files, DDS with the DX10 header and every mip and layer (0064).
+- **Shaders:** vkd3d-shader reads SM4 `call`, `callc` and label registers, and `D3DReflect` keeps a shader's resources when it can't scan its code (0066); `D3DCompile`'s standard includes are found next to sources named with either path separator, which CSP's sky, clouds and post-processing shaders are (0069).
+- **Online:** winevulkan gives DXVK-MacOS functions that fail for Win32 handles of extensions MoltenVK lacks, instead of NULL, which it called for D3D11 shared resources (0067).
+- **Dialogs over fullscreen:** a window a program opens while its fullscreen window is on screen (CSP's "Failed to launch the race") shows in front of it (0068).
+- **D3DMetal:** WFDXCompat's new D3D11 frontend refuses block-compressed render targets as the D3D11 runtime does; D3DMetal created them, and CSP's track textures rendered with black squares (0070, `source/wfdxcompat`).
+
 ## 7.0
 
 Both builds.

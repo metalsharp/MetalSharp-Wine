@@ -38,6 +38,7 @@
 #
 #   BUNDLES=<dir with the bundles release's .tar.zst> MULLION=<lib/dxmt> DXVK=<dxvk-macos-vX-x86_64 release dir>
 #   DXVK_I386=<dxvk-macos-vX-i386 release dir> VKD3D=<vkd3d-proton-vX-x86_64 release dir> MOLTENVK=<moltenvk-vX-universal dir> NGX=<x86_64 nvngx/nvapi64 dir>
+#   WFDXCOMPAT_X86_64=<source/wfdxcompat lib/wfdxcompat/x86_64-windows> (optional): the D3D11 frontend for D3DMetal
 #   WINE_BUILD=<the x86_64 Wine's build tree> WINE_MODULES="ntdll win32u ..." (modules rebuilt there with MetalSharp
 #   Wine's fixes, which replace the bundle's; server for the wineserver)
 #   WINEMETALGL=<install-x86_64/winemetalgl> VCRUN_X64=<Microsoft's x64 VC++ runtime DLLs> DEPS_SRC=<deps/src-x86_64:deps/src> LICENSES_EXTRA=<dir of license folders> (share/licenses)
@@ -223,6 +224,11 @@ for f in License.rtf Acknowledgements.rtf; do [ -f "$D3DMETAL/$f" ] && cp -p "$D
 mkdir -p "$C/share/licenses/d3dmetal/gptk3"
 for f in License.rtf Acknowledgements.rtf; do [ -f "$D3DMETAL_GPTK3/$f" ] && cp -p "$D3DMETAL_GPTK3/$f" "$C/share/licenses/d3dmetal/gptk3/"; done
 cp -Rp "$GX/wfdxcompat" "$GX/wfdxcompat-agility" "$R/"
+# WFDXCompat's D3D11 frontend for D3DMetal (source/wfdxcompat, build.sh: lib/wfdxcompat/x86_64-windows),
+# over the graphics bundle's WFDXCompat, which predates it
+if [ -n "${WFDXCOMPAT_X86_64:-}" ]; then
+  for f in d3d11.dll wfdxbackend-d3d11.dll; do cp -p "$WFDXCOMPAT_X86_64/$f" "$R/wfdxcompat/x86_64-windows/$f"; done
+fi
 for d in mono-x86 mono-arm64 dxvk-1.10.3 goldberg shims fnalibs fna-kickstart faudio; do cp -Rp "$AS/$d" "$R/$d"; done
 # fnalibs' SDL2-linked FNA3D, FAudio, theorafile and FMOD (the fnalibs bundle) over the asset bundle's
 cp -Rp "$WORK/fnalibs/fnalibs/." "$R/fnalibs/"
