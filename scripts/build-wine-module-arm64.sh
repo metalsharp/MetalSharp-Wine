@@ -37,12 +37,15 @@ for arch in aarch64 i386; do
         -lgdi32 -luser32 -lkernel32 -lntdll $( [ $arch = i386 ] && echo -Wl,--kill-at )
     printf 'int __stdcall DllMain(void *i, unsigned int r, void *p) { return 1; }\n' > "$OBJ/$arch/forwarder.c"
     $cc -c -O2 "$OBJ/$arch/forwarder.c" -o "$OBJ/$arch/forwarder.o"
+    # a version resource, as Windows' opengl32.dll has: programs read it to see that OpenGL is installed
+    case $arch in aarch64) rc=arm64ec-w64-mingw32-windres ;; i386) rc=i686-w64-mingw32-windres ;; esac
+    $rc -O res "$ROOT/src/wine/rc/opengl32.rc" -o "$OBJ/$arch/opengl32.res"
     if [ $arch = i386 ]; then
-        $cc -shared -nostdlib -o "$OUT/$arch-windows/opengl32.dll" "$OBJ/$arch/forwarder.o" "$GEN/opengl32.def" \
+        $cc -shared -nostdlib -o "$OUT/$arch-windows/opengl32.dll" "$OBJ/$arch/forwarder.o" "$OBJ/$arch/opengl32.res" "$GEN/opengl32.def" \
             -Wl,--entry,DllMain@12 -lkernel32
     else
         # ARM64EC code needs the toolchain's EC runtime helpers, so no -nostdlib here
-        $cc -shared -o "$OUT/$arch-windows/opengl32.dll" "$OBJ/$arch/forwarder.o" "$GEN/opengl32.def" \
+        $cc -shared -o "$OUT/$arch-windows/opengl32.dll" "$OBJ/$arch/forwarder.o" "$OBJ/$arch/opengl32.res" "$GEN/opengl32.def" \
             -Wl,--entry,DllMain -lkernel32
     fi
     # Wine loads winemetalgl.so for a builtin winemetalgl.dll only (winebuild --builtin).
