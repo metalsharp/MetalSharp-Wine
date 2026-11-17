@@ -1,0 +1,162 @@
+From 81d6f260f35610fafb0927df1cb66dcf12ff3753 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Mon, 16 Nov 2026 19:19:06 -0700
+Subject: [PATCH] ntdll, wow64: A system call writes the read-only pages FEX
+ made of a page with code.
+
+FEX makes a page read-only once it has translated code from it, to see the code change, and handles the faults the
+program's own writes take. A write by a system call faulted in Wine's unix code instead, and the call failed with
+STATUS_ACCESS_VIOLATION where Windows writes the page: a 32-bit program with its output buffers on a page with code
+(a program with one section, or with DEP off) read 0 from QueryPerformanceCounter, GetSystemTimeAsFileTime and time()
+(metalsharp/MetalSharp-Wine#32).
+
+On arm64, a write fault inside a system call of a wow64 process, on a committed read-only page that can hold code,
+makes the page writable for the write and records it in the 64-bit TEB. When the call returns, wow64 puts the page's
+protection back and tells the translator it changed (BTCpuNotifyMemoryDirty), which drops the code translated from it.
+---
+ dlls/ntdll/unix/signal_arm64.c |  3 +++
+ dlls/ntdll/unix/unix_private.h |  5 ++++
+ dlls/ntdll/unix/virtual.c      | 45 ++++++++++++++++++++++++++++++++++
+ dlls/wow64/syscall.c           | 29 ++++++++++++++++++++++
+ 4 files changed, 82 insertions(+)
+
+diff --git a/dlls/ntdll/unix/signal_arm64.c b/dlls/ntdll/unix/signal_arm64.c
+index 23467c8db02..a845b8405a3 100644
+--- a/dlls/ntdll/unix/signal_arm64.c
++++ b/dlls/ntdll/unix/signal_arm64.c
+@@ -1530,6 +1530,9 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
+     rec.NumberParameters = 2;
+ 
+     if (!virtual_handle_fault( data, &rec, (void *)SP_sig(sigcontext) )) return;
++    if (rec.ExceptionInformation[0] == EXCEPTION_WRITE_FAULT && is_inside_syscall( data, SP_sig(sigcontext) ) &&
++        virtual_handle_syscall_write( data, siginfo->si_addr ))
++        return;
+     if (handle_syscall_fault( data, sigcontext, &rec )) return;
+ 
+     save_context( &context, sigcontext );
+diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
+index c49a62a6842..80a22d4196a 100644
+--- a/dlls/ntdll/unix/unix_private.h
++++ b/dlls/ntdll/unix/unix_private.h
+@@ -330,10 +330,15 @@ extern NTSTATUS virtual_alloc_thread_stack( INITIAL_TEB *stack, ULONG_PTR limit_
+ extern void virtual_map_user_shared_data(void);
+ extern void virtual_init_user_shared_data(void);
+ extern NTSTATUS virtual_handle_fault( struct thread_data *data, EXCEPTION_RECORD *rec, void *stack );
++/* pages a system call of a wow64 process wrote that were read-only: (page, Win32 protection) pairs in the 64-bit
++ * TEB's ReservedForDebuggerInstrumentation from this slot, which wow64 restores (dlls/wow64/syscall.c) */
++#define WOW64_SYSCALL_WRITE_SLOT  8
++#define WOW64_SYSCALL_WRITE_PAGES 4
+ #if defined(__APPLE__) && defined(__aarch64__)
+ extern BOOL virtual_wx_begin_store( void *addr, SIZE_T size );
+ extern void virtual_wx_end_store( void *addr, SIZE_T size );
+ extern BOOL virtual_is_write_emulated( void *addr );
++extern BOOL virtual_handle_syscall_write( struct thread_data *data, void *addr );
+ #endif
+ extern unsigned int virtual_locked_server_call( void *req_ptr );
+ extern ssize_t virtual_locked_read( int fd, void *addr, size_t size );
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index 5a9c9354a5f..87d968da544 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -4684,6 +4684,51 @@ BOOL virtual_is_write_emulated( void *addr )
+ }
+ 
+ 
++/***********************************************************************
++ *           virtual_handle_syscall_write
++ *
++ * A system call of a wow64 process writing to a read-only page that can hold code. The binary translator (FEX)
++ * makes such pages read-only once it has translated code in them, to see the code change: an output buffer that
++ * shares a page with code (a program with one section, or with DEP off) then failed the call with
++ * STATUS_ACCESS_VIOLATION, where Windows writes it. The page is made writable for the write and recorded in the
++ * 64-bit TEB; when the call returns, wow64 puts its protection back and tells the translator it changed.
++ */
++BOOL virtual_handle_syscall_write( struct thread_data *data, void *addr )
++{
++    void **slots = data->teb->ReservedForDebuggerInstrumentation + WOW64_SYSCALL_WRITE_SLOT;
++    char *page = ROUND_ADDR( addr, page_mask );
++    struct file_view *view;
++    BOOL ret = FALSE;
++    unsigned int i;
++    BYTE vprot;
++
++    if (!is_wow64()) return FALSE;
++
++    mutex_lock( &virtual_mutex );  /* no need for signal masking inside signal handler */
++    vprot = get_page_vprot( page );
++    if ((view = find_view( page, 0 )) && (vprot & VPROT_COMMITTED) && (vprot & VPROT_READ) &&
++        !(vprot & (VPROT_WRITE | VPROT_WRITECOPY | VPROT_GUARD)) && ((vprot & VPROT_EXEC) || force_exec_prot))
++    {
++        for (i = 0; i < 2 * WOW64_SYSCALL_WRITE_PAGES && slots[i]; i += 2)
++            if (slots[i] == page) break;
++        if (i < 2 * WOW64_SYSCALL_WRITE_PAGES)
++        {
++            if (!slots[i])
++            {
++                slots[i] = page;
++                slots[i + 1] = (void *)(ULONG_PTR)get_win32_prot( vprot, view->protect );
++            }
++            TRACE( "%p: writable for a system call's write to %p\n", page, addr );
++            set_page_vprot_bits( page, page_size, VPROT_WRITE, 0 );
++            mprotect_range( page, page_size, 0, 0 );
++            ret = TRUE;
++        }
++    }
++    mutex_unlock( &virtual_mutex );
++    return ret;
++}
++
++
+ /***********************************************************************
+  *           virtual_wx_end_store
+  */
+diff --git a/dlls/wow64/syscall.c b/dlls/wow64/syscall.c
+index d6fea09cec8..c4209fa9a16 100644
+--- a/dlls/wow64/syscall.c
++++ b/dlls/wow64/syscall.c
+@@ -1196,6 +1196,34 @@ __ASM_GLOBAL_FUNC( wow64_syscall_handler,
+ #endif
+ 
+ 
++/* pages a system call wrote that were read-only (ntdll/unix/unix_private.h) */
++#define WOW64_SYSCALL_WRITE_SLOT  8
++#define WOW64_SYSCALL_WRITE_PAGES 4
++
++/**********************************************************************
++ *           restore_syscall_writes
++ *
++ * Put back the protection of the pages the system call made writable to write them, and tell the binary translator
++ * they changed, so it drops the code it translated from them.
++ */
++static void restore_syscall_writes(void)
++{
++    void **slots = NtCurrentTeb()->ReservedForDebuggerInstrumentation + WOW64_SYSCALL_WRITE_SLOT;
++    unsigned int i;
++
++    for (i = 0; i < 2 * WOW64_SYSCALL_WRITE_PAGES && slots[i]; i += 2)
++    {
++        void *addr = slots[i];
++        SIZE_T size = 0x1000;
++        ULONG old;
++
++        NtProtectVirtualMemory( GetCurrentProcess(), &addr, &size, (ULONG)(ULONG_PTR)slots[i + 1], &old );
++        if (pBTCpuNotifyMemoryDirty) pBTCpuNotifyMemoryDirty( slots[i], 0x1000 );
++        slots[i] = slots[i + 1] = NULL;
++    }
++}
++
++
+ /**********************************************************************
+  *           Wow64SystemServiceEx  (wow64.@)
+  */
+@@ -1211,6 +1239,7 @@ NTSTATUS WINAPI Wow64SystemServiceEx( UINT num, UINT *args )
+         return STATUS_INVALID_SYSTEM_SERVICE;
+     }
+     status = wow64_syscall( args, table->ServiceTable[id] );
++    if (NtCurrentTeb()->ReservedForDebuggerInstrumentation[WOW64_SYSCALL_WRITE_SLOT]) restore_syscall_writes();
+     free_temp_data();
+     return status;
+ }
+-- 
+2.54.0 (Apple Git-157)
+
