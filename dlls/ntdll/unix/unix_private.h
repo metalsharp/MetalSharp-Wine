@@ -330,10 +330,15 @@ extern NTSTATUS virtual_alloc_thread_stack( INITIAL_TEB *stack, ULONG_PTR limit_
 extern void virtual_map_user_shared_data(void);
 extern void virtual_init_user_shared_data(void);
 extern NTSTATUS virtual_handle_fault( struct thread_data *data, EXCEPTION_RECORD *rec, void *stack );
+/* pages a system call of a wow64 process wrote that were read-only: (page, Win32 protection) pairs in the 64-bit
+ * TEB's ReservedForDebuggerInstrumentation from this slot, which wow64 restores (dlls/wow64/syscall.c) */
+#define WOW64_SYSCALL_WRITE_SLOT  8
+#define WOW64_SYSCALL_WRITE_PAGES 4
 #if defined(__APPLE__) && defined(__aarch64__)
 extern BOOL virtual_wx_begin_store( void *addr, SIZE_T size );
 extern void virtual_wx_end_store( void *addr, SIZE_T size );
 extern BOOL virtual_is_write_emulated( void *addr );
+extern BOOL virtual_handle_syscall_write( struct thread_data *data, void *addr );
 #endif
 extern unsigned int virtual_locked_server_call( void *req_ptr );
 extern ssize_t virtual_locked_read( int fd, void *addr, size_t size );

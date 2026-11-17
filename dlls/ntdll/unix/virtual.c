@@ -4685,6 +4685,51 @@ BOOL virtual_is_write_emulated( void *addr )
 
 
 /***********************************************************************
+ *           virtual_handle_syscall_write
+ *
+ * A system call of a wow64 process writing to a read-only page that can hold code. The binary translator (FEX)
+ * makes such pages read-only once it has translated code in them, to see the code change: an output buffer that
+ * shares a page with code (a program with one section, or with DEP off) then failed the call with
+ * STATUS_ACCESS_VIOLATION, where Windows writes it. The page is made writable for the write and recorded in the
+ * 64-bit TEB; when the call returns, wow64 puts its protection back and tells the translator it changed.
+ */
+BOOL virtual_handle_syscall_write( struct thread_data *data, void *addr )
+{
+    void **slots = data->teb->ReservedForDebuggerInstrumentation + WOW64_SYSCALL_WRITE_SLOT;
+    char *page = ROUND_ADDR( addr, page_mask );
+    struct file_view *view;
+    BOOL ret = FALSE;
+    unsigned int i;
+    BYTE vprot;
+
+    if (!is_wow64()) return FALSE;
+
+    mutex_lock( &virtual_mutex );  /* no need for signal masking inside signal handler */
+    vprot = get_page_vprot( page );
+    if ((view = find_view( page, 0 )) && (vprot & VPROT_COMMITTED) && (vprot & VPROT_READ) &&
+        !(vprot & (VPROT_WRITE | VPROT_WRITECOPY | VPROT_GUARD)) && ((vprot & VPROT_EXEC) || force_exec_prot))
+    {
+        for (i = 0; i < 2 * WOW64_SYSCALL_WRITE_PAGES && slots[i]; i += 2)
+            if (slots[i] == page) break;
+        if (i < 2 * WOW64_SYSCALL_WRITE_PAGES)
+        {
+            if (!slots[i])
+            {
+                slots[i] = page;
+                slots[i + 1] = (void *)(ULONG_PTR)get_win32_prot( vprot, view->protect );
+            }
+            TRACE( "%p: writable for a system call's write to %p\n", page, addr );
+            set_page_vprot_bits( page, page_size, VPROT_WRITE, 0 );
+            mprotect_range( page, page_size, 0, 0 );
+            ret = TRUE;
+        }
+    }
+    mutex_unlock( &virtual_mutex );
+    return ret;
+}
+
+
+/***********************************************************************
  *           virtual_wx_end_store
  */
 void virtual_wx_end_store( void *addr, SIZE_T size )

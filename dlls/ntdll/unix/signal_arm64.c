@@ -1530,6 +1530,9 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
     rec.NumberParameters = 2;
 
     if (!virtual_handle_fault( data, &rec, (void *)SP_sig(sigcontext) )) return;
+    if (rec.ExceptionInformation[0] == EXCEPTION_WRITE_FAULT && is_inside_syscall( data, SP_sig(sigcontext) ) &&
+        virtual_handle_syscall_write( data, siginfo->si_addr ))
+        return;
     if (handle_syscall_fault( data, sigcontext, &rec )) return;
 
     save_context( &context, sigcontext );
