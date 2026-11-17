@@ -644,9 +644,12 @@ TIntermTyped* TParseContext::handleBracketDereference(const TSourceLoc& loc, TIn
             requireProfile(base->getLoc(), ~EEsProfile, "variable indexing fragment shader output array");
         else if (base->getBasicType() == EbtSampler && version >= 130) {
             const char* explanation = "variable indexing sampler array";
-            requireProfile(base->getLoc(), EEsProfile | ECoreProfile | ECompatibilityProfile, explanation);
             profileRequires(base->getLoc(), EEsProfile, 320, Num_AEP_gpu_shader5, AEP_gpu_shader5, explanation);
-            profileRequires(base->getLoc(), ECoreProfile | ECompatibilityProfile, 400, nullptr, explanation);
+            // WineMetalGL: desktop drivers take a variable index before GLSL
+            // 4.00 too, and Metal indexes texture arrays with any value
+            // (Foundry Mari's #version 330 viewport shaders, issue #88).
+            if (!isEsProfile() && version < 400 && !extensionTurnedOn(E_GL_ARB_gpu_shader5))
+                warn(base->getLoc(), "accepted before GLSL 4.00, as desktop drivers do", explanation, "");
         }
 
         result = intermediate.addIndex(EOpIndexIndirect, base, index, loc);
