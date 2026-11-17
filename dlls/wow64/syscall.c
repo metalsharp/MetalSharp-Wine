@@ -1196,6 +1196,34 @@ __ASM_GLOBAL_FUNC( wow64_syscall_handler,
 #endif
 
 
+/* pages a system call wrote that were read-only (ntdll/unix/unix_private.h) */
+#define WOW64_SYSCALL_WRITE_SLOT  8
+#define WOW64_SYSCALL_WRITE_PAGES 4
+
+/**********************************************************************
+ *           restore_syscall_writes
+ *
+ * Put back the protection of the pages the system call made writable to write them, and tell the binary translator
+ * they changed, so it drops the code it translated from them.
+ */
+static void restore_syscall_writes(void)
+{
+    void **slots = NtCurrentTeb()->ReservedForDebuggerInstrumentation + WOW64_SYSCALL_WRITE_SLOT;
+    unsigned int i;
+
+    for (i = 0; i < 2 * WOW64_SYSCALL_WRITE_PAGES && slots[i]; i += 2)
+    {
+        void *addr = slots[i];
+        SIZE_T size = 0x1000;
+        ULONG old;
+
+        NtProtectVirtualMemory( GetCurrentProcess(), &addr, &size, (ULONG)(ULONG_PTR)slots[i + 1], &old );
+        if (pBTCpuNotifyMemoryDirty) pBTCpuNotifyMemoryDirty( slots[i], 0x1000 );
+        slots[i] = slots[i + 1] = NULL;
+    }
+}
+
+
 /**********************************************************************
  *           Wow64SystemServiceEx  (wow64.@)
  */
@@ -1211,6 +1239,7 @@ NTSTATUS WINAPI Wow64SystemServiceEx( UINT num, UINT *args )
         return STATUS_INVALID_SYSTEM_SERVICE;
     }
     status = wow64_syscall( args, table->ServiceTable[id] );
+    if (NtCurrentTeb()->ReservedForDebuggerInstrumentation[WOW64_SYSCALL_WRITE_SLOT]) restore_syscall_writes();
     free_temp_data();
     return status;
 }
