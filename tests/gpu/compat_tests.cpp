@@ -3,6 +3,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 
@@ -19,7 +20,7 @@
     X(glPushAttrib) X(glPopAttrib) X(glRasterPos2f) X(glWindowPos2i) X(glBitmap) X(glDrawPixels)                \
     X(glPixelZoom) X(glIsEnabled) X(glColorMaterial) X(glInterleavedArrays) X(glArrayElement)                  \
     X(glFrustum) X(glMultMatrixf) X(glLoadMatrixf) X(glLineWidth) X(glPolygonStipple) X(glGetPolygonStipple) X(glRenderMode) X(glInitNames) X(glPushName) X(glLightf) X(glMaterialf) X(glTexGenf) \
-    X(glGetMaterialfv) X(glGetMaterialiv) X(glGetLightiv) X(glTexEnvf) X(glNormalPointer)
+    X(glGetMaterialfv) X(glGetMaterialiv) X(glGetLightiv) X(glTexEnvf) X(glNormalPointer) X(glTexParameteriv)
 
 #define WMGL_COMPAT_DECLARE(name) static PFN_##name name;
 WMGL_COMPAT_FUNCS(WMGL_COMPAT_DECLARE)
@@ -1513,4 +1514,75 @@ COMPAT_TEST(compat_generic_attribute_zero_from_vertex_array) {
     glUseProgram(0);
     glDeleteBuffers(1, &vbo);
     glDeleteProgram(p);
+}
+
+// Bink's video planes in a D3D9 game through WineD3D (MetalSharp-Wine issue
+// #58: Call of Duty 4's videos solid pink, every plane sampling 1.0). On a
+// compatibility context WineD3D makes D3DFMT_L8 a GL_R8 texture swizzled
+// (R, R, R, 1) and D3DFMT_A8 a GL_ALPHA8 one; it sets the swizzle when the
+// texture is first bound, uploads with glTexSubImage2D (from a PBO for
+// dynamic textures), samples through a sampler object and reads the planes
+// in GLSL 1.20. Each way, the planes read back their texels.
+COMPAT_TEST(compat_wined3d_luminance_and_alpha_planes) {
+    const char* vs = "#version 120\nattribute vec2 position; varying vec2 uv;\n"
+                     "void main() { uv = position * 0.5 + 0.5; gl_Position = vec4(position, 0.0, 1.0); }\n";
+    // L8 planes are read as .x, A8 planes as .w, as WineD3D's ps_2_0 code does.
+    const char* fsL = "#version 120\nuniform sampler2D s; varying vec2 uv;\n"
+                      "void main() { vec4 t = texture2D(s, uv); gl_FragColor = vec4(t.x, t.y, t.z, t.w * 0.5); }\n";
+    const char* fsA = "#version 120\nuniform sampler2D s; varying vec2 uv;\n"
+                      "void main() { vec4 t = texture2D(s, uv); gl_FragColor = vec4(t.w, t.x, t.y, 1.0); }\n";
+    GLuint pL = gpu::program(vs, fsL), pA = gpu::program(vs, fsA);
+    GLuint vao = gpu::quad();
+    GLuint sampler = 0;
+    glGenSamplers(1, &sampler);
+    glSamplerParameteri(sampler, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glSamplerParameteri(sampler, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    const GLint lSwizzle[4] = {GL_RED, GL_RED, GL_RED, GL_ONE};
+    std::vector<uint8_t> texels(16 * 16, 0x40);
+    for (int storage = 0; storage < 2; ++storage)
+        for (int pbo = 0; pbo < 2; ++pbo)
+            for (int alpha = 0; alpha < 2; ++alpha) {
+                GLuint tex = 0, buffer = 0;
+                glGenTextures(1, &tex);
+                glBindTexture(GL_TEXTURE_2D, tex);
+                const GLenum internal = alpha ? GL_ALPHA8 : GL_R8, format = alpha ? GL_ALPHA : GL_RED;
+                if (storage) glTexStorage2D(GL_TEXTURE_2D, 1, internal, 16, 16);
+                else glTexImage2D(GL_TEXTURE_2D, 0, static_cast<GLint>(internal), 16, 16, 0, format, GL_UNSIGNED_BYTE, nullptr);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
+                if (!alpha) glTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_RGBA, lSwizzle);
+                glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+                if (pbo) {
+                    glGenBuffers(1, &buffer);
+                    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, buffer);
+                    glBufferData(GL_PIXEL_UNPACK_BUFFER, static_cast<GLsizeiptr>(texels.size()), texels.data(), GL_STREAM_DRAW);
+                    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 16, 16, format, GL_UNSIGNED_BYTE, nullptr);
+                    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+                } else {
+                    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 16, 16, format, GL_UNSIGNED_BYTE, texels.data());
+                }
+                glBindSampler(0, sampler);
+                const GLuint p = alpha ? pA : pL;
+                glUseProgram(p);
+                glUniform1i(glGetUniformLocation(p, "s"), 0);
+                glClearColor(0, 0, 0, 0);
+                glClear(GL_COLOR_BUFFER_BIT);
+                glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+                // L8: (0x40, 0x40, 0x40, 1 * 0.5); A8: (0x40, 0, 0, 1).
+                const uint8_t want[4] = {0x40, uint8_t(alpha ? 0 : 0x40), uint8_t(alpha ? 0 : 0x40), uint8_t(alpha ? 255 : 128)};
+                const bool ok = pixel(32, 32, want, 3);
+                CHECK(ok);
+                if (!ok) {
+                    const std::vector<uint8_t> got = gpu::readRGBA8(32, 32, 1, 1);
+                    std::fprintf(stderr, "  %s storage=%d pbo=%d: got %d %d %d %d\n", alpha ? "A8" : "L8", storage, pbo, got[0],
+                                 got[1], got[2], got[3]);
+                }
+                glBindSampler(0, 0);
+                glDeleteTextures(1, &tex);
+                if (buffer) glDeleteBuffers(1, &buffer);
+            }
+    glDeleteSamplers(1, &sampler);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(pL);
+    glDeleteProgram(pA);
+    CHECK_GL();
 }
