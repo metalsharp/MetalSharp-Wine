@@ -121,6 +121,13 @@ NTSTATUS wmgl_unix_init( void *args )
         copy_upscale( params );
         return STATUS_SUCCESS;
     }
+    if (params->game_settings)
+    {
+        /* Before anything reads its settings, UpscaleGL's preset included. */
+        void (*apply_game_settings)( const char * );
+        if ((*(void **)&apply_game_settings = wmgl_core_symbol( "wmgl_apply_game_settings" )))
+            apply_game_settings( (const char *)(ULONG_PTR)params->game_settings );
+    }
     params->log_level = wmgl_pe_log_level();
     copy_upscale( params );
     return wmgl_unix_init_formats( args );

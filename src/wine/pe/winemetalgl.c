@@ -306,6 +306,29 @@ static LONG CALLBACK log_exception( EXCEPTION_POINTERS *info )
 }
 #endif
 
+/* winemetalgl.conf beside the program (`exe`, its full path): the game's own
+ * WINEMETALGL_* settings, as dxvk.conf and dxmt.conf are for DXVK and DXMT
+ * (issue #76). Into `text` (`size` bytes, nul-terminated); FALSE without one. */
+static BOOL read_game_settings( const WCHAR *exe, char *text, DWORD size )
+{
+    static const WCHAR name[] = L"winemetalgl.conf";
+    WCHAR conf[1024 + sizeof(name) / sizeof(name[0])];
+    const WCHAR *slash = wcsrchr( exe, '\\' );
+    DWORD dir, got = 0;
+    HANDLE file;
+
+    if (!slash) return FALSE;
+    dir = slash + 1 - exe;
+    memcpy( conf, exe, dir * sizeof(WCHAR) );
+    memcpy( conf + dir, name, sizeof(name) );
+    file = CreateFileW( conf, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL );
+    if (file == INVALID_HANDLE_VALUE) return FALSE;
+    if (!ReadFile( file, text, size - 1, &got, NULL )) got = 0;
+    CloseHandle( file );
+    text[got] = 0;
+    return got > 0;
+}
+
 static BOOL init_pixel_formats(void)
 {
     struct wmgl_init_params init = {0};
@@ -316,6 +339,7 @@ static BOOL init_pixel_formats(void)
     /* Long paths (a deep Steam library) do not fit MAX_PATH: UTF-8 of up to 1023 characters. */
     static WCHAR path[1024];
     static char program[3 * 1024];
+    static char game_settings[16 * 1024];
     DWORD len;
 
     /* For the log: the program, and Wine's build (its version, and whose). */
@@ -323,6 +347,8 @@ static BOOL init_pixel_formats(void)
     if ((len = GetModuleFileNameW( NULL, path, size )) && len < size &&
         WideCharToMultiByte( CP_UTF8, 0, path, -1, program, sizeof(program), NULL, NULL ))
         init.program = (UINT64)(ULONG_PTR)program;
+    if (len && len < size && read_game_settings( path, game_settings, sizeof(game_settings) ))
+        init.game_settings = (UINT64)(ULONG_PTR)game_settings;
     if ((*(FARPROC *)&wine_version = GetProcAddress( ntdll, "wine_get_build_id" )) ||
         (*(FARPROC *)&wine_version = GetProcAddress( ntdll, "wine_get_version" )))
         init.host_version = (UINT64)(ULONG_PTR)wine_version();
@@ -332,6 +358,7 @@ static BOOL init_pixel_formats(void)
     memcpy( upscale_setting, init.upscale, sizeof(upscale_setting) );
     upscale_setting[sizeof(upscale_setting) - 1] = 0;
     WMGL_INFO( "winemetalgl.dll (%d-bit) in %s\n", (int)sizeof(void *) * 8, program );
+    if (init.game_settings) WMGL_INFO( "settings from winemetalgl.conf beside the program\n" );
 #ifdef __x86_64__
     log_all_exceptions = getenv( "WINEMETALGL_EXCEPTIONS" ) && !strcmp( getenv( "WINEMETALGL_EXCEPTIONS" ), "1" );
     AddVectoredExceptionHandler( 1, log_exception );

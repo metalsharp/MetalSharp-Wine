@@ -101,6 +101,12 @@ void wmgl_version(int *major, int *minor, int *patch);
  * frees it. Call before creating contexts. Optional: cores before 3.0.0 do
  * not export it. */
 void wmgl_set_buffer_memory(void *(*allocate)(size_t size), void (*release)(void *memory, size_t size));
+
+/* A game's own settings: the text of winemetalgl.conf beside its .exe
+ * (WINEMETALGL_*=value lines, as in the settings file), over the settings
+ * file's values and under the environment's. Call before creating contexts.
+ * Optional: cores before 4.0.0 do not export it. */
+void wmgl_apply_game_settings(const char *text);
 /* Diagnostics, for tests: the WINEMETALGL_STATS counters of the calling
  * thread (src/core/stats.h). wmgl_stats_enable(1) counts without logging
  * (0 stops counting unless WINEMETALGL_STATS is set), wmgl_stats_reset zeroes

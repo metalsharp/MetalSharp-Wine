@@ -235,6 +235,12 @@ a download, `ARM64_CORE=<staged arm64 core>` the arm64 core, and
 ad hoc without `WINEMETALGL_SIGN_IDENTITY`. `scripts/build-settings-dmg.sh`
 makes the disk image it is released in.
 
+A game can have settings of its own, as `dxvk.conf` and `dxmt.conf` do for
+DXVK and DXMT: a `winemetalgl.conf` beside its `.exe`, the same
+`NAME=value` lines, wins over `settings.conf` and loses to the environment.
+For example `WINEMETALGL_MAX_FRAME_RATE=100` for a game whose physics break
+past 105 fps, while other games keep the limit set in the app.
+
 ## Checking that a program uses the core
 
 Look at a program's `GL_RENDERER` string: it ends in `(WineMetalGL)`, for
@@ -278,5 +284,5 @@ no `opengl32=native` override, and the program got Wine's own OpenGL.
 | `WINEMETALGL_SETTINGS=<path>`, `=0` | Read the settings file from there, or none. By default `~/Library/Application Support/WineMetalGL/settings.conf` (written by WineMetalGL Settings) sets the variables of this table the environment does not set |
 | `WINEMETALGL_WINE_DEBUG=1` | Log what the Wine module does (contexts, surfaces, windows): `WINEMETALGL_LOG=wine:3,pe:3` |
 | `WINEMETALGL_EXTENSIONS_LENGTH=<n>` | Keep `glGetString(GL_EXTENSIONS)` to `n` bytes (whole names, oldest first; `0`: the whole string). By default, contexts a program created as OpenGL 1.x or 2.x (legacy `wglCreateContext` asks for 1.0) get 3900 bytes, as older programs copy or print the string into fixed buffers (Jedi Academy overran a 4096-byte one); `glGetStringi` always lists every extension |
-| `WINEMETALGL_MAX_FRAME_RATE=<fps>` | Limit the frame rate: `SwapBuffers` returns at most `fps` times a second, with or without vsync (`30`, `40`, `59.94`...). For older games that tie their physics to the frame rate and have no limit of their own but vsync, which runs them at 120 fps on a 120 Hz display, or to save battery. Off by default; it can also go in the settings file |
+| `WINEMETALGL_MAX_FRAME_RATE=<fps>` | Limit the frame rate: `SwapBuffers` returns at most `fps` times a second, with or without vsync (`30`, `40`, `59.94`...); per game in its `winemetalgl.conf`. For older games that tie their physics to the frame rate and have no limit of their own but vsync, which runs them at 120 fps on a 120 Hz display, or to save battery. Off by default; it can also go in the settings file |
 | `WINEMETALGL_VENDOR`, `WINEMETALGL_RENDERER` | Replace the `GL_VENDOR` and `GL_RENDERER` strings, for games that refuse unknown vendors |
