@@ -254,6 +254,14 @@ public:
         return true;
       }
 
+      if (TableInfo->Flags & X86Tables::InstFlags::FLAGS_MEM_OFFSET) {
+        // MetalSharp: MOV to or from an absolute address (A0-A3) accesses memory through its literal operand, which
+        // the operand checks below don't see. Without a marker of its own, a fault on it (a store to a page with code
+        // in it, which FEX write-protects) resumed at the last marked instruction before it, and ran again the
+        // instructions in between: CPUID among them, with EAX its own result.
+        return true;
+      }
+
       if (TableInfo->Flags & (X86Tables::InstFlags::FLAGS_SETS_RIP | X86Tables::InstFlags::FLAGS_BLOCK_END)) {
         // Cooperative suspend interrupts can be triggered at any back-edge, the RIP must be reconstructed correctly in such cases
         return true;
