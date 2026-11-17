@@ -1,0 +1,63 @@
+From 5c3e273b5953a6668b021c3399244d5f38c1a1da Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Mon, 16 Nov 2026 19:18:55 -0700
+Subject: [PATCH] FEXCore: Give MOV to and from an absolute address its own
+ fault marker
+
+A guest instruction is marked (GuestOpcode) only when it can have side effects, so a fault inside a block resumes at
+the last marked instruction and runs the ones after it again. Whether it can was read from its operands, and MOV
+between AL/EAX and an absolute address (A0-A3, FLAGS_MEM_OFFSET) reaches memory through a literal operand the check
+didn't count: a fault on it resumed before it. Self-modifying code detection faults such a store when it writes a
+page FEX has translated code from, and running the instructions in between again gave wrong results. CPUID, whose
+input EAX it overwrites, then answered for the leaf its own result named: a 32-bit program storing CPUID's results
+next to its code read leaf 0's vendor string as leaf 1's features (metalsharp/MetalSharp-Wine#32).
+---
+ External/Catch2                                  | 2 +-
+ External/Vulkan-Headers                          | 2 +-
+ External/drm-headers                             | 2 +-
+ FEXCore/Source/Interface/Core/OpcodeDispatcher.h | 8 ++++++++
+ 4 files changed, 11 insertions(+), 3 deletions(-)
+
+diff --git a/External/Catch2 b/External/Catch2
+index b3fb4b9fe..36c1bc3ef 160000
+--- a/External/Catch2
++++ b/External/Catch2
+@@ -1 +1 @@
+-Subproject commit b3fb4b9feafcd8d91c5cb510a4775143fdbef02f
++Subproject commit 36c1bc3ef209a649741f36d9913d63451e8d07b5
+diff --git a/External/Vulkan-Headers b/External/Vulkan-Headers
+index ee2ec5fd8..b26454f3c 160000
+--- a/External/Vulkan-Headers
++++ b/External/Vulkan-Headers
+@@ -1 +1 @@
+-Subproject commit ee2ec5fd83dafce291024683b50dc89219333076
++Subproject commit b26454f3ccd67e704117a39295fa13935fd3804c
+diff --git a/External/drm-headers b/External/drm-headers
+index 3e4983699..2b23749e3 160000
+--- a/External/drm-headers
++++ b/External/drm-headers
+@@ -1 +1 @@
+-Subproject commit 3e49836995c1dcb3df709440ad2f270b569c6a5f
++Subproject commit 2b23749e35cfbde8de875e803fd7c903a48a71e3
+diff --git a/FEXCore/Source/Interface/Core/OpcodeDispatcher.h b/FEXCore/Source/Interface/Core/OpcodeDispatcher.h
+index 86901682d..65e3180f2 100644
+--- a/FEXCore/Source/Interface/Core/OpcodeDispatcher.h
++++ b/FEXCore/Source/Interface/Core/OpcodeDispatcher.h
+@@ -254,6 +254,14 @@ public:
+         return true;
+       }
+ 
++      if (TableInfo->Flags & X86Tables::InstFlags::FLAGS_MEM_OFFSET) {
++        // MetalSharp: MOV to or from an absolute address (A0-A3) accesses memory through its literal operand, which
++        // the operand checks below don't see. Without a marker of its own, a fault on it (a store to a page with code
++        // in it, which FEX write-protects) resumed at the last marked instruction before it, and ran again the
++        // instructions in between: CPUID among them, with EAX its own result.
++        return true;
++      }
++
+       if (TableInfo->Flags & (X86Tables::InstFlags::FLAGS_SETS_RIP | X86Tables::InstFlags::FLAGS_BLOCK_END)) {
+         // Cooperative suspend interrupts can be triggered at any back-edge, the RIP must be reconstructed correctly in such cases
+         return true;
+-- 
+2.54.0 (Apple Git-157)
+

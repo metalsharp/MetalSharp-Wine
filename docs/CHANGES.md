@@ -18,6 +18,13 @@ Both builds:
 - Mullion merged with upstream [dttdrv/mullion](https://github.com/dttdrv/mullion) main (`aaf2tbz/mullion` `metalsharp-2.1-main` at `959aa5ec`), with nothing of upstream's left out; its NGX core is signed by the fork's CI for DLSS.
 - VKD3D-Proton-MacOS 5.4 → 6.0.
 
+arm64 build:
+
+- **32-bit programs read their clocks and `cpuid` again** ([#32](https://github.com/metalsharp/MetalSharp-Wine/issues/32)). Both broke when a program keeps the data it writes on a page with its code (one section, or DEP off), which FEX write-protects to catch self-modifying code.
+  - A system call writing to such a page failed with an access violation, so `QueryPerformanceCounter`, `GetSystemTimeAsFileTime`, `GetSystemTime`, `GetLocalTime` and `time()` returned 0. Wine now makes the page writable for the call's write, then puts its protection back and tells FEX it changed (Wine patch 0173).
+  - A fault on `mov` to or from an absolute address resumed at an earlier instruction, so `cpuid` ran again with EAX overwritten and answered for the wrong leaf (leaf 1's features read as the vendor string). That `mov` now gets its own resume point (FEX 0036).
+- **Battle.net loads again** ([#50](https://github.com/metalsharp/MetalSharp-Wine/issues/50)). 7.0 gave it the software drawing arguments every Chromium browser gets, and with them it crashed in `vkCreateBuffer`. It gets `--in-process-gpu` alone again, as in 6.x (Wine patch 0174). The Mullion above (`959aa5ec`) fixes the 32-bit D3D11 path its login and store draw through, which 7.0's Mullion broke.
+
 ## 7.0
 
 Both builds.

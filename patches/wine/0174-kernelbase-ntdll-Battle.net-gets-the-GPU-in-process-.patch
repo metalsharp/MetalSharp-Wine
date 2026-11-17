@@ -1,0 +1,63 @@
+From fc89a8ab3271a4bdd6eb4a5ad6bb9e4b9d1ae60c Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Mon, 16 Nov 2026 19:21:13 -0700
+Subject: [PATCH] kernelbase, ntdll: Battle.net gets the GPU in process alone
+ again.
+
+Since 7.0 every Chromium browser, Battle.net's among them, got the software drawing arguments (no sandbox, the GPU
+in process and off, SwiftShader for WebGL), and Battle.net no longer loaded: its log ends with an exception in
+winevulkan's vkCreateBuffer (metalsharp/MetalSharp-Wine#50). Before 7.0 its rule gave it --in-process-gpu alone, and
+it loaded. Its rule gives it that again, and ntdll leaves a Battle.net browser started directly as it is.
+---
+ dlls/kernelbase/launchers.c | 8 +++++---
+ dlls/ntdll/unix/env.c       | 9 ++++++++-
+ 2 files changed, 13 insertions(+), 4 deletions(-)
+
+diff --git a/dlls/kernelbase/launchers.c b/dlls/kernelbase/launchers.c
+index b117aaa4659..392d0793cd0 100644
+--- a/dlls/kernelbase/launchers.c
++++ b/dlls/kernelbase/launchers.c
+@@ -76,15 +76,17 @@ static const struct launcher_process_policy launcher_process_policies[] =
+         {L"--type=", CHROMIUM_SOFTWARE_MARKER, NULL},
+         CHROMIUM_SOFTWARE_ARGS,
+     },
+-    /* WineForge-Internal: launcher-compat/battlenet-in-process-gpu-v1. */
++    /* WineForge-Internal: launcher-compat/battlenet-in-process-gpu-v1. MetalSharp: the GPU in process alone, as before
++     * 7.0. Given CHROMIUM_SOFTWARE_ARGS, Battle.net no longer loaded, with an exception in winevulkan's vkCreateBuffer
++     * (metalsharp/MetalSharp-Wine#50). */
+     {
+         L"Battle.net.exe",
+         L"\\Program Files (x86)\\Battle.net\\",
+         L"/Program Files (x86)/Battle.net/",
+         NULL,
+         NULL,
+-        {L"--type=", CHROMIUM_SOFTWARE_MARKER, NULL},
+-        CHROMIUM_SOFTWARE_ARGS,
++        {L"--type=", L"--in-process-gpu", NULL},
++        L" --in-process-gpu",
+     },
+     /* WineForge-Internal: launcher-compat/ubisoft-connect-in-process-gpu-v1. Its browser is upc.exe itself; its
+      * renderers (UplayWebCore.exe --type=...) are left as they are. */
+diff --git a/dlls/ntdll/unix/env.c b/dlls/ntdll/unix/env.c
+index bea1377a703..9f55bdaae04 100644
+--- a/dlls/ntdll/unix/env.c
++++ b/dlls/ntdll/unix/env.c
+@@ -2502,7 +2502,14 @@ static WCHAR **chromium_software_drawing( WCHAR **wargv )
+         if (wide_starts_with_ascii( wargv[argc], "--type=" ) ||
+             wide_starts_with_ascii( wargv[argc], "--use-angle=swiftshader-webgl" ))
+             return wargv;
+-    for (p = wargv[0]; *p; p++) if (*p == '\\' || *p == '/') name = p + 1;
++    for (p = wargv[0]; *p; p++)
++    {
++        if (*p == '\\' || *p == '/') name = p + 1;
++        /* Battle.net gets the GPU in process alone, from kernelbase (launchers.c) */
++        if (wide_starts_with_ascii( p, "Battle.net" ) && p > wargv[0] && (p[-1] == '\\' || p[-1] == '/') &&
++            (p[10] == '\\' || p[10] == '/'))
++            return wargv;
++    }
+     dir_len = name - wargv[0];
+     for (i = 0; i < ARRAY_SIZE(markers) && !found; i++)
+     {
+-- 
+2.54.0 (Apple Git-157)
+
