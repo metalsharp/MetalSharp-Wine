@@ -13,6 +13,11 @@ x86_64 build. Assetto Corsa with Custom Shaders Patch runs and joins servers (Wi
 - **Dialogs over fullscreen:** a window a program opens while its fullscreen window is on screen (CSP's "Failed to launch the race") shows in front of it (0068).
 - **D3DMetal:** WFDXCompat's new D3D11 frontend refuses block-compressed render targets as the D3D11 runtime does; D3DMetal created them, and CSP's track textures rendered with black squares (0070, `source/wfdxcompat`).
 
+Both builds:
+
+- Mullion merged with upstream [dttdrv/mullion](https://github.com/dttdrv/mullion) main (`aaf2tbz/mullion` `metalsharp-2.1-main` at `959aa5ec`), with nothing of upstream's left out; its NGX core is signed by the fork's CI for DLSS.
+- VKD3D-Proton-MacOS 5.4 → 6.0.
+
 ## 7.0
 
 Both builds.
