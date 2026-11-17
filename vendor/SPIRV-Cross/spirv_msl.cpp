@@ -14674,6 +14674,21 @@ void CompilerMSL::replace_illegal_names()
 			dec.alias += "0";
 	});
 
+	// Metal Standard Library functions that are not GLSL functions, which a
+	// GLSL shader may use as names (WineMetalGL): the MSL a GLSL built-in
+	// becomes calls them, so `vec3 dfdx = dFdx(F);` (Foundry Mari, issue
+	// #88) must not become `float3 dfdx = dfdx(F);`. Any named ID: variables,
+	// temporaries, parameters and functions.
+	static const unordered_set<string> msl_only_functions = {
+		"dfdx", "dfdy", "rsqrt", "rint", "atan2", "fmin", "fmax", "fmod", "fdim", "median3", "select",
+		"sincos", "powr", "exp10", "divide", "copysign", "popcount", "ctz", "clz", "reverse_bits",
+		"extract_bits", "insert_bits", "rotate", "mulhi", "mul24", "mad24", "absdiff", "addsat", "subsat",
+		"madhi", "madsat", "as_type", "discard_fragment", "simd_sum", "quad_sum", "fast", "precise", "metal",
+	};
+	for (auto &m : ir.meta)
+		if (msl_only_functions.count(m.second.decoration.alias))
+			m.second.decoration.alias += "0";
+
 	ir.for_each_typed_id<SPIRType>([&](uint32_t self, SPIRType &) {
 		auto *meta = ir.find_meta(self);
 		if (!meta)
