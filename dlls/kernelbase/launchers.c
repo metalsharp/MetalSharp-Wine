@@ -76,15 +76,17 @@ static const struct launcher_process_policy launcher_process_policies[] =
         {L"--type=", CHROMIUM_SOFTWARE_MARKER, NULL},
         CHROMIUM_SOFTWARE_ARGS,
     },
-    /* WineForge-Internal: launcher-compat/battlenet-in-process-gpu-v1. */
+    /* WineForge-Internal: launcher-compat/battlenet-in-process-gpu-v1. MetalSharp: the GPU in process alone, as before
+     * 7.0. Given CHROMIUM_SOFTWARE_ARGS, Battle.net no longer loaded, with an exception in winevulkan's vkCreateBuffer
+     * (metalsharp/MetalSharp-Wine#50). */
     {
         L"Battle.net.exe",
         L"\\Program Files (x86)\\Battle.net\\",
         L"/Program Files (x86)/Battle.net/",
         NULL,
         NULL,
-        {L"--type=", CHROMIUM_SOFTWARE_MARKER, NULL},
-        CHROMIUM_SOFTWARE_ARGS,
+        {L"--type=", L"--in-process-gpu", NULL},
+        L" --in-process-gpu",
     },
     /* WineForge-Internal: launcher-compat/ubisoft-connect-in-process-gpu-v1. Its browser is upc.exe itself; its
      * renderers (UplayWebCore.exe --type=...) are left as they are. */

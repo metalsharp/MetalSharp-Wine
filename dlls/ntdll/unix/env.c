@@ -2502,7 +2502,14 @@ static WCHAR **chromium_software_drawing( WCHAR **wargv )
         if (wide_starts_with_ascii( wargv[argc], "--type=" ) ||
             wide_starts_with_ascii( wargv[argc], "--use-angle=swiftshader-webgl" ))
             return wargv;
-    for (p = wargv[0]; *p; p++) if (*p == '\\' || *p == '/') name = p + 1;
+    for (p = wargv[0]; *p; p++)
+    {
+        if (*p == '\\' || *p == '/') name = p + 1;
+        /* Battle.net gets the GPU in process alone, from kernelbase (launchers.c) */
+        if (wide_starts_with_ascii( p, "Battle.net" ) && p > wargv[0] && (p[-1] == '\\' || p[-1] == '/') &&
+            (p[10] == '\\' || p[10] == '/'))
+            return wargv;
+    }
     dir_len = name - wargv[0];
     for (i = 0; i < ARRAY_SIZE(markers) && !found; i++)
     {
