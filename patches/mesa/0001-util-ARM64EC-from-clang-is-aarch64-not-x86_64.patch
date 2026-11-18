@@ -1,0 +1,49 @@
+From 1da4c9f1895e01e97f0a33ee69f0c15106dcee8c Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Tue, 17 Nov 2026 17:14:31 -0700
+Subject: [PATCH] util: ARM64EC from clang is aarch64, not x86_64
+
+clang's ARM64EC (llvm-mingw's arm64ec-w64-mingw32) defines __x86_64__ and
+__x86_64, as MSVC's defines _M_X64, so DETECT_ARCH_X86_64 was set and x86
+intrinsic headers were included, which do not compile for ARM64EC. Take
+__arm64ec__ as MSVC's _M_ARM64EC is taken.
+---
+ src/util/detect_arch.h | 12 +++++++-----
+ 1 file changed, 7 insertions(+), 5 deletions(-)
+
+diff --git a/src/util/detect_arch.h b/src/util/detect_arch.h
+index e32de8d..cdcd41b 100644
+--- a/src/util/detect_arch.h
++++ b/src/util/detect_arch.h
+@@ -58,9 +58,11 @@
+ #define DETECT_ARCH_X86 1
+ #endif
+ 
+-#if defined(__x86_64__) /* gcc */ || \
+-    ((defined(_M_X64) || defined(_M_AMD64)) && !defined(_M_ARM64EC)) /* msvc */ || \
+-    defined(__x86_64) /* Sun cc */
++/* clang's ARM64EC defines __x86_64__ and __x86_64 too, as MSVC's defines _M_X64 */
++#if !defined(__arm64ec__) && \
++    (defined(__x86_64__) /* gcc */ || \
++     ((defined(_M_X64) || defined(_M_AMD64)) && !defined(_M_ARM64EC)) /* msvc */ || \
++     defined(__x86_64) /* Sun cc */)
+ #define DETECT_ARCH_X86_64 1
+ #endif
+ 
+@@ -87,11 +89,11 @@
+ #define DETECT_ARCH_ARM 1
+ #endif
+ 
+-#if defined(__aarch64__) || defined(_M_ARM64) || defined(_M_ARM64EC)
++#if defined(__aarch64__) || defined(_M_ARM64) || defined(_M_ARM64EC) || defined(__arm64ec__)
+ #define DETECT_ARCH_AARCH64 1
+ #endif
+ 
+-#if defined(_M_ARM64EC)
++#if defined(_M_ARM64EC) || defined(__arm64ec__)
+ #define DETECT_ARCH_ARM64EC 1
+ #endif
+ 
+-- 
+2.54.0 (Apple Git-157)
+

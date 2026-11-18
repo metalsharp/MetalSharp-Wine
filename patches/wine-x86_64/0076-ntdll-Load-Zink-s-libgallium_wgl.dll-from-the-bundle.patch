@@ -1,0 +1,82 @@
+From ff042efe3fd1c299960b339c3352eaeaf6ea7145 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@Averys-Mac-Mini.local>
+Date: Tue, 17 Nov 2026 19:12:40 -0700
+Subject: [PATCH] ntdll: Load Zink's libgallium_wgl.dll from the bundle with
+ SharpGL_Switch=1.
+
+Zink's opengl32.dll imports libgallium_wgl.dll, which no prefix holds: take it from lib/zink, as the
+Unix loader does opengl32.dll.
+---
+ dlls/ntdll/loader.c | 49 +++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 49 insertions(+)
+
+diff --git a/dlls/ntdll/loader.c b/dlls/ntdll/loader.c
+index 2b799d0..dc84629 100644
+--- a/dlls/ntdll/loader.c
++++ b/dlls/ntdll/loader.c
+@@ -3222,6 +3222,51 @@ static NTSTATUS open_wfdxcompat_runtime_alias( const WCHAR *name, UNICODE_STRING
+ #endif
+ 
+ 
++/***********************************************************************
++ *	open_zink_gallium
++ *
++ * SharpGL_Switch=1: Zink's opengl32.dll (which the Unix loader maps from lib/zink in place of
++ * WineMetalGL's) imports libgallium_wgl.dll, which no prefix holds: take it from the same place,
++ * <WINEDLLDIR0>/../zink/<pe_dir>.
++ */
++static NTSTATUS open_zink_gallium( const WCHAR *name, UNICODE_STRING *nt_name, WINE_MODREF **pwm,
++                                   HANDLE *mapping, SECTION_IMAGE_INFORMATION *image_info,
++                                   struct file_id *id )
++{
++    static const WCHAR gallium[] = L"libgallium_wgl.dll";
++    UNICODE_STRING value;
++    NTSTATUS status;
++    WCHAR *slash;
++    BOOL enabled;
++
++    if (contains_path( name ) || wcsicmp( name, gallium )) return STATUS_DLL_NOT_FOUND;
++    if (get_env_var( L"SharpGL_Switch", 0, &value )) return STATUS_DLL_NOT_FOUND;
++    enabled = !wcscmp( value.Buffer, L"1" );
++    RtlFreeUnicodeString( &value );
++    if (!enabled) return STATUS_DLL_NOT_FOUND;
++
++    if (get_env_var( L"WINEDLLDIR0", 8 + wcslen( pe_dir ) + ARRAY_SIZE( gallium ), nt_name ))
++        return STATUS_DLL_NOT_FOUND;
++    if (!(slash = wcsrchr( nt_name->Buffer, '\\' )))
++    {
++        RtlFreeUnicodeString( nt_name );
++        return STATUS_DLL_NOT_FOUND;
++    }
++    nt_name->Length = (slash - nt_name->Buffer) * sizeof(WCHAR);
++    RtlAppendUnicodeToString( nt_name, L"\\zink" );
++    RtlAppendUnicodeToString( nt_name, pe_dir );
++    RtlAppendUnicodeToString( nt_name, L"\\" );
++    RtlAppendUnicodeToString( nt_name, gallium );
++    status = open_dll_file( nt_name, pwm, mapping, image_info, id );
++    if (status == STATUS_DLL_NOT_FOUND)
++    {
++        RtlFreeUnicodeString( nt_name );
++        nt_name->Buffer = NULL;
++    }
++    return status;
++}
++
++
+ /***********************************************************************
+  *	find_builtin_without_file
+  *
+@@ -3404,6 +3449,10 @@ static NTSTATUS find_dll_file( const WCHAR *load_path, const WCHAR *libname, UNI
+         goto done;
+ #endif
+ 
++    if ((status = open_zink_gallium( libname, nt_name, pwm, mapping, image_info,
++                                     id )) != STATUS_DLL_NOT_FOUND)
++        goto done;
++
+     if (RtlDetermineDosPathNameType_U( libname ) == RtlPathTypeRelative)
+     {
+         status = search_dll_file( load_path, libname, nt_name, pwm, mapping, image_info, id );
+-- 
+2.54.0 (Apple Git-157)
+

@@ -12,3 +12,5 @@
 /tests/media/
 # Developer ID provisioning profile
 signing/
+/src/mesa/
+/install-x86_64/

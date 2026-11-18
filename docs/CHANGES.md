@@ -2,7 +2,28 @@
 
 The [release notes](https://github.com/metalsharp/MetalSharp-Wine/releases) have the full list for each release.
 
-## Unreleased
+## 8.0
+
+Both builds:
+
+- **Two switches for other graphics drivers**, off unless set to `1`:
+  - `SharpGL_Switch=1`: OpenGL through Mesa's **Zink** (OpenGL on Vulkan) in WineMetalGL's place (Wine 0175, x86_64 0072; `scripts/build-zink.sh`).
+  - `SharpVK_Switch=1`: Vulkan through Mesa's **KosmicKrisp** (Vulkan on Metal, macOS 26 and later) in MoltenVK's place. The arm64 launcher points the Vulkan loader at it; the x86_64 Wine opens the Khronos loader the app now carries (x86_64 0074; `scripts/build-kosmickrisp.sh`).
+- **Windowed mode's virtual desktop is a window you can move** (metalsharp/MetalSharp#805): a titled frame the desktop's size, whose windows move with it. `WINEMAC_DESKTOP_FRAME=0` leaves it at the screen's top-left as before (Wine 0177, x86_64 0073).
+- **Windows function keys** (metalsharp/MetalSharp#802): `WINEMAC_FKEYS=windows` has the top row send F1-F12 while the program is active, and puts the keyboard's own setting back when it isn't (Wine 0177, x86_64 0073).
+- **Steam no longer stops responding when SteamVR starts**: gdi32 exports `D3DKMTGetProcessSchedulingPriorityClass` and `D3DKMTSetProcessSchedulingPriorityClass`, whose absence crashed the 32-bit `steamservice.exe` (Wine 0179, x86_64 0075).
+- **MetalVR 0.2.1** ships in both apps (`lib/metalvr`, `bin/metalvrd`): the OpenXR runtime and the server that streams VR games on Mullion to a headset.
+- **Mullion alpha 4** ([dttdrv/mullion#297](https://github.com/dttdrv/mullion/pull/297) on `aaf2tbz/mullion` `metalsharp-2.1-main` at `f62d816`): native tessellation, pipelines and archives made at first draw, one pipeline archive per converter version, and the other merged PRs, and performance improvements: faster shader cache and pipeline loads, ray tracing pipelines converted once and compiled up front, compiles moved off the draw path, less work per frame, and DXIL results that match Direct3D's. Its NGX cores are signed by the fork's CI.
+- **WineMetalGL 4.0.0**: Foundry Mari's viewport shaders, per-game settings in `winemetalgl.conf` beside a game's `.exe`, 100, 120 and custom frame rate limits, and `opengl32.dll`'s version resource SteamVR checks for.
+- **DXVK-MacOS 3.1.1-macos.4**, on the MoltenVK of VKD3D-Proton-MacOS 6.0.
+- WFDXCompat at `32e5e73`: the D3D11 frontend for D3DMetal shares resources within a process.
+
+arm64 build:
+
+- **x86_64 programs that ship their own x64 C runtime no longer crash in Wine's DLLs** (#57: EXOCAD's .NET WinForms, in `ImageList_Duplicate`). The compiler gave ARM64EC calls to `memcpy`, `memmove` and `memset` it makes itself no exit thunk, so when such a call reached x64 code it ran the module's first byte; 542 of 7.0's ARM64X modules had them. winecrt0 now gives each module the three exit thunks (Wine 0176).
+
+Also in 8.0, from after 7.0:
+
 
 x86_64 build. Assetto Corsa with Custom Shaders Patch runs and joins servers (Wine 11 regressions from Wine 10):
 

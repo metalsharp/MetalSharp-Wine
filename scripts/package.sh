@@ -3,7 +3,7 @@
 # All dependency references become @rpath, absolute rpaths are removed, binaries are re-signed.
 set -e
 source ${0:A:h}/env.sh
-NAME=${1:-metalsharp-wine-7.0-arm64}
+NAME=${1:-metalsharp-wine-8.0-arm64}
 D=$ROOT/dist/$NAME
 rm -rf $D; mkdir -p $D
 rsync -a $ROOT/install/ $D/
@@ -105,15 +105,15 @@ for f in $(find $D -type f \( -name '*.dylib' -o -name '*.so' -o -perm -u+x \));
   codesign -f -s - $f 2>/dev/null
 done
 
-# Launcher: point GStreamer and the Vulkan loader inside the bundle, then run the real loader.
+# Launcher: point GStreamer inside the bundle, then run the real loader. The Vulkan driver (MoltenVK, or KosmicKrisp
+# with SharpVK_Switch=1) is chosen by ntdll, which the signed app runs without this script.
 mv $D/bin/wine $D/bin/wine-launcher
 cat > $D/bin/wine <<'EOF'
 #!/bin/sh
 here=$(cd "$(dirname "$0")/.." && pwd -P)
 : "${GST_PLUGIN_SYSTEM_PATH_1_0:=$here/lib/gstreamer-1.0}"
 : "${GST_PLUGIN_SCANNER_1_0:=$here/libexec/gstreamer-1.0/gst-plugin-scanner}"
-: "${VK_DRIVER_FILES:=$here/share/vulkan/icd.d/MoltenVK_icd.json}"
-export GST_PLUGIN_SYSTEM_PATH_1_0 GST_PLUGIN_SCANNER_1_0 VK_DRIVER_FILES
+export GST_PLUGIN_SYSTEM_PATH_1_0 GST_PLUGIN_SCANNER_1_0
 exec "$here/bin/wine-launcher" "$@"
 EOF
 chmod +x $D/bin/wine

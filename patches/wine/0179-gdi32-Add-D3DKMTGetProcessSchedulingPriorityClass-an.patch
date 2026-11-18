@@ -1,0 +1,77 @@
+From 35a61446b017b055948193760fe17266d863a6fd Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@Averys-Mac-Mini.local>
+Date: Sun, 15 Nov 2026 23:03:35 -0700
+Subject: [PATCH 179/179] gdi32: Add D3DKMTGetProcessSchedulingPriorityClass
+ and D3DKMTSetProcessSchedulingPriorityClass.
+
+The Steam client's service raises SteamVR's compositor's GPU scheduling
+priority with D3DKMTSetProcessSchedulingPriorityClass. Without the export the
+32-bit steamservice.exe crashed on the import stub, and the Steam client,
+waiting up to three minutes for its reply, stopped responding whenever
+SteamVR started. Both accept the request: the host's GPU scheduler is not
+the Windows one, so nothing changes, and Get reports the normal class.
+---
+ dlls/gdi32/gdi32.spec |  2 ++
+ dlls/gdi32/objects.c  | 26 ++++++++++++++++++++++++++
+ 2 files changed, 28 insertions(+)
+
+diff --git a/dlls/gdi32/gdi32.spec b/dlls/gdi32/gdi32.spec
+index 207549ff826..70e502c37d6 100644
+--- a/dlls/gdi32/gdi32.spec
++++ b/dlls/gdi32/gdi32.spec
+@@ -121,6 +121,7 @@
+ @ stdcall D3DKMTEnumAdapters(ptr) win32u.NtGdiDdDDIEnumAdapters
+ @ stdcall D3DKMTEnumAdapters2(ptr) win32u.NtGdiDdDDIEnumAdapters2
+ @ stdcall D3DKMTEscape(ptr) win32u.NtGdiDdDDIEscape
++@ stdcall D3DKMTGetProcessSchedulingPriorityClass(ptr ptr)
+ @ stdcall D3DKMTOpenAdapterFromDeviceName(ptr) win32u.NtGdiDdDDIOpenAdapterFromDeviceName
+ @ stdcall D3DKMTOpenAdapterFromGdiDisplayName(ptr)
+ @ stdcall D3DKMTOpenAdapterFromHdc(ptr) win32u.NtGdiDdDDIOpenAdapterFromHdc
+@@ -143,6 +144,7 @@
+ @ stdcall D3DKMTQueryVideoMemoryInfo(ptr) win32u.NtGdiDdDDIQueryVideoMemoryInfo
+ @ stdcall D3DKMTReleaseKeyedMutex(ptr) win32u.NtGdiDdDDIReleaseKeyedMutex
+ @ stdcall D3DKMTReleaseKeyedMutex2(ptr) win32u.NtGdiDdDDIReleaseKeyedMutex2
++@ stdcall D3DKMTSetProcessSchedulingPriorityClass(ptr long)
+ @ stdcall D3DKMTSetQueuedLimit(ptr) win32u.NtGdiDdDDISetQueuedLimit
+ @ stdcall D3DKMTSetVidPnSourceOwner(ptr) win32u.NtGdiDdDDISetVidPnSourceOwner
+ @ stdcall D3DKMTShareObjects(long ptr ptr long ptr) win32u.NtGdiDdDDIShareObjects
+diff --git a/dlls/gdi32/objects.c b/dlls/gdi32/objects.c
+index f2b353cff27..180e9f5a4aa 100644
+--- a/dlls/gdi32/objects.c
++++ b/dlls/gdi32/objects.c
+@@ -896,6 +896,32 @@ NTSTATUS WINAPI D3DKMTOpenAdapterFromGdiDisplayName( D3DKMT_OPENADAPTERFROMGDIDI
+     return NtUserD3DKMTOpenAdapterFromGdiDisplayName( desc );
+ }
+ 
++/******************************************************************************
++ *           D3DKMTGetProcessSchedulingPriorityClass    (GDI32.@)
++ */
++NTSTATUS WINAPI D3DKMTGetProcessSchedulingPriorityClass( HANDLE process, int *priority )
++{
++    TRACE( "(%p, %p)\n", process, priority );
++
++    if (!priority) return STATUS_INVALID_PARAMETER;
++    *priority = 2; /* D3DKMT_SCHEDULINGPRIORITYCLASS_NORMAL */
++    return STATUS_SUCCESS;
++}
++
++/******************************************************************************
++ *           D3DKMTSetProcessSchedulingPriorityClass    (GDI32.@)
++ *
++ * Asks for a process's GPU scheduling priority (SteamVR asks it for its compositor). The host's GPU scheduler is not
++ * the Windows one, so this accepts the request and changes nothing.
++ */
++NTSTATUS WINAPI D3DKMTSetProcessSchedulingPriorityClass( HANDLE process, int priority )
++{
++    FIXME( "(%p, %d) semi-stub\n", process, priority );
++
++    if (priority < 0 || priority > 5) return STATUS_INVALID_PARAMETER;
++    return STATUS_SUCCESS;
++}
++
+ /***********************************************************************
+  *           SetObjectOwner    (GDI32.@)
+  */
+-- 
+2.54.0 (Apple Git-157)
+
