@@ -11,9 +11,17 @@
 
 </div>
 
+<div align="center">
+
 Wine 11.20 as a native arm64 macOS app for Apple silicon. It runs ARM64, x86_64 and 32-bit x86 Windows programs, with x86 code translated by FEX, and Direct3D 9–12 and OpenGL 4.6 on Metal. No Rosetta. It needs **macOS 15 or later**, and 32-bit programs need **macOS 26.4 or later**.
 
-**Early access.** Contribution is welcome, but mostly for the Arm64 Wine With FEX.
+___
+
+**Early access.** Contribution is Welcome!
+
+___
+
+</div>
 
 ## Install
 
@@ -73,6 +81,9 @@ The first run makes the prefix. Switches such as the Direct3D backend are in [do
 - **On DXVK** (`GRAPHICS_BACKEND=dxvk`): [metalsharp/DXVK-MacOS](https://github.com/metalsharp/DXVK-MacOS).
 - **Anything else:** this repository's [issues](https://github.com/metalsharp/MetalSharp-Wine/issues).
 
+
+<div align="center">
+
 ## More
 
 | | |
@@ -83,3 +94,5 @@ The first run makes the prefix. Switches such as the Direct3D backend are in [do
 | [docs/X86_64.md](docs/X86_64.md) | The x86_64 build (`MetalSharp-Wine-x86_64.app`, under Rosetta 2, with D3DMetal) |
 | [docs/BUILDING.md](docs/BUILDING.md) | The sources and how to build |
 | [docs/LICENSES.md](docs/LICENSES.md) | Licenses. MetalSharp Wine's own material is [AGPL-3.0](LICENSE) |
+
+</div>
