@@ -25,6 +25,10 @@
 #include "config.h"
 
 #include <dlfcn.h>
+#include <limits.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <pthread.h>
 #include <unistd.h>
 
@@ -3095,6 +3099,39 @@ static const struct vulkan_driver_funcs lazydrv_funcs =
     .p_map_device_extensions = lazydrv_map_device_extensions,
 };
 
+#ifdef __APPLE__
+/* MetalSharp: SharpVK_Switch=1 has Vulkan go to KosmicKrisp (Mesa's Vulkan on Metal) instead of MoltenVK. This Wine
+ * opens MoltenVK itself as libvulkan.dylib; KosmicKrisp is a driver for the Vulkan loader, so the bundle's Khronos
+ * loader is opened in its place, with VK_DRIVER_FILES naming KosmicKrisp's manifest unless it is set already. Both
+ * are in <lib>/kosmickrisp, this module being <lib>/wine/x86_64-unix/win32u.so. NULL: MoltenVK as before. */
+static void *open_kosmickrisp_loader(void)
+{
+    const char *enabled = getenv( "SharpVK_Switch" );
+    char dir[PATH_MAX], path[PATH_MAX], *slash;
+    Dl_info info;
+    void *handle;
+
+    if (!enabled || strcmp( enabled, "1" )) return NULL;
+    if (!dladdr( (void *)open_kosmickrisp_loader, &info ) || !info.dli_fname) return NULL;
+    snprintf( dir, sizeof(dir), "%s", info.dli_fname );
+    if (!(slash = strrchr( dir, '/' ))) return NULL;
+    *slash = 0;
+    snprintf( path, sizeof(path), "%s/../../kosmickrisp/kosmickrisp_icd.json", dir );
+    if (access( path, R_OK ))
+    {
+        ERR( "SharpVK_Switch=1, but there is no %s: using MoltenVK\n", debugstr_a(path) );
+        return NULL;
+    }
+    setenv( "VK_DRIVER_FILES", path, 0 );
+    snprintf( path, sizeof(path), "%s/../../kosmickrisp/libvulkan_loader.dylib", dir );
+    if (!(handle = dlopen( path, RTLD_NOW )))
+        ERR( "SharpVK_Switch=1, but %s did not load (%s): using MoltenVK\n", debugstr_a(path), dlerror() );
+    else
+        TRACE( "KosmicKrisp through %s\n", debugstr_a(path) );
+    return handle;
+}
+#endif
+
 static void vulkan_init_once(void)
 {
     struct vulkan_instance_extensions extensions = {0};
@@ -3103,7 +3140,10 @@ static void vulkan_init_once(void)
     VkResult res;
 
 #ifdef SONAME_LIBVULKAN
-    vulkan_handle = dlopen( SONAME_LIBVULKAN, RTLD_NOW );
+#ifdef __APPLE__
+    vulkan_handle = open_kosmickrisp_loader();
+#endif
+    if (!vulkan_handle) vulkan_handle = dlopen( SONAME_LIBVULKAN, RTLD_NOW );
     if (!vulkan_handle) ERR( "Failed to load %s\n", SONAME_LIBVULKAN );
 #else
     ERR( "Wine was built without Vulkan support.\n" );
