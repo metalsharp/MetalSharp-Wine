@@ -1430,6 +1430,25 @@ static char *winemetalgl_opengl32_path( USHORT machine )
     return NULL;
 }
 
+/* MetalSharp: SharpGL_Switch=1 has Mesa's Zink (OpenGL on Vulkan, so on MoltenVK, or on KosmicKrisp with
+ * SharpVK_Switch=1) in WineMetalGL's place: its opengl32.dll and the libgallium_wgl.dll that opengl32.dll loads, from
+ * <dll_dir>/../zink. PE only, as Windows' Mesa builds are. */
+static char *zink_pe_path( const char *name, USHORT machine )
+{
+    const char *enabled = getenv( "SharpGL_Switch" ), *pe_dir;
+    char *path;
+
+    if (!enabled || strcmp( enabled, "1" )) return NULL;
+    if (strcmp( name, "opengl32.dll" ) && strcmp( name, "libgallium_wgl.dll" )) return NULL;
+    if (machine == IMAGE_FILE_MACHINE_AMD64) pe_dir = "x86_64-windows";
+    else if (machine == IMAGE_FILE_MACHINE_I386) pe_dir = "i386-windows";
+    else return NULL;
+    if (!dll_dir || asprintf( &path, "%s/../zink/%s/%s", dll_dir, pe_dir, name ) == -1) return NULL;
+    if (!access( path, R_OK )) return path;
+    free( path );
+    return NULL;
+}
+
 static char *resolve_vkd3d_lane_pe_path( const char *module, USHORT machine )
 {
     static const char *const vkd3d_names[] = { "d3d12.dll", "d3d12core.dll", "dxgi.dll", "d3d11.dll", "d3d10core.dll",
@@ -1595,6 +1614,25 @@ static NTSTATUS find_builtin_dll( UNICODE_STRING *nt_name, ANSI_STRING *exp_name
                 goto done;
             }
             free( dxmt_pe );
+        }
+    }
+
+    /* MetalSharp: Zink's opengl32 with SharpGL_Switch=1, no unix side */
+    {
+        char *zink = zink_pe_path( file + pos + 1, search_machine );
+
+        if (zink)
+        {
+            status = open_builtin_pe_file( zink, &attr, module, size_ptr, image_info,
+                                           limit_low, limit_high, load_machine, prefer_native, offset );
+            TRACE( "Zink %s for %s -> %#lx\n", debugstr_a(zink), debugstr_us(nt_name), (long)status );
+            free( zink );
+            if (status != STATUS_DLL_NOT_FOUND)
+            {
+                ptr = file + pos;
+                vkd3d_lane_pe = TRUE;
+                goto done;
+            }
         }
     }
 
