@@ -43,6 +43,7 @@
 #   Wine's fixes, which replace the bundle's; server for the wineserver)
 #   WINEMETALGL=<install-x86_64/winemetalgl> VCRUN_X64=<Microsoft's x64 VC++ runtime DLLs> DEPS_SRC=<deps/src-x86_64:deps/src> LICENSES_EXTRA=<dir of license folders> (share/licenses)
 #   [ZINK=<install-x86_64/zink, from build-zink.sh x86_64>: OpenGL on Zink with SharpGL_Switch=1]
+#   [KOSMICKRISP=<install-x86_64/kosmickrisp, from build-kosmickrisp.sh x86_64>: Vulkan on KosmicKrisp with SharpVK_Switch=1]
 #   [METALVR=<MetalSharp Wine's install/ after build-metalvr.sh: bin/metalvrd and lib/metalvr>: VR, as in MetalSharp-Wine.app]
 #   D3DMETAL=<GPTK 4.0 beta 3: dir with external/ and wine/> D3DMETAL_GPTK3=<GPTK 3.0: the same, from redist/lib> MEDIA=<x86_64 GStreamer/FFmpeg prefix> SIGN_IDENTITY="Developer ID Application: ..." \
 #   VERSION=<the MetalSharp Wine release, e.g. 5.1> [TIMESTAMP=1: secure timestamps, which notarization needs] \
@@ -273,6 +274,11 @@ xcrun actool "$HERE/x86_64/$ICON.icon" --compile "$C/Resources" --app-icon "$ICO
 # WineMetalGL's place with SharpGL_Switch=1
 if [ -n "$ZINK" ]; then
   rm -rf "$C/lib/zink"; cp -Rp "$ZINK" "$C/lib/zink"
+fi
+# KosmicKrisp (Vulkan on Metal; KOSMICKRISP: build-kosmickrisp.sh x86_64's install-x86_64/kosmickrisp): with
+# SharpVK_Switch=1 win32u opens its Khronos loader (lib/kosmickrisp/libvulkan_loader.dylib) in MoltenVK's place
+if [ -n "$KOSMICKRISP" ]; then
+  rm -rf "$C/lib/kosmickrisp"; cp -Rp "$KOSMICKRISP" "$C/lib/kosmickrisp"
 fi
 
 # WineMetalGL (OpenGL 1.0-4.6 on Metal; WINEMETALGL: MetalSharp Wine's build-winemetalgl-x86_64.sh output), the
