@@ -1,0 +1,123 @@
+From 1cab6c1689f831ad7fb3d69d32539f9e8a3c9a59 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Tue, 17 Nov 2026 19:12:40 -0700
+Subject: [PATCH] ntdll: Run SharpGL_Switch's Zink and SharpVK_Switch's
+ KosmicKrisp from the bundle.
+
+Zink's opengl32.dll imports libgallium_wgl.dll, which no prefix holds: take it from lib/zink, as the
+Unix loader does opengl32.dll. The bundle's default Vulkan driver is KosmicKrisp's manifest with
+SharpVK_Switch=1, so the switch works without the dist launcher script (the signed app runs the loader
+directly).
+---
+ dlls/ntdll/loader.c      | 48 ++++++++++++++++++++++++++++++++++++++++
+ dlls/ntdll/unix/loader.c | 18 +++++++++++----
+ 2 files changed, 62 insertions(+), 4 deletions(-)
+
+diff --git a/dlls/ntdll/loader.c b/dlls/ntdll/loader.c
+index bc9a9a11a48..868ebfc63ae 100644
+--- a/dlls/ntdll/loader.c
++++ b/dlls/ntdll/loader.c
+@@ -3209,6 +3209,51 @@ static NTSTATUS open_wfdxcompat_launcher_alias( const WCHAR *name, UNICODE_STRIN
+ }
+ 
+ 
++/***********************************************************************
++ *	open_zink_gallium
++ *
++ * SharpGL_Switch=1: Zink's opengl32.dll (which the Unix loader maps from lib/zink in place of
++ * WineMetalGL's) imports libgallium_wgl.dll, which no prefix holds: take it from the same place,
++ * <WINEDLLDIR0>/../zink/<pe_dir>.
++ */
++static NTSTATUS open_zink_gallium( const WCHAR *name, UNICODE_STRING *nt_name, WINE_MODREF **pwm,
++                                   HANDLE *mapping, SECTION_IMAGE_INFORMATION *image_info,
++                                   struct file_id *id )
++{
++    static const WCHAR gallium[] = L"libgallium_wgl.dll";
++    UNICODE_STRING value;
++    NTSTATUS status;
++    WCHAR *slash;
++    BOOL enabled;
++
++    if (contains_path( name ) || wcsicmp( name, gallium )) return STATUS_DLL_NOT_FOUND;
++    if (get_env_var( L"SharpGL_Switch", 0, &value )) return STATUS_DLL_NOT_FOUND;
++    enabled = !wcscmp( value.Buffer, L"1" );
++    RtlFreeUnicodeString( &value );
++    if (!enabled) return STATUS_DLL_NOT_FOUND;
++
++    if (get_env_var( L"WINEDLLDIR0", 8 + wcslen( pe_dir ) + ARRAY_SIZE( gallium ), nt_name ))
++        return STATUS_DLL_NOT_FOUND;
++    if (!(slash = wcsrchr( nt_name->Buffer, '\\' )))
++    {
++        RtlFreeUnicodeString( nt_name );
++        return STATUS_DLL_NOT_FOUND;
++    }
++    nt_name->Length = (slash - nt_name->Buffer) * sizeof(WCHAR);
++    RtlAppendUnicodeToString( nt_name, L"\\zink" );
++    RtlAppendUnicodeToString( nt_name, pe_dir );
++    RtlAppendUnicodeToString( nt_name, L"\\" );
++    RtlAppendUnicodeToString( nt_name, gallium );
++    status = open_dll_file( nt_name, pwm, mapping, image_info, id );
++    if (status == STATUS_DLL_NOT_FOUND)
++    {
++        RtlFreeUnicodeString( nt_name );
++        nt_name->Buffer = NULL;
++    }
++    return status;
++}
++
++
+ /***********************************************************************
+  *	find_builtin_without_file
+  *
+@@ -3387,6 +3432,9 @@ static NTSTATUS find_dll_file( const WCHAR *load_path, const WCHAR *libname, UNI
+         (status = open_wfdxcompat_launcher_alias( libname, nt_name, pwm, mapping,
+                                                   image_info, id )) != STATUS_DLL_NOT_FOUND)
+         goto done;
++    if ((status = open_zink_gallium( libname, nt_name, pwm, mapping, image_info,
++                                     id )) != STATUS_DLL_NOT_FOUND)
++        goto done;
+ 
+     if (RtlDetermineDosPathNameType_U( libname ) == RtlPathTypeRelative)
+     {
+diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
+index 89ac70a601e..0a46083e06a 100644
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -301,13 +301,16 @@ static void set_dll_path(void)
+     int i, count = 0;
+ 
+ #ifdef __APPLE__
+-    /* a relocatable bundle's own MoltenVK and GStreamer plugins, unless the environment
+-     * already chooses (the dist launcher script did this; Wine.app runs the loader directly) */
++    /* a relocatable bundle's own Vulkan driver and GStreamer plugins, unless the environment
++     * already chooses. The driver is MoltenVK, or KosmicKrisp (Mesa's) with SharpVK_Switch=1 */
+     if (dll_dir)
+     {
+-        static const struct { const char *var, *path; } bundled[] =
++        const char *sharpvk = getenv( "SharpVK_Switch" );
++        const struct { const char *var, *path; } bundled[] =
+         {
+-            { "VK_DRIVER_FILES",            "../../share/vulkan/icd.d/MoltenVK_icd.json" },
++            { "VK_DRIVER_FILES",            sharpvk && !strcmp( sharpvk, "1" )
++                                            ? "../../share/vulkan/icd.d/kosmickrisp_icd.json"
++                                            : "../../share/vulkan/icd.d/MoltenVK_icd.json" },
+             { "GST_PLUGIN_SYSTEM_PATH_1_0", "../gstreamer-1.0" },
+             { "GST_PLUGIN_SCANNER_1_0",     "../../libexec/gstreamer-1.0/gst-plugin-scanner" },
+         };
+@@ -319,6 +322,13 @@ static void set_dll_path(void)
+             if (!access( value, R_OK )) setenv( bundled[i].var, value, 0 );
+             free( value );
+         }
++        if (!getenv( "VK_DRIVER_FILES" ) && sharpvk && !strcmp( sharpvk, "1" ) &&
++            asprintf( &value, "%s/../../share/vulkan/icd.d/MoltenVK_icd.json", dll_dir ) != -1)
++        {
++            ERR( "SharpVK_Switch=1, but this bundle has no KosmicKrisp: using MoltenVK\n" );
++            if (!access( value, R_OK )) setenv( "VK_DRIVER_FILES", value, 0 );
++            free( value );
++        }
+     }
+     /* MoltenVK logs its whole feature list at info level on every instance; keep errors only */
+     setenv( "MVK_CONFIG_LOG_LEVEL", "1", 0 );
+-- 
+2.54.0 (Apple Git-157)
+
