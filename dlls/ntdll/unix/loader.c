@@ -301,13 +301,16 @@ static void set_dll_path(void)
     int i, count = 0;
 
 #ifdef __APPLE__
-    /* a relocatable bundle's own MoltenVK and GStreamer plugins, unless the environment
-     * already chooses (the dist launcher script did this; Wine.app runs the loader directly) */
+    /* a relocatable bundle's own Vulkan driver and GStreamer plugins, unless the environment
+     * already chooses. The driver is MoltenVK, or KosmicKrisp (Mesa's) with SharpVK_Switch=1 */
     if (dll_dir)
     {
-        static const struct { const char *var, *path; } bundled[] =
+        const char *sharpvk = getenv( "SharpVK_Switch" );
+        const struct { const char *var, *path; } bundled[] =
         {
-            { "VK_DRIVER_FILES",            "../../share/vulkan/icd.d/MoltenVK_icd.json" },
+            { "VK_DRIVER_FILES",            sharpvk && !strcmp( sharpvk, "1" )
+                                            ? "../../share/vulkan/icd.d/kosmickrisp_icd.json"
+                                            : "../../share/vulkan/icd.d/MoltenVK_icd.json" },
             { "GST_PLUGIN_SYSTEM_PATH_1_0", "../gstreamer-1.0" },
             { "GST_PLUGIN_SCANNER_1_0",     "../../libexec/gstreamer-1.0/gst-plugin-scanner" },
         };
@@ -317,6 +320,13 @@ static void set_dll_path(void)
         {
             if (getenv( bundled[i].var ) || asprintf( &value, "%s/%s", dll_dir, bundled[i].path ) == -1) continue;
             if (!access( value, R_OK )) setenv( bundled[i].var, value, 0 );
+            free( value );
+        }
+        if (!getenv( "VK_DRIVER_FILES" ) && sharpvk && !strcmp( sharpvk, "1" ) &&
+            asprintf( &value, "%s/../../share/vulkan/icd.d/MoltenVK_icd.json", dll_dir ) != -1)
+        {
+            ERR( "SharpVK_Switch=1, but this bundle has no KosmicKrisp: using MoltenVK\n" );
+            if (!access( value, R_OK )) setenv( "VK_DRIVER_FILES", value, 0 );
             free( value );
         }
     }
