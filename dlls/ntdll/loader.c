@@ -3210,6 +3210,56 @@ static NTSTATUS open_wfdxcompat_launcher_alias( const WCHAR *name, UNICODE_STRIN
 
 
 /***********************************************************************
+ *	open_zink_gallium
+ *
+ * SharpGL_Switch=1: Zink's opengl32.dll (which the Unix loader maps from lib/zink in place of
+ * WineMetalGL's) imports libgallium_wgl.dll, which no prefix holds: take it from the same place,
+ * <WINEDLLDIR0>/../zink/<pe_dir>.
+ */
+static NTSTATUS open_zink_gallium( const WCHAR *name, UNICODE_STRING *nt_name, WINE_MODREF **pwm,
+                                   HANDLE *mapping, SECTION_IMAGE_INFORMATION *image_info,
+                                   struct file_id *id )
+{
+    static const WCHAR gallium[] = L"libgallium_wgl.dll";
+#ifdef __arm64ec__
+    static const WCHAR zink_dir[] = L"\\aarch64-windows";  /* x86_64 programs run Zink's ARM64EC build */
+#else
+    const WCHAR *zink_dir = pe_dir;
+#endif
+    UNICODE_STRING value;
+    NTSTATUS status;
+    WCHAR *slash;
+    BOOL enabled;
+
+    if (contains_path( name ) || wcsicmp( name, gallium )) return STATUS_DLL_NOT_FOUND;
+    if (get_env_var( L"SharpGL_Switch", 0, &value )) return STATUS_DLL_NOT_FOUND;
+    enabled = !wcscmp( value.Buffer, L"1" );
+    RtlFreeUnicodeString( &value );
+    if (!enabled) return STATUS_DLL_NOT_FOUND;
+
+    if (get_env_var( L"WINEDLLDIR0", 8 + wcslen( zink_dir ) + ARRAY_SIZE( gallium ), nt_name ))
+        return STATUS_DLL_NOT_FOUND;
+    if (!(slash = wcsrchr( nt_name->Buffer, '\\' )))
+    {
+        RtlFreeUnicodeString( nt_name );
+        return STATUS_DLL_NOT_FOUND;
+    }
+    nt_name->Length = (slash - nt_name->Buffer) * sizeof(WCHAR);
+    RtlAppendUnicodeToString( nt_name, L"\\zink" );
+    RtlAppendUnicodeToString( nt_name, zink_dir );
+    RtlAppendUnicodeToString( nt_name, L"\\" );
+    RtlAppendUnicodeToString( nt_name, gallium );
+    status = open_dll_file( nt_name, pwm, mapping, image_info, id );
+    if (status == STATUS_DLL_NOT_FOUND)
+    {
+        RtlFreeUnicodeString( nt_name );
+        nt_name->Buffer = NULL;
+    }
+    return status;
+}
+
+
+/***********************************************************************
  *	find_builtin_without_file
  *
  * Find a builtin dll when the corresponding file cannot be found in the prefix.
@@ -3386,6 +3436,9 @@ static NTSTATUS find_dll_file( const WCHAR *load_path, const WCHAR *libname, UNI
     if (!contains_path( libname ) &&
         (status = open_wfdxcompat_launcher_alias( libname, nt_name, pwm, mapping,
                                                   image_info, id )) != STATUS_DLL_NOT_FOUND)
+        goto done;
+    if ((status = open_zink_gallium( libname, nt_name, pwm, mapping, image_info,
+                                     id )) != STATUS_DLL_NOT_FOUND)
         goto done;
 
     if (RtlDetermineDosPathNameType_U( libname ) == RtlPathTypeRelative)

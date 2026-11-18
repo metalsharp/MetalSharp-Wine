@@ -301,13 +301,16 @@ static void set_dll_path(void)
     int i, count = 0;
 
 #ifdef __APPLE__
-    /* a relocatable bundle's own MoltenVK and GStreamer plugins, unless the environment
-     * already chooses (the dist launcher script did this; Wine.app runs the loader directly) */
+    /* a relocatable bundle's own Vulkan driver and GStreamer plugins, unless the environment
+     * already chooses. The driver is MoltenVK, or KosmicKrisp (Mesa's) with SharpVK_Switch=1 */
     if (dll_dir)
     {
-        static const struct { const char *var, *path; } bundled[] =
+        const char *sharpvk = getenv( "SharpVK_Switch" );
+        const struct { const char *var, *path; } bundled[] =
         {
-            { "VK_DRIVER_FILES",            "../../share/vulkan/icd.d/MoltenVK_icd.json" },
+            { "VK_DRIVER_FILES",            sharpvk && !strcmp( sharpvk, "1" )
+                                            ? "../../share/vulkan/icd.d/kosmickrisp_icd.json"
+                                            : "../../share/vulkan/icd.d/MoltenVK_icd.json" },
             { "GST_PLUGIN_SYSTEM_PATH_1_0", "../gstreamer-1.0" },
             { "GST_PLUGIN_SCANNER_1_0",     "../../libexec/gstreamer-1.0/gst-plugin-scanner" },
         };
@@ -317,6 +320,13 @@ static void set_dll_path(void)
         {
             if (getenv( bundled[i].var ) || asprintf( &value, "%s/%s", dll_dir, bundled[i].path ) == -1) continue;
             if (!access( value, R_OK )) setenv( bundled[i].var, value, 0 );
+            free( value );
+        }
+        if (!getenv( "VK_DRIVER_FILES" ) && sharpvk && !strcmp( sharpvk, "1" ) &&
+            asprintf( &value, "%s/../../share/vulkan/icd.d/MoltenVK_icd.json", dll_dir ) != -1)
+        {
+            ERR( "SharpVK_Switch=1, but this bundle has no KosmicKrisp: using MoltenVK\n" );
+            if (!access( value, R_OK )) setenv( "VK_DRIVER_FILES", value, 0 );
             free( value );
         }
     }
@@ -1311,6 +1321,30 @@ static char *winemetalgl_opengl32_path( USHORT machine )
     return NULL;
 }
 
+/***********************************************************************
+ *           zink_pe_path
+ *
+ * SharpGL_Switch=1: Mesa's Zink (OpenGL on Vulkan, so on MoltenVK, or on KosmicKrisp with
+ * SharpVK_Switch=1) in WineMetalGL's place: its opengl32.dll and the libgallium_wgl.dll that
+ * opengl32.dll loads, from lib/zink. PE only, as Windows' Mesa builds are.
+ */
+static char *zink_pe_path( const char *name, USHORT machine )
+{
+    const char *enabled = getenv( "SharpGL_Switch" ), *pe_dir;
+    char *path;
+
+    if (!enabled || strcmp( enabled, "1" )) return NULL;
+    if (strcmp( name, "opengl32.dll" ) && strcmp( name, "libgallium_wgl.dll" )) return NULL;
+    if (machine == IMAGE_FILE_MACHINE_I386) pe_dir = "i386-windows";
+    else if (machine == IMAGE_FILE_MACHINE_AMD64 || machine == IMAGE_FILE_MACHINE_ARM64)
+        pe_dir = "aarch64-windows";  /* ARM64EC, for FEX's x86_64 programs */
+    else return NULL;
+    if (asprintf( &path, "%s/../zink/%s/%s", dll_dir, pe_dir, name ) == -1) return NULL;
+    if (!access( path, R_OK )) return path;
+    free( path );
+    return NULL;
+}
+
 /* DXVK 1.10.3 (macOS, x86_64): <dll_dir>/../dxvk/x86_64-windows, for GRAPHICS_BACKEND=dxvk */
 static char *dxvk_pe_path( const char *name )
 {
@@ -1444,6 +1478,23 @@ static NTSTATUS find_builtin_dll( UNICODE_STRING *nt_name, ANSI_STRING *exp_name
     TRACE( "looking for %s for file %s\n", debugstr_a(file + pos + 1), debugstr_us(nt_name) );
 
 #ifdef __APPLE__
+    {
+        char *zink = zink_pe_path( file + pos + 1, search_machine );
+
+        if (zink)
+        {
+            status = open_builtin_pe_file( zink, &attr, module, size_ptr, image_info,
+                                           limit_low, limit_high, load_machine, prefer_native, offset );
+            TRACE( "Zink %s for %s -> %#lx\n", debugstr_a(zink), debugstr_us(nt_name), (long)status );
+            free( zink );
+            if (status != STATUS_DLL_NOT_FOUND)
+            {
+                winemetalgl_pe = TRUE;  /* no unix side */
+                goto done;
+            }
+        }
+    }
+
     if (!strcmp( file + pos + 1, "opengl32.dll" ))
     {
         char *forwarder = winemetalgl_opengl32_path( search_machine );

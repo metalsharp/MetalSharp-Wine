@@ -190,6 +190,45 @@ static inline CGPoint cgpoint_win_from_mac(CGPoint point)
     return point;
 }
 
+/* MetalSharp: where a Wine virtual desktop's frame window puts the desktop on the Mac's screens (the top-left of its
+ * content, in the Mac driver's screen points), so it can be moved like any window (metalsharp/MetalSharp#805). Screen
+ * positions go between Win32 and the Mac through the *_screen conversions, which add it; positions inside a window
+ * (surfaces, views, dirty rects) do not. Zero without a virtual desktop. */
+extern CGPoint macdrv_desktop_offset;
+
+static inline CGRect cgrect_mac_from_win_screen(CGRect rect)
+{
+    rect = cgrect_mac_from_win(rect);
+    rect.origin.x += macdrv_desktop_offset.x;
+    rect.origin.y += macdrv_desktop_offset.y;
+    return rect;
+}
+
+static inline CGRect cgrect_win_from_mac_screen(CGRect rect)
+{
+    rect.origin.x -= macdrv_desktop_offset.x;
+    rect.origin.y -= macdrv_desktop_offset.y;
+    return cgrect_win_from_mac(rect);
+}
+
+static inline CGPoint cgpoint_mac_from_win_screen(CGPoint point)
+{
+    point = cgpoint_mac_from_win(point);
+    point.x += macdrv_desktop_offset.x;
+    point.y += macdrv_desktop_offset.y;
+    return point;
+}
+
+static inline CGPoint cgpoint_win_from_mac_screen(CGPoint point)
+{
+    point.x -= macdrv_desktop_offset.x;
+    point.y -= macdrv_desktop_offset.y;
+    return cgpoint_win_from_mac(point);
+}
+
+/* MetalSharp: shows the virtual desktop's frame window, `size` in Win32 pixels (once per process) */
+extern void macdrv_show_desktop_frame(CGSize size);
+
 extern int macdrv_start_cocoa_app(unsigned long long tickcount);
 extern void macdrv_window_rejected_focus(const struct macdrv_event *event);
 extern void macdrv_beep(void);

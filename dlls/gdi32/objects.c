@@ -896,6 +896,32 @@ NTSTATUS WINAPI D3DKMTOpenAdapterFromGdiDisplayName( D3DKMT_OPENADAPTERFROMGDIDI
     return NtUserD3DKMTOpenAdapterFromGdiDisplayName( desc );
 }
 
+/******************************************************************************
+ *           D3DKMTGetProcessSchedulingPriorityClass    (GDI32.@)
+ */
+NTSTATUS WINAPI D3DKMTGetProcessSchedulingPriorityClass( HANDLE process, int *priority )
+{
+    TRACE( "(%p, %p)\n", process, priority );
+
+    if (!priority) return STATUS_INVALID_PARAMETER;
+    *priority = 2; /* D3DKMT_SCHEDULINGPRIORITYCLASS_NORMAL */
+    return STATUS_SUCCESS;
+}
+
+/******************************************************************************
+ *           D3DKMTSetProcessSchedulingPriorityClass    (GDI32.@)
+ *
+ * Asks for a process's GPU scheduling priority (SteamVR asks it for its compositor). The host's GPU scheduler is not
+ * the Windows one, so this accepts the request and changes nothing.
+ */
+NTSTATUS WINAPI D3DKMTSetProcessSchedulingPriorityClass( HANDLE process, int priority )
+{
+    FIXME( "(%p, %d) semi-stub\n", process, priority );
+
+    if (priority < 0 || priority > 5) return STATUS_INVALID_PARAMETER;
+    return STATUS_SUCCESS;
+}
+
 /***********************************************************************
  *           SetObjectOwner    (GDI32.@)
  */
