@@ -111,4 +111,26 @@ asm( "\t.section .rdata,\"dr\"\n"
      "\t.rva __os_arm64x_helper7\n"
      "\t.rva __os_arm64x_helper8\n" );
 
+/* Exit thunks for the C library calls the compiler makes itself. A struct copy, or memcpy, memmove and memset that
+ * the compiler expands as builtins, become calls with no exit thunk in the object, so the linker gives the import's
+ * thunk none (RVA 0) unless some object of the module calls the function explicitly. The import thunk is used only
+ * when the call goes to x64 code: an x64 ucrtbase.dll an application ships and loaded first (EXOCAD's .NET
+ * WinForms: ImageList_Duplicate's memcpy executed comctl32_v6's base, MetalSharp-Wine issue #57). These explicit
+ * calls, in the object every module with imports links for the __os_arm64x symbols, give each one its exit thunk. */
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Winconsistent-dllimport"
+/* not dllimport: a direct call is what gives the named #memcpy$exit_thunk the import's thunk takes */
+void *__cdecl memcpy( void *dst, const void *src, size_t size );
+void *__cdecl memmove( void *dst, const void *src, size_t size );
+void *__cdecl memset( void *dst, int c, size_t size );
+#pragma clang diagnostic pop
+
+__attribute__((used, no_builtin("memcpy", "memmove", "memset")))
+void __wine_arm64ec_libcall_exit_thunks( void *dst, const void *src, size_t size )
+{
+    memcpy( dst, src, size );
+    memmove( dst, src, size );
+    memset( dst, 0, size );
+}
+
 #endif /* __arm64ec__ */
