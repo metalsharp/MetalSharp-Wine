@@ -42,6 +42,7 @@
 #   WINE_BUILD=<the x86_64 Wine's build tree> WINE_MODULES="ntdll win32u ..." (modules rebuilt there with MetalSharp
 #   Wine's fixes, which replace the bundle's; server for the wineserver)
 #   WINEMETALGL=<install-x86_64/winemetalgl> VCRUN_X64=<Microsoft's x64 VC++ runtime DLLs> DEPS_SRC=<deps/src-x86_64:deps/src> LICENSES_EXTRA=<dir of license folders> (share/licenses)
+#   [ZINK=<install-x86_64/zink, from build-zink.sh x86_64>: OpenGL on Zink with SharpGL_Switch=1]
 #   [METALVR=<MetalSharp Wine's install/ after build-metalvr.sh: bin/metalvrd and lib/metalvr>: VR, as in MetalSharp-Wine.app]
 #   D3DMETAL=<GPTK 4.0 beta 3: dir with external/ and wine/> D3DMETAL_GPTK3=<GPTK 3.0: the same, from redist/lib> MEDIA=<x86_64 GStreamer/FFmpeg prefix> SIGN_IDENTITY="Developer ID Application: ..." \
 #   VERSION=<the MetalSharp Wine release, e.g. 5.1> [TIMESTAMP=1: secure timestamps, which notarization needs] \
@@ -268,6 +269,12 @@ mkdir -p "$C/Resources"
 xcrun -f actool >/dev/null 2>&1 || export DEVELOPER_DIR=${DEVELOPER_DIR:-$HOME/Downloads/Xcode-beta.app/Contents/Developer}
 xcrun actool "$HERE/x86_64/$ICON.icon" --compile "$C/Resources" --app-icon "$ICON" \
   --platform macosx --minimum-deployment-target 15.0 --output-partial-info-plist "$WORK/icon-partial.plist" >/dev/null
+# Zink (OpenGL on Vulkan; ZINK: build-zink.sh x86_64's install-x86_64/zink), which ntdll serves for opengl32.dll in
+# WineMetalGL's place with SharpGL_Switch=1
+if [ -n "$ZINK" ]; then
+  rm -rf "$C/lib/zink"; cp -Rp "$ZINK" "$C/lib/zink"
+fi
+
 # WineMetalGL (OpenGL 1.0-4.6 on Metal; WINEMETALGL: MetalSharp Wine's build-winemetalgl-x86_64.sh output), the
 # x86_64 Wine's default OpenGL as on MetalSharp Wine: its module in place of the bundle's and opengl32 forwarders in
 # lib/winemetalgl, which ntdll serves for opengl32.dll
