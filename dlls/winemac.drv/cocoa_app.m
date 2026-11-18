@@ -28,6 +28,8 @@
 #import "cocoa_event.h"
 #import "cocoa_window.h"
 #import "cocoa_fullscreen.h"
+#include <IOKit/hidsystem/IOHIDLib.h>
+#include <IOKit/hidsystem/IOHIDParameter.h>
 
 #pragma GCC diagnostic ignored "-Wdeclaration-after-statement"
 
@@ -115,6 +117,182 @@ static NSString* WineLocalizedString(unsigned int stringID)
 
 @end
 
+
+/*
+ * MetalSharp: a Wine virtual desktop's frame window (metalsharp/MetalSharp#805). The Mac driver gives a virtual
+ * desktop no window of its own, so a program that is fullscreen in it was a box fixed to the top-left of the screen.
+ * Each process that shows windows in a virtual desktop gets a titled frame the desktop's size, which can be moved but
+ * never takes the keyboard. The desktop's Win32 coordinates start at the frame's content: macdrv_desktop_offset, which
+ * the *_screen conversions add. When the frame moves, the offset moves with it first and the process's top-level Wine
+ * windows follow (their owned windows are AppKit child windows of theirs and come along), so their Win32 positions
+ * stay as they were.
+ */
+CGPoint macdrv_desktop_offset;
+
+@interface WineDesktopFrame : NSWindow <NSWindowDelegate>
+{
+    NSRect lastFrame;
+}
+@end
+
+@implementation WineDesktopFrame
+
+    - (BOOL) canBecomeKeyWindow { return NO; }
+    - (BOOL) canBecomeMainWindow { return NO; }
+
+    - (void) updateDesktopOffset
+    {
+        NSRect content = [self contentRectForFrameRect:[self frame]];
+        [[WineApplicationController sharedController] flipRect:&content];
+        macdrv_desktop_offset = CGPointMake(NSMinX(content), NSMinY(content));
+        lastFrame = [self frame];
+    }
+
+    /* the desktop's windows stay in front of it, and the one in front keeps the keyboard */
+    - (void) raiseDesktopWindows
+    {
+        NSWindow* window;
+        NSWindow* front = nil;
+
+        for (window in [[NSApp orderedWindows] reverseObjectEnumerator])
+        {
+            if (![window isKindOfClass:[WineWindow class]] || [window parentWindow] || ![window isVisible]) continue;
+            [window orderWindow:NSWindowAbove relativeTo:[self windowNumber]];
+            front = window;
+        }
+        if (front && [front canBecomeKeyWindow]) [front makeKeyWindow];
+    }
+
+    - (void) sendEvent:(NSEvent*)event
+    {
+        [super sendEvent:event];
+        if ([event type] == NSEventTypeLeftMouseDown || [event type] == NSEventTypeLeftMouseUp)
+            [self raiseDesktopWindows];
+    }
+
+    - (void) windowDidMove:(NSNotification *)notification
+    {
+        NSRect frame = [self frame];
+        CGFloat dx = NSMinX(frame) - NSMinX(lastFrame), dy = NSMinY(frame) - NSMinY(lastFrame);
+        NSWindow* window;
+
+        if (!dx && !dy) return;
+        [self updateDesktopOffset];
+        for (window in [NSApp windows])
+        {
+            if (![window isKindOfClass:[WineWindow class]] || [window parentWindow] || ![window isVisible]) continue;
+            if ([window styleMask] & NSWindowStyleMaskFullScreen) continue;
+            [window setFrameOrigin:NSMakePoint(NSMinX([window frame]) + dx, NSMinY([window frame]) + dy)];
+        }
+    }
+
+@end
+
+static WineDesktopFrame* desktop_frame;
+
+/***********************************************************************
+ *              macdrv_show_desktop_frame
+ *
+ * Shows the frame of a virtual desktop of `size` Win32 pixels, centered on the main screen, once per process.
+ * WINEMAC_DESKTOP_FRAME=0 leaves the desktop at the screen's top-left, as before.
+ */
+void macdrv_show_desktop_frame(CGSize size)
+{
+    const char* setting = getenv("WINEMAC_DESKTOP_FRAME");
+    if (desktop_frame || (setting && !strcmp(setting, "0"))) return;
+
+    OnMainThread(^{
+        NSSize content = NSSizeFromCGSize(cgsize_mac_from_win(size));
+        NSRect visible = [[NSScreen mainScreen] visibleFrame], rect;
+        WineDesktopFrame* frame;
+
+        if (desktop_frame) return;
+        rect = [WineDesktopFrame frameRectForContentRect:NSMakeRect(0, 0, content.width, content.height)
+                                               styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskMiniaturizable];
+        rect.origin.x = NSMinX(visible) + MAX(0, floor((NSWidth(visible) - NSWidth(rect)) / 2));
+        rect.origin.y = NSMinY(visible) + MAX(0, floor((NSHeight(visible) - NSHeight(rect)) / 2));
+        rect = [WineDesktopFrame contentRectForFrameRect:rect
+                                               styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskMiniaturizable];
+        frame = [[WineDesktopFrame alloc] initWithContentRect:rect
+                                                    styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskMiniaturizable
+                                                      backing:NSBackingStoreBuffered
+                                                        defer:NO];
+        [frame setReleasedWhenClosed:NO];
+        [frame setTitle:[[NSProcessInfo processInfo] processName]];
+        [frame setBackgroundColor:[NSColor blackColor]];
+        [frame setDelegate:frame];
+        [frame setCollectionBehavior:NSWindowCollectionBehaviorManaged | NSWindowCollectionBehaviorParticipatesInCycle];
+        [frame updateDesktopOffset];
+        [frame orderFront:nil];
+        desktop_frame = frame;
+        /* windows made before it, at the desktop's old place (the screen's top-left), move into it; the Mac's y
+           grows upward where the driver's grows downward */
+        for (NSWindow* window in [NSApp windows])
+        {
+            if (![window isKindOfClass:[WineWindow class]] || [window parentWindow]) continue;
+            [window setFrameOrigin:NSMakePoint(NSMinX([window frame]) + macdrv_desktop_offset.x,
+                                               NSMinY([window frame]) - macdrv_desktop_offset.y)];
+        }
+    });
+}
+
+/*
+ * MetalSharp: WINEMAC_FKEYS=windows (a per-game setting, issue metalsharp/MetalSharp#802) has the Mac's top row
+ * send F1-F12 while the program is the active app, as "Use F1, F2, etc. keys as standard function keys" does, with
+ * the brightness, media and volume functions on fn as on a Windows keyboard. The keyboard's own setting is saved when
+ * the program becomes active and put back when it stops being active and when it exits, so other apps keep theirs.
+ */
+static io_connect_t fkeys_connect;
+static UInt32 fkeys_saved;
+static BOOL fkeys_applied;
+
+static BOOL fkeys_wanted(void)
+{
+    const char *value = getenv("WINEMAC_FKEYS");
+    return value && !strcmp(value, "windows");
+}
+
+static BOOL fkeys_open(void)
+{
+    if (!fkeys_connect)
+    {
+        io_service_t service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching(kIOHIDSystemClass));
+        if (!service) return FALSE;
+        if (IOServiceOpen(service, mach_task_self(), kIOHIDParamConnectType, &fkeys_connect) != KERN_SUCCESS)
+            fkeys_connect = 0;
+        IOObjectRelease(service);
+    }
+    return fkeys_connect != 0;
+}
+
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+static void fkeys_restore(void)
+{
+    if (!fkeys_applied) return;
+    fkeys_applied = FALSE;
+    IOHIDSetParameter(fkeys_connect, CFSTR(kIOHIDFKeyModeKey), &fkeys_saved, sizeof(fkeys_saved));
+}
+
+static void fkeys_apply(void)
+{
+    static BOOL registered;
+    UInt32 on = 1;
+    IOByteCount size = sizeof(fkeys_saved);
+
+    if (fkeys_applied || !fkeys_wanted() || !fkeys_open()) return;
+    if (IOHIDGetParameter(fkeys_connect, CFSTR(kIOHIDFKeyModeKey), sizeof(fkeys_saved), &fkeys_saved, &size) != KERN_SUCCESS)
+        return;  /* nothing to put back: leave the keyboard as it is */
+    if (fkeys_saved == on) return;
+    if (IOHIDSetParameter(fkeys_connect, CFSTR(kIOHIDFKeyModeKey), &on, sizeof(on)) != KERN_SUCCESS) return;
+    fkeys_applied = TRUE;
+    if (!registered)
+    {
+        registered = TRUE;
+        atexit(fkeys_restore);
+    }
+}
+#pragma clang diagnostic pop
 
 @implementation WineApplicationController
 
@@ -1434,7 +1612,7 @@ static NSString* WineLocalizedString(unsigned int stringID)
             {
                 if (self.clippingCursor)
                     [clipCursorHandler clipCursorLocation:&point];
-                point = cgpoint_win_from_mac(point);
+                point = cgpoint_win_from_mac_screen(point);
 
                 event = macdrv_create_event(MOUSE_MOVED_ABSOLUTE, targetWindow);
                 event->mouse_moved.x = floor(point.x);
@@ -1586,7 +1764,7 @@ static NSString* WineLocalizedString(unsigned int stringID)
             {
                 macdrv_event* event;
 
-                pt = cgpoint_win_from_mac(pt);
+                pt = cgpoint_win_from_mac_screen(pt);
 
                 event = macdrv_create_event(MOUSE_BUTTON, window);
                 event->mouse_button.button = [theEvent buttonNumber];
@@ -1671,7 +1849,7 @@ static NSString* WineLocalizedString(unsigned int stringID)
                 double x, y;
                 BOOL continuous = FALSE;
 
-                pt = cgpoint_win_from_mac(pt);
+                pt = cgpoint_win_from_mac_screen(pt);
 
                 event = macdrv_create_event(MOUSE_SCROLL, window);
                 event->mouse_scroll.x = floor(pt.x);
@@ -2233,6 +2411,8 @@ static NSString* WineLocalizedString(unsigned int stringID)
 
     - (void)applicationDidBecomeActive:(NSNotification *)notification
     {
+        fkeys_apply();
+
         NSNumber* displayID;
         NSDictionary* modesToRealize = [latentDisplayModes autorelease];
 
@@ -2272,6 +2452,8 @@ static NSString* WineLocalizedString(unsigned int stringID)
     {
         macdrv_event* event;
         WineEventQueue* queue;
+
+        fkeys_restore();
 
         [self invalidateGotFocusEvents];
 
@@ -2550,7 +2732,7 @@ int macdrv_get_cursor_position(CGPoint *pos)
     OnMainThread(^{
         NSPoint location = [NSEvent mouseLocation];
         location = [[WineApplicationController sharedController] flippedMouseLocation:location];
-        *pos = cgpoint_win_from_mac(NSPointToCGPoint(location));
+        *pos = cgpoint_win_from_mac_screen(NSPointToCGPoint(location));
     });
 
     return TRUE;
@@ -2567,7 +2749,7 @@ int macdrv_set_cursor_position(CGPoint pos)
     __block int ret;
 
     OnMainThread(^{
-        ret = [[WineApplicationController sharedController] setCursorPosition:cgpoint_mac_from_win(pos)];
+        ret = [[WineApplicationController sharedController] setCursorPosition:cgpoint_mac_from_win_screen(pos)];
     });
 
     return ret;
@@ -2590,7 +2772,7 @@ int macdrv_clip_cursor(CGRect r)
         CGRect rect = r;
 
         if (!CGRectIsInfinite(rect))
-            rect = cgrect_mac_from_win(rect);
+            rect = cgrect_mac_from_win_screen(rect);
 
         if (!CGRectIsInfinite(rect))
         {
