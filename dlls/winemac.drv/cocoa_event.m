@@ -359,7 +359,7 @@ static const OSType WineHotKeySignature = 'Wine';
     {
         MacDrvEvent* event;
 
-        pos = cgpoint_win_from_mac(pos);
+        pos = cgpoint_win_from_mac_screen(pos);
 
         [eventsLock lock];
 

@@ -114,7 +114,7 @@
         NSUInteger typeMask = NSEventMaskFromType([nsevent type]);
         CGPoint point = CGEventGetLocation([nsevent CGEvent]);
 
-        point = cgpoint_win_from_mac(point);
+        point = cgpoint_win_from_mac_screen(point);
 
         event = macdrv_create_event(STATUS_ITEM_MOUSE_BUTTON, nil);
         event->status_item_mouse_button.item = (macdrv_status_item)self;
@@ -175,7 +175,7 @@
         macdrv_event* event;
         CGPoint point = CGEventGetLocation([nsevent CGEvent]);
 
-        point = cgpoint_win_from_mac(point);
+        point = cgpoint_win_from_mac_screen(point);
 
         event = macdrv_create_event(STATUS_ITEM_MOUSE_MOVE, nil);
         event->status_item_mouse_move.item = (macdrv_status_item)self;

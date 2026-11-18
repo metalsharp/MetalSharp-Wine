@@ -981,7 +981,7 @@ static inline BOOL stage_manager_enabled(void)
         aRange = NSIntersectionRange(aRange, NSMakeRange(0, [markedText length]));
 
         pthread_mutex_lock(&ime_composition_rect_mutex);
-        ret = NSRectFromCGRect(cgrect_mac_from_win(ime_composition_rect));
+        ret = NSRectFromCGRect(cgrect_mac_from_win_screen(ime_composition_rect));
         pthread_mutex_unlock(&ime_composition_rect_mutex);
 
         [[WineApplicationController sharedController] flipRect:&ret];
@@ -2291,7 +2291,7 @@ static inline BOOL stage_manager_enabled(void)
                                forWindow:self];
 
         event = macdrv_create_event(WINDOW_FRAME_CHANGED, self);
-        event->window_frame_changed.frame = cgrect_win_from_mac(NSRectToCGRect(frame));
+        event->window_frame_changed.frame = cgrect_win_from_mac_screen(NSRectToCGRect(frame));
         event->window_frame_changed.fullscreen = isFullscreen;
         event->window_frame_changed.in_resize = resizing;
         event->window_frame_changed.skip_size_move_loop = skipSizeMove;
@@ -2631,7 +2631,7 @@ static inline BOOL stage_manager_enabled(void)
 
                     event = macdrv_create_event(WINDOW_RESTORE_REQUESTED, self);
                     event->window_restore_requested.keep_frame = true;
-                    event->window_restore_requested.frame = cgrect_win_from_mac(NSRectToCGRect(frame));
+                    event->window_restore_requested.frame = cgrect_win_from_mac_screen(NSRectToCGRect(frame));
                     [queue postEvent:event];
                     macdrv_release_event(event);
 
@@ -3168,13 +3168,13 @@ static inline BOOL stage_manager_enabled(void)
             query = macdrv_create_query();
             query->type = QUERY_RESIZE_SIZE;
             query->window = (macdrv_window)[self retain];
-            query->resize_size.rect = cgrect_win_from_mac(NSRectToCGRect(rect));
+            query->resize_size.rect = cgrect_win_from_mac_screen(NSRectToCGRect(rect));
             query->resize_size.from_left = resizingFromLeft;
             query->resize_size.from_top = resizingFromTop;
 
             if ([self.queue query:query timeout:0.1])
             {
-                rect = NSRectFromCGRect(cgrect_mac_from_win(query->resize_size.rect));
+                rect = NSRectFromCGRect(cgrect_mac_from_win_screen(query->resize_size.rect));
                 rect = [self frameRectForContentRect:rect];
                 frameSize = rect.size;
             }
@@ -3198,7 +3198,7 @@ static inline BOOL stage_manager_enabled(void)
 
             event = macdrv_create_event(WINDOW_RESTORE_REQUESTED, self);
             event->window_restore_requested.keep_frame = true;
-            event->window_restore_requested.frame = cgrect_win_from_mac(NSRectToCGRect(frame));
+            event->window_restore_requested.frame = cgrect_win_from_mac_screen(NSRectToCGRect(frame));
             [queue postEvent:event];
             macdrv_release_event(event);
         }
@@ -3365,7 +3365,7 @@ macdrv_window macdrv_create_cocoa_window(const struct macdrv_window_features* wf
 
     OnMainThread(^{
         window = [[WineWindow createWindowWithFeatures:wf
-                                           windowFrame:NSRectFromCGRect(cgrect_mac_from_win(frame))
+                                           windowFrame:NSRectFromCGRect(cgrect_mac_from_win_screen(frame))
                                                   hwnd:hwnd
                                                  queue:(WineEventQueue*)queue] retain];
     });
@@ -3510,7 +3510,7 @@ void macdrv_set_cocoa_window_frame(macdrv_window w, const CGRect* new_frame)
     WineWindow* window = (WineWindow*)w;
 
     OnMainThread(^{
-        [window setFrameFromWine:NSRectFromCGRect(cgrect_mac_from_win(*new_frame))];
+        [window setFrameFromWine:NSRectFromCGRect(cgrect_mac_from_win_screen(*new_frame))];
     });
 }
 
@@ -3528,7 +3528,7 @@ void macdrv_get_cocoa_window_frame(macdrv_window w, CGRect* out_frame)
 
         frame = [window contentRectForFrameRect:[window wine_fractionalFrame]];
         [[WineApplicationController sharedController] flipRect:&frame];
-        *out_frame = cgrect_win_from_mac(NSRectToCGRect(frame));
+        *out_frame = cgrect_win_from_mac_screen(NSRectToCGRect(frame));
     });
 }
 
