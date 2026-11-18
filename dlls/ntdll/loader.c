@@ -3221,6 +3221,11 @@ static NTSTATUS open_zink_gallium( const WCHAR *name, UNICODE_STRING *nt_name, W
                                    struct file_id *id )
 {
     static const WCHAR gallium[] = L"libgallium_wgl.dll";
+#ifdef __arm64ec__
+    static const WCHAR zink_dir[] = L"\\aarch64-windows";  /* x86_64 programs run Zink's ARM64EC build */
+#else
+    const WCHAR *zink_dir = pe_dir;
+#endif
     UNICODE_STRING value;
     NTSTATUS status;
     WCHAR *slash;
@@ -3232,7 +3237,7 @@ static NTSTATUS open_zink_gallium( const WCHAR *name, UNICODE_STRING *nt_name, W
     RtlFreeUnicodeString( &value );
     if (!enabled) return STATUS_DLL_NOT_FOUND;
 
-    if (get_env_var( L"WINEDLLDIR0", 8 + wcslen( pe_dir ) + ARRAY_SIZE( gallium ), nt_name ))
+    if (get_env_var( L"WINEDLLDIR0", 8 + wcslen( zink_dir ) + ARRAY_SIZE( gallium ), nt_name ))
         return STATUS_DLL_NOT_FOUND;
     if (!(slash = wcsrchr( nt_name->Buffer, '\\' )))
     {
@@ -3241,7 +3246,7 @@ static NTSTATUS open_zink_gallium( const WCHAR *name, UNICODE_STRING *nt_name, W
     }
     nt_name->Length = (slash - nt_name->Buffer) * sizeof(WCHAR);
     RtlAppendUnicodeToString( nt_name, L"\\zink" );
-    RtlAppendUnicodeToString( nt_name, pe_dir );
+    RtlAppendUnicodeToString( nt_name, zink_dir );
     RtlAppendUnicodeToString( nt_name, L"\\" );
     RtlAppendUnicodeToString( nt_name, gallium );
     status = open_dll_file( nt_name, pwm, mapping, image_info, id );
