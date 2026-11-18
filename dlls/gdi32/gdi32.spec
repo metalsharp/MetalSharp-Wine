@@ -121,6 +121,7 @@
 @ stdcall D3DKMTEnumAdapters(ptr) win32u.NtGdiDdDDIEnumAdapters
 @ stdcall D3DKMTEnumAdapters2(ptr) win32u.NtGdiDdDDIEnumAdapters2
 @ stdcall D3DKMTEscape(ptr) win32u.NtGdiDdDDIEscape
+@ stdcall D3DKMTGetProcessSchedulingPriorityClass(ptr ptr)
 @ stdcall D3DKMTOpenAdapterFromDeviceName(ptr) win32u.NtGdiDdDDIOpenAdapterFromDeviceName
 @ stdcall D3DKMTOpenAdapterFromGdiDisplayName(ptr)
 @ stdcall D3DKMTOpenAdapterFromHdc(ptr) win32u.NtGdiDdDDIOpenAdapterFromHdc
@@ -143,6 +144,7 @@
 @ stdcall D3DKMTQueryVideoMemoryInfo(ptr) win32u.NtGdiDdDDIQueryVideoMemoryInfo
 @ stdcall D3DKMTReleaseKeyedMutex(ptr) win32u.NtGdiDdDDIReleaseKeyedMutex
 @ stdcall D3DKMTReleaseKeyedMutex2(ptr) win32u.NtGdiDdDDIReleaseKeyedMutex2
+@ stdcall D3DKMTSetProcessSchedulingPriorityClass(ptr long)
 @ stdcall D3DKMTSetQueuedLimit(ptr) win32u.NtGdiDdDDISetQueuedLimit
 @ stdcall D3DKMTSetVidPnSourceOwner(ptr) win32u.NtGdiDdDDISetVidPnSourceOwner
 @ stdcall D3DKMTShareObjects(long ptr ptr long ptr) win32u.NtGdiDdDDIShareObjects

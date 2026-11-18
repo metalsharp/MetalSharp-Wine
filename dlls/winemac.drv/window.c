@@ -477,6 +477,30 @@ static void sync_window_min_max_info(HWND hwnd)
 }
 
 
+/***********************************************************************
+ *              show_virtual_desktop_frame
+ *
+ * MetalSharp: in a Wine virtual desktop (explorer /desktop=name,WxH, MetalSharp's Windowed mode) the desktop's
+ * size differs from the Mac's displays; its windows then go in a frame that can be moved (macdrv_show_desktop_frame).
+ */
+static void show_virtual_desktop_frame(void)
+{
+    static BOOL checked;
+    RECT desktop;
+    CGRect displays;
+
+    if (checked) return;
+    checked = TRUE;
+    desktop = NtUserGetVirtualScreenRect( MDT_RAW_DPI );
+    displays = macdrv_get_desktop_rect();
+    if (desktop.right - desktop.left == CGRectGetWidth(displays) &&
+        desktop.bottom - desktop.top == CGRectGetHeight(displays))
+        return;
+    TRACE("virtual desktop %s, displays %s\n", wine_dbgstr_rect(&desktop), wine_dbgstr_cgrect(displays));
+    macdrv_show_desktop_frame(CGSizeMake(desktop.right - desktop.left, desktop.bottom - desktop.top));
+}
+
+
 /**********************************************************************
  *              create_cocoa_window
  *
@@ -731,6 +755,7 @@ static void show_window(struct macdrv_win_data *data)
 
     if (!prev_window)
         activate = activate_on_focus_time && (NtGetTickCount() - activate_on_focus_time < 2000);
+    show_virtual_desktop_frame();  /* before the first window is shown, so it goes in front of the frame */
     macdrv_order_cocoa_window(data->cocoa_window, prev_window, next_window, activate);
     data->on_screen = TRUE;
 
