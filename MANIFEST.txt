@@ -62,6 +62,7 @@ docs/release-notes/3.6.0.md
 docs/release-notes/3.7.0.md
 docs/release-notes/3.8.0.md
 docs/release-notes/3.9.0.md
+docs/release-notes/4.0.0.md
 docs/release.md
 docs/testing.md
 docs/unsupported.md
@@ -237,6 +238,7 @@ src/wine/pe/wgl_fonts.c
 src/wine/pe/wgl_formats.c
 src/wine/pe/winemetalgl.c
 src/wine/pe/wmgl_pe.h
+src/wine/rc/opengl32.rc
 src/wine/unix/unix_log.c
 src/wine/unix/unix_main.c
 src/wine/unix/unix_wgl.c

@@ -17,4 +17,10 @@ std::string settingsPath();
 // inherits them, and drops them to read the file as it is now.
 void applySettingsFile();
 
+// Sets the WINEMETALGL_* variables of a game's own settings (winemetalgl.conf
+// beside its .exe, read by the Wine side), the same lines as the settings
+// file's: over the settings file's values, under the environment's. Before
+// anything reads its settings (the Wine side's first call).
+void applyGameSettings(const std::string& text);
+
 }  // namespace wmgl

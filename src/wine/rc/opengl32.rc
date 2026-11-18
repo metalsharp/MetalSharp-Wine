@@ -1,0 +1,31 @@
+/* The version resource of the opengl32.dll forwarder. Programs check that OpenGL is installed by reading it
+ * (SteamVR's vrmonitor: GetFileVersionInfoSize("opengl32.dll")), as Windows' opengl32.dll has one. */
+#include <winver.h>
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION     10,0,19041,1
+PRODUCTVERSION  10,0,19041,1
+FILEFLAGSMASK   VS_FFI_FILEFLAGSMASK
+FILEFLAGS       0
+FILEOS          VOS_NT_WINDOWS32
+FILETYPE        VFT_DLL
+FILESUBTYPE     VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName",      "WineMetalGL"
+            VALUE "FileDescription",  "OpenGL Client DLL"
+            VALUE "FileVersion",      "10.0.19041.1"
+            VALUE "InternalName",     "OpenGL32"
+            VALUE "OriginalFilename", "OPENGL32.DLL"
+            VALUE "ProductName",      "WineMetalGL"
+            VALUE "ProductVersion",   "10.0.19041.1"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 1200
+    END
+END

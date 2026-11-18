@@ -556,3 +556,40 @@ void main() { uv = position * 0.5 + 0.5; gl_Position = vec4(position, 0.0, 1.0);
     glDeleteProgram(p);
     CHECK_GL();
 }
+
+// Foundry Mari's #version 330 viewport shaders (issue #88): a sampler array
+// indexed by a uniform, and locals named dfdx and dfdy, which are Metal
+// functions, next to the dFdx calls that become them.
+GPU_TEST(gpu_texture_variable_indexed_sampler_array_330) {
+    const uint8_t colors[3][4] = {{255, 0, 0, 255}, {0, 255, 0, 255}, {0, 0, 255, 255}};
+    GLuint tex[3];
+    for (int i = 0; i < 3; ++i) {
+        glActiveTexture(GL_TEXTURE0 + i);
+        tex[i] = texture2D(GL_RGBA8, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, colors[i]);
+    }
+    glActiveTexture(GL_TEXTURE0);
+    const char* fs = R"(#version 330 core
+in vec2 uv; uniform sampler2D tiles[3]; uniform int layer; out vec4 o;
+void main() {
+    vec3 F = vec3(uv, 0.0);
+    vec3 dfdx = dFdx(F);
+    vec3 dfdy = dFdy(F);
+    o = texture(tiles[layer], uv) + vec4(step(1.0, length(cross(dfdx, dfdy))) * 0.0);
+})";
+    GLuint p = gpu::program(kQuadVs, fs);
+    GLuint vao = gpu::quad();
+    glUseProgram(p);
+    const GLint units[3] = {0, 1, 2};
+    glUniform1iv(glGetUniformLocation(p, "tiles"), 3, units);
+    for (int i = 0; i < 3; ++i) {
+        glUniform1i(glGetUniformLocation(p, "layer"), i);
+        glClearColor(0, 0, 0, 0);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        CHECK(gpu::near(gpu::readRGBA8(32, 32, 1, 1).data(), colors[i]));
+    }
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(p);
+    glDeleteTextures(3, tex);
+    CHECK_GL();
+}
