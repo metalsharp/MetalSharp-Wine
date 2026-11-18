@@ -13,6 +13,7 @@
 
 #include "core/context.h"
 #include "core/metal/device.h"
+#include "core/util/settings.h"
 #include "core/proc_table.h"
 #include "core/stats.h"
 #include "core/surface.h"
@@ -405,6 +406,10 @@ extern void (*g_bufferRelease)(void*, size_t);
 WMGL_EXPORT void wmgl_set_buffer_memory(void* (*allocate)(size_t), void (*release)(void*, size_t)) {
     wmgl::api::g_bufferAllocate = allocate;
     wmgl::api::g_bufferRelease = release;
+}
+
+WMGL_EXPORT void wmgl_apply_game_settings(const char* text) {
+    if (text && *text) wmgl::applyGameSettings(text);
 }
 
 WMGL_EXPORT void wmgl_stats_enable(int enable) { stats::g_enabled = enable || stats::g_reporting; }

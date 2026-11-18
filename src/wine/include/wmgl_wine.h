@@ -102,6 +102,7 @@ struct wmgl_init_params
     INT log_level;          /* out: the highest level the PE side's messages are kept at (-1: none) */
     BOOL ok;
     char upscale[32];       /* out: WINEMETALGL_UPSCALE, the settings file's when the environment has none */
+    UINT64 game_settings;   /* winemetalgl.conf beside the program (client string, or 0) */
 };
 
 /* log: a message of the PE side, into the core's log (category "pe"). */

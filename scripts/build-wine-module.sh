@@ -37,7 +37,9 @@ for arch in x86_64 i386; do
     printf 'BOOL __stdcall DllMain(void *i, unsigned int r, void *p) { return 1; }\n' |
         sed 's/BOOL/int/' > "$OBJ/$arch/forwarder.c"
     "$cc" -c -O2 "$OBJ/$arch/forwarder.c" -o "$OBJ/$arch/forwarder.o"
-    "$cc" -shared -nostdlib -o "$OUT/$arch-windows/opengl32.dll" "$OBJ/$arch/forwarder.o" "$GEN/opengl32.def" \
+    # a version resource, as Windows' opengl32.dll has: programs read it to see that OpenGL is installed
+    "${cc%clang}windres" -O res "$ROOT/src/wine/rc/opengl32.rc" -o "$OBJ/$arch/opengl32.res"
+    "$cc" -shared -nostdlib -o "$OUT/$arch-windows/opengl32.dll" "$OBJ/$arch/forwarder.o" "$OBJ/$arch/opengl32.res" "$GEN/opengl32.def" \
         -Wl,--entry,DllMain$( [ $arch = i386 ] && echo @12 ) -lkernel32
     # Wine loads winemetalgl.so for a builtin winemetalgl.dll only (winebuild --builtin).
     python3 - "$OUT/$arch-windows/winemetalgl.dll" <<'PY'

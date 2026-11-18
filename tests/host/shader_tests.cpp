@@ -1000,3 +1000,42 @@ TEST(shader_link_results_round_trip) {
         CHECK(!deserializeLinkResult(cut, back));
     }
 }
+
+// Sampler arrays indexed by a variable below GLSL 4.00, which desktop drivers
+// accept (Foundry Mari's viewport shaders, issue #88).
+TEST(shader_variable_indexed_sampler_array_before_400) {
+    for (const char* version : {"#version 330 core\n", "#version 150 compatibility\n"}) {
+        LinkInput in;
+        in.shaders.push_back({Stage::Vertex, std::string(version) + "in vec4 pos; out vec2 uv; flat out int layer;\n"
+                                                                      "void main() { uv = pos.xy; layer = int(pos.z); gl_Position = pos; }\n"});
+        in.shaders.push_back({Stage::Fragment, std::string(version) + "uniform sampler2D tiles[4]; in vec2 uv; flat in int layer;\n"
+                                                                        "out vec4 color;\n"
+                                                                        "void main() { color = texture(tiles[layer], uv); }\n"});
+        LinkResult r = link(in);
+        if (!r.ok) std::fprintf(stderr, "%s\n", r.log.c_str());
+        CHECK(r.ok);
+    }
+}
+
+// GLSL names that are functions in MSL but not in GLSL (Mari's
+// `vec3 dfdx = dFdx(F);`, issue #88) are renamed in the MSL.
+TEST(shader_msl_function_names_as_variables) {
+    LinkInput in;
+    in.shaders.push_back({Stage::Vertex, "#version 330 core\nin vec4 pos; out vec3 F;\n"
+                                         "void main() { F = pos.xyz; gl_Position = pos; }\n"});
+    in.shaders.push_back({Stage::Fragment, "#version 330 core\nin vec3 F; out vec4 color;\n"
+                                           "void main() {\n"
+                                           "    vec3 dfdx = dFdx(F);\n"
+                                           "    vec3 dfdy = dFdy(F);\n"
+                                           "    float rsqrt = inversesqrt(dot(F, F));\n"
+                                           "    color = vec4(normalize(cross(dfdx, dfdy)) * rsqrt, 1.0);\n"
+                                           "}\n"});
+    LinkResult r = link(in);
+    if (!r.ok) std::fprintf(stderr, "%s\n", r.log.c_str());
+    CHECK(r.ok);
+    const std::string& msl = r.stages[static_cast<int>(Stage::Fragment)].msl;
+    CHECK(msl.find(" dfdx = dfdx(") == std::string::npos);
+    CHECK(msl.find(" dfdy = dfdy(") == std::string::npos);
+    CHECK(msl.find(" rsqrt = rsqrt(") == std::string::npos);
+    if (msl.find(" dfdx = dfdx(") != std::string::npos) std::fprintf(stderr, "%s\n", msl.c_str());
+}

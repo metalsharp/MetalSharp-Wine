@@ -54,7 +54,39 @@ enum Upscale: String, CaseIterable, Identifiable {
 }
 
 /// The frame rate limits the app offers (WINEMETALGL_MAX_FRAME_RATE); 0 is off.
-let frameRateLimits = [0, 30, 35, 40, 45, 50, 55, 60]
+/// Others (Alien: Isolation's physics past 105 fps) go in the Custom field.
+let frameRateLimits = [0, 30, 35, 40, 45, 50, 55, 60, 100, 120]
+
+/// Any frame rate limit (59.94, 105...): applied on Return or when focus leaves.
+struct CustomFrameRateField: View {
+    @ObservedObject var store: SettingsStore
+    @State private var text = ""
+
+    var body: some View {
+        HStack {
+            Text("Custom")
+            TextField("fps", text: $text)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 90)
+                .onSubmit(apply)
+                .accessibilityLabel("Custom frame rate limit, frames per second")
+            Spacer()
+        }
+        .onAppear { text = frameRateLimits.contains(Int(store.maxFrameRate) ?? -1) ? "" : store.maxFrameRate }
+        .onChange(of: store.maxFrameRate) { _, rate in
+            if frameRateLimits.contains(Int(rate) ?? -1) || rate.isEmpty { text = "" }
+        }
+    }
+
+    private func apply() {
+        let trimmed = text.trimmingCharacters(in: .whitespaces)
+        guard let fps = Double(trimmed), fps > 0, fps <= 1000 else {
+            text = ""
+            return
+        }
+        store.maxFrameRate = fps == fps.rounded() ? String(Int(fps)) : trimmed
+    }
+}
 
 /// ~/Library/Application Support/WineMetalGL/settings.conf: NAME=value lines.
 /// Only the settings this app shows are rewritten; other lines stay.
@@ -366,8 +398,9 @@ struct SettingsView: View {
                             summary: store.maxFrameRate.isEmpty ? "Off" : "\(store.maxFrameRate) fps") {
                 EmptyView()
             } content: {
-                // Two rows of four: Off and 30 to 60 fps in steps of 5 (40 suits 120 Hz displays).
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 4), spacing: 6) {
+                // Two rows of five: Off, 30 to 60 fps in steps of 5 (40 suits
+                // 120 Hz displays), 100 and 120 for high refresh rates; any other in Custom.
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 5), spacing: 6) {
                     ForEach(frameRateLimits, id: \.self) { fps in
                         let value = fps == 0 ? "" : String(fps)
                         let selected = store.maxFrameRate == value
@@ -389,6 +422,7 @@ struct SettingsView: View {
                         .accessibilityAddTraits(selected ? .isSelected : [])
                     }
                 }
+                CustomFrameRateField(store: store)
                 Text(store.maxFrameRate.isEmpty
                      ? "Games run as fast as they draw, or at your display's refresh rate with vsync."
                      : "Games show at most \(store.maxFrameRate) frames a second, with or without vsync. For older games whose speed follows the frame rate, or to save battery.")
