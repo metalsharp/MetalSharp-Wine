@@ -13,7 +13,7 @@
 
 Wine 11.20 as a native arm64 macOS app for Apple silicon. It runs ARM64, x86_64 and 32-bit x86 Windows programs, with x86 code translated by FEX, and Direct3D 9–12 and OpenGL 4.6 on Metal. No Rosetta. It needs **macOS 15 or later**, and 32-bit programs need **macOS 26.4 or later**.
 
-**Early access.** Direct3D 12 most of all is under active development.
+**Early access.** Contribution is welcome, but mostly for the Arm64 Wine With FEX.
 
 ## Install
 
