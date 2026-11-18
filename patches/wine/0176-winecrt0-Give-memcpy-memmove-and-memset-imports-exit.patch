@@ -1,0 +1,52 @@
+From 5e288b4f6df38ffc456345996804752070f2603f Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Tue, 17 Nov 2026 18:07:46 -0700
+Subject: [PATCH 176/179] winecrt0: Give memcpy, memmove and memset imports
+ exit thunks on ARM64EC.
+
+A struct copy, or memcpy, memmove and memset the compiler expands as
+builtins, become calls with no exit thunk, so lld gives the import's
+thunk an exit thunk of RVA 0 unless some object calls the function
+explicitly. When such a call goes to x64 code (an x64 ucrtbase.dll an
+application ships), it executes the module's base: EXOCAD's .NET
+WinForms in ImageList_Duplicate (metalsharp/MetalSharp-Wine#57). 542 of
+7.0's ARM64X modules had them. Explicit calls in arm64ec.c, which every
+module with imports links, give each its exit thunk.
+---
+ libs/winecrt0/arm64ec.c | 22 ++++++++++++++++++++++
+ 1 file changed, 22 insertions(+)
+
+diff --git a/libs/winecrt0/arm64ec.c b/libs/winecrt0/arm64ec.c
+index 1930a27d627..2806f820a17 100644
+--- a/libs/winecrt0/arm64ec.c
++++ b/libs/winecrt0/arm64ec.c
+@@ -111,4 +111,26 @@ asm( "\t.section .rdata,\"dr\"\n"
+      "\t.rva __os_arm64x_helper7\n"
+      "\t.rva __os_arm64x_helper8\n" );
+ 
++/* Exit thunks for the C library calls the compiler makes itself. A struct copy, or memcpy, memmove and memset that
++ * the compiler expands as builtins, become calls with no exit thunk in the object, so the linker gives the import's
++ * thunk none (RVA 0) unless some object of the module calls the function explicitly. The import thunk is used only
++ * when the call goes to x64 code: an x64 ucrtbase.dll an application ships and loaded first (EXOCAD's .NET
++ * WinForms: ImageList_Duplicate's memcpy executed comctl32_v6's base, MetalSharp-Wine issue #57). These explicit
++ * calls, in the object every module with imports links for the __os_arm64x symbols, give each one its exit thunk. */
++#pragma clang diagnostic push
++#pragma clang diagnostic ignored "-Winconsistent-dllimport"
++/* not dllimport: a direct call is what gives the named #memcpy$exit_thunk the import's thunk takes */
++void *__cdecl memcpy( void *dst, const void *src, size_t size );
++void *__cdecl memmove( void *dst, const void *src, size_t size );
++void *__cdecl memset( void *dst, int c, size_t size );
++#pragma clang diagnostic pop
++
++__attribute__((used, no_builtin("memcpy", "memmove", "memset")))
++void __wine_arm64ec_libcall_exit_thunks( void *dst, const void *src, size_t size )
++{
++    memcpy( dst, src, size );
++    memmove( dst, src, size );
++    memset( dst, 0, size );
++}
++
+ #endif /* __arm64ec__ */
+-- 
+2.54.0 (Apple Git-157)
+

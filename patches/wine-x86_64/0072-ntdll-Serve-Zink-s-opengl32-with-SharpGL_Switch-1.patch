@@ -1,0 +1,71 @@
+From fc3f50b2f81893e4d489ab69cdb9f154663c2af1 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Tue, 17 Nov 2026 18:07:56 -0700
+Subject: [PATCH 72/75] ntdll: Serve Zink's opengl32 with SharpGL_Switch=1.
+
+As on the arm64 build: opengl32.dll and libgallium_wgl.dll from
+lib/zink/<arch> (Mesa's Zink, OpenGL on Vulkan) in place of WineMetalGL's
+forwarder. PE only, no unix side.
+---
+ dlls/ntdll/unix/loader.c | 38 ++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 38 insertions(+)
+
+diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
+index 607aa7c..41a5c27 100644
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -1430,6 +1430,25 @@ static char *winemetalgl_opengl32_path( USHORT machine )
+     return NULL;
+ }
+ 
++/* MetalSharp: SharpGL_Switch=1 has Mesa's Zink (OpenGL on Vulkan, so on MoltenVK, or on KosmicKrisp with
++ * SharpVK_Switch=1) in WineMetalGL's place: its opengl32.dll and the libgallium_wgl.dll that opengl32.dll loads, from
++ * <dll_dir>/../zink. PE only, as Windows' Mesa builds are. */
++static char *zink_pe_path( const char *name, USHORT machine )
++{
++    const char *enabled = getenv( "SharpGL_Switch" ), *pe_dir;
++    char *path;
++
++    if (!enabled || strcmp( enabled, "1" )) return NULL;
++    if (strcmp( name, "opengl32.dll" ) && strcmp( name, "libgallium_wgl.dll" )) return NULL;
++    if (machine == IMAGE_FILE_MACHINE_AMD64) pe_dir = "x86_64-windows";
++    else if (machine == IMAGE_FILE_MACHINE_I386) pe_dir = "i386-windows";
++    else return NULL;
++    if (!dll_dir || asprintf( &path, "%s/../zink/%s/%s", dll_dir, pe_dir, name ) == -1) return NULL;
++    if (!access( path, R_OK )) return path;
++    free( path );
++    return NULL;
++}
++
+ static char *resolve_vkd3d_lane_pe_path( const char *module, USHORT machine )
+ {
+     static const char *const vkd3d_names[] = { "d3d12.dll", "d3d12core.dll", "dxgi.dll", "d3d11.dll", "d3d10core.dll",
+@@ -1598,6 +1617,25 @@ static NTSTATUS find_builtin_dll( UNICODE_STRING *nt_name, ANSI_STRING *exp_name
+         }
+     }
+ 
++    /* MetalSharp: Zink's opengl32 with SharpGL_Switch=1, no unix side */
++    {
++        char *zink = zink_pe_path( file + pos + 1, search_machine );
++
++        if (zink)
++        {
++            status = open_builtin_pe_file( zink, &attr, module, size_ptr, image_info,
++                                           limit_low, limit_high, load_machine, prefer_native, offset );
++            TRACE( "Zink %s for %s -> %#lx\n", debugstr_a(zink), debugstr_us(nt_name), (long)status );
++            free( zink );
++            if (status != STATUS_DLL_NOT_FOUND)
++            {
++                ptr = file + pos;
++                vkd3d_lane_pe = TRUE;
++                goto done;
++            }
++        }
++    }
++
+     /* MetalSharp: WineMetalGL's opengl32 forwarder, no unix side */
+     if (!strcmp( file + pos + 1, "opengl32.dll" ))
+     {
+-- 
+2.54.0 (Apple Git-157)
+
