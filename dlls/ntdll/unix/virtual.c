@@ -137,6 +137,7 @@ struct file_view
 #define VPROT_SYSTEM           0x0200  /* system view (underlying mmap not under our control) */
 #define VPROT_PLACEHOLDER      0x0400
 #define VPROT_FREE_PLACEHOLDER 0x0800
+#define VPROT_MAPJIT           0x1000  /* MAP_JIT memory: never mprotect()ed, each thread switches it between writable and executable */
 
 /* Conversion from VPROT_* to Win32 flags */
 static const BYTE VIRTUAL_Win32Flags[16] =
@@ -241,6 +242,21 @@ static struct file_view *view_block_start, *view_block_end, *next_free_view;
 static const size_t view_block_size = 0x100000;
 static BOOL force_exec_prot;  /* whether to force PROT_EXEC on all PROT_READ mmaps */
 static BOOL enable_write_exceptions;  /* raise exception on writes to executable memory */
+
+#if defined(__APPLE__) && defined(__aarch64__)
+/* MetalSharp: an x64 emulator's JIT code buffers (executable, writable, ARM64EC code) are mapped with MAP_JIT
+ * once the emulator asks for it, and it switches its own threads between writing and executing them with
+ * pthread_jit_write_protect_np(). Otherwise every code write takes a fault and two mprotect() calls to emulate
+ * W+X, and a page made writable for one thread stops every other thread executing from it. The emulator opts
+ * in because it must bracket all of its writes: a write to MAP_JIT memory in execute mode can't be fixed up. */
+static BOOL map_jit_enabled;
+
+DECLSPEC_EXPORT BOOL __wine_virtual_enable_map_jit(void)
+{
+    map_jit_enabled = TRUE;
+    return TRUE;
+}
+#endif
 
 static UINT_PTR *mem_areas;
 static const UINT_PTR initial_mem_areas[] = { 0, ~(UINT_PTR)0 };
@@ -1825,8 +1841,52 @@ static int mprotect_range( void *base, size_t size, BYTE set, BYTE clear )
  *
  * Change the protection of a range of pages.
  */
+#if defined(__APPLE__) && defined(__aarch64__)
+/***********************************************************************
+ *           set_map_jit_vprot
+ *
+ * Protection change on a MAP_JIT view. mprotect() fails on MAP_JIT memory, so the host pages stay
+ * read/write/execute (each thread's JIT write mode decides what it may do); a host page that becomes
+ * inaccessible is replaced by a PROT_NONE mapping, and gets MAP_JIT memory back when it is made accessible.
+ * virtual_mutex must be held by caller.
+ */
+static BOOL set_map_jit_vprot( void *base, size_t size, BYTE vprot )
+{
+    char *page = ROUND_ADDR( base, host_page_mask ), *end = (char *)base + size;
+    BOOL ret = TRUE;
+
+    for (; page < end; page += host_page_size)
+    {
+        char *start = max( page, (char *)base ), *stop = min( page + host_page_size, end );
+        BOOL was = get_unix_prot( get_host_page_vprot( page )) != PROT_NONE, now;
+        void *ptr;
+
+        set_page_vprot( start, stop - start, vprot );
+        now = get_unix_prot( get_host_page_vprot( page )) != PROT_NONE;
+        if (now == was) continue;
+        if (!now)
+        {
+            anon_mmap_fixed( page, host_page_size, PROT_NONE, 0 );
+            continue;
+        }
+        munmap( page, host_page_size );
+        ptr = mmap( page, host_page_size, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANON | MAP_JIT, -1, 0 );
+        if (ptr == page) continue;
+        /* someone took the hole: never map over it, fall back to W^X emulation for this page */
+        if (ptr != MAP_FAILED) munmap( ptr, host_page_size );
+        if (mmap( page, host_page_size, PROT_READ | PROT_EXEC, MAP_PRIVATE | MAP_ANON, -1, 0 ) != page)
+            ERR( "lost MAP_JIT page %p\n", page );
+        ret = FALSE;
+    }
+    return ret;
+}
+#endif
+
 static BOOL set_vprot( struct file_view *view, void *base, size_t size, BYTE vprot )
 {
+#if defined(__APPLE__) && defined(__aarch64__)
+    if (view->protect & VPROT_MAPJIT) return set_map_jit_vprot( base, size, vprot | (view->protect & VPROT_NOEXEC_HOST) );
+#endif
     vprot |= view->protect & VPROT_NOEXEC_HOST;
     if (!use_kernel_writewatch && view->protect & VPROT_WRITEWATCH)
     {
@@ -2257,6 +2317,45 @@ static NTSTATUS map_view( struct file_view **view_ret, void *base, size_t size,
     if (status != STATUS_SUCCESS) unmap_area( ptr, size );
     return status;
 }
+
+
+#if defined(__APPLE__) && defined(__aarch64__)
+/***********************************************************************
+ *           map_jit_view
+ *
+ * Create a view of MAP_JIT memory where the host has room for it. MAP_JIT can't be combined with
+ * MAP_FIXED, so it can't go into a reserved area; the kernel picks a free range, outside of them.
+ * virtual_mutex must be held by caller.
+ */
+static NTSTATUS map_jit_view( struct file_view **view_ret, size_t size, unsigned int vprot,
+                              ULONG_PTR limit_low, ULONG_PTR limit_high, size_t align_mask )
+{
+    size_t host_size = ROUND_SIZE( 0, size, host_page_mask ), total = host_size + align_mask + 1;
+    char *ptr = mmap( NULL, total, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANON | MAP_JIT, -1, 0 );
+    void *end = min( user_space_limit, host_addr_space_limit );
+    NTSTATUS status;
+
+    if (ptr == MAP_FAILED) return STATUS_NO_MEMORY;
+    if ((ULONG_PTR)ptr & align_mask)
+    {
+        size_t extra = align_mask + 1 - ((ULONG_PTR)ptr & align_mask);
+        munmap( ptr, extra );
+        ptr += extra;
+        total -= extra;
+    }
+    if (total > host_size) munmap( ptr + host_size, total - host_size );
+
+    if (ptr < (char *)address_space_start || is_beyond_limit( ptr, size, end ) ||
+        (limit_low && ptr < (char *)limit_low) || (limit_high && is_beyond_limit( ptr, size, (void *)limit_high )))
+    {
+        munmap( ptr, host_size );
+        return STATUS_CONFLICTING_ADDRESSES;
+    }
+    if ((status = create_view( view_ret, ptr, size, vprot | VPROT_MAPJIT ))) munmap( ptr, host_size );
+    else TRACE( "MAP_JIT view %p-%p\n", ptr, ptr + size );
+    return status;
+}
+#endif
 
 
 /***********************************************************************
@@ -4782,6 +4881,14 @@ NTSTATUS virtual_handle_fault( struct thread_data *data, EXCEPTION_RECORD *rec, 
         sys_icache_invalidate( page, host_page_size );
         ret = STATUS_SUCCESS;
     }
+    if (ret == STATUS_ACCESS_VIOLATION && (err == EXCEPTION_WRITE_FAULT || err == EXCEPTION_EXECUTE_FAULT))
+    {
+        struct file_view *view = find_view( addr, 0 );
+        if (view && (view->protect & VPROT_MAPJIT))
+            ERR( "%s to MAP_JIT memory %p in %s mode: the emulator missed a JIT write window\n",
+                 err == EXCEPTION_WRITE_FAULT ? "write" : "execute", addr,
+                 err == EXCEPTION_WRITE_FAULT ? "execute" : "write" );
+    }
 #endif
     mutex_unlock( &virtual_mutex );
     rec->ExceptionCode = ret;
@@ -5418,13 +5525,30 @@ static NTSTATUS allocate_virtual_memory( void **ret, SIZE_T *size_ptr, ULONG typ
 
             if (vprot & VPROT_WRITECOPY) status = STATUS_INVALID_PAGE_PROTECTION;
             else if (is_dos_memory) status = allocate_dos_memory( &view, vprot );
-            else status = map_view( &view, base, size, type, vprot, limit_low, limit_high,
-                                    align ? align - 1 : granularity_mask );
+            else
+            {
+                status = STATUS_UNSUCCESSFUL;
+#if defined(__APPLE__) && defined(__aarch64__)
+                /* the emulator's code buffers: ARM64EC code memory, or in a WoW64 process, W+X memory the
+                 * emulator places above the 32-bit address space (lowest address at or above 0x7ffe0000, the
+                 * smallest 32-bit user limit, and no upper limit), which the guest can't use */
+                if (map_jit_enabled && !base &&
+                    ((attributes & MEM_EXTENDED_PARAMETER_EC_CODE) ||
+                     (is_wow64() && limit_low >= 0x7ffe0000 && !limit_high)) &&
+                    is_vprot_exec_write( vprot ) && (vprot & VPROT_COMMITTED) &&
+                    !(vprot & (VPROT_WRITEWATCH | VPROT_PLACEHOLDER)) && !(type & MEM_PHYSICAL))
+                    status = map_jit_view( &view, size, vprot, limit_low, limit_high,
+                                           align ? align - 1 : granularity_mask );
+#endif
+                if (status) status = map_view( &view, base, size, type, vprot, limit_low, limit_high,
+                                               align ? align - 1 : granularity_mask );
+            }
 
             if (status == STATUS_SUCCESS)
             {
                 base = view->base;
-                if (vprot & VPROT_EXEC || force_exec_prot) mprotect_range( base, size, 0, 0 );
+                if ((vprot & VPROT_EXEC || force_exec_prot) && !(view->protect & VPROT_MAPJIT))
+                    mprotect_range( base, size, 0, 0 );
             }
         }
     }
