@@ -608,9 +608,11 @@ ContextImpl::GenerateIR(FEXCore::Core::InternalThreadState* Thread, uint64_t Gue
       bool BlockInForceTSOValidRange = false;
       auto InstForceTSOIt = ForceTSOInstructions.end();
       if (ForceTSOValidRanges.Contains({Block.Entry, Block.Entry + Block.Size})) {
+        // The metadata covers this block, so only its listed instructions need TSO. A block with none of them
+        // listed is the common case and must not fall back to full TSO.
+        BlockInForceTSOValidRange = true;
         if (auto It = ForceTSOInstructions.lower_bound(Block.Entry); It != ForceTSOInstructions.end() && *It < Block.Entry + Block.Size) {
           InstForceTSOIt = It;
-          BlockInForceTSOValidRange = true;
         }
       }
 
@@ -749,14 +751,14 @@ ContextImpl::GenerateIR(FEXCore::Core::InternalThreadState* Thread, uint64_t Gue
           Thread->OpDispatcher->ResetHandledLock();
           Thread->OpDispatcher->ResetDecodeFailure();
           IR::ForceTSOMode ForceTSO = IR::ForceTSOMode::NoOverride;
-          if (BlockInForceTSOValidRange) {
+          if (DecodedInfo->Flags & X86Tables::DecodeFlags::FLAG_FORCE_TSO) {
+            ForceTSO = IR::ForceTSOMode::ForceEnabled;
+          } else if (BlockInForceTSOValidRange) {
             if (InstForceTSOIt != ForceTSOInstructions.end() && *InstForceTSOIt == InstAddress) {
               ForceTSO = IR::ForceTSOMode::ForceEnabled;
             } else {
               ForceTSO = IR::ForceTSOMode::ForceDisabled;
             }
-          } else if (DecodedInfo->Flags & X86Tables::DecodeFlags::FLAG_FORCE_TSO) {
-            ForceTSO = IR::ForceTSOMode::ForceEnabled;
           }
 
           Thread->OpDispatcher->SetForceTSO(ForceTSO);
