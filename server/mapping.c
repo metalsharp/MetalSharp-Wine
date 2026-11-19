@@ -249,7 +249,13 @@ static unsigned int map_random(void)
 
 void init_memory(void)
 {
+#ifdef __APPLE__
+    /* MetalSharp: no random start for the dll ranges on macOS, so a dll lands where it did last time when
+     * dlls load in the same order. FEX's ahead-of-time code caches hold absolute guest addresses. */
+    unsigned int random = 0;
+#else
     unsigned int random = map_random();
+#endif
 
     host_page_mask = sysconf( _SC_PAGESIZE ) - 1;
     free_map_addr( 0x60000000, 0x1c000000 - ((random & 0xff) << 16) );
@@ -1312,7 +1318,20 @@ static client_ptr_t assign_exe_map_address( struct mapping *mapping )
         start = is_machine_64bit( mapping->image.machine ) ? 0x10000 : 0x110000;
         end   = 0x01000000;
     }
+#ifdef __APPLE__
+    {
+        /* MetalSharp: a fixed address per executable on macOS, derived from the image, so FEX's ahead-of-time
+         * code cache for it (built in another process) matches every launch. */
+        const struct pe_image_info *img = &mapping->image;
+        unsigned int hash = 2166136261u;
+        unsigned int fields[] = { (unsigned int)img->base, (unsigned int)(img->base >> 32), img->entry_point,
+                                  img->map_size, img->file_size, img->checksum, img->header_size, img->machine };
+        for (unsigned int i = 0; i < ARRAY_SIZE(fields); i++) hash = (hash ^ fields[i]) * 16777619u;
+        start += ((client_ptr_t)hash << 16) % (end - start);
+    }
+#else
     start += ((client_ptr_t)map_random() << 16) % (end - start);
+#endif
     start &= ~granularity_mask;
     set_fd_map_address( mapping->fd, start, 0 );
     return start;
