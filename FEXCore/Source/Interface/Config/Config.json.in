@@ -3,7 +3,7 @@
     "CPU": {
       "Multiblock": {
         "Type": "bool",
-        "Default": "true",
+        "Default": "false",
         "AffectsCodeGen": "true",
         "Desc": [
           "Controls multiblock code compilation",
@@ -576,7 +576,7 @@
       },
       "TSOEnabled": {
         "Type": "bool",
-        "Default": "true",
+        "Default": "false",
         "AffectsCodeGen": "true",
         "Desc": [
           "Controls TSO IR ops.",
