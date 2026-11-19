@@ -4037,6 +4037,13 @@ static void randomize_address_space(void)
     UINT random[2];
     UINT_PTR offset;
 
+#ifdef __APPLE__
+    /* MetalSharp: keep Windows allocations in the low area reserved at startup, as before 11.22. Moved to a random
+     * address, they interleaved with the memory macOS frameworks allocate, and a game's writes corrupted an
+     * Objective-C autorelease pool page there (Overwatch), crashing the Cocoa side with the display captured. */
+    return;
+#endif
+
     switch (mitigation_options[0] & PROCESS_CREATION_MITIGATION_POLICY_BOTTOM_UP_ASLR_MASK)
     {
     case PROCESS_CREATION_MITIGATION_POLICY_BOTTOM_UP_ASLR_ALWAYS_OFF:
