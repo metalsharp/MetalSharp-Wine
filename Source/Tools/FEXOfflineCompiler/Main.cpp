@@ -844,6 +844,12 @@ int main(int argc, char** argv) {
   LogMan::Throw::InstallHandler(AssertHandler);
   LogMan::Msg::InstallHandler(MsgHandler);
 #else
+  {
+    // Logging reads its options, so the configuration has to be loaded first.
+    const auto PortableInfo = FEX::ReadPortabilityInformation();
+    char* envp[] = {nullptr};
+    FEX::Config::LoadConfig("", envp, PortableInfo);
+  }
   FEX::Windows::Logging::Init();
 #endif
 
