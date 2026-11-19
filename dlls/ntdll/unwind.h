@@ -38,7 +38,8 @@ static inline ULONG ctx_flags_x64_to_arm( ULONG flags )
     flags &= ~CONTEXT_AMD64;
     if (flags & CONTEXT_AMD64_CONTROL) ret |= CONTEXT_ARM64_CONTROL;
     if (flags & CONTEXT_AMD64_INTEGER) ret |= CONTEXT_ARM64_INTEGER;
-    if (flags & CONTEXT_AMD64_FLOATING_POINT) ret |= CONTEXT_ARM64_FLOATING_POINT;
+    if (flags & CONTEXT_AMD64_FLOATING_POINT) ret |= CONTEXT_ARM64_FLOATING_POINT_LOW;
+    if (flags & CONTEXT_AMD64_XSTATE) ret |= CONTEXT_ARM64_FLOATING_POINT_HIGH;
     return ret;
 }
 
@@ -49,7 +50,7 @@ static inline ULONG ctx_flags_arm_to_x64( ULONG flags )
     flags &= ~CONTEXT_ARM64;
     if (flags & CONTEXT_ARM64_CONTROL) ret |= CONTEXT_AMD64_CONTROL;
     if (flags & CONTEXT_ARM64_INTEGER) ret |= CONTEXT_AMD64_INTEGER;
-    if (flags & CONTEXT_ARM64_FLOATING_POINT) ret |= CONTEXT_AMD64_FLOATING_POINT;
+    if (flags & (CONTEXT_ARM64_FLOATING_POINT | CONTEXT_ARM64_FLOATING_POINT_LOW)) ret |= CONTEXT_AMD64_FLOATING_POINT;
     return ret;
 }
 
@@ -130,8 +131,10 @@ static inline UINT fpcsr_to_mxcsr( UINT fpcr, UINT fpsr )
     return ret;
 }
 
-static inline void context_x64_to_arm( ARM64_NT_CONTEXT *arm_ctx, const ARM64EC_NT_CONTEXT *ec_ctx )
+static inline NTSTATUS context_x64_to_arm( ARM64_NT_CONTEXT *arm_ctx, const ARM64EC_NT_CONTEXT *ec_ctx )
 {
+    NTSTATUS status = STATUS_SUCCESS;
+    YMMCONTEXT *ymm = NULL;
     UINT64 fpcsr;
 
     arm_ctx->ContextFlags = ctx_flags_x64_to_arm( ec_ctx->ContextFlags );
@@ -170,16 +173,32 @@ static inline void context_x64_to_arm( ARM64_NT_CONTEXT *arm_ctx, const ARM64EC_
     arm_ctx->Sp   = ec_ctx->Sp;
     arm_ctx->Pc   = ec_ctx->Pc;
     memcpy( arm_ctx->V, ec_ctx->V, 16 * sizeof(arm_ctx->V[0]) );
-    memset( arm_ctx->V + 16, 0, sizeof(*arm_ctx) - offsetof( ARM64_NT_CONTEXT, V[16] ));
+    memset( arm_ctx->Bcr, 0, sizeof(*arm_ctx) - offsetof( ARM64_NT_CONTEXT, Bcr ));
     fpcsr = mxcsr_to_fpcsr( ec_ctx->AMD64_MxCsr );
     arm_ctx->Fpcr = fpcsr;
     arm_ctx->Fpsr = fpcsr >> 32;
+
+    if ((ec_ctx->ContextFlags & CONTEXT_AMD64_XSTATE) == CONTEXT_AMD64_XSTATE)
+    {
+        CONTEXT_EX *context_ex = (CONTEXT_EX *)(ec_ctx + 1);
+        XSTATE *xstate = (XSTATE *)((char *)context_ex + context_ex->XState.Offset);
+        if (context_ex->XState.Length < sizeof(XSAVE_AREA_HEADER) || context_ex->XState.Length > sizeof(*xstate))
+            status = STATUS_INVALID_PARAMETER;
+        else if (xstate->Mask & XSTATE_MASK_AVX & RtlGetEnabledExtendedFeatures( XSTATE_MASK_AVX ))
+        {
+            if (context_ex->XState.Length == sizeof(*xstate)) ymm = &xstate->YmmContext;
+            else status = STATUS_BUFFER_OVERFLOW;
+        }
+    }
+    if (ymm) memcpy( &arm_ctx->V[16], ymm, sizeof(*ymm) );
+    else memset( arm_ctx->V + 16, 0, sizeof(*ymm) );
+    return status;
 }
 
-static inline void context_arm_to_x64( ARM64EC_NT_CONTEXT *ec_ctx, const ARM64_NT_CONTEXT *arm_ctx )
+static inline void context_arm_to_x64( ARM64EC_NT_CONTEXT *ec_ctx, const ARM64_NT_CONTEXT *arm_ctx, ULONG flags )
 {
     memset( ec_ctx, 0, sizeof(*ec_ctx) );
-    ec_ctx->ContextFlags = ctx_flags_arm_to_x64( arm_ctx->ContextFlags );
+    ec_ctx->ContextFlags = flags;
     /* MetalSharp: the segment registers below are filled in, as an x64 context has them (CONTEXT_FULL plus segments),
      * and x87's control word is Windows' default rather than 0: an ARM64 context carries neither, and protection code
      * that reads the context its exception handler gets compares them with what x64 Windows gives it */
@@ -229,6 +248,16 @@ static inline void context_arm_to_x64( ARM64EC_NT_CONTEXT *ec_ctx, const ARM64_N
     ec_ctx->X17_3 = arm_ctx->X17 >> 48;
 
     memcpy( ec_ctx->V, arm_ctx->V, sizeof(ec_ctx->V) );
+
+    if ((ec_ctx->ContextFlags & CONTEXT_AMD64_XSTATE) == CONTEXT_AMD64_XSTATE)
+    {
+        CONTEXT_EX *context_ex = (CONTEXT_EX *)(ec_ctx + 1);
+        XSTATE *xstate = (XSTATE *)((char *)context_ex + context_ex->XState.Offset);
+        xstate->Mask &= XSTATE_MASK_AVX;
+        xstate->CompactionMask = 0;
+        if (xstate->Mask & XSTATE_MASK_AVX)
+            memcpy( &xstate->YmmContext, &arm_ctx->V[16], sizeof(xstate->YmmContext) );
+    }
 }
 
 #endif /* __aarch64__ || __arm64ec__ */

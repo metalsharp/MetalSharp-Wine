@@ -29,6 +29,9 @@
 #include <sys/stat.h>
 #include <sys/mman.h>
 #include <unistd.h>
+#ifdef HAVE_SYS_RANDOM_H
+# include <sys/random.h>
+#endif
 #ifdef HAVE_LINUX_MEMFD_H
 # include <linux/memfd.h>
 #endif
@@ -221,11 +224,36 @@ static inline mem_size_t round_size( mem_size_t size, mem_size_t mask )
     return (size + mask) & ~mask;
 }
 
+#ifndef HAVE_GETRANDOM
+static ssize_t getrandom( void *buffer, size_t size, unsigned int flags )
+{
+    static int urandom_fd = -2;
+
+    if (urandom_fd == -2) urandom_fd = open( "/dev/urandom", O_RDONLY );
+    if (urandom_fd == -1) return 0;
+    return read( urandom_fd, buffer, size );
+}
+#endif
+
+static unsigned int map_random(void)
+{
+    static unsigned int pos, data[32];
+
+    if (!pos)
+    {
+        if (getrandom( data, sizeof(data), 0 ) == -1) return 0;
+        pos = ARRAY_SIZE( data );
+    }
+    return data[--pos];
+}
+
 void init_memory(void)
 {
+    unsigned int random = map_random();
+
     host_page_mask = sysconf( _SC_PAGESIZE ) - 1;
-    free_map_addr( 0x60000000, 0x1c000000 );
-    free_map_addr( 0x600000000000, 0x100000000000 );
+    free_map_addr( 0x60000000, 0x1c000000 - ((random & 0xff) << 16) );
+    free_map_addr( 0x600000000000, (0x100000000000 - ((mem_size_t)random << 8)) & ~granularity_mask );
 }
 
 static void ranges_dump( struct object *obj, int verbose )
@@ -832,8 +860,8 @@ static unsigned int get_image_params( struct mapping *mapping, file_pos_t file_s
         IMAGE_LOAD_CONFIG_DIRECTORY64 cfg64;
     } cfg;
     off_t pos;
-    int size, has_relocs;
-    IMAGE_DATA_DIRECTORY *data_dirs, *exp_dir, *res_dir, *cfg_dir, *clr_dir;
+    int size;
+    IMAGE_DATA_DIRECTORY *data_dirs, *exp_dir, *res_dir, *cfg_dir, *clr_dir, *rel_dir;
     size_t mz_size, align_mask;
     unsigned int i, ret, nb_data_dirs;
 
@@ -844,10 +872,11 @@ static unsigned int get_image_params( struct mapping *mapping, file_pos_t file_s
     if (size < sizeof(mz.dos)) return STATUS_INVALID_IMAGE_NOT_MZ;
     if (mz.dos.e_magic != IMAGE_DOS_SIGNATURE) return STATUS_INVALID_IMAGE_NOT_MZ;
     mz_size = size;
-    pos = mz.dos.e_lfanew;
+    pos = (unsigned int)mz.dos.e_lfanew;
+    if (pos >= RTL_IMAGE_MAX_DOS_HEADER) return STATUS_INVALID_IMAGE_PROTECT;
 
     size = pread( unix_fd, &nt, sizeof(nt), pos );
-    if (size < sizeof(nt.Signature) + sizeof(nt.FileHeader)) return STATUS_INVALID_IMAGE_PROTECT;
+    if (size < (int)(sizeof(nt.Signature) + sizeof(nt.FileHeader))) return STATUS_INVALID_IMAGE_PROTECT;
     if (size < sizeof(nt)) memset( (char *)&nt + size, 0, sizeof(nt) - size );
     if (nt.Signature != IMAGE_NT_SIGNATURE)
     {
@@ -940,8 +969,7 @@ static unsigned int get_image_params( struct mapping *mapping, file_pos_t file_s
     res_dir = GET_DATA_DIR( IMAGE_DIRECTORY_ENTRY_RESOURCE );
     cfg_dir = GET_DATA_DIR( IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG );
     clr_dir = GET_DATA_DIR( IMAGE_DIRECTORY_ENTRY_COM_DESCRIPTOR );
-    has_relocs = (GET_DATA_DIR( IMAGE_DIRECTORY_ENTRY_BASERELOC ) &&
-                  !(nt.FileHeader.Characteristics & IMAGE_FILE_RELOCS_STRIPPED));
+    rel_dir = GET_DATA_DIR( IMAGE_DIRECTORY_ENTRY_BASERELOC );
 #undef GET_DATA_DIR
 
     mapping->image.is_hybrid     = 0;
@@ -963,7 +991,8 @@ static unsigned int get_image_params( struct mapping *mapping, file_pos_t file_s
     if (mapping->image.alignment & page_mask)
         mapping->image.image_flags |= IMAGE_FLAGS_ImageMappedFlat;
     else if ((mapping->image.dll_charact & IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE) &&
-             (has_relocs || mapping->image.contains_code) && !clr_dir)
+             !(mapping->image.image_charact & IMAGE_FILE_RELOCS_STRIPPED) &&
+             (rel_dir || mapping->image.contains_code) && !clr_dir)
         mapping->image.image_flags |= IMAGE_FLAGS_ImageDynamicallyRelocated;
 
     align_mask = max( mapping->image.alignment - 1, page_mask );
@@ -1260,6 +1289,35 @@ static enum server_fd_type mapping_get_fd_type( struct fd *fd )
     return FD_TYPE_FILE;
 }
 
+/* assign a mapping address to an exe image mapping */
+static client_ptr_t assign_exe_map_address( struct mapping *mapping )
+{
+    client_ptr_t start, end;
+    mem_size_t size = round_size( mapping->size, granularity_mask );
+
+    if (mapping->image.base >> 32)
+    {
+        start = 0x7ff600000000;
+        end   = 0x7ff800000000;
+        if (size >= end - start) return 0;
+        end -= size;
+    }
+    else if (mapping->image.base >> 28)
+    {
+        start = 0x10000000;
+        end   = 0x20000000;
+    }
+    else
+    {
+        start = is_machine_64bit( mapping->image.machine ) ? 0x10000 : 0x110000;
+        end   = 0x01000000;
+    }
+    start += ((client_ptr_t)map_random() << 16) % (end - start);
+    start &= ~granularity_mask;
+    set_fd_map_address( mapping->fd, start, 0 );
+    return start;
+}
+
 /* assign a mapping address to a PE image mapping */
 static client_ptr_t assign_map_address( struct mapping *mapping )
 {
@@ -1268,11 +1326,9 @@ static client_ptr_t assign_map_address( struct mapping *mapping )
     struct addr_range *range = (mapping->image.base >> 32) ? &ranges64 : &ranges32;
     mem_size_t size = round_size( mapping->size, granularity_mask );
 
-    if (!(mapping->image.image_charact & IMAGE_FILE_DLL)) return 0;
-
     if ((ret = get_fd_map_address( mapping->fd ))) return ret;
 
-    size += granularity_mask + 1;  /* leave some free space between mappings */
+    if (!(mapping->image.image_charact & IMAGE_FILE_DLL)) return assign_exe_map_address( mapping );
 
     for (i = 0; i < range->count; i++)
     {
@@ -1291,6 +1347,8 @@ void free_map_addr( client_ptr_t base, mem_size_t size )
     unsigned int i;
     client_ptr_t end = base + size;
     struct addr_range *range = (base >> 32) ? &ranges64 : &ranges32;
+
+    if (!size) return;  /* exe mapping */
 
     for (i = 0; i < range->count; i++)
     {
