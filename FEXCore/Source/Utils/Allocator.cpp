@@ -321,6 +321,16 @@ void VirtualTHPNOP(const void* Ptr, size_t Size, THPControl Control) {}
 
 VirtualNamePtr VirtualName {VirtualNameNOP};
 VirtualTHPPtr VirtualTHPControl {VirtualTHPNOP};
+JITWriteProtectPtr JITWriteProtect {};
+// No nesting count: thread-local storage isn't usable this early in the emulator DLL, and no write window
+// contains another (keep it that way: an inner window would end the outer one).
+void JITWriteBegin() {
+  JITWriteProtect(false);
+}
+
+void JITWriteEnd() {
+  JITWriteProtect(true);
+}
 
 void SetupHooks(size_t PageSize, HookPtrs Ptrs) {
   VirtualName = Ptrs.VirtualName;

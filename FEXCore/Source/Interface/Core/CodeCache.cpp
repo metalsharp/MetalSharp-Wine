@@ -566,6 +566,7 @@ static inline void ApplyPatchableCRCMoveRelocation(uint64_t SiteAddress, uint8_t
 bool CodeCache::ApplyPackedCodeRelocations(uint64_t GuestEntry, std::span<std::byte> Code,
                                            std::span<const DiskCache::BlobSmallRelocation> SmallRelocs,
                                            std::span<const DiskCache::BlobThunkRelocation> ThunkRelocs) {
+  FEXCore::Allocator::ScopedJITWrite JITWrite;
   CPU::Arm64Emitter Emitter(&CTX, Code.data(), Code.size_bytes());
   for (auto& Reloc : SmallRelocs) {
     LOGMAN_THROW_A_FMT(Reloc.Offset < Code.size_bytes(), "Invalid relocation offset");
@@ -617,6 +618,7 @@ bool CodeCache::ApplyPackedCodeRelocations(uint64_t GuestEntry, std::span<std::b
 
 bool CodeCache::ApplyCodeRelocations(uint64_t GuestEntry, std::span<std::byte> Code,
                                      std::span<const FEXCore::CPU::Relocation> EntryRelocations, bool ForStorage) {
+  FEXCore::Allocator::ScopedJITWrite JITWrite;
   CPU::Arm64Emitter Emitter(&CTX, Code.data(), Code.size_bytes());
   for (size_t j = 0; j < EntryRelocations.size(); ++j) {
     const FEXCore::CPU::Relocation& Reloc = EntryRelocations[j];
@@ -989,7 +991,10 @@ void CodeCache::FinalizeCodePages(MappedCodeCacheFile& Code, std::span<std::byte
 #else
   // TODO: Implement lazy mapping on Windows
 #ifdef _M_ARM64EC
-  memcpy(Code.CodeBuffer.data() + StartOffset, Code.CodeBufferInFile.data() + StartOffset, Size);
+  {
+    FEXCore::Allocator::ScopedJITWrite JITWrite;
+    memcpy(Code.CodeBuffer.data() + StartOffset, Code.CodeBufferInFile.data() + StartOffset, Size);
+  }
 #endif
   for (size_t i = StartPage; i < EndPage; ++i) {
     auto PageRelocations = SpanPageRelocations(Code, i);

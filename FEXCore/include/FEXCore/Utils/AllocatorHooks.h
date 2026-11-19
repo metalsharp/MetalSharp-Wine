@@ -70,7 +70,36 @@ inline void* VirtualAlloc(size_t Size, bool Execute = false, bool Commit = true)
 // Tell the OS that code was written to an executable allocation. Required semantics on Windows are
 // only the icache flush (already done by ClearICache), but Wine on hosts that enforce W^X (macOS)
 // uses it to make the pages executable again without taking an execute fault.
+// MetalSharp: set by the Windows frontend when the host maps code buffers as MAP_JIT (macOS): JIT memory is then
+// writable or executable per thread, switched by this call, and every write to it must sit in a ScopedJITWrite.
+using JITWriteProtectPtr = void (*)(bool Enable);
+FEX_DEFAULT_VISIBILITY extern JITWriteProtectPtr JITWriteProtect;
+FEX_DEFAULT_VISIBILITY void JITWriteBegin();
+FEX_DEFAULT_VISIBILITY void JITWriteEnd();
+
+// A window in which this thread may write JIT code (and may not execute it). Inert without MAP_JIT.
+// Windows must not nest: the inner one would end the outer one.
+class ScopedJITWrite final {
+public:
+  ScopedJITWrite() {
+    if (JITWriteProtect) {
+      JITWriteBegin();
+    }
+  }
+  ~ScopedJITWrite() {
+    if (JITWriteProtect) {
+      JITWriteEnd();
+    }
+  }
+  ScopedJITWrite(const ScopedJITWrite&) = delete;
+  ScopedJITWrite& operator=(const ScopedJITWrite&) = delete;
+};
+
 inline void FlushCodeWrites(const void* Ptr, size_t Size) {
+  // MAP_JIT memory needs no W^X emulation: ClearICache already flushed the instruction cache.
+  if (JITWriteProtect) {
+    return;
+  }
   ::FlushInstructionCache(GetCurrentProcess(), Ptr, Size);
 }
 
@@ -130,6 +159,11 @@ inline void* VirtualAlloc(void* Base, size_t Size, bool Execute = false, bool Co
 }
 
 inline void FlushCodeWrites(const void*, size_t) {}
+
+class ScopedJITWrite final {
+public:
+  ScopedJITWrite() = default;
+};
 
 inline void VirtualFree(void* Ptr, size_t Size) {
   FEXCore::Allocator::munmap(Ptr, Size);

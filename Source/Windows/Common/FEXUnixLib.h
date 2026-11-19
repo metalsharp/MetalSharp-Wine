@@ -53,4 +53,8 @@ void* MapFile(HANDLE FileHandle, uint64_t MapSize);
 // Or returns the process ID otherwise.
 uint32_t GetPID();
 
+// MetalSharp: asks Wine for MAP_JIT code buffers (macOS). On success, JIT writes must use JITWriteProtect.
+bool TryEnableMapJit();
+void JITWriteProtect(bool Enable);
+
 } // namespace FEX::Windows::UnixLib

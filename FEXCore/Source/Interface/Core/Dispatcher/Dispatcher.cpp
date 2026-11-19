@@ -52,6 +52,7 @@ Dispatcher::~Dispatcher() {
 }
 
 void Dispatcher::EmitDispatcher() {
+  FEXCore::Allocator::ScopedJITWrite JITWrite;
   // The dispatcher computes nothing with FPRs, so it leaves the AFP bits to the code it enters.
   EmitAFPState = false;
   // Don't modify TMP3 since it contains our RIP once the block doesn't exist

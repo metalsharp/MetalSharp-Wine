@@ -738,6 +738,12 @@ NTSTATUS ProcessInit() {
   FEX::Windows::Allocator::SetupHooks(NtDll);
   FEX::Windows::UnixLib::Init(NtDll);
   if (FEX::Windows::UnixLib::Available()) {
+    // MetalSharp: MAP_JIT code buffers on macOS, before anything allocates one. METALSHARP_NO_MAPJIT=1 keeps
+    // Wine's W+X emulation (for comparison).
+    const char* NoMapJit = getenv("METALSHARP_NO_MAPJIT");
+    if (!(NoMapJit && *NoMapJit == '1') && FEX::Windows::UnixLib::TryEnableMapJit()) {
+      FEXCore::Allocator::JITWriteProtect = FEX::Windows::UnixLib::JITWriteProtect;
+    }
     FEXCore::DiskCache::SetFileMapper(FEX::Windows::UnixLib::MapFile);
   }
 
