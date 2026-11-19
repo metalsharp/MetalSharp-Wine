@@ -450,15 +450,11 @@ NTSTATUS WINAPI NtSetContextThread( HANDLE handle, const CONTEXT *context )
         if (is_emulated_code( frame->pc )) flags |= RESTORE_FLAGS_EMULATION;
         else frame->restore_flags &= ~RESTORE_FLAGS_EMULATION;
     }
-    if (flags & (CONTEXT_FLOATING_POINT | CONTEXT_ARM64_FLOATING_POINT_LOW))
+    if (flags & CONTEXT_FLOATING_POINT)
     {
         frame->fpcr = context->Fpcr;
         frame->fpsr = context->Fpsr;
-        memcpy( frame->v, context->V, 16 * sizeof(frame->v[0]) );
-    }
-    if (flags & (CONTEXT_FLOATING_POINT | CONTEXT_ARM64_FLOATING_POINT_HIGH))
-    {
-        memcpy( &frame->v[16], &context->V[16], 16 * sizeof(frame->v[0]) );
+        memcpy( frame->v, context->V, sizeof(frame->v) );
     }
     if (flags & CONTEXT_ARM64_X18)
     {
@@ -504,17 +500,12 @@ NTSTATUS WINAPI NtGetContextThread( HANDLE handle, CONTEXT *context )
         context->Cpsr = frame->cpsr;
         context->ContextFlags |= CONTEXT_CONTROL;
     }
-    if (needed_flags & (CONTEXT_FLOATING_POINT | CONTEXT_ARM64_FLOATING_POINT_LOW))
+    if (needed_flags & CONTEXT_FLOATING_POINT)
     {
         context->Fpcr = frame->fpcr;
         context->Fpsr = frame->fpsr;
-        memcpy( context->V, frame->v, 16 * sizeof(context->V[0]) );
-        context->ContextFlags |= CONTEXT_ARM64 | (needed_flags & (CONTEXT_FLOATING_POINT | CONTEXT_ARM64_FLOATING_POINT_LOW));
-    }
-    if (needed_flags & (CONTEXT_FLOATING_POINT | CONTEXT_ARM64_FLOATING_POINT_HIGH))
-    {
-        memcpy( &context->V[16], &frame->v[16], 16 * sizeof(frame->v[0]) );
-        context->ContextFlags |= CONTEXT_ARM64 | (needed_flags & CONTEXT_ARM64_FLOATING_POINT_HIGH);
+        memcpy( context->V, frame->v, sizeof(context->V) );
+        context->ContextFlags |= CONTEXT_FLOATING_POINT;
     }
     if (needed_flags & CONTEXT_ARM64_X18)
     {

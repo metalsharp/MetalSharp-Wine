@@ -601,6 +601,14 @@ void WINAPI RtlGetCallersAddress( void **caller, void **parent )
 }
 
 
+/**********************************************************************
+ *              RtlGetEnabledExtendedFeatures   (NTDLL.@)
+ */
+ULONG64 WINAPI RtlGetEnabledExtendedFeatures(ULONG64 feature_mask)
+{
+    return user_shared_data->XState.EnabledFeatures & feature_mask;
+}
+
 struct context_copy_range
 {
     ULONG start;
