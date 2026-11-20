@@ -114,6 +114,10 @@ here=$(cd "$(dirname "$0")/.." && pwd -P)
 : "${GST_PLUGIN_SYSTEM_PATH_1_0:=$here/lib/gstreamer-1.0}"
 : "${GST_PLUGIN_SCANNER_1_0:=$here/libexec/gstreamer-1.0/gst-plugin-scanner}"
 export GST_PLUGIN_SYSTEM_PATH_1_0 GST_PLUGIN_SCANNER_1_0
+# winedbg, winecfg, regedit... are symlinks to this script; the loader picks the builtin program from argv[0]'s
+# basename, which exec turns into wine-launcher, so pass the name on as the program to run (wine winedbg ...)
+name=${0##*/}
+case $name in wine|wine-launcher) ;; *) set -- "$name" "$@" ;; esac
 exec "$here/bin/wine-launcher" "$@"
 EOF
 chmod +x $D/bin/wine
