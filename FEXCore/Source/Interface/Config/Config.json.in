@@ -3,7 +3,7 @@
     "CPU": {
       "Multiblock": {
         "Type": "bool",
-        "Default": "false",
+        "Default": "true",
         "AffectsCodeGen": "true",
         "Desc": [
           "Controls multiblock code compilation",
