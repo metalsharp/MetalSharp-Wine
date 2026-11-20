@@ -6,15 +6,31 @@
 #   install/lib/wine/{aarch64,i386}-windows/winemetal.dll, aarch64-unix/winemetal.so
 #   install/lib/wine/aarch64-windows/nvngx.dll     NGX core for DLSS on MetalFX, signed (see below)
 #   install/lib/wine/aarch64-windows/nvapi64.dll   NVAPI, for DLSS games (Streamline loads it from System32)
-# nvngx.dll is signed with Mullion's NGX key when MULLION_NGX_SIGNING_KEY_FILE names it (a PEM private key; the
-# certificate is src/mullion/src/nvngx/signing/mullion-ngx.pem): NVIDIA's NGX library loads only a signed core, and
-# Mullion's DXGI trusts the certificate with NVEXT on. As Wine builtins both reach every prefix's System32, where
+# NVIDIA's NGX library loads only a signed core: nvngx.dll must carry Mullion's signature, which Mullion's DXGI trusts
+# with NVEXT on (the certificate is src/mullion/src/nvngx/signing/mullion-ngx.pem). Either
+#   MULLION_NGX_SIGNING_KEY_FILE=<PEM private key>   signs the core built here, or
+#   MULLION_SIGNED_NGX_DIR=<signed Mullion release>  takes that release's aarch64-windows/nvngx.dll (Mullion's CI
+#                                                    signs it; use the release of src/mullion's commit).
+# The core installed is then checked against the certificate. With neither, the build stops before building, since
+# an unsigned core gives every game no DLSS; MULLION_NGX_UNSIGNED=1 builds one anyway, for a build without DLSS.
+# As Wine builtins nvngx.dll and nvapi64.dll reach every prefix's System32, where
 # NGX and Streamline look; nvapi64.dll loads only in a program Mullion shows an NVIDIA GPU (a DLSS game, which
 # MetalSharp Wine sets up), so Steam and other programs find no NVAPI, as on another vendor's GPU.
 # winemetal is a new module name for Wine, so wineboot creates its placeholder in every prefix;
 # d3d11/dxgi/... are routed to the runtime only for processes with GRAPHICS_BACKEND=dxmt.
 set -e
 source ${0:A:h}/env.sh
+NGX_DIR=${MULLION_SIGNED_NGX_DIR:+${MULLION_SIGNED_NGX_DIR:A}}
+if [[ -n $MULLION_NGX_SIGNING_KEY_FILE ]]; then
+  [[ -f $MULLION_NGX_SIGNING_KEY_FILE ]] || { echo "error: no MULLION_NGX_SIGNING_KEY_FILE" >&2; exit 1; }
+elif [[ -n $NGX_DIR ]]; then
+  [[ -f $NGX_DIR/aarch64-windows/nvngx.dll ]] ||
+    { echo "error: MULLION_SIGNED_NGX_DIR has no aarch64-windows/nvngx.dll" >&2; exit 1; }
+elif [[ $MULLION_NGX_UNSIGNED != 1 ]]; then
+  echo "error: nvngx.dll needs Mullion's signature, or no game gets DLSS: set MULLION_NGX_SIGNING_KEY_FILE or" >&2
+  echo "       MULLION_SIGNED_NGX_DIR (see this script), or MULLION_NGX_UNSIGNED=1 to build without DLSS" >&2
+  exit 1
+fi
 unset CFLAGS CXXFLAGS OBJCFLAGS LDFLAGS CPPFLAGS CC CXX OBJC  # macOS flags would reach the PE cross compilers
 M=$ROOT/src/mullion
 I=$ROOT/install
@@ -41,13 +57,20 @@ cp $B/d3d10/d3d10core.dll $B/d3d11/d3d11.dll $B/d3d12/d3d12.dll $B/d3d12/d3d12co
    $B/dxgi/dxgi.dll $B/winemetal/winemetal.dll $R/aarch64-windows/
 cp $B/winemetal/unix/winemetal.so $R/aarch64-unix/
 cp $B/nvapi/nvapi64.dll $R/aarch64-windows/
+CERT=$M/src/nvngx/signing/mullion-ngx.pem
 if [[ -n $MULLION_NGX_SIGNING_KEY_FILE ]]; then
-  osslsigncode sign -certs $M/src/nvngx/signing/mullion-ngx.pem -key $MULLION_NGX_SIGNING_KEY_FILE -n "Mullion NGX" \
+  osslsigncode sign -certs $CERT -key $MULLION_NGX_SIGNING_KEY_FILE -n "Mullion NGX" \
     -h sha256 -in $B/nvngx/nvngx.dll -out $R/aarch64-windows/nvngx.dll >/dev/null
-  osslsigncode verify -CAfile $M/src/nvngx/signing/mullion-ngx.pem -in $R/aarch64-windows/nvngx.dll >/dev/null
+elif [[ -n $NGX_DIR ]]; then
+  cp $NGX_DIR/aarch64-windows/nvngx.dll $R/aarch64-windows/
 else
-  echo "warning: MULLION_NGX_SIGNING_KEY_FILE is not set: nvngx.dll is unsigned, and NGX (DLSS) will not load it" >&2
+  echo "warning: nvngx.dll is unsigned (MULLION_NGX_UNSIGNED=1): NGX will not load it, so no game gets DLSS" >&2
   cp $B/nvngx/nvngx.dll $R/aarch64-windows/
+fi
+if [[ -n $MULLION_NGX_SIGNING_KEY_FILE || -n $NGX_DIR ]] &&
+   ! osslsigncode verify -CAfile $CERT -in $R/aarch64-windows/nvngx.dll >/dev/null 2>&1; then
+  echo "error: $R/aarch64-windows/nvngx.dll is not signed with $CERT" >&2
+  exit 1
 fi
 B=$M/build-win32/src
 cp $B/d3d10/d3d10core.dll $B/d3d11/d3d11.dll $B/dxgi/dxgi.dll $B/winemetal/winemetal.dll $R/i386-windows/
