@@ -264,6 +264,7 @@ struct opengl_drawable
     LONG                                ref;            /* reference count */
     struct list                         entry;          /* entry in cleanup lists */
     struct client_surface              *client;         /* underlying client surface */
+    HWND                                hwnd;           /* target window for this drawable, if any */
     HDC                                 owner_hdc;      /* HDC owning the drawable, if any (for pbuffer / D3D swapchains) */
     int                                 format;         /* pixel format of the drawable */
     int                                 interval;       /* last set surface swap interval */
@@ -310,9 +311,9 @@ struct opengl_driver_funcs
     BOOL (*p_context_activate)( struct opengl_context *context, struct opengl_drawable *draw, struct opengl_drawable *read );
     BOOL (*p_pbuffer_create)( HDC hdc, int format, SIZE size, BOOL largest, GLenum texture_format, GLenum texture_target,
                               GLint max_level, struct opengl_drawable **drawable );
-    BOOL (*p_null_surface_create)( int format, struct opengl_drawable **drawable );
     BOOL (*p_cleanup_thread)(void);
     BOOL broken_sharing;
+    BOOL context_format;
 };
 
 #endif /* WINE_UNIX_LIB */

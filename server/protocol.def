@@ -773,6 +773,7 @@ enum irp_type
     IRP_CALL_CLOSE,
     IRP_CALL_READ,
     IRP_CALL_WRITE,
+    IRP_CALL_SET_INFO,
     IRP_CALL_FLUSH,
     IRP_CALL_IOCTL,
     IRP_CALL_VOLUME,
@@ -814,6 +815,12 @@ union irp_params
         client_ptr_t     file;      /* opaque ptr for the file object */
         file_pos_t       pos;       /* file position */
     } write;
+    struct
+    {
+        enum irp_type    type;      /* IRP_CALL_SET_INFO */
+        int              class;     /* information class */
+        client_ptr_t     file;      /* opaque ptr for the file object */
+    } set_info;
     struct
     {
         enum irp_type    type;      /* IRP_CALL_FLUSH */
@@ -991,6 +998,7 @@ enum d3dkmt_type
     D3DKMT_SYNC         = 5,
     D3DKMT_RESOURCE     = 6,
     D3DKMT_ALLOCATION   = 7,
+    D3DKMT_SWAPCHAIN    = 8,
 };
 
 /****************************************************************/
@@ -1227,6 +1235,7 @@ typedef volatile struct
     int          exit_code;    /* process exit code */
 @REPLY
     int          self;         /* suicide? */
+    int          exit_code;    /* process exit code */
 @END
 
 
@@ -1721,6 +1730,16 @@ enum server_fd_type
     unsigned int info_class;    /* queried information class */
 @REPLY
     VARARG(data,bytes);         /* file info data */
+@END
+
+/* Set file information */
+@REQ(set_file_info)
+    obj_handle_t handle;        /* handle to the file */
+    struct async_data async;    /* async I/O parameters */
+    unsigned int info_class;    /* queried information class */
+    VARARG(data,bytes);         /* file info data */
+@REPLY
+    obj_handle_t wait;          /* handle to wait on for blocking read */
 @END
 
 /* Query volume information */
@@ -2652,12 +2671,6 @@ enum message_type
 #define NAMED_PIPE_NONBLOCKING_MODE     0x0004
 #define NAMED_PIPE_SERVER_END           0x8000
 
-/* Set named pipe information by handle */
-@REQ(set_named_pipe_info)
-    obj_handle_t   handle;
-    unsigned int   flags;
-@END
-
 /* Create a window */
 @REQ(create_window)
     user_handle_t  parent;      /* parent window */
@@ -3479,16 +3492,17 @@ enum caret_state
 
 /* Create a security token */
 @REQ(create_token)
-    struct luid    token_id;
+    struct luid    auth_id;        /* authentication id */
     unsigned int   access;         /* access rights to the new token */
     int            primary;        /* is the new token to be a primary one? */
     int            impersonation_level; /* impersonation level of the new token */
     abstime_t      expire;         /* expiration time */
     int            group_count;
-    int            primary_group;
     int            priv_count;
     /* VARARG(objattr,object_attributes);  */
     /* VARARG(user,sid); */
+    /* VARARG(owner,sid); */
+    /* VARARG(primary_group,sid); */
     /* VARARG(groups,sid); */
     /* VARARG(privs,luid_attr); */
     /* VARARG(dacl,acl); */
@@ -3677,18 +3691,6 @@ struct handle_info
 @REPLY
     obj_handle_t   handle;        /* handle to the mailslot */
 @END
-
-
-/* Set mailslot information */
-@REQ(set_mailslot_info)
-    obj_handle_t   handle;        /* handle to the mailslot */
-    timeout_t      read_timeout;
-    unsigned int   flags;
-@REPLY
-    timeout_t      read_timeout;
-    unsigned int   max_msgsize;
-@END
-#define MAILSLOT_SET_READ_TIMEOUT  1
 
 
 /* Create a directory object */
@@ -4000,13 +4002,6 @@ struct handle_info
 @END
 
 
-/* set fd completion information */
-@REQ(set_fd_completion_mode)
-    obj_handle_t handle;          /* handle to a file or directory */
-    unsigned int flags;           /* completion notification flags */
-@END
-
-
 /* set fd disposition information */
 @REQ(set_fd_disp_info)
     obj_handle_t handle;          /* handle to a file or directory */
@@ -4023,13 +4018,6 @@ struct handle_info
     unsigned int flags;           /* FILE_RENAME_* flags */
     VARARG(name,unicode_str,namelen); /* NT name */
     VARARG(filename,string);      /* new file name */
-@END
-
-
-/* set fd eof information */
-@REQ(set_fd_eof_info)
-    obj_handle_t handle;        /* handle to a file or directory */
-    file_pos_t   eof;           /* offset of eof of file */
 @END
 
 
@@ -4282,7 +4270,7 @@ enum inproc_sync_type
 @REQ(d3dkmt_object_create)
     unsigned int        type;           /* d3dkmt object type */
     int                 fd;             /* host specific fd */
-    unsigned int        value;          /* initial value for keyed mutex */
+    unsigned __int64    value;          /* initial value for keyed mutex */
     VARARG(runtime,bytes);              /* client runtime data */
 @REPLY
     d3dkmt_handle_t     global;         /* global d3dkmt handle */
@@ -4367,6 +4355,24 @@ enum inproc_sync_type
     unsigned __int64    fence_value;    /* semaphore fence value */
     data_size_t         runtime_size;   /* size of client runtime data */
     VARARG(runtime,bytes);              /* client runtime data */
+@END
+
+
+/* Wait on a global d3dkmt sync fence value */
+@REQ(d3dkmt_sync_wait)
+    d3dkmt_handle_t     sync;           /* sync global handle */
+    unsigned int        fence_value;    /* fence value to wait for */
+    obj_handle_t        wait_handle;    /* previously returned wait handle */
+    unsigned int        wait_status;    /* status returned from previous wait */
+@REPLY
+    obj_handle_t        wait_handle;    /* wait handle for pending acquire */
+@END
+
+
+/* Signal a global d3dkmt sync fence value */
+@REQ(d3dkmt_sync_signal)
+    d3dkmt_handle_t     sync;           /* sync global handle */
+    unsigned __int64    fence_value;    /* signaled fence value */
 @END
 
 
