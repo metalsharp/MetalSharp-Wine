@@ -14,6 +14,12 @@ static inline int prctl(int, ...) {
 #include <sys/prctl.h>
 #endif
 #include <unistd.h>
+#ifdef __APPLE__
+#include <cstring>
+#include <dlfcn.h>
+#include <mach-o/dyld.h>
+#include <pthread.h>
+#endif
 
 #include "FEXUnixLib.h"
 
@@ -195,6 +201,39 @@ static NTSTATUS FEXUnixLib_GetPIDHandler(void* _Args) {
   Args->Result = ::getpid();
   return STATUS_SUCCESS;
 }
+// MetalSharp: on macOS, asks Wine to back the JIT code buffers with MAP_JIT memory. From then on every write to them
+// must be bracketed by JITWriteProtect(false/true) on the writing thread. Wine without the export keeps emulating W+X.
+static NTSTATUS FEXUnixLib_EnableMapJitHandler(void*) {
+#ifdef __APPLE__
+  using EnableFn = int (*)();
+  auto Enable = reinterpret_cast<EnableFn>(dlsym(RTLD_DEFAULT, "__wine_virtual_enable_map_jit"));
+  // ntdll.so may be loaded without RTLD_GLOBAL: look it up among the loaded images.
+  for (uint32_t i = 0, n = _dyld_image_count(); !Enable && i < n; i++) {
+    const char* Name = _dyld_get_image_name(i);
+    size_t Len = Name ? strlen(Name) : 0;
+    if (Len < 9 || strcmp(Name + Len - 9, "/ntdll.so")) {
+      continue;
+    }
+    if (void* Handle = dlopen(Name, RTLD_LAZY | RTLD_NOLOAD)) {
+      Enable = reinterpret_cast<EnableFn>(dlsym(Handle, "__wine_virtual_enable_map_jit"));
+      dlclose(Handle);
+    }
+  }
+  return Enable && Enable() ? STATUS_SUCCESS : STATUS_NOT_SUPPORTED;
+#else
+  return STATUS_NOT_SUPPORTED;
+#endif
+}
+
+static NTSTATUS FEXUnixLib_JITWriteProtectHandler(void* _Args) {
+#ifdef __APPLE__
+  pthread_jit_write_protect_np(reinterpret_cast<const FEXUnixLib_JITWriteProtect*>(_Args)->Enable);
+  return STATUS_SUCCESS;
+#else
+  return STATUS_NOT_SUPPORTED;
+#endif
+}
+
 extern "C" const unixlib_entry_t __wine_unix_call_funcs[] = {
   FEXUnixLib_SetHardwareTSOControlHandler,
   FEXUnixLib_SetKernelUnalignedAtomicControlHandler,
@@ -204,6 +243,8 @@ extern "C" const unixlib_entry_t __wine_unix_call_funcs[] = {
   FEXUnixLib_DeleteSHMStatsFileHandler,
   FEXUnixLib_MapFileHandler,
   FEXUnixLib_GetPIDHandler,
+  FEXUnixLib_EnableMapJitHandler,
+  FEXUnixLib_JITWriteProtectHandler,
 };
 
 static_assert(sizeof(__wine_unix_call_funcs) / sizeof(__wine_unix_call_funcs[0]) == ToUnderlying(FEXUnixLibFunctions::MAX));

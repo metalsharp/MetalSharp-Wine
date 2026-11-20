@@ -12,6 +12,8 @@ enum class FEXUnixLibFunctions : uint32_t {
   DeleteSHMStatsFile,
   MapFile,
   GetPID,
+  EnableMapJit,
+  JITWriteProtect,
   MAX,
 };
 
@@ -65,3 +67,8 @@ struct FEXUnixLib_GetPID {
   uint32_t Result;
 };
 static_assert(sizeof(FEXUnixLib_GetPID) == 4);
+
+struct FEXUnixLib_JITWriteProtect {
+  bool Enable;
+};
+static_assert(sizeof(FEXUnixLib_JITWriteProtect) == 1);

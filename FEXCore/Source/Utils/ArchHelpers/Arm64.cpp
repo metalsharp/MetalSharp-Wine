@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 
+#include <FEXCore/Utils/AllocatorHooks.h>
 #include "Interface/Core/CPUBackend.h"
 #include "Interface/Context/Context.h"
 #include <FEXCore/Utils/SpinWaitLock.h>
@@ -2103,6 +2104,8 @@ std::optional<int32_t> HandleUnalignedAccess(FEXCore::Core::InternalThreadState*
   // Lock code mutex during any SIGBUS handling that potentially changes code.
   // Due to code buffer sharing between threads, code must be carefully backpatched from last to first.
   // Multiple threads can be attempting to handle the SIGBUS or even be executing the code being backpatched.
+  // The lock word lives in the block tail, in JIT memory, so the write window opens first and closes last.
+  FEXCore::Allocator::ScopedJITWrite JITWrite;
   FEXCore::Utils::SpinWaitLock::UniqueSpinMutex lk(&InlineTail->SpinLockFutex);
 
   if ((Instr & LDAXR_MASK) == LDAR_INST ||  // LDAR*

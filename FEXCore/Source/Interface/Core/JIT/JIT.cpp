@@ -536,6 +536,7 @@ void Arm64JITCore::Op_Unhandled(const IR::IROp_Header* IROp, IR::Ref Node) {
 }
 
 static void DirectBlockDelinker(FEXCore::Context::ExitFunctionLinkData* Record, bool Call) {
+  FEXCore::Allocator::ScopedJITWrite JITWrite;
   uintptr_t JumpThunkStartAddress = reinterpret_cast<uintptr_t>(Record) - 0x10;
   uintptr_t CallerAddress = JumpThunkStartAddress + Record->CallerOffset;
   auto BranchOffset = JumpThunkStartAddress / 4 - CallerAddress / 4;
@@ -555,6 +556,7 @@ static void DirectBlockDelinker(FEXCore::Context::ExitFunctionLinkData* Record, 
 }
 
 static void IndirectBlockDelinker(FEXCore::Context::ExitFunctionLinkData* Record) {
+  FEXCore::Allocator::ScopedJITWrite JITWrite;
   uintptr_t JumpThunkStartAddress = reinterpret_cast<uintptr_t>(Record) - 0x10;
   uint32_t BranchInst = 0;
   ARMEmitter::Emitter BranchEmit(reinterpret_cast<uint8_t*>(&BranchInst), 4);
@@ -607,6 +609,8 @@ uint64_t Arm64JITCore::ExitFunctionLink(FEXCore::Core::CpuStateFrame* Frame, FEX
   // Guard the LookupCache lock with the code invalidation mutex, to avoid issues with forking
   auto lk_inval = GuardSignalDeferringSection<std::shared_lock>(static_cast<Context::ContextImpl*>(Thread->CTX)->CodeInvalidationMutex, Thread);
 
+  // Patching below writes JIT code. Declared before the lock so the lock is released first.
+  FEXCore::Allocator::ScopedJITWrite JITWrite;
   // Lock here is necessary to prevent simultaneous linking and delinking
   auto lk = Thread->LookupCache->AcquireWriteLock();
 
@@ -1269,6 +1273,7 @@ CPUBackend::CompiledCode Arm64JITCore::CompileCode(uint64_t Entry, uint64_t Size
     CodeData.HostCodeOffset = CodeData.BlockBegin - CurrentCodeBuffer->GetBufferBase();
 
     // Copy over CodeBuffer contents
+    FEXCore::Allocator::ScopedJITWrite JITWrite;
     memcpy(AllocatedInfo.BufferAllocationOffset, TempCodeBuffer, CodeData.Size);
   }
 
@@ -1315,7 +1320,10 @@ CPUBackend::CompiledCode Arm64JITCore::LoadCachedCode(std::span<const uint8_t> H
   auto AllocatedInfo = AllocateCodeBufferInSharedCache(HostBytes.size());
 
   uint8_t* Dest = AllocatedInfo.BufferAllocationOffset;
-  memcpy(Dest, HostBytes.data(), HostBytes.size());
+  {
+    FEXCore::Allocator::ScopedJITWrite JITWrite;
+    memcpy(Dest, HostBytes.data(), HostBytes.size());
+  }
   ClearICache(Dest, HostBytes.size());
   FEXCore::Allocator::FlushCodeWrites(Dest, HostBytes.size());
 

@@ -8,6 +8,7 @@ $end_info$
 
 #include <FEXCore/fextl/fmt.h>
 #include <atomic>
+#include <mutex>
 #include <set>
 #include <shared_mutex>
 #include <FEXCore/Core/X86Enums.h>
@@ -171,6 +172,15 @@ struct DebugRegisters {
 // Set on threads that haven't started in FEX yet (created suspended), applied in ThreadInit. `ThreadCreationMutex`.
 std::unordered_map<DWORD, DebugRegisters> PendingDebugRegisters;
 static void ApplyPendingDebugRegisters(FEXCore::Core::InternalThreadState* Thread, DWORD Tid);
+// MetalSharp: every thread's debug registers as last set, under a lock of their own. Protection code suspends a thread
+// and reads its context, debug registers included; a thread suspended while it holds `ThreadCreationMutex` (in a
+// fault on a code page, say) would leave that read waiting for it forever, and the thread is resumed only after the
+// read. Reads that can't take `ThreadCreationMutex` at once come from here instead.
+std::mutex DebugShadowLock;
+std::unordered_map<DWORD, DebugRegisters> DebugShadow;
+static bool DebugRegistersClear(const DebugRegisters& Regs) {
+  return !Regs.Dr7 && !Regs.Dr[0] && !Regs.Dr[1] && !Regs.Dr[2] && !Regs.Dr[3];
+}
 
 std::pair<NTSTATUS, ThreadCPUArea> GetThreadCPUArea(HANDLE Thread) {
   THREAD_BASIC_INFORMATION Info;
@@ -728,6 +738,12 @@ NTSTATUS ProcessInit() {
   FEX::Windows::Allocator::SetupHooks(NtDll);
   FEX::Windows::UnixLib::Init(NtDll);
   if (FEX::Windows::UnixLib::Available()) {
+    // MetalSharp: MAP_JIT code buffers on macOS, before anything allocates one. METALSHARP_NO_MAPJIT=1 keeps
+    // Wine's W+X emulation (for comparison).
+    const char* NoMapJit = getenv("METALSHARP_NO_MAPJIT");
+    if (!(NoMapJit && *NoMapJit == '1') && FEX::Windows::UnixLib::TryEnableMapJit()) {
+      FEXCore::Allocator::JITWriteProtect = FEX::Windows::UnixLib::JITWriteProtect;
+    }
     FEXCore::DiskCache::SetFileMapper(FEX::Windows::UnixLib::MapFile);
   }
 
@@ -820,7 +836,10 @@ bool ResetToConsistentStateImpl(const ThreadCPUArea CPUArea, EXCEPTION_RECORD* E
       return true;
     }
 
-    std::scoped_lock Lock(ThreadCreationMutex);
+    // MetalSharp: no ThreadCreationMutex for self-modifying code. The tracker has locks of its own and the thread list
+    // isn't touched here; holding the mutex while invalidation waited for a compile in progress stalled every thread
+    // that needed it (a thread starting, say), and taking it for every access violation inverted the lock order with
+    // code invalidation.
     if (InvalidationTracker && InvalidationTracker->HandleRWXAccessViolation(Thread, NativeContext->Pc, FaultAddress)) {
       FEXCORE_PROFILE_INSTANT_INCREMENT(Thread, AccumulatedSMCCount, 1);
       if (CTX->IsAddressInCodeBuffer(Thread, NativeContext->Pc) && !CTX->IsCurrentBlockSingleInst(CPUArea.ThreadState()) &&
@@ -926,14 +945,16 @@ void NotifyMemoryAlloc(void* Address, SIZE_T Size, ULONG Type, ULONG Prot, BOOL 
     return;
   }
 
+  // MetalSharp: no ThreadCreationMutex here. The tracker has locks of its own, and this notification doesn't touch the
+  // thread list the mutex guards. Holding it across the system call (as FEX did) or around the tracker update
+  // deadlocked: FEX's own protection changes while compiling (holding the code invalidation lock) notify here too,
+  // while a thread holding ThreadCreationMutex waited in code invalidation for that compile.
   if (!After) {
-    ThreadCreationMutex.lock();
-  } else {
-    // MEM_RESET(_UNDO) ignores the passed permissions
-    if (!Status && !(Type & (MEM_RESET | MEM_RESET_UNDO))) {
-      InvalidationTracker->HandleMemoryProtectionNotification(reinterpret_cast<uint64_t>(Address), static_cast<uint64_t>(Size), Prot);
-    }
-    ThreadCreationMutex.unlock();
+    return;
+  }
+  // MEM_RESET(_UNDO) ignores the passed permissions
+  if (!Status && !(Type & (MEM_RESET | MEM_RESET_UNDO))) {
+    InvalidationTracker->HandleMemoryProtectionNotification(reinterpret_cast<uint64_t>(Address), static_cast<uint64_t>(Size), Prot);
   }
 }
 
@@ -942,13 +963,15 @@ void NotifyMemoryFree(void* Address, SIZE_T Size, ULONG FreeType, BOOL After, NT
     return;
   }
 
+  // MetalSharp: no ThreadCreationMutex here. The tracker has locks of its own, and this notification doesn't touch the
+  // thread list the mutex guards. Holding it across the system call (as FEX did) or around the tracker update
+  // deadlocked: FEX's own protection changes while compiling (holding the code invalidation lock) notify here too,
+  // while a thread holding ThreadCreationMutex waited in code invalidation for that compile.
   if (!After) {
-    ThreadCreationMutex.lock();
-  } else {
-    if (!Status) {
-      InvalidationTracker->InvalidateAlignedInterval(reinterpret_cast<uint64_t>(Address), static_cast<uint64_t>(Size), true);
-    }
-    ThreadCreationMutex.unlock();
+    return;
+  }
+  if (!Status) {
+    InvalidationTracker->InvalidateAlignedInterval(reinterpret_cast<uint64_t>(Address), static_cast<uint64_t>(Size), true);
   }
 }
 
@@ -957,13 +980,15 @@ void NotifyMemoryProtect(void* Address, SIZE_T Size, ULONG NewProt, BOOL After, 
     return;
   }
 
+  // MetalSharp: no ThreadCreationMutex here. The tracker has locks of its own, and this notification doesn't touch the
+  // thread list the mutex guards. Holding it across the system call (as FEX did) or around the tracker update
+  // deadlocked: FEX's own protection changes while compiling (holding the code invalidation lock) notify here too,
+  // while a thread holding ThreadCreationMutex waited in code invalidation for that compile.
   if (!After) {
-    ThreadCreationMutex.lock();
-  } else {
-    if (!Status) {
-      InvalidationTracker->HandleMemoryProtectionNotification(reinterpret_cast<uint64_t>(Address), static_cast<uint64_t>(Size), NewProt);
-    }
-    ThreadCreationMutex.unlock();
+    return;
+  }
+  if (!Status) {
+    InvalidationTracker->HandleMemoryProtectionNotification(reinterpret_cast<uint64_t>(Address), static_cast<uint64_t>(Size), NewProt);
   }
 }
 
@@ -993,15 +1018,14 @@ void NotifyUnmapViewOfSection(void* Address, BOOL After, NTSTATUS Status) {
     return;
   }
 
+  // MetalSharp: as for the memory notifications, the mutex is released before the system call, not after it.
   if (!After) {
-    ThreadCreationMutex.lock();
+    std::scoped_lock Lock(ThreadCreationMutex);
     auto [Start, Size] = InvalidationTracker->InvalidateContainingSection(reinterpret_cast<uint64_t>(Address), true);
     if (Size) {
       HandleImageUnmap(Start, Size);
     }
     InvalidationTracker->HandleDataSectionUnmap(reinterpret_cast<uint64_t>(Address));
-  } else {
-    ThreadCreationMutex.unlock();
   }
 }
 
@@ -1082,12 +1106,11 @@ void BTCpu64NotifyReadFile(HANDLE Handle, void* Address, SIZE_T Size, BOOL After
   if (!After) {
     // MetalSharp: open the write-protected code pages of the buffer before the read, without holding the locks
     // through it, or the kernel's write faults and the read fails (ERROR_NOACCESS). Code translated from the range
-    // during the read protects it again; that read then fails as before.
-    std::scoped_lock Lock(ThreadCreationMutex);
+    // during the read protects it again; that read then fails as before. No ThreadCreationMutex: as for the memory
+    // notifications, it guards nothing here and taking it before the code invalidation lock deadlocked.
     std::scoped_lock CodeLock(CTX->GetCodeInvalidationMutex());
     InvalidationTracker->BeginUntrackedWriteLocked(reinterpret_cast<uint64_t>(Address), static_cast<uint64_t>(Size));
   } else if (Status == STATUS_SUCCESS) {
-    std::scoped_lock Lock(ThreadCreationMutex);
     InvalidationTracker->InvalidateAlignedInterval(reinterpret_cast<uint64_t>(Address), static_cast<uint64_t>(Size), false);
   }
 }
@@ -1151,6 +1174,11 @@ NTSTATUS ThreadInit() {
   {
     auto ThreadTID = GetCurrentThreadId();
     Threads.emplace(ThreadTID, Thread);
+    if (!PendingDebugRegisters.contains(ThreadTID)) {
+      // A new thread has no debug registers set, whatever an earlier thread with this TID had.
+      std::scoped_lock ShadowLock(DebugShadowLock);
+      DebugShadow.erase(ThreadTID);
+    }
     ApplyPendingDebugRegisters(Thread, ThreadTID);
     if (StatAllocHandler) {
       Thread->ThreadStats = StatAllocHandler->AllocateSlot(ThreadTID);
@@ -1205,6 +1233,10 @@ NTSTATUS ThreadTerm(HANDLE Thread, LONG ExitCode) {
     }
 
     Threads.erase(it);
+    {
+      std::scoped_lock ShadowLock(DebugShadowLock);
+      DebugShadow.erase(ThreadTID);
+    }
     if (StatAllocHandler) {
       StatAllocHandler->DeallocateSlot(CPUArea.ThreadState()->ThreadStats);
     }
@@ -1237,6 +1269,19 @@ void UpdateProcessorInformation(SYSTEM_CPU_INFORMATION* Info) {
 // MetalSharp: x86 debug registers. Wine's ARM64EC context conversion has nowhere to keep them, so its NtContinue,
 // NtSetContextThread and NtGetContextThread pass the x64 context's debug registers here, and FEX keeps them in the
 // thread's state.
+
+// The TID of a thread of this process, or 0. Takes no lock.
+static DWORD DebugRegisterTid(HANDLE Thread) {
+  if (Thread == NtCurrentThread()) {
+    return GetCurrentThreadId();
+  }
+  THREAD_BASIC_INFORMATION Info;
+  if (NtQueryInformationThread(Thread, ThreadBasicInformation, &Info, sizeof(Info), nullptr) ||
+      reinterpret_cast<uintptr_t>(Info.ClientId.UniqueProcess) != GetCurrentProcessId()) {
+    return 0;
+  }
+  return static_cast<DWORD>(reinterpret_cast<uintptr_t>(Info.ClientId.UniqueThread));
+}
 
 // The thread's FEX state, or null with its TID in `Tid` when it is in this process but not running in FEX yet.
 static FEXCore::Core::InternalThreadState* DebugRegisterThread(HANDLE Thread, DWORD& Tid) {
@@ -1297,6 +1342,17 @@ extern "C" void MetalSharpSetDebugRegisters(HANDLE Thread, const CONTEXT* Contex
     return;
   }
   const DebugRegisters Regs {{Context->Dr0, Context->Dr1, Context->Dr2, Context->Dr3}, Context->Dr6, Context->Dr7};
+  const DWORD ShadowTid = DebugRegisterTid(Thread);
+  if (ShadowTid) {
+    std::scoped_lock ShadowLock(DebugShadowLock);
+    auto It = DebugShadow.find(ShadowTid);
+    const bool WasClear = It == DebugShadow.end() || DebugRegistersClear(It->second);
+    DebugShadow[ShadowTid] = Regs;
+    // Clearing registers that are clear changes nothing in FEX: no breakpoint to remove, nothing to wait for.
+    if (WasClear && DebugRegistersClear(Regs)) {
+      return;
+    }
+  }
   std::scoped_lock Lock(ThreadCreationMutex);
   DWORD Tid;
   auto* ThreadState = DebugRegisterThread(Thread, Tid);
@@ -1311,7 +1367,24 @@ extern "C" void MetalSharpGetDebugRegisters(HANDLE Thread, CONTEXT* Context) {
   if (!Context || (Context->ContextFlags & CONTEXT_DEBUG_REGISTERS) != CONTEXT_DEBUG_REGISTERS) {
     return;
   }
-  std::scoped_lock Lock(ThreadCreationMutex);
+  std::unique_lock Lock(ThreadCreationMutex, std::try_to_lock);
+  if (!Lock.owns_lock()) {
+    // Held by another thread, perhaps one the caller has suspended: answer from the shadow rather than wait.
+    DebugRegisters Regs {};
+    if (const DWORD ShadowTid = DebugRegisterTid(Thread)) {
+      std::scoped_lock ShadowLock(DebugShadowLock);
+      if (auto It = DebugShadow.find(ShadowTid); It != DebugShadow.end()) {
+        Regs = It->second;
+      }
+    }
+    Context->Dr0 = Regs.Dr[0];
+    Context->Dr1 = Regs.Dr[1];
+    Context->Dr2 = Regs.Dr[2];
+    Context->Dr3 = Regs.Dr[3];
+    Context->Dr6 = Regs.Dr6;
+    Context->Dr7 = Regs.Dr7;
+    return;
+  }
   DWORD Tid;
   auto* ThreadState = DebugRegisterThread(Thread, Tid);
   if (!ThreadState) {

@@ -215,4 +215,15 @@ uint32_t GetPID() {
   return GetCurrentProcessId();
 }
 
+bool TryEnableMapJit() {
+  return Available() && Call(FEXUnixLibFunctions::EnableMapJit, nullptr) == STATUS_SUCCESS;
+}
+
+void JITWriteProtect(bool Enable) {
+  FEXUnixLib_JITWriteProtect Args {
+    .Enable = Enable,
+  };
+  Call(FEXUnixLibFunctions::JITWriteProtect, &Args);
+}
+
 } // namespace FEX::Windows::UnixLib
