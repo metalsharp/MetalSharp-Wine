@@ -119,7 +119,12 @@ FEXCore::HostFeatures CPUFeatures::FetchHostFeatures(bool IsWine, FEXCore::HostF
       if (Works) {
         HostFeatures.CPUIndexSource = CPUIndexSourceEnum::TPIDR_Low12;
       }
-      LogMan::Msg::IFmt("FEX: processor number from TPIDR_EL0: {}", Works ? "enabled" : "check failed, RDTSCP and RDPID stay off");
+      if (Works) {
+        LogMan::Msg::IFmt("FEX: processor number from TPIDR_EL0: enabled");
+      } else {
+        // The user asked for this, so say why it is off: RDTSCP and RDPID still run, through the slower OS call.
+        LogMan::Msg::EFmt("FEX: CPUIndexInTPIDR set, but the TPIDR_EL0 check failed; RDTSCP and RDPID are not advertised");
+      }
     }
   }
 

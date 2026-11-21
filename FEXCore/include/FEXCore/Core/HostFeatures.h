@@ -23,7 +23,8 @@ struct HostFeatures {
 
   // Where the JIT reads the current processor number for RDTSCP, RDPID and CPUID.
   enum class CPUIndexSourceEnum : uint32_t {
-    // None: RDTSCP and RDPID are not advertised; Linux asks the kernel through getcpu.
+    // None: Linux asks the kernel through getcpu. On Windows (Wine) the JIT calls GetCurrentProcessorNumber, which is
+    // too slow to advertise RDTSCP and RDPID in CPUID, but keeps programs that execute them anyway from faulting.
     None,
     // Windows keeps the processor number in TPIDRRO_EL0.
     TPIDRRO,
@@ -34,7 +35,7 @@ struct HostFeatures {
 
   [[nodiscard]]
   bool SupportsCPUIndex() const {
-    return CPUIndexSource == CPUIndexSourceEnum::TPIDRRO || CPUIndexSource == CPUIndexSourceEnum::TPIDR_Low12;
+    return CPUIndexSource != CPUIndexSourceEnum::None;
   }
 
   // Whether or not the host supports any kind of SVE implementation.

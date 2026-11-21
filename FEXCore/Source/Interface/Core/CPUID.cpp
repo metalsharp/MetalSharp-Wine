@@ -666,7 +666,7 @@ FEXCore::CPUID::FunctionResults CPUIDEmu::Function_07h(uint32_t Leaf) const {
 #ifndef _WIN32
     constexpr uint32_t SUPPORTS_RDPID = 1;
 #else
-    // RDPID under WIN32 is only supported if a register holds the processor number.
+    // RDPID under WIN32 is only advertised if a register holds the processor number; otherwise it calls out to the OS.
     const uint32_t SUPPORTS_RDPID = SupportsCPUIndex;
 #endif
 
@@ -1086,7 +1086,7 @@ FEXCore::CPUID::FunctionResults CPUIDEmu::Function_8000_0001h(uint32_t Leaf) con
 #ifndef _WIN32
   constexpr uint32_t SUPPORTS_RDTSCP = 1;
 #else
-  // RDTSCP under WIN32 is only supported if a register holds the processor number.
+  // RDTSCP under WIN32 is only advertised if a register holds the processor number; otherwise it calls out to the OS.
   const uint32_t SUPPORTS_RDTSCP = SupportsCPUIndex;
 #endif
   FEXCore::CPUID::FunctionResults Res {};
