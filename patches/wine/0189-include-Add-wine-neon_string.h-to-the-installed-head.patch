@@ -1,0 +1,29 @@
+From 4da4341d95ee2bc0e73373b395a07067fd2a873d Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Sat, 21 Nov 2026 08:40:52 -0700
+Subject: [PATCH] include: Add wine/neon_string.h to the installed headers
+ list.
+
+makedep only resolves headers listed in include/Makefile.in, so configure
+failed on a fresh tree with "wine/neon_string.h: No such file or directory"
+from dlls/msvcrt/string.c, and an existing tree never rebuilt the files
+that include it when it changed.
+---
+ include/Makefile.in | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/include/Makefile.in b/include/Makefile.in
+index 3f23c63d3ea..a953c41b3f1 100644
+--- a/include/Makefile.in
++++ b/include/Makefile.in
+@@ -1137,6 +1137,7 @@ SOURCES = \
+ 	wine/mmsystem16.h \
+ 	wine/mscvpdb.h \
+ 	wine/mssign.h \
++	wine/neon_string.h \
+ 	wine/nsi.h \
+ 	wine/opengl_driver.h \
+ 	wine/orpc.idl \
+-- 
+2.54.0 (Apple Git-157)
+
