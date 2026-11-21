@@ -24,6 +24,7 @@
 #include "windef.h"
 #include "winbase.h"
 #include "winnls.h"
+#include "wine/neon_string.h"
 
 /* NLS codepage file format:
  *
@@ -309,6 +310,18 @@ static inline unsigned int cp_wcstombs_size( const CPTABLEINFO *info, const WCHA
 }
 
 
+#ifdef WINE_NEON_STRING
+/* Whether the next 16 characters are all 7-bit ASCII. */
+static inline int neon_ascii16_a( const char *src )
+{
+    return vmaxvq_u8( vld1q_u8( (const uint8_t *)src )) < 0x80;
+}
+static inline int neon_ascii16_w( const WCHAR *src )
+{
+    return vmaxvq_u16( vorrq_u16( vld1q_u16( src ), vld1q_u16( src + 8 ))) < 0x80;
+}
+#endif
+
 static inline NTSTATUS utf8_wcstombs_size( const WCHAR *src, unsigned int srclen, unsigned int *reslen )
 {
     unsigned int val, len;
@@ -316,6 +329,15 @@ static inline NTSTATUS utf8_wcstombs_size( const WCHAR *src, unsigned int srclen
 
     for (len = 0; srclen; srclen--, src++)
     {
+#ifdef WINE_NEON_STRING
+        while (srclen >= 16 && neon_ascii16_w( src ))
+        {
+            len += 16;
+            src += 16;
+            srclen -= 16;
+        }
+        if (!srclen) break;
+#endif
         if (*src < 0x80) len++;  /* 0x00-0x7f: 1 byte */
         else if (*src < 0x800) len += 2;  /* 0x80-0x7ff: 2 bytes */
         else
@@ -347,7 +369,16 @@ static inline NTSTATUS utf8_mbstowcs_size( const char *src, unsigned int srclen,
 
     for (len = 0; src < srcend; len++)
     {
-        unsigned char ch = *src++;
+        unsigned char ch;
+#ifdef WINE_NEON_STRING
+        while (srcend - src >= 16 && neon_ascii16_a( src ))
+        {
+            len += 16;
+            src += 16;
+        }
+        if (src == srcend) break;
+#endif
+        ch = *src++;
         if (ch < 0x80) continue;
         if ((res = decode_utf8_char( ch, &src, srcend )) > 0x10ffff)
             status = STATUS_SOME_NOT_MAPPED;
@@ -429,7 +460,20 @@ static inline NTSTATUS utf8_mbstowcs( WCHAR *dst, unsigned int dstlen, unsigned 
 
     while ((dst < dstend) && (src < srcend))
     {
-        unsigned char ch = *src++;
+        unsigned char ch;
+#ifdef WINE_NEON_STRING
+        while (srcend - src >= 16 && dstend - dst >= 16)
+        {
+            uint8x16_t v = vld1q_u8( (const uint8_t *)src );
+            if (vmaxvq_u8( v ) >= 0x80) break;
+            vst1q_u16( dst, vmovl_u8( vget_low_u8( v )));
+            vst1q_u16( dst + 8, vmovl_high_u8( v ));
+            src += 16;
+            dst += 16;
+        }
+        if (dst == dstend || src == srcend) break;
+#endif
+        ch = *src++;
         if (ch < 0x80)  /* special fast case for 7-bit ASCII */
         {
             *dst++ = ch;
@@ -471,7 +515,18 @@ static inline NTSTATUS utf8_wcstombs( char *dst, unsigned int dstlen, unsigned i
 
     for (end = dst + dstlen; srclen; srclen--, src++)
     {
-        WCHAR ch = *src;
+        WCHAR ch;
+#ifdef WINE_NEON_STRING
+        while (srclen >= 16 && end - dst >= 16 && neon_ascii16_w( src ))
+        {
+            vst1q_u8( (uint8_t *)dst, vcombine_u8( vmovn_u16( vld1q_u16( src )), vmovn_u16( vld1q_u16( src + 8 ))));
+            src += 16;
+            dst += 16;
+            srclen -= 16;
+        }
+        if (!srclen) break;
+#endif
+        ch = *src;
 
         if (ch < 0x80)  /* 0x00-0x7f: 1 byte */
         {
