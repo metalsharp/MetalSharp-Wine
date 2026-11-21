@@ -1,0 +1,536 @@
+From 5b7b8df0837cc54c8f10f5580fe0b4f4d0286922 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Roman=20Fro=C5=82ow?= <rofrol@gmail.com>
+Date: Sat, 21 Nov 2026 05:28:52 +0100
+Subject: [PATCH 43/44] Windows: RDTSCP and RDPID under Wine on macOS through
+ TPIDR_EL0
+
+Under Wine FEX has no processor-number register, so RDTSCP and RDPID are not
+advertised and raise #UD (Blender 5.3.0 stops on it). macOS keeps the current
+processor number in the low 12 bits of TPIDR_EL0, the value libsystem's
+pthread_cpu_number_np returns; Apple does not document the layout.
+
+- HostFeatures: the SupportsCPUIndexInTPIDRRO bit becomes CPUIndexSource
+  (None, TPIDRRO, TPIDR_Low12), so two sources cannot both be set.
+- JIT ProcessorID and CPUID's APIC ID read TPIDR_EL0 & 0xfff for TPIDR_Low12.
+- New option CPUIndexInTPIDR (default off). When set under Wine, the unix
+  library probes the layout on threads of both QoS classes against
+  pthread_cpu_number_np and hw.ncpu, and the PE side against
+  GetCurrentProcessorNumber(); any failure leaves the feature off. Up to 1
+  mismatch in 1000 samples per thread is taken as a migration away and back
+  between the reads.
+
+Limits: a startup check cannot see aliasing above 4096 processors or a later
+change; a thread that restricted its own affinity gets the processor it runs
+on, while Wine's GetCurrentProcessorNumber names one inside its mask.
+---
+ .../Source/Interface/Config/Config.json.in    |  12 ++
+ FEXCore/Source/Interface/Core/CPUID.cpp       |  22 ++-
+ FEXCore/Source/Interface/Core/CPUID.h         |   2 +-
+ FEXCore/Source/Interface/Core/JIT/MiscOps.cpp |  15 +-
+ .../Interface/Core/OpcodeDispatcher.cpp       |   8 +-
+ FEXCore/include/FEXCore/Core/HostFeatures.h   |  20 ++-
+ Source/Common/HostFeatures.cpp                |   2 +-
+ Source/Windows/Common/CPUFeatures.cpp         |  42 +++++-
+ Source/Windows/Common/FEXUnixLib.cpp          |   7 +
+ Source/Windows/Common/FEXUnixLib.h            |   3 +
+ Source/Windows/UnixLib/FEXUnixLib.cpp         | 134 ++++++++++++++++++
+ Source/Windows/UnixLib/FEXUnixLib.h           |   8 ++
+ 12 files changed, 253 insertions(+), 22 deletions(-)
+
+diff --git a/FEXCore/Source/Interface/Config/Config.json.in b/FEXCore/Source/Interface/Config/Config.json.in
+index b5bed75197f..1e078c18d0d 100644
+--- a/FEXCore/Source/Interface/Config/Config.json.in
++++ b/FEXCore/Source/Interface/Config/Config.json.in
+@@ -141,6 +141,18 @@
+           "Hides hybrid CPU core arrangement."
+         ]
+       },
++      "CPUIndexInTPIDR": {
++        "Type": "bool",
++        "Default": "false",
++        "AffectsCodeGen": "false",
++        "Desc": [
++          "Wine on macOS: reads the processor number from the low 12 bits of TPIDR_EL0 to support RDTSCP and RDPID.",
++          "The layout is not documented by Apple; it is checked at startup and left off when the check fails.",
++          "A thread that restricted its affinity gets the processor it runs on, which macOS does not pin, while",
++          "Wine's GetCurrentProcessorNumber names one inside the mask.",
++          "The choice is part of the host features, which already key the code cache."
++        ]
++      },
+       "SoftwareRNG": {
+         "Type": "bool",
+         "Default": "false",
+diff --git a/FEXCore/Source/Interface/Core/CPUID.cpp b/FEXCore/Source/Interface/Core/CPUID.cpp
+index e3326510e17..b45c20cef57 100644
+--- a/FEXCore/Source/Interface/Core/CPUID.cpp
++++ b/FEXCore/Source/Interface/Core/CPUID.cpp
+@@ -154,6 +154,12 @@ static uint32_t GetCPUID_TPIDRRO() {
+   return Result;
+ }
+ 
++static uint32_t GetCPUID_TPIDR_Low12() {
++  uint64_t Result {};
++  __asm volatile("mrs %[Res], TPIDR_EL0" : [Res] "=r"(Result));
++  return Result & 0xfff;
++}
++
+ void CPUIDEmu::SetupHostHybridFlag() {
+   FEX_CONFIG_OPT(HideHybrid, HIDEHYBRID);
+   PerCPUData.resize(Cores);
+@@ -660,8 +666,8 @@ FEXCore::CPUID::FunctionResults CPUIDEmu::Function_07h(uint32_t Leaf) const {
+ #ifndef _WIN32
+     constexpr uint32_t SUPPORTS_RDPID = 1;
+ #else
+-    // RDPID under WIN32 is only supported if CPUIndex is available in TPIDRRO.
+-    const uint32_t SUPPORTS_RDPID = SupportsCPUIndexInTPIDRRO;
++    // RDPID under WIN32 is only supported if a register holds the processor number.
++    const uint32_t SUPPORTS_RDPID = SupportsCPUIndex;
+ #endif
+ 
+     // Disable Enhanced REP MOVS when TSO is enabled.
+@@ -1080,8 +1086,8 @@ FEXCore::CPUID::FunctionResults CPUIDEmu::Function_8000_0001h(uint32_t Leaf) con
+ #ifndef _WIN32
+   constexpr uint32_t SUPPORTS_RDTSCP = 1;
+ #else
+-  // RDTSCP under WIN32 is only supported if CPUIndex is available in TPIDRRO.
+-  const uint32_t SUPPORTS_RDTSCP = SupportsCPUIndexInTPIDRRO;
++  // RDTSCP under WIN32 is only supported if a register holds the processor number.
++  const uint32_t SUPPORTS_RDTSCP = SupportsCPUIndex;
+ #endif
+   FEXCore::CPUID::FunctionResults Res {};
+ 
+@@ -1397,7 +1403,7 @@ FEXCore::CPUID::XCRResults CPUIDEmu::XCRFunction_0h() const {
+ 
+ CPUIDEmu::CPUIDEmu(const FEXCore::Context::ContextImpl* ctx)
+   : CTX {ctx}
+-  , SupportsCPUIndexInTPIDRRO {CTX->HostFeatures.SupportsCPUIndexInTPIDRRO != 0}
++  , SupportsCPUIndex {CTX->HostFeatures.SupportsCPUIndex()}
+   , GetCPUID {GetCPUID_Syscall} {
+   Cores = CTX->HostFeatures.CPUMIDRs.size();
+ 
+@@ -1407,8 +1413,10 @@ CPUIDEmu::CPUIDEmu(const FEXCore::Context::ContextImpl* ctx)
+   SetupFeatures();
+ 
+ #ifdef ARCHITECTURE_arm64
+-  if (SupportsCPUIndexInTPIDRRO) {
+-    GetCPUID = GetCPUID_TPIDRRO;
++  switch (CTX->HostFeatures.CPUIndexSource) {
++  case FEXCore::HostFeatures::CPUIndexSourceEnum::TPIDRRO: GetCPUID = GetCPUID_TPIDRRO; break;
++  case FEXCore::HostFeatures::CPUIndexSourceEnum::TPIDR_Low12: GetCPUID = GetCPUID_TPIDR_Low12; break;
++  case FEXCore::HostFeatures::CPUIndexSourceEnum::None: break;
+   }
+ #endif
+ }
+diff --git a/FEXCore/Source/Interface/Core/CPUID.h b/FEXCore/Source/Interface/Core/CPUID.h
+index a79685058be..1f438debf6c 100644
+--- a/FEXCore/Source/Interface/Core/CPUID.h
++++ b/FEXCore/Source/Interface/Core/CPUID.h
+@@ -115,7 +115,7 @@ public:
+ 
+ private:
+   const FEXCore::Context::ContextImpl* CTX;
+-  [[maybe_unused]] bool SupportsCPUIndexInTPIDRRO {};
++  [[maybe_unused]] bool SupportsCPUIndex {};
+   bool Hybrid {};
+   uint32_t Cores {};
+   FEX_CONFIG_OPT(HideHypervisorBit, HIDEHYPERVISORBIT);
+diff --git a/FEXCore/Source/Interface/Core/JIT/MiscOps.cpp b/FEXCore/Source/Interface/Core/JIT/MiscOps.cpp
+index 6e8df955385..6b937d06f1a 100644
+--- a/FEXCore/Source/Interface/Core/JIT/MiscOps.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/MiscOps.cpp
+@@ -230,15 +230,18 @@ DEF_OP(PrintMsg) {
+ }
+ 
+ DEF_OP(ProcessorID) {
+-  if (CTX->HostFeatures.SupportsCPUIndexInTPIDRRO) {
+-    mrs(GetReg(Node), ARMEmitter::SystemRegister::TPIDRRO_EL0);
++  using CPUIndexSourceEnum = FEXCore::HostFeatures::CPUIndexSourceEnum;
++  switch (CTX->HostFeatures.CPUIndexSource) {
++  case CPUIndexSourceEnum::TPIDRRO: mrs(GetReg(Node), ARMEmitter::SystemRegister::TPIDRRO_EL0); return;
++  case CPUIndexSourceEnum::TPIDR_Low12:
++    mrs(GetReg(Node), ARMEmitter::SystemRegister::TPIDR_EL0);
++    and_(ARMEmitter::Size::i64Bit, GetReg(Node), GetReg(Node), 0xfff);
+     return;
++  case CPUIndexSourceEnum::None: break;
+   }
+ #ifdef _WIN32
+-  else {
+-    // If on Windows and TPIDRRO isn't supported (like in wine), then this is a programming error.
+-    ERROR_AND_DIE_FMT("Unsupported");
+-  }
++  // If on Windows without a processor number register (like in wine), then this is a programming error.
++  ERROR_AND_DIE_FMT("Unsupported");
+ #else
+   // We always need to spill x8 since we can't know if it is live at this SSA location
+   uint32_t SpillMask = 1U << 8;
+diff --git a/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp b/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
+index 43572b8d207..e1ade4e7ac2 100644
+--- a/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
++++ b/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
+@@ -5143,8 +5143,8 @@ void OpDispatchBuilder::RDTSCPOp(OpcodeArgs) {
+   //  - Explicitly use an MFENCE before this instruction if you want this behaviour
+   // This instruction is not an execution fence, so subsequent instructions can execute after this
+   //  - Explicitly use an LFENCE after RDTSCP if you want to block this behaviour
+-  if (CTX->HostFeatures.HostType != FEXCore::HostFeatures::HostTypeEnum::Linux && !CTX->HostFeatures.SupportsCPUIndexInTPIDRRO) {
+-    // RDTSCP is unsupported on Win32 platforms if TPIDRRO isn't supported.
++  if (CTX->HostFeatures.HostType != FEXCore::HostFeatures::HostTypeEnum::Linux && !CTX->HostFeatures.SupportsCPUIndex()) {
++    // RDTSCP is unsupported on Win32 platforms without a processor number register.
+     UnimplementedOp(Op);
+     return;
+   }
+@@ -5157,8 +5157,8 @@ void OpDispatchBuilder::RDTSCPOp(OpcodeArgs) {
+ }
+ 
+ void OpDispatchBuilder::RDPIDOp(OpcodeArgs) {
+-  if (CTX->HostFeatures.HostType != FEXCore::HostFeatures::HostTypeEnum::Linux && !CTX->HostFeatures.SupportsCPUIndexInTPIDRRO) {
+-    // RDTSCP is unsupported on Win32 platforms if TPIDRRO isn't supported.
++  if (CTX->HostFeatures.HostType != FEXCore::HostFeatures::HostTypeEnum::Linux && !CTX->HostFeatures.SupportsCPUIndex()) {
++    // RDTSCP is unsupported on Win32 platforms without a processor number register.
+     UnimplementedOp(Op);
+     return;
+   }
+diff --git a/FEXCore/include/FEXCore/Core/HostFeatures.h b/FEXCore/include/FEXCore/Core/HostFeatures.h
+index b401cfe1ca0..b0404f6ff69 100644
+--- a/FEXCore/include/FEXCore/Core/HostFeatures.h
++++ b/FEXCore/include/FEXCore/Core/HostFeatures.h
+@@ -21,6 +21,22 @@ struct HostFeatures {
+     Arm64ec,
+   };
+ 
++  // Where the JIT reads the current processor number for RDTSCP, RDPID and CPUID.
++  enum class CPUIndexSourceEnum : uint32_t {
++    // None: RDTSCP and RDPID are not advertised; Linux asks the kernel through getcpu.
++    None,
++    // Windows keeps the processor number in TPIDRRO_EL0.
++    TPIDRRO,
++    // macOS keeps it in the low 12 bits of TPIDR_EL0, the value pthread_cpu_number_np returns.
++    // This is not documented by Apple, so it is only used after a startup check of the convention.
++    TPIDR_Low12,
++  };
++
++  [[nodiscard]]
++  bool SupportsCPUIndex() const {
++    return CPUIndexSource == CPUIndexSourceEnum::TPIDRRO || CPUIndexSource == CPUIndexSourceEnum::TPIDR_Low12;
++  }
++
+   // Whether or not the host supports any kind of SVE implementation.
+   [[nodiscard]]
+   bool SupportsSVE() const {
+@@ -71,7 +87,7 @@ struct HostFeatures {
+   uint32_t SupportsPreserveAllABI      : 1 {};
+   uint32_t SupportsAES256              : 1 {};
+   uint32_t SupportsSVEBitPerm          : 1 {};
+-  uint32_t SupportsCPUIndexInTPIDRRO   : 1 {};
++  CPUIndexSourceEnum CPUIndexSource   : 2 {};
+   uint32_t SupportsFRINTTS             : 1 {};
+   uint32_t SupportsECV                 : 1 {};
+   uint32_t SupportsWFXT                : 1 {};
+@@ -85,7 +101,7 @@ struct HostFeatures {
+   uint32_t SupportsFloatExceptions     : 1 {};
+   // Flag if this is InstCountCI
+   uint32_t IsInstCountCI : 1 {};
+-  uint32_t pad           : 26 {};
++  uint32_t pad           : 25 {};
+ 
+   // This affects codegen, but it isn't machine state
+   HostTypeEnum HostType {};
+diff --git a/Source/Common/HostFeatures.cpp b/Source/Common/HostFeatures.cpp
+index 858d76d7139..3961dfad77c 100644
+--- a/Source/Common/HostFeatures.cpp
++++ b/Source/Common/HostFeatures.cpp
+@@ -631,7 +631,7 @@ FEXCore::HostFeatures FetchHostFeatures() {
+   FillMIDRInformationViaLinux(&HostFeatures);
+   FetchHostFeatures(Features, HostFeatures, true, CTR, MIDR);
+ 
+-  HostFeatures.SupportsCPUIndexInTPIDRRO = false;
++  HostFeatures.CPUIndexSource = FEXCore::HostFeatures::CPUIndexSourceEnum::None;
+   HostFeatures.HostType = FEXCore::HostFeatures::HostTypeEnum::Linux;
+   HostFeatures.ProcessPID = ::getpid();
+   return HostFeatures;
+diff --git a/Source/Windows/Common/CPUFeatures.cpp b/Source/Windows/Common/CPUFeatures.cpp
+index 1a0001c6b04..f95e10840fe 100644
+--- a/Source/Windows/Common/CPUFeatures.cpp
++++ b/Source/Windows/Common/CPUFeatures.cpp
+@@ -2,13 +2,16 @@
+ 
+ #include "Common/CPUInfo.h"
+ 
++#include <FEXCore/Config/Config.h>
+ #include <FEXCore/Core/Context.h>
+ #include <FEXCore/Core/HostFeatures.h>
+ #include <FEXCore/fextl/fmt.h>
++#include <FEXCore/Utils/LogManager.h>
+ 
+ #include <windows.h>
+ 
+ #include "CPUFeatures.h"
++#include "FEXUnixLib.h"
+ 
+ namespace {
+ 
+@@ -28,6 +31,32 @@ uint64_t ReadRegU64(HKEY Key, const char* Name) {
+   return Value;
+ }
+ 
++// Under Wine on macOS, TPIDR_EL0's low 12 bits can stand in for Windows' TPIDRRO_EL0 processor number, once the
++// unix side has checked them against pthread_cpu_number_np and this thread against Wine's own processor number.
++// As on the unix side, up to 1 mismatch in 1000 samples is taken as a migration away and back between the reads.
++bool CPUIndexInTPIDRWorks(uint32_t NumCPUs) {
++  if (!FEX::Windows::UnixLib::ProbeCPUIndexInTPIDR(NumCPUs)) {
++    return false;
++  }
++
++  uint32_t Matched = 0, Mismatched = 0;
++  for (uint32_t i = 0; i < 2000; ++i) {
++    const auto Before = GetCurrentProcessorNumber();
++    uint64_t Reg {};
++    __asm volatile("mrs %[Reg], TPIDR_EL0" : [Reg] "=r"(Reg));
++    const auto After = GetCurrentProcessorNumber();
++    if (Before != After) {
++      continue;
++    }
++    ++Matched;
++    if (Before >= NumCPUs || (Reg & 0xfff) >= NumCPUs) {
++      return false;
++    }
++    Mismatched += (Reg & 0xfff) != Before;
++  }
++  return Matched > 0 && Mismatched * 1000 <= Matched;
++}
++
+ } // namespace
+ 
+ namespace FEX::Windows {
+@@ -81,7 +110,18 @@ FEXCore::HostFeatures CPUFeatures::FetchHostFeatures(bool IsWine, FEXCore::HostF
+   HostFeatures.SupportsSVE128 = false;
+   HostFeatures.SupportsSVE256 = false;
+ 
+-  HostFeatures.SupportsCPUIndexInTPIDRRO = !IsWine;
++  using CPUIndexSourceEnum = FEXCore::HostFeatures::CPUIndexSourceEnum;
++  HostFeatures.CPUIndexSource = IsWine ? CPUIndexSourceEnum::None : CPUIndexSourceEnum::TPIDRRO;
++  if (IsWine) {
++    FEX_CONFIG_OPT(CPUIndexInTPIDR, CPUINDEXINTPIDR);
++    if (CPUIndexInTPIDR()) {
++      const bool Works = CPUIndexInTPIDRWorks(HostFeatures.CPUMIDRs.size());
++      if (Works) {
++        HostFeatures.CPUIndexSource = CPUIndexSourceEnum::TPIDR_Low12;
++      }
++      LogMan::Msg::IFmt("FEX: processor number from TPIDR_EL0: {}", Works ? "enabled" : "check failed, RDTSCP and RDPID stay off");
++    }
++  }
+ 
+   HostFeatures.HostType = HostType;
+   HostFeatures.ProcessPID = ProcessPID;
+diff --git a/Source/Windows/Common/FEXUnixLib.cpp b/Source/Windows/Common/FEXUnixLib.cpp
+index e10e55ee775..e2239b748f0 100644
+--- a/Source/Windows/Common/FEXUnixLib.cpp
++++ b/Source/Windows/Common/FEXUnixLib.cpp
+@@ -226,4 +226,11 @@ void JITWriteProtect(bool Enable) {
+   Call(FEXUnixLibFunctions::JITWriteProtect, &Args);
+ }
+ 
++bool ProbeCPUIndexInTPIDR(uint32_t NumCPUs) {
++  FEXUnixLib_ProbeCPUIndexInTPIDR Args {
++    .NumCPUs = NumCPUs,
++  };
++  return Available() && Call(FEXUnixLibFunctions::ProbeCPUIndexInTPIDR, &Args) == STATUS_SUCCESS;
++}
++
+ } // namespace FEX::Windows::UnixLib
+diff --git a/Source/Windows/Common/FEXUnixLib.h b/Source/Windows/Common/FEXUnixLib.h
+index faffac856ea..22134e7b9f7 100644
+--- a/Source/Windows/Common/FEXUnixLib.h
++++ b/Source/Windows/Common/FEXUnixLib.h
+@@ -57,4 +57,7 @@ uint32_t GetPID();
+ bool TryEnableMapJit();
+ void JITWriteProtect(bool Enable);
+ 
++// Whether the unix side confirmed, for NumCPUs processors, that TPIDR_EL0's low 12 bits hold the processor number.
++bool ProbeCPUIndexInTPIDR(uint32_t NumCPUs);
++
+ } // namespace FEX::Windows::UnixLib
+diff --git a/Source/Windows/UnixLib/FEXUnixLib.cpp b/Source/Windows/UnixLib/FEXUnixLib.cpp
+index 6c8ce84d938..0a2571a3bc2 100644
+--- a/Source/Windows/UnixLib/FEXUnixLib.cpp
++++ b/Source/Windows/UnixLib/FEXUnixLib.cpp
+@@ -19,6 +19,8 @@ static inline int prctl(int, ...) {
+ #include <dlfcn.h>
+ #include <mach-o/dyld.h>
+ #include <pthread.h>
++#include <signal.h>
++#include <sys/sysctl.h>
+ #endif
+ 
+ #include "FEXUnixLib.h"
+@@ -234,6 +236,137 @@ static NTSTATUS FEXUnixLib_JITWriteProtectHandler(void* _Args) {
+ #endif
+ }
+ 
++#if defined(__APPLE__) && defined(__aarch64__)
++namespace {
++struct CPUIndexProbeThread {
++  pthread_t Thread;
++  uint32_t NumCPUs;
++  uint32_t Matched;
++  uint32_t Mismatched;
++  // Processor numbers seen, modulo 64.
++  uint64_t Seen;
++  bool Error;
++};
++
++// Samples the register between two pthread_cpu_number_np calls; a sample counts only when both calls agree.
++// That does not rule out a migration away and back in between, so a rare mismatch is tolerated (see below).
++void* CPUIndexProbe(void* _Arg) {
++  auto Arg = static_cast<CPUIndexProbeThread*>(_Arg);
++  constexpr uint32_t Samples = 20000;
++  for (uint32_t i = 0; i < Samples; ++i) {
++    size_t Before {}, After {};
++    uint64_t Reg {};
++    if (pthread_cpu_number_np(&Before)) {
++      Arg->Error = true;
++      break;
++    }
++    __asm volatile("mrs %[Reg], TPIDR_EL0" : [Reg] "=r"(Reg));
++    if (pthread_cpu_number_np(&After)) {
++      Arg->Error = true;
++      break;
++    }
++    if (Before != After) {
++      continue;
++    }
++    ++Arg->Matched;
++    // A migration can change the number between the reads, but never put it out of range.
++    if (Before >= Arg->NumCPUs || (Reg & 0xfff) >= Arg->NumCPUs) {
++      Arg->Error = true;
++      break;
++    }
++    if ((Reg & 0xfff) != Before) {
++      ++Arg->Mismatched;
++    } else {
++      Arg->Seen |= uint64_t {1} << (Before % 64);
++    }
++  }
++  return nullptr;
++}
++} // namespace
++#endif
++
++// The macOS convention is not documented, so it is checked on threads of both performance classes, which the
++// scheduler places on different core types, and fails closed. pthread_cpu_number_np reads the same register in
++// macOS 27, so the comparison shows that libsystem still uses this layout and that the values are in range; it
++// cannot see aliasing above 0xfff processors or a change that appears later in the process's life.
++// A thread can migrate away and back between the reads (A-B-A); measured natively with this window, 0 in 80 million
++// samples, so up to 1 mismatch in 1000 samples of each thread is taken as migration, while a wrong layout
++// mismatches in most.
++#if defined(__APPLE__) && defined(__aarch64__)
++static bool ProbeCPUIndexInTPIDR(uint32_t NumCPUs) {
++  int NCPU {};
++  size_t Size = sizeof(NCPU);
++  if (sysctlbyname("hw.ncpu", &NCPU, &Size, nullptr, 0) || Size != sizeof(NCPU) || NCPU <= 1 || NCPU > 0x1000 ||
++      static_cast<uint32_t>(NCPU) != NumCPUs) {
++    return false;
++  }
++
++  // Static, so that the threads' results outlive a failed join; the handler runs this at most once.
++  constexpr uint32_t MaxThreads = 64;
++  static CPUIndexProbeThread Threads[MaxThreads];
++  const uint32_t NumThreads = NumCPUs * 2 < MaxThreads ? NumCPUs * 2 : MaxThreads;
++  // The probe threads are not Wine threads: they must not take asynchronous signals meant for the process.
++  sigset_t Block, Old;
++  sigfillset(&Block);
++  for (int Sig : {SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGTRAP}) {
++    sigdelset(&Block, Sig);
++  }
++  if (pthread_sigmask(SIG_BLOCK, &Block, &Old)) {
++    return false;
++  }
++  uint32_t Started = 0;
++  bool Failed = false;
++  for (; Started < NumThreads; ++Started) {
++    auto& T = Threads[Started];
++    T = {};
++    T.NumCPUs = NumCPUs;
++    pthread_attr_t Attr;
++    if (pthread_attr_init(&Attr)) {
++      Failed = true;
++      break;
++    }
++    int Result = pthread_attr_set_qos_class_np(&Attr, Started % 2 ? QOS_CLASS_USER_INTERACTIVE : QOS_CLASS_BACKGROUND, 0);
++    if (!Result) {
++      Result = pthread_create(&T.Thread, &Attr, CPUIndexProbe, &T);
++    }
++    pthread_attr_destroy(&Attr);
++    if (Result) {
++      Failed = true;
++      break;
++    }
++  }
++  Failed |= pthread_sigmask(SIG_SETMASK, &Old, nullptr) != 0;
++
++  uint64_t Matched = 0, Seen = 0;
++  for (uint32_t i = 0; i < Started; ++i) {
++    if (pthread_join(Threads[i].Thread, nullptr)) {
++      Failed = true;
++      continue;
++    }
++    const auto& T = Threads[i];
++    Failed |= T.Error || uint64_t {T.Mismatched} * 1000 > T.Matched;
++    Matched += T.Matched;
++    Seen |= T.Seen;
++  }
++  // At least two processors seen, so the value is not a constant.
++  return !Failed && Matched > 0 && __builtin_popcountll(Seen) >= 2;
++}
++#endif
++
++static NTSTATUS FEXUnixLib_ProbeCPUIndexInTPIDRHandler(void* _Args) {
++#if defined(__APPLE__) && defined(__aarch64__)
++  // Once per process: FEX asks during host feature setup; a second call gets the first answer.
++  static pthread_once_t Once = PTHREAD_ONCE_INIT;
++  static uint32_t NumCPUs;
++  static bool Works;
++  NumCPUs = reinterpret_cast<const FEXUnixLib_ProbeCPUIndexInTPIDR*>(_Args)->NumCPUs;
++  pthread_once(&Once, [] { Works = ProbeCPUIndexInTPIDR(NumCPUs); });
++  return Works ? STATUS_SUCCESS : STATUS_NOT_SUPPORTED;
++#else
++  return STATUS_NOT_SUPPORTED;
++#endif
++}
++
+ extern "C" const unixlib_entry_t __wine_unix_call_funcs[] = {
+   FEXUnixLib_SetHardwareTSOControlHandler,
+   FEXUnixLib_SetKernelUnalignedAtomicControlHandler,
+@@ -245,6 +378,7 @@ extern "C" const unixlib_entry_t __wine_unix_call_funcs[] = {
+   FEXUnixLib_GetPIDHandler,
+   FEXUnixLib_EnableMapJitHandler,
+   FEXUnixLib_JITWriteProtectHandler,
++  FEXUnixLib_ProbeCPUIndexInTPIDRHandler,
+ };
+ 
+ static_assert(sizeof(__wine_unix_call_funcs) / sizeof(__wine_unix_call_funcs[0]) == ToUnderlying(FEXUnixLibFunctions::MAX));
+diff --git a/Source/Windows/UnixLib/FEXUnixLib.h b/Source/Windows/UnixLib/FEXUnixLib.h
+index 7ab598ab7dd..16fc055380c 100644
+--- a/Source/Windows/UnixLib/FEXUnixLib.h
++++ b/Source/Windows/UnixLib/FEXUnixLib.h
+@@ -14,6 +14,7 @@ enum class FEXUnixLibFunctions : uint32_t {
+   GetPID,
+   EnableMapJit,
+   JITWriteProtect,
++  ProbeCPUIndexInTPIDR,
+   MAX,
+ };
+ 
+@@ -72,3 +73,10 @@ struct FEXUnixLib_JITWriteProtect {
+   bool Enable;
+ };
+ static_assert(sizeof(FEXUnixLib_JITWriteProtect) == 1);
++
++// Checks, on macOS, that the low 12 bits of TPIDR_EL0 hold the processor number pthread_cpu_number_np returns.
++struct FEXUnixLib_ProbeCPUIndexInTPIDR {
++  // In: the number of processors Wine reports.
++  uint32_t NumCPUs;
++};
++static_assert(sizeof(FEXUnixLib_ProbeCPUIndexInTPIDR) == 4);
+-- 
+2.54.0 (Apple Git-157)
+

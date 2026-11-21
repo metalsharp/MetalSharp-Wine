@@ -1,0 +1,39 @@
+From eba60ea145b406d825da8313667a8e2ef36d46db Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@Averys-Mac-Mini.local>
+Date: Thu, 19 Nov 2026 00:04:43 -0700
+Subject: [PATCH 38/44] FEXCore: Default Multiblock and TSO emulation to off
+
+With Multiblock on, Overwatch took about 141 s from its loader to
+Direct3D 12 startup; with it off, about 17 s. TSO emulation off ran
+the game far faster again. Both stay switchable per game with
+FEX_MULTIBLOCK=1 and FEX_TSOENABLED=1 for anything that needs them;
+TSO off can break multithreaded code that relies on x86 ordering.
+---
+ FEXCore/Source/Interface/Config/Config.json.in | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/FEXCore/Source/Interface/Config/Config.json.in b/FEXCore/Source/Interface/Config/Config.json.in
+index 3f4fdf8db99..0ea3f81e051 100644
+--- a/FEXCore/Source/Interface/Config/Config.json.in
++++ b/FEXCore/Source/Interface/Config/Config.json.in
+@@ -3,7 +3,7 @@
+     "CPU": {
+       "Multiblock": {
+         "Type": "bool",
+-        "Default": "true",
++        "Default": "false",
+         "AffectsCodeGen": "true",
+         "Desc": [
+           "Controls multiblock code compilation",
+@@ -576,7 +576,7 @@
+       },
+       "TSOEnabled": {
+         "Type": "bool",
+-        "Default": "true",
++        "Default": "false",
+         "AffectsCodeGen": "true",
+         "Desc": [
+           "Controls TSO IR ops.",
+-- 
+2.54.0 (Apple Git-157)
+

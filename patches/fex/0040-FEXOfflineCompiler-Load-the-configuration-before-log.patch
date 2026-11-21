@@ -1,0 +1,32 @@
+From ebeae9c8739e46da8b52b8542dc11cfcd1f11a5b Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@Averys-Mac-Mini.local>
+Date: Thu, 19 Nov 2026 01:24:58 -0700
+Subject: [PATCH 40/44] FEXOfflineCompiler: Load the configuration before
+ logging on Windows
+
+Logging reads its options, so on Windows the tool crashed on a null
+configuration before doing anything.
+---
+ Source/Tools/FEXOfflineCompiler/Main.cpp | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/Source/Tools/FEXOfflineCompiler/Main.cpp b/Source/Tools/FEXOfflineCompiler/Main.cpp
+index 484aeb8c728..f95097f7515 100644
+--- a/Source/Tools/FEXOfflineCompiler/Main.cpp
++++ b/Source/Tools/FEXOfflineCompiler/Main.cpp
+@@ -844,6 +844,12 @@ int main(int argc, char** argv) {
+   LogMan::Throw::InstallHandler(AssertHandler);
+   LogMan::Msg::InstallHandler(MsgHandler);
+ #else
++  {
++    // Logging reads its options, so the configuration has to be loaded first.
++    const auto PortableInfo = FEX::ReadPortabilityInformation();
++    char* envp[] = {nullptr};
++    FEX::Config::LoadConfig("", envp, PortableInfo);
++  }
+   FEX::Windows::Logging::Init();
+ #endif
+ 
+-- 
+2.54.0 (Apple Git-157)
+
