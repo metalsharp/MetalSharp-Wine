@@ -2482,21 +2482,34 @@ static BOOL wide_starts_with_ascii( const WCHAR *str, const char *prefix )
     return TRUE;
 }
 
+/* A file name (its last path element) as ASCII, compared without case */
+static BOOL wide_name_is_ascii( const WCHAR *str, const char *name )
+{
+    while (*name) if (ntdll_towlower( *str++ ) != ntdll_towlower( (unsigned char)*name++ )) return FALSE;
+    return !*str;
+}
+
 /* MetalSharp: a Chromium browser (CEF, Chrome, Edge/WebView2) started directly gets what kernelbase gives one started
  * by CreateProcess (launchers.c, CHROMIUM_SOFTWARE_ARGS): no sandbox, the GPU in process and off, and SwiftShader for
- * WebGL only, so its UI composites in software. Drawn through ANGLE into its windows, it stops updating under FEX. */
+ * WebGL only, so its UI composites in software. Drawn through ANGLE into its windows, it stops updating under FEX.
+ * Battle.net's browser gets what kernelbase gives it instead (launchers.c, BATTLENET_ARGS): the GPU in process, and
+ * compositing in software, without which its login and main windows stayed black (metalsharp/MetalSharp-Wine#50);
+ * the rest of Battle.net's folder (its Launcher, which starts the browser through kernelbase) is left alone. */
 static WCHAR **chromium_software_drawing( WCHAR **wargv )
 {
     static const char *const markers[] = { "libcef.dll", "chrome_elf.dll", "msedge_elf.dll" };
-    static const char *const flags[] = { "--no-sandbox", "--in-process-gpu", "--disable-gpu", "--disable-d3d11",
-                                         "--enable-unsafe-swiftshader", "--use-gl=angle",
-                                         "--use-angle=swiftshader-webgl" };
+    static const char *const software_flags[] = { "--no-sandbox", "--in-process-gpu", "--disable-gpu",
+                                                  "--disable-d3d11", "--enable-unsafe-swiftshader", "--use-gl=angle",
+                                                  "--use-angle=swiftshader-webgl" };
+    static const char *const battlenet_flags[] = { "--in-process-gpu", "--disable-gpu-compositing" };
+    const char *const *flags = software_flags;
+    unsigned int flag_count = ARRAY_SIZE(software_flags);
     const WCHAR *name = wargv[0], *p;
     WCHAR path[MAX_PATH], **ret, *text;
     unsigned int argc, i, j, dir_len;
     size_t chars = 0;
     char *unix_name;
-    BOOL found = FALSE;
+    BOOL found = FALSE, battlenet = FALSE;
 
     for (argc = 1; wargv[argc]; argc++)
         if (wide_starts_with_ascii( wargv[argc], "--type=" ) ||
@@ -2505,10 +2518,19 @@ static WCHAR **chromium_software_drawing( WCHAR **wargv )
     for (p = wargv[0]; *p; p++)
     {
         if (*p == '\\' || *p == '/') name = p + 1;
-        /* Battle.net gets the GPU in process alone, from kernelbase (launchers.c) */
         if (wide_starts_with_ascii( p, "Battle.net" ) && p > wargv[0] && (p[-1] == '\\' || p[-1] == '/') &&
             (p[10] == '\\' || p[10] == '/'))
-            return wargv;
+            battlenet = TRUE;
+    }
+    if (battlenet)
+    {
+        if (!wide_name_is_ascii( name, "Battle.net.exe" )) return wargv;
+        /* a command line that already has them */
+        for (i = 1; i < argc; i++)
+            if (wide_starts_with_ascii( wargv[i], "--disable-gpu-compositing" )) return wargv;
+        flags = battlenet_flags;
+        flag_count = ARRAY_SIZE(battlenet_flags);
+        found = TRUE;
     }
     dir_len = name - wargv[0];
     for (i = 0; i < ARRAY_SIZE(markers) && !found; i++)
@@ -2523,18 +2545,18 @@ static WCHAR **chromium_software_drawing( WCHAR **wargv )
     }
     if (!found) return wargv;
 
-    for (i = 0; i < ARRAY_SIZE(flags); i++) chars += strlen( flags[i] ) + 1;
+    for (i = 0; i < flag_count; i++) chars += strlen( flags[i] ) + 1;
     /* the old array stays allocated: its strings are still referenced */
-    if (!(ret = malloc( (argc + ARRAY_SIZE(flags) + 1) * sizeof(*ret) + chars * sizeof(WCHAR) ))) return wargv;
+    if (!(ret = malloc( (argc + flag_count + 1) * sizeof(*ret) + chars * sizeof(WCHAR) ))) return wargv;
     memcpy( ret, wargv, argc * sizeof(*ret) );
-    text = (WCHAR *)(ret + argc + ARRAY_SIZE(flags) + 1);
-    for (i = 0; i < ARRAY_SIZE(flags); i++)
+    text = (WCHAR *)(ret + argc + flag_count + 1);
+    for (i = 0; i < flag_count; i++)
     {
         ret[argc + i] = text;
         for (j = 0; flags[i][j]; j++) *text++ = (unsigned char)flags[i][j];
         *text++ = 0;
     }
-    ret[argc + ARRAY_SIZE(flags)] = NULL;
+    ret[argc + flag_count] = NULL;
     TRACE( "Chromium browser %s: drawing in software\n", debugstr_w(wargv[0]) );
     return ret;
 }
