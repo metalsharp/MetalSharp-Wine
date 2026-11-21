@@ -33,6 +33,13 @@ struct launcher_process_policy
     const WCHAR *append_args;
 };
 
+/* MetalSharp: what Battle.net's browser (Battle.net.exe) gets: the GPU in process, and compositing in software. With
+ * GPU compositing its login window and its main window stayed black: the browser drew its pages, but what the GPU
+ * composited never reached the window. WebGL keeps the GPU (metalsharp/MetalSharp-Wine#50). */
+#define BATTLENET_ARGS L" --in-process-gpu --disable-gpu-compositing"
+/* A command line that already has them. */
+#define BATTLENET_MARKER L"--disable-gpu-compositing"
+
 static const struct launcher_process_policy launcher_process_policies[] =
 {
     /* MetalSharp-Internal: launcher-compat/steam-cef-swiftshader-v1. */
@@ -71,15 +78,15 @@ static const struct launcher_process_policy launcher_process_policies[] =
         {L"--type=", L"--in-process-gpu", NULL},
         L" --in-process-gpu",
     },
-    /* MetalSharp-Internal: launcher-compat/battlenet-in-process-gpu-v1. */
+    /* MetalSharp-Internal: launcher-compat/battlenet-in-process-gpu-v1, composited in software (BATTLENET_ARGS). */
     {
         L"Battle.net.exe",
         L"\\Program Files (x86)\\Battle.net\\",
         L"/Program Files (x86)/Battle.net/",
         NULL,
         NULL,
-        {L"--type=", L"--in-process-gpu", NULL},
-        L" --in-process-gpu",
+        {L"--type=", BATTLENET_MARKER, NULL},
+        BATTLENET_ARGS,
     },
     /* MetalSharp-Internal: launcher-compat/ubisoft-connect-in-process-gpu-v1. */
     {
