@@ -1,0 +1,29 @@
+From a38cbceada2cd2bda608e928eb5e1a4095f96865 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@Averys-Mac-Mini.local>
+Date: Thu, 19 Nov 2026 19:48:35 -0700
+Subject: [PATCH 42/44] FEXCore: Default Multiblock back to on
+
+Multiblock off sped up Overwatch's startup, but other games run better
+with it on, and the probes favored it cold and warm. Overwatch's slow
+startup with it on is left to a fix of its own; FEX_MULTIBLOCK=0 still
+turns it off per game. TSO emulation stays off by default.
+---
+ FEXCore/Source/Interface/Config/Config.json.in | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/FEXCore/Source/Interface/Config/Config.json.in b/FEXCore/Source/Interface/Config/Config.json.in
+index 0ea3f81e051..b5bed75197f 100644
+--- a/FEXCore/Source/Interface/Config/Config.json.in
++++ b/FEXCore/Source/Interface/Config/Config.json.in
+@@ -3,7 +3,7 @@
+     "CPU": {
+       "Multiblock": {
+         "Type": "bool",
+-        "Default": "false",
++        "Default": "true",
+         "AffectsCodeGen": "true",
+         "Desc": [
+           "Controls multiblock code compilation",
+-- 
+2.54.0 (Apple Git-157)
+

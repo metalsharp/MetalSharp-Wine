@@ -1,0 +1,225 @@
+From a72310007791722683ba0569bed5a406ad543878 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Sat, 21 Nov 2026 07:25:57 -0700
+Subject: [PATCH 44/44] Windows: run RDTSCP and RDPID under Wine without a
+ processor number register
+
+Programs such as Blender execute RDTSCP without checking CPUID, so leaving it
+unadvertised did not stop the #UD. Without a register source, ProcessorID now
+calls GetCurrentProcessorNumber through a JIT runtime call (as CPUID already
+does for its APIC ID), so the value matches what Wine reports, including its
+affinity remap. CPUID still advertises RDTSCP and RDPID only with a register
+source, since the call is slower (about 45 ns against 9 ns on an M6).
+
+- A failed CPUIndexInTPIDR check is logged as an error, since the user asked
+  for it.
+- SupportsCPUIndex() is CPUIndexSource != None.
+
+Tested on an Apple M6 (12 CPUs), x86_64, 8 threads, 1.6 million samples:
+before, RDTSCP raised #UD; option off, no fault and 1 mismatch (a migration
+away and back); option on, the probe passes and 0 mismatches.
+---
+ .../Source/Interface/Config/Config.json.in    |  3 ++-
+ FEXCore/Source/Interface/Core/CPUID.cpp       |  4 ++--
+ FEXCore/Source/Interface/Core/JIT/JIT.cpp     | 12 ++++++++--
+ FEXCore/Source/Interface/Core/JIT/MiscOps.cpp | 22 +++++++++++++++++--
+ .../Interface/Core/OpcodeDispatcher.cpp       | 12 ++--------
+ FEXCore/include/FEXCore/Core/CoreState.h      |  1 +
+ FEXCore/include/FEXCore/Core/HostFeatures.h   |  5 +++--
+ Source/Windows/Common/CPUFeatures.cpp         |  7 +++++-
+ 8 files changed, 46 insertions(+), 20 deletions(-)
+
+diff --git a/FEXCore/Source/Interface/Config/Config.json.in b/FEXCore/Source/Interface/Config/Config.json.in
+index 1e078c18d0d..3f968378660 100644
+--- a/FEXCore/Source/Interface/Config/Config.json.in
++++ b/FEXCore/Source/Interface/Config/Config.json.in
+@@ -146,7 +146,8 @@
+         "Default": "false",
+         "AffectsCodeGen": "false",
+         "Desc": [
+-          "Wine on macOS: reads the processor number from the low 12 bits of TPIDR_EL0 to support RDTSCP and RDPID.",
++          "Wine on macOS: reads the processor number from the low 12 bits of TPIDR_EL0, so RDTSCP and RDPID are fast and advertised in CPUID.",
++          "Without it they still run, through a slower GetCurrentProcessorNumber call, but CPUID does not advertise them.",
+           "The layout is not documented by Apple; it is checked at startup and left off when the check fails.",
+           "A thread that restricted its affinity gets the processor it runs on, which macOS does not pin, while",
+           "Wine's GetCurrentProcessorNumber names one inside the mask.",
+diff --git a/FEXCore/Source/Interface/Core/CPUID.cpp b/FEXCore/Source/Interface/Core/CPUID.cpp
+index b45c20cef57..45941e75948 100644
+--- a/FEXCore/Source/Interface/Core/CPUID.cpp
++++ b/FEXCore/Source/Interface/Core/CPUID.cpp
+@@ -666,7 +666,7 @@ FEXCore::CPUID::FunctionResults CPUIDEmu::Function_07h(uint32_t Leaf) const {
+ #ifndef _WIN32
+     constexpr uint32_t SUPPORTS_RDPID = 1;
+ #else
+-    // RDPID under WIN32 is only supported if a register holds the processor number.
++    // RDPID under WIN32 is only advertised if a register holds the processor number; otherwise it calls out to the OS.
+     const uint32_t SUPPORTS_RDPID = SupportsCPUIndex;
+ #endif
+ 
+@@ -1086,7 +1086,7 @@ FEXCore::CPUID::FunctionResults CPUIDEmu::Function_8000_0001h(uint32_t Leaf) con
+ #ifndef _WIN32
+   constexpr uint32_t SUPPORTS_RDTSCP = 1;
+ #else
+-  // RDTSCP under WIN32 is only supported if a register holds the processor number.
++  // RDTSCP under WIN32 is only advertised if a register holds the processor number; otherwise it calls out to the OS.
+   const uint32_t SUPPORTS_RDTSCP = SupportsCPUIndex;
+ #endif
+   FEXCore::CPUID::FunctionResults Res {};
+diff --git a/FEXCore/Source/Interface/Core/JIT/JIT.cpp b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+index f179e03ccc6..ff6f5f08fd6 100644
+--- a/FEXCore/Source/Interface/Core/JIT/JIT.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+@@ -39,10 +39,9 @@ $end_info$
+ #include <optional>
+ #include <type_traits>
+ #include <unistd.h>
++#include <FEXHeaderUtils/Syscalls.h>
+ #ifdef _WIN32
+ #include <atomic>
+-#else
+-#include <FEXHeaderUtils/Syscalls.h>
+ #endif
+ 
+ namespace {
+@@ -99,6 +98,14 @@ static std::optional<uint64_t> RDRANDFallback(uint64_t Reseed) {
+ }
+ #endif
+ 
++// RDTSCP/RDPID when no register holds the processor number (Wine without the TPIDR_EL0 source): ask the OS, as
++// CPUID already does for its APIC ID. On Windows this is GetCurrentProcessorNumber, the number Wine reports.
++static uint64_t ProcessorIDFallback() {
++  uint32_t CPU {};
++  FHU::Syscalls::getcpu(&CPU, nullptr);
++  return CPU;
++}
++
+ static void PrintValue(uint64_t Value) {
+   LogMan::Msg::DFmt("Value: 0x{:x}", Value);
+ }
+@@ -711,6 +718,7 @@ Arm64JITCore::Arm64JITCore(FEXCore::Context::ContextImpl* ctx, FEXCore::Core::In
+     Ptrs.LUDIV = reinterpret_cast<uint64_t>(LUDIV);
+     Ptrs.LDIV = reinterpret_cast<uint64_t>(LDIV);
+     Ptrs.RDRANDFallback = reinterpret_cast<uint64_t>(RDRANDFallback);
++    Ptrs.ProcessorIDFallback = reinterpret_cast<uint64_t>(ProcessorIDFallback);
+   }
+ 
+   CurrentCodeBuffer = SharedCodeBuffers.GetLatest();
+diff --git a/FEXCore/Source/Interface/Core/JIT/MiscOps.cpp b/FEXCore/Source/Interface/Core/JIT/MiscOps.cpp
+index 6b937d06f1a..991d6f0f262 100644
+--- a/FEXCore/Source/Interface/Core/JIT/MiscOps.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/MiscOps.cpp
+@@ -240,8 +240,26 @@ DEF_OP(ProcessorID) {
+   case CPUIndexSourceEnum::None: break;
+   }
+ #ifdef _WIN32
+-  // If on Windows without a processor number register (like in wine), then this is a programming error.
+-  ERROR_AND_DIE_FMT("Unsupported");
++  // Without a processor number register (Wine), call out to GetCurrentProcessorNumber. This is slower than a register
++  // read, so CPUID does not advertise RDTSCP/RDPID here, but programs that execute them anyway still run.
++  PushDynamicRegs(TMP4);
++  SpillStaticRegs(TMP4);
++
++  ldr(ARMEmitter::XReg::x0, STATE, offsetof(FEXCore::Core::CpuStateFrame, Pointers.ProcessorIDFallback));
++  if (!CTX->Config.DisableVixlIndirectCalls) [[unlikely]] {
++    GenerateIndirectRuntimeCall<uint64_t>(ARMEmitter::Reg::r0);
++  } else {
++    blr(ARMEmitter::Reg::r0);
++  }
++
++  if (!TMP_ABIARGS) {
++    mov(ARMEmitter::Size::i64Bit, TMP1, ARMEmitter::Reg::r0);
++  }
++
++  FillStaticRegs();
++  PopDynamicRegs();
++
++  mov(ARMEmitter::Size::i64Bit, GetReg(Node), TMP1);
+ #else
+   // We always need to spill x8 since we can't know if it is live at this SSA location
+   uint32_t SpillMask = 1U << 8;
+diff --git a/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp b/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
+index e1ade4e7ac2..ee405268584 100644
+--- a/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
++++ b/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
+@@ -5143,11 +5143,8 @@ void OpDispatchBuilder::RDTSCPOp(OpcodeArgs) {
+   //  - Explicitly use an MFENCE before this instruction if you want this behaviour
+   // This instruction is not an execution fence, so subsequent instructions can execute after this
+   //  - Explicitly use an LFENCE after RDTSCP if you want to block this behaviour
+-  if (CTX->HostFeatures.HostType != FEXCore::HostFeatures::HostTypeEnum::Linux && !CTX->HostFeatures.SupportsCPUIndex()) {
+-    // RDTSCP is unsupported on Win32 platforms without a processor number register.
+-    UnimplementedOp(Op);
+-    return;
+-  }
++  // Without a processor number register (Wine), ProcessorID calls out to the OS. CPUID then does not advertise
++  // RDTSCP, but programs that execute it without checking still get a correct TSC_AUX instead of #UD.
+   auto Counter = CycleCounter(true);
+ 
+   auto ID = _ProcessorID();
+@@ -5157,11 +5154,6 @@ void OpDispatchBuilder::RDTSCPOp(OpcodeArgs) {
+ }
+ 
+ void OpDispatchBuilder::RDPIDOp(OpcodeArgs) {
+-  if (CTX->HostFeatures.HostType != FEXCore::HostFeatures::HostTypeEnum::Linux && !CTX->HostFeatures.SupportsCPUIndex()) {
+-    // RDTSCP is unsupported on Win32 platforms without a processor number register.
+-    UnimplementedOp(Op);
+-    return;
+-  }
+   StoreResultGPR(Op, _ProcessorID());
+ }
+ 
+diff --git a/FEXCore/include/FEXCore/Core/CoreState.h b/FEXCore/include/FEXCore/Core/CoreState.h
+index c48c16e7f57..c105fa1efd8 100644
+--- a/FEXCore/include/FEXCore/Core/CoreState.h
++++ b/FEXCore/include/FEXCore/Core/CoreState.h
+@@ -367,6 +367,7 @@ struct JITPointers {
+   uint64_t LUDIV {};
+   uint64_t LDIV {};
+   uint64_t RDRANDFallback {};
++  uint64_t ProcessorIDFallback {};
+   uint64_t ThunkCallbackRet {};
+ 
+   // Handles returning/calling ARM64EC code from the JIT, expects the target PC in TMP3
+diff --git a/FEXCore/include/FEXCore/Core/HostFeatures.h b/FEXCore/include/FEXCore/Core/HostFeatures.h
+index b0404f6ff69..c3bb169a191 100644
+--- a/FEXCore/include/FEXCore/Core/HostFeatures.h
++++ b/FEXCore/include/FEXCore/Core/HostFeatures.h
+@@ -23,7 +23,8 @@ struct HostFeatures {
+ 
+   // Where the JIT reads the current processor number for RDTSCP, RDPID and CPUID.
+   enum class CPUIndexSourceEnum : uint32_t {
+-    // None: RDTSCP and RDPID are not advertised; Linux asks the kernel through getcpu.
++    // None: Linux asks the kernel through getcpu. On Windows (Wine) the JIT calls GetCurrentProcessorNumber, which is
++    // too slow to advertise RDTSCP and RDPID in CPUID, but keeps programs that execute them anyway from faulting.
+     None,
+     // Windows keeps the processor number in TPIDRRO_EL0.
+     TPIDRRO,
+@@ -34,7 +35,7 @@ struct HostFeatures {
+ 
+   [[nodiscard]]
+   bool SupportsCPUIndex() const {
+-    return CPUIndexSource == CPUIndexSourceEnum::TPIDRRO || CPUIndexSource == CPUIndexSourceEnum::TPIDR_Low12;
++    return CPUIndexSource != CPUIndexSourceEnum::None;
+   }
+ 
+   // Whether or not the host supports any kind of SVE implementation.
+diff --git a/Source/Windows/Common/CPUFeatures.cpp b/Source/Windows/Common/CPUFeatures.cpp
+index f95e10840fe..6c0a2abd44c 100644
+--- a/Source/Windows/Common/CPUFeatures.cpp
++++ b/Source/Windows/Common/CPUFeatures.cpp
+@@ -119,7 +119,12 @@ FEXCore::HostFeatures CPUFeatures::FetchHostFeatures(bool IsWine, FEXCore::HostF
+       if (Works) {
+         HostFeatures.CPUIndexSource = CPUIndexSourceEnum::TPIDR_Low12;
+       }
+-      LogMan::Msg::IFmt("FEX: processor number from TPIDR_EL0: {}", Works ? "enabled" : "check failed, RDTSCP and RDPID stay off");
++      if (Works) {
++        LogMan::Msg::IFmt("FEX: processor number from TPIDR_EL0: enabled");
++      } else {
++        // The user asked for this, so say why it is off: RDTSCP and RDPID still run, through the slower OS call.
++        LogMan::Msg::EFmt("FEX: CPUIndexInTPIDR set, but the TPIDR_EL0 check failed; RDTSCP and RDPID are not advertised");
++      }
+     }
+   }
+ 
+-- 
+2.54.0 (Apple Git-157)
+
