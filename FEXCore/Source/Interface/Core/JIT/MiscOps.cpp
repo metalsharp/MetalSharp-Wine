@@ -230,15 +230,36 @@ DEF_OP(PrintMsg) {
 }
 
 DEF_OP(ProcessorID) {
-  if (CTX->HostFeatures.SupportsCPUIndexInTPIDRRO) {
-    mrs(GetReg(Node), ARMEmitter::SystemRegister::TPIDRRO_EL0);
+  using CPUIndexSourceEnum = FEXCore::HostFeatures::CPUIndexSourceEnum;
+  switch (CTX->HostFeatures.CPUIndexSource) {
+  case CPUIndexSourceEnum::TPIDRRO: mrs(GetReg(Node), ARMEmitter::SystemRegister::TPIDRRO_EL0); return;
+  case CPUIndexSourceEnum::TPIDR_Low12:
+    mrs(GetReg(Node), ARMEmitter::SystemRegister::TPIDR_EL0);
+    and_(ARMEmitter::Size::i64Bit, GetReg(Node), GetReg(Node), 0xfff);
     return;
+  case CPUIndexSourceEnum::None: break;
   }
 #ifdef _WIN32
-  else {
-    // If on Windows and TPIDRRO isn't supported (like in wine), then this is a programming error.
-    ERROR_AND_DIE_FMT("Unsupported");
+  // Without a processor number register (Wine), call out to GetCurrentProcessorNumber. This is slower than a register
+  // read, so CPUID does not advertise RDTSCP/RDPID here, but programs that execute them anyway still run.
+  PushDynamicRegs(TMP4);
+  SpillStaticRegs(TMP4);
+
+  ldr(ARMEmitter::XReg::x0, STATE, offsetof(FEXCore::Core::CpuStateFrame, Pointers.ProcessorIDFallback));
+  if (!CTX->Config.DisableVixlIndirectCalls) [[unlikely]] {
+    GenerateIndirectRuntimeCall<uint64_t>(ARMEmitter::Reg::r0);
+  } else {
+    blr(ARMEmitter::Reg::r0);
   }
+
+  if (!TMP_ABIARGS) {
+    mov(ARMEmitter::Size::i64Bit, TMP1, ARMEmitter::Reg::r0);
+  }
+
+  FillStaticRegs();
+  PopDynamicRegs();
+
+  mov(ARMEmitter::Size::i64Bit, GetReg(Node), TMP1);
 #else
   // We always need to spill x8 since we can't know if it is live at this SSA location
   uint32_t SpillMask = 1U << 8;

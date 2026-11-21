@@ -154,6 +154,12 @@ static uint32_t GetCPUID_TPIDRRO() {
   return Result;
 }
 
+static uint32_t GetCPUID_TPIDR_Low12() {
+  uint64_t Result {};
+  __asm volatile("mrs %[Res], TPIDR_EL0" : [Res] "=r"(Result));
+  return Result & 0xfff;
+}
+
 void CPUIDEmu::SetupHostHybridFlag() {
   FEX_CONFIG_OPT(HideHybrid, HIDEHYBRID);
   PerCPUData.resize(Cores);
@@ -660,8 +666,8 @@ FEXCore::CPUID::FunctionResults CPUIDEmu::Function_07h(uint32_t Leaf) const {
 #ifndef _WIN32
     constexpr uint32_t SUPPORTS_RDPID = 1;
 #else
-    // RDPID under WIN32 is only supported if CPUIndex is available in TPIDRRO.
-    const uint32_t SUPPORTS_RDPID = SupportsCPUIndexInTPIDRRO;
+    // RDPID under WIN32 is only advertised if a register holds the processor number; otherwise it calls out to the OS.
+    const uint32_t SUPPORTS_RDPID = SupportsCPUIndex;
 #endif
 
     // Disable Enhanced REP MOVS when TSO is enabled.
@@ -1080,8 +1086,8 @@ FEXCore::CPUID::FunctionResults CPUIDEmu::Function_8000_0001h(uint32_t Leaf) con
 #ifndef _WIN32
   constexpr uint32_t SUPPORTS_RDTSCP = 1;
 #else
-  // RDTSCP under WIN32 is only supported if CPUIndex is available in TPIDRRO.
-  const uint32_t SUPPORTS_RDTSCP = SupportsCPUIndexInTPIDRRO;
+  // RDTSCP under WIN32 is only advertised if a register holds the processor number; otherwise it calls out to the OS.
+  const uint32_t SUPPORTS_RDTSCP = SupportsCPUIndex;
 #endif
   FEXCore::CPUID::FunctionResults Res {};
 
@@ -1397,7 +1403,7 @@ FEXCore::CPUID::XCRResults CPUIDEmu::XCRFunction_0h() const {
 
 CPUIDEmu::CPUIDEmu(const FEXCore::Context::ContextImpl* ctx)
   : CTX {ctx}
-  , SupportsCPUIndexInTPIDRRO {CTX->HostFeatures.SupportsCPUIndexInTPIDRRO != 0}
+  , SupportsCPUIndex {CTX->HostFeatures.SupportsCPUIndex()}
   , GetCPUID {GetCPUID_Syscall} {
   Cores = CTX->HostFeatures.CPUMIDRs.size();
 
@@ -1407,8 +1413,10 @@ CPUIDEmu::CPUIDEmu(const FEXCore::Context::ContextImpl* ctx)
   SetupFeatures();
 
 #ifdef ARCHITECTURE_arm64
-  if (SupportsCPUIndexInTPIDRRO) {
-    GetCPUID = GetCPUID_TPIDRRO;
+  switch (CTX->HostFeatures.CPUIndexSource) {
+  case FEXCore::HostFeatures::CPUIndexSourceEnum::TPIDRRO: GetCPUID = GetCPUID_TPIDRRO; break;
+  case FEXCore::HostFeatures::CPUIndexSourceEnum::TPIDR_Low12: GetCPUID = GetCPUID_TPIDR_Low12; break;
+  case FEXCore::HostFeatures::CPUIndexSourceEnum::None: break;
   }
 #endif
 }

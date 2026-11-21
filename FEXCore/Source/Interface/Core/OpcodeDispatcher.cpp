@@ -5143,11 +5143,8 @@ void OpDispatchBuilder::RDTSCPOp(OpcodeArgs) {
   //  - Explicitly use an MFENCE before this instruction if you want this behaviour
   // This instruction is not an execution fence, so subsequent instructions can execute after this
   //  - Explicitly use an LFENCE after RDTSCP if you want to block this behaviour
-  if (CTX->HostFeatures.HostType != FEXCore::HostFeatures::HostTypeEnum::Linux && !CTX->HostFeatures.SupportsCPUIndexInTPIDRRO) {
-    // RDTSCP is unsupported on Win32 platforms if TPIDRRO isn't supported.
-    UnimplementedOp(Op);
-    return;
-  }
+  // Without a processor number register (Wine), ProcessorID calls out to the OS. CPUID then does not advertise
+  // RDTSCP, but programs that execute it without checking still get a correct TSC_AUX instead of #UD.
   auto Counter = CycleCounter(true);
 
   auto ID = _ProcessorID();
@@ -5157,11 +5154,6 @@ void OpDispatchBuilder::RDTSCPOp(OpcodeArgs) {
 }
 
 void OpDispatchBuilder::RDPIDOp(OpcodeArgs) {
-  if (CTX->HostFeatures.HostType != FEXCore::HostFeatures::HostTypeEnum::Linux && !CTX->HostFeatures.SupportsCPUIndexInTPIDRRO) {
-    // RDTSCP is unsupported on Win32 platforms if TPIDRRO isn't supported.
-    UnimplementedOp(Op);
-    return;
-  }
   StoreResultGPR(Op, _ProcessorID());
 }
 

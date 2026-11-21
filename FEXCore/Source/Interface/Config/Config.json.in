@@ -141,6 +141,19 @@
           "Hides hybrid CPU core arrangement."
         ]
       },
+      "CPUIndexInTPIDR": {
+        "Type": "bool",
+        "Default": "false",
+        "AffectsCodeGen": "false",
+        "Desc": [
+          "Wine on macOS: reads the processor number from the low 12 bits of TPIDR_EL0, so RDTSCP and RDPID are fast and advertised in CPUID.",
+          "Without it they still run, through a slower GetCurrentProcessorNumber call, but CPUID does not advertise them.",
+          "The layout is not documented by Apple; it is checked at startup and left off when the check fails.",
+          "A thread that restricted its affinity gets the processor it runs on, which macOS does not pin, while",
+          "Wine's GetCurrentProcessorNumber names one inside the mask.",
+          "The choice is part of the host features, which already key the code cache."
+        ]
+      },
       "SoftwareRNG": {
         "Type": "bool",
         "Default": "false",

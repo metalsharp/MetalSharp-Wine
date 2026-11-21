@@ -21,6 +21,23 @@ struct HostFeatures {
     Arm64ec,
   };
 
+  // Where the JIT reads the current processor number for RDTSCP, RDPID and CPUID.
+  enum class CPUIndexSourceEnum : uint32_t {
+    // None: Linux asks the kernel through getcpu. On Windows (Wine) the JIT calls GetCurrentProcessorNumber, which is
+    // too slow to advertise RDTSCP and RDPID in CPUID, but keeps programs that execute them anyway from faulting.
+    None,
+    // Windows keeps the processor number in TPIDRRO_EL0.
+    TPIDRRO,
+    // macOS keeps it in the low 12 bits of TPIDR_EL0, the value pthread_cpu_number_np returns.
+    // This is not documented by Apple, so it is only used after a startup check of the convention.
+    TPIDR_Low12,
+  };
+
+  [[nodiscard]]
+  bool SupportsCPUIndex() const {
+    return CPUIndexSource != CPUIndexSourceEnum::None;
+  }
+
   // Whether or not the host supports any kind of SVE implementation.
   [[nodiscard]]
   bool SupportsSVE() const {
@@ -71,7 +88,7 @@ struct HostFeatures {
   uint32_t SupportsPreserveAllABI      : 1 {};
   uint32_t SupportsAES256              : 1 {};
   uint32_t SupportsSVEBitPerm          : 1 {};
-  uint32_t SupportsCPUIndexInTPIDRRO   : 1 {};
+  CPUIndexSourceEnum CPUIndexSource   : 2 {};
   uint32_t SupportsFRINTTS             : 1 {};
   uint32_t SupportsECV                 : 1 {};
   uint32_t SupportsWFXT                : 1 {};
@@ -85,7 +102,7 @@ struct HostFeatures {
   uint32_t SupportsFloatExceptions     : 1 {};
   // Flag if this is InstCountCI
   uint32_t IsInstCountCI : 1 {};
-  uint32_t pad           : 26 {};
+  uint32_t pad           : 25 {};
 
   // This affects codegen, but it isn't machine state
   HostTypeEnum HostType {};

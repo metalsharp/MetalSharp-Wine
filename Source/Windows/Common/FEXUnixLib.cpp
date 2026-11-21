@@ -226,4 +226,11 @@ void JITWriteProtect(bool Enable) {
   Call(FEXUnixLibFunctions::JITWriteProtect, &Args);
 }
 
+bool ProbeCPUIndexInTPIDR(uint32_t NumCPUs) {
+  FEXUnixLib_ProbeCPUIndexInTPIDR Args {
+    .NumCPUs = NumCPUs,
+  };
+  return Available() && Call(FEXUnixLibFunctions::ProbeCPUIndexInTPIDR, &Args) == STATUS_SUCCESS;
+}
+
 } // namespace FEX::Windows::UnixLib

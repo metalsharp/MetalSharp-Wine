@@ -2,13 +2,16 @@
 
 #include "Common/CPUInfo.h"
 
+#include <FEXCore/Config/Config.h>
 #include <FEXCore/Core/Context.h>
 #include <FEXCore/Core/HostFeatures.h>
 #include <FEXCore/fextl/fmt.h>
+#include <FEXCore/Utils/LogManager.h>
 
 #include <windows.h>
 
 #include "CPUFeatures.h"
+#include "FEXUnixLib.h"
 
 namespace {
 
@@ -26,6 +29,32 @@ uint64_t ReadRegU64(HKEY Key, const char* Name) {
   DWORD Size = sizeof(Value);
   RegGetValueA(Key, nullptr, Name, 0, nullptr, &Value, &Size);
   return Value;
+}
+
+// Under Wine on macOS, TPIDR_EL0's low 12 bits can stand in for Windows' TPIDRRO_EL0 processor number, once the
+// unix side has checked them against pthread_cpu_number_np and this thread against Wine's own processor number.
+// As on the unix side, up to 1 mismatch in 1000 samples is taken as a migration away and back between the reads.
+bool CPUIndexInTPIDRWorks(uint32_t NumCPUs) {
+  if (!FEX::Windows::UnixLib::ProbeCPUIndexInTPIDR(NumCPUs)) {
+    return false;
+  }
+
+  uint32_t Matched = 0, Mismatched = 0;
+  for (uint32_t i = 0; i < 2000; ++i) {
+    const auto Before = GetCurrentProcessorNumber();
+    uint64_t Reg {};
+    __asm volatile("mrs %[Reg], TPIDR_EL0" : [Reg] "=r"(Reg));
+    const auto After = GetCurrentProcessorNumber();
+    if (Before != After) {
+      continue;
+    }
+    ++Matched;
+    if (Before >= NumCPUs || (Reg & 0xfff) >= NumCPUs) {
+      return false;
+    }
+    Mismatched += (Reg & 0xfff) != Before;
+  }
+  return Matched > 0 && Mismatched * 1000 <= Matched;
 }
 
 } // namespace
@@ -81,7 +110,23 @@ FEXCore::HostFeatures CPUFeatures::FetchHostFeatures(bool IsWine, FEXCore::HostF
   HostFeatures.SupportsSVE128 = false;
   HostFeatures.SupportsSVE256 = false;
 
-  HostFeatures.SupportsCPUIndexInTPIDRRO = !IsWine;
+  using CPUIndexSourceEnum = FEXCore::HostFeatures::CPUIndexSourceEnum;
+  HostFeatures.CPUIndexSource = IsWine ? CPUIndexSourceEnum::None : CPUIndexSourceEnum::TPIDRRO;
+  if (IsWine) {
+    FEX_CONFIG_OPT(CPUIndexInTPIDR, CPUINDEXINTPIDR);
+    if (CPUIndexInTPIDR()) {
+      const bool Works = CPUIndexInTPIDRWorks(HostFeatures.CPUMIDRs.size());
+      if (Works) {
+        HostFeatures.CPUIndexSource = CPUIndexSourceEnum::TPIDR_Low12;
+      }
+      if (Works) {
+        LogMan::Msg::IFmt("FEX: processor number from TPIDR_EL0: enabled");
+      } else {
+        // The user asked for this, so say why it is off: RDTSCP and RDPID still run, through the slower OS call.
+        LogMan::Msg::EFmt("FEX: CPUIndexInTPIDR set, but the TPIDR_EL0 check failed; RDTSCP and RDPID are not advertised");
+      }
+    }
+  }
 
   HostFeatures.HostType = HostType;
   HostFeatures.ProcessPID = ProcessPID;

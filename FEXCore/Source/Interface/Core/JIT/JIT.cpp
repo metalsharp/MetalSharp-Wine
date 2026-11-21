@@ -39,10 +39,9 @@ $end_info$
 #include <optional>
 #include <type_traits>
 #include <unistd.h>
+#include <FEXHeaderUtils/Syscalls.h>
 #ifdef _WIN32
 #include <atomic>
-#else
-#include <FEXHeaderUtils/Syscalls.h>
 #endif
 
 namespace {
@@ -98,6 +97,14 @@ static std::optional<uint64_t> RDRANDFallback(uint64_t Reseed) {
   return Value ^ (Value >> 31);
 }
 #endif
+
+// RDTSCP/RDPID when no register holds the processor number (Wine without the TPIDR_EL0 source): ask the OS, as
+// CPUID already does for its APIC ID. On Windows this is GetCurrentProcessorNumber, the number Wine reports.
+static uint64_t ProcessorIDFallback() {
+  uint32_t CPU {};
+  FHU::Syscalls::getcpu(&CPU, nullptr);
+  return CPU;
+}
 
 static void PrintValue(uint64_t Value) {
   LogMan::Msg::DFmt("Value: 0x{:x}", Value);
@@ -711,6 +718,7 @@ Arm64JITCore::Arm64JITCore(FEXCore::Context::ContextImpl* ctx, FEXCore::Core::In
     Ptrs.LUDIV = reinterpret_cast<uint64_t>(LUDIV);
     Ptrs.LDIV = reinterpret_cast<uint64_t>(LDIV);
     Ptrs.RDRANDFallback = reinterpret_cast<uint64_t>(RDRANDFallback);
+    Ptrs.ProcessorIDFallback = reinterpret_cast<uint64_t>(ProcessorIDFallback);
   }
 
   CurrentCodeBuffer = SharedCodeBuffers.GetLatest();

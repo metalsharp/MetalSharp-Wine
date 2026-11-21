@@ -367,6 +367,7 @@ struct JITPointers {
   uint64_t LUDIV {};
   uint64_t LDIV {};
   uint64_t RDRANDFallback {};
+  uint64_t ProcessorIDFallback {};
   uint64_t ThunkCallbackRet {};
 
   // Handles returning/calling ARM64EC code from the JIT, expects the target PC in TMP3
