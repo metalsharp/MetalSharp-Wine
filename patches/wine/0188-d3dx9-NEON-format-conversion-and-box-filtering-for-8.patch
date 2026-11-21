@@ -1,0 +1,232 @@
+From ebd71f434961a4f7866e5f7a3b284c95a4d9d1b7 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Sat, 21 Nov 2026 08:27:39 -0700
+Subject: [PATCH 188/188] d3dx9: NEON format conversion and box filtering for
+ 8-bit channel formats.
+
+In d3dx_helpers.c, so d3dx9, d3dx10 and d3dx11 all get it:
+- convert_argb_pixels between 32bpp formats with whole-byte channels, without
+  a color key or conversion flags: each destination byte is a source byte or
+  a constant. The map is found by converting probe pixels with
+  convert_argb_pixel and checked on random ones, then applied with a byte
+  shuffle. 18 of the 169 32bpp format pairs take it; their output matches
+  for all 169.
+- box_filter_argb_pixels for a 2D level of a format with four 8-bit UNORM
+  channels into the same format: the C code's float operations in its
+  order, with the fused multiply-add the compiler emits for the conversion
+  back, so the bytes match.
+
+2048x2048 conversion 25-30 -> 0.3 ms; 4096x4096 box filter mip 181 -> 10.6
+ms.
+---
+ dlls/d3dx9_36/d3dx_helpers.c | 152 ++++++++++++++++++++++++++++++++++-
+ 1 file changed, 150 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/d3dx9_36/d3dx_helpers.c b/dlls/d3dx9_36/d3dx_helpers.c
+index c70dc3d1348..b94d4e7df7f 100644
+--- a/dlls/d3dx9_36/d3dx_helpers.c
++++ b/dlls/d3dx9_36/d3dx_helpers.c
+@@ -2591,6 +2591,67 @@ static void convert_argb_pixel(const uint8_t *src_ptr, const struct pixel_format
+     }
+ }
+ 
++#if defined(__aarch64__) || defined(__arm64ec__)
++#include <arm_neon.h>
++
++static BOOL byte_channels(const struct pixel_format_desc *fmt)
++{
++    unsigned int i;
++
++    if (fmt->bytes_per_pixel != 4) return FALSE;
++    for (i = 0; i < 4; ++i)
++        if ((fmt->bits[i] != 0 && fmt->bits[i] != 8) || (fmt->shift[i] & 7)) return FALSE;
++    return TRUE;
++}
++
++/* Between 32bpp formats with whole-byte channels, convert_argb_pixel moves bytes: each destination byte is one
++ * source byte or a constant. Find which by converting probe pixels with it, and check the result on random ones,
++ * so that a shuffle gives the same pixels. */
++static BOOL get_argb_byte_map(const struct pixel_format_desc *src_fmt, const struct pixel_format_desc *dst_fmt,
++        struct argb_conversion_info *conv_info, uint8_t map[16], uint8_t fill[16])
++{
++    static const uint8_t probes[] = { 0xff, 0x01, 0x80, 0x5a, 0xa5, 0x7f };
++    uint8_t in[4], base[4], out[4], idx[4] = { 0xff, 0xff, 0xff, 0xff };
++    unsigned int i, j, k, p;
++    uint32_t seed = 0x12345678;
++
++    if (!format_types_match(src_fmt, dst_fmt) || !byte_channels(src_fmt) || !byte_channels(dst_fmt))
++        return FALSE;
++
++    memset(in, 0, sizeof(in));
++    convert_argb_pixel(in, src_fmt, base, dst_fmt, NULL, conv_info, NULL, NULL, NULL, 0);
++    for (i = 0; i < 4; ++i)
++    {
++        for (k = 0; k < ARRAY_SIZE(probes); ++k)
++        {
++            memset(in, 0, sizeof(in));
++            in[i] = probes[k];
++            convert_argb_pixel(in, src_fmt, out, dst_fmt, NULL, conv_info, NULL, NULL, NULL, 0);
++            for (j = 0; j < 4; ++j)
++            {
++                if (out[j] == base[j]) continue;
++                if (out[j] != probes[k] || base[j] || (idx[j] != 0xff && idx[j] != i)) return FALSE;
++                idx[j] = i;
++            }
++        }
++    }
++    for (p = 0; p < 4; ++p)
++        for (j = 0; j < 4; ++j)
++        {
++            map[p * 4 + j] = idx[j] == 0xff ? 0xff : p * 4 + idx[j];
++            fill[p * 4 + j] = idx[j] == 0xff ? base[j] : 0;
++        }
++    for (k = 0; k < 64; ++k)
++    {
++        for (i = 0; i < 4; ++i) in[i] = (seed = seed * 1103515245 + 12345) >> 24;
++        convert_argb_pixel(in, src_fmt, out, dst_fmt, NULL, conv_info, NULL, NULL, NULL, 0);
++        for (j = 0; j < 4; ++j)
++            if (out[j] != (idx[j] == 0xff ? base[j] : in[idx[j]])) return FALSE;
++    }
++    return TRUE;
++}
++#endif
++
+ /************************************************************
+  * convert_argb_pixels
+  *
+@@ -2608,6 +2669,10 @@ static void convert_argb_pixels(const BYTE *src, UINT src_row_pitch, UINT src_sl
+     struct argb_conversion_info conv_info, ck_conv_info;
+     UINT min_width, min_height, min_depth;
+     UINT x, y, z;
++#if defined(__aarch64__) || defined(__arm64ec__)
++    uint8_t byte_map[16], byte_fill[16];
++    BOOL use_byte_map;
++#endif
+ 
+     TRACE("src %p, src_row_pitch %u, src_slice_pitch %u, src_size %p, src_format %p, dst %p, "
+             "dst_row_pitch %u, dst_slice_pitch %u, dst_size %p, dst_format %p, color_key %s, palette %p.\n",
+@@ -2615,6 +2680,9 @@ static void convert_argb_pixels(const BYTE *src, UINT src_row_pitch, UINT src_sl
+             dst_format, debug_d3dx_color_key(color_key), palette);
+ 
+     init_argb_conversion_info(src_format, dst_format, &conv_info);
++#if defined(__aarch64__) || defined(__arm64ec__)
++    use_byte_map = !color_key && !conv_flags && get_argb_byte_map(src_format, dst_format, &conv_info, byte_map, byte_fill);
++#endif
+ 
+     min_width = min(src_size->width, dst_size->width);
+     min_height = min(src_size->height, dst_size->height);
+@@ -2631,7 +2699,17 @@ static void convert_argb_pixels(const BYTE *src, UINT src_row_pitch, UINT src_sl
+             const BYTE *src_ptr = src_slice_ptr + y * src_row_pitch;
+             BYTE *dst_ptr = dst_slice_ptr + y * dst_row_pitch;
+ 
+-            for (x = 0; x < min_width; x++) {
++            x = 0;
++#if defined(__aarch64__) || defined(__arm64ec__)
++            if (use_byte_map)
++            {
++                uint8x16_t map = vld1q_u8(byte_map), fill = vld1q_u8(byte_fill);
++
++                for (; x + 4 <= min_width; x += 4, src_ptr += 16, dst_ptr += 16)
++                    vst1q_u8(dst_ptr, vorrq_u8(vqtbl1q_u8(vld1q_u8(src_ptr), map), fill));
++            }
++#endif
++            for (; x < min_width; x++) {
+                 convert_argb_pixel(src_ptr, src_format, dst_ptr, dst_format, palette,
+                         &conv_info, color_key, ck_format, &ck_conv_info, conv_flags);
+ 
+@@ -2715,6 +2793,64 @@ static inline void vec4_scale(struct vec4 *out, const float scale)
+     out->w *= scale;
+ }
+ 
++#if defined(__aarch64__) || defined(__arm64ec__)
++/* box_filter_argb_pixels for a 2D level of a format with four 8-bit UNORM channels into the same format: every
++ * byte gets the C code's float operations in its order, (((a + b) + c) + d) of c / 255.0f, times 0.25f, then
++ * clamped and converted with the fused multiply-add the compiler emits for it, so the bytes match. Does the
++ * pairs of columns it can and returns how many. */
++static UINT box_filter_unorm8_row_neon(const BYTE *row0, const BYTE *row1, BYTE *dst, UINT src_width)
++{
++    const float32x4_t scale = vdupq_n_f32(255.0f), quarter = vdupq_n_f32(0.25f), half = vdupq_n_f32(0.5f);
++    const float32x4_t zero = vdupq_n_f32(0.0f), one = vdupq_n_f32(1.0f);
++    UINT x;
++
++    for (x = 0; x + 8 <= src_width; x += 8, row0 += 32, row1 += 32, dst += 16)
++    {
++        /* even and odd pixels of each row: 4 pixels, 16 bytes each */
++        uint32x4x2_t top = vld2q_u32((const uint32_t *)row0), bottom = vld2q_u32((const uint32_t *)row1);
++        uint8x16_t in[4] = { vreinterpretq_u8_u32(top.val[0]), vreinterpretq_u8_u32(top.val[1]),
++                             vreinterpretq_u8_u32(bottom.val[0]), vreinterpretq_u8_u32(bottom.val[1]) };
++        uint16x8_t out16[2];
++        int h;
++
++        for (h = 0; h < 2; h++)
++        {
++            uint32x4_t out32[2];
++            int q;
++
++            for (q = 0; q < 2; q++)
++            {
++                float32x4_t sum;
++                int i;
++
++                for (i = 0; i < 4; i++)
++                {
++                    uint16x8_t w = h ? vmovl_high_u8(in[i]) : vmovl_u8(vget_low_u8(in[i]));
++                    uint32x4_t d = q ? vmovl_high_u16(w) : vmovl_u16(vget_low_u16(w));
++                    float32x4_t v = vdivq_f32(vcvtq_f32_u32(d), scale);
++                    sum = i ? vaddq_f32(sum, v) : v;
++                }
++                sum = vminq_f32(vmaxq_f32(vmulq_f32(sum, quarter), zero), one);
++                out32[q] = vcvtq_u32_f32(vfmaq_f32(half, sum, scale));
++            }
++            out16[h] = vcombine_u16(vmovn_u32(out32[0]), vmovn_u32(out32[1]));
++        }
++        vst1q_u8(dst, vcombine_u8(vmovn_u16(out16[0]), vmovn_u16(out16[1])));
++    }
++    return x;
++}
++
++static BOOL unorm8_format(const struct pixel_format_desc *fmt)
++{
++    unsigned int i;
++
++    if (fmt->bytes_per_pixel != 4 || fmt->a_type != CTYPE_UNORM || fmt->rgb_type != CTYPE_UNORM) return FALSE;
++    for (i = 0; i < 4; ++i)
++        if (fmt->bits[i] != 8 || (fmt->shift[i] & 7)) return FALSE;
++    return TRUE;
++}
++#endif
++
+ static void box_filter_argb_pixels(const BYTE *src, UINT src_row_pitch, UINT src_slice_pitch,
+         const struct volume *src_size, const struct pixel_format_desc *src_format, BYTE *dst, UINT dst_row_pitch,
+         UINT dst_slice_pitch, const struct volume *dst_size, const struct pixel_format_desc *dst_format,
+@@ -2726,6 +2862,10 @@ static void box_filter_argb_pixels(const BYTE *src, UINT src_row_pitch, UINT src
+     struct d3dx_color color, tmp;
+     unsigned int i;
+     UINT x, y, z;
++#if defined(__aarch64__) || defined(__arm64ec__)
++    const BOOL neon_unorm8 = src_format == dst_format && unorm8_format(src_format) && !color_key && !conv_flags
++            && src_size->depth == 1;
++#endif
+ 
+     TRACE("src %p, src_row_pitch %u, src_slice_pitch %u, src_size %p, src_format %p, dst %p, "
+             "dst_row_pitch %u, dst_slice_pitch %u, dst_size %p, dst_format %p, color_key %s, palette %p.\n",
+@@ -2749,7 +2889,15 @@ static void box_filter_argb_pixels(const BYTE *src, UINT src_row_pitch, UINT src
+             const BYTE *src_row_ptr = src_slice_ptr + src_row_pitch * y;
+             BYTE *dst_ptr = dst_slice_ptr + (y >> 1) * dst_row_pitch;
+ 
+-            for (x = 0; x < src_size->width; x += 2)
++            x = 0;
++#if defined(__aarch64__) || defined(__arm64ec__)
++            if (neon_unorm8)
++            {
++                x = box_filter_unorm8_row_neon(src_row_ptr, src_row_ptr + src_row_pitch, dst_ptr, src_size->width);
++                dst_ptr += x / 2 * 4;
++            }
++#endif
++            for (; x < src_size->width; x += 2)
+             {
+                 const BYTE *src_ptr = src_row_ptr + x * src_format->bytes_per_pixel;
+ 
+-- 
+2.54.0 (Apple Git-157)
+

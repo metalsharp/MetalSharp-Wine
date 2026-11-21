@@ -1,0 +1,582 @@
+From e0723b3f9691e9c322aafaa21de060bcece737a8 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Sat, 21 Nov 2026 08:27:38 -0700
+Subject: [PATCH 182/188] ntdll, msvcrt: NEON string and memory functions on
+ ARM64 and ARM64EC.
+
+strlen, wcslen, memchr, memcmp, strchr, strcmp and memmove/memcpy in ntdll
+and in msvcrt, ucrtbase and the msvcr* DLLs built from it. x86_64 programs
+reach these through ARM64EC, where the C loops ran a byte at a time (the
+x86_64 build gets sse2_memmove). The shared versions are in
+include/wine/neon_string.h:
+- Scans that stop at a terminator read aligned 16-byte blocks, so a load
+  never crosses into the next page, and mask the bytes before the start.
+- strcmp reads both strings 16 bytes at a time while neither block crosses
+  a page, then a byte at a time.
+- memmove copies 32 bytes per step with the head or tail block loaded first,
+  so overlapping copies in either direction are correct, and aligns the
+  destination for long copies when the buffers are 64 bytes or more apart.
+
+Native benchmark against the C versions (ns, old -> new):
+  strlen 128/1024 bytes 36 -> 3, 375 -> 33; wcslen 35 -> 11, 382 -> 83
+  memchr 51 -> 5, 304 -> 20; memcmp 82 -> 5, 365 -> 21; strcmp 46 -> 6
+  memmove: 2-6x below 64 bytes, 3x on misaligned 4 KB, equal when aligned.
+Through FEX from x86_64: strlen(1024) 240 -> 18 ns.
+---
+ dlls/msvcrt/string.c       |  25 ++++
+ dlls/msvcrt/wcs.c          |   5 +
+ dlls/ntdll/string.c        |  29 +++++
+ dlls/ntdll/wcstring.c      |   5 +
+ include/wine/neon_string.h | 251 +++++++++++++++++++++++++++++++++++++
+ 5 files changed, 315 insertions(+)
+ create mode 100644 include/wine/neon_string.h
+
+diff --git a/dlls/msvcrt/string.c b/dlls/msvcrt/string.c
+index 6b4ffbf45b5..e955e94d1c2 100644
+--- a/dlls/msvcrt/string.c
++++ b/dlls/msvcrt/string.c
+@@ -33,6 +33,7 @@
+ #include "winnls.h"
+ #include "wine/asm.h"
+ #include "wine/debug.h"
++#include "wine/neon_string.h"
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(msvcrt);
+ 
+@@ -1564,9 +1565,13 @@ int CDECL _atoldbl(_LDOUBLE *value, char *str)
+  */
+ size_t __cdecl strlen(const char *str)
+ {
++#ifdef WINE_NEON_STRING
++    return neon_strlen( str );
++#else
+     const char *s = str;
+     while (*s) s++;
+     return s - str;
++#endif
+ }
+ 
+ /******************************************************************
+@@ -2728,6 +2733,7 @@ int CDECL I10_OUTPUT(_LDOUBLE ld80, int prec, int flag, struct _I10_OUTPUT_DATA
+ }
+ #undef I10_OUTPUT_MAX_PREC
+ 
++#ifndef WINE_NEON_STRING
+ static inline int memcmp_bytes(const void *ptr1, const void *ptr2, size_t n)
+ {
+     const unsigned char *p1, *p2;
+@@ -2761,12 +2767,16 @@ static inline int memcmp_blocks(const void *ptr1, const void *ptr2, size_t size)
+ 
+     return memcmp_bytes(p1, p2, remainder);
+ }
++#endif
+ 
+ /*********************************************************************
+  *                  memcmp (MSVCRT.@)
+  */
+ int __cdecl memcmp(const void *ptr1, const void *ptr2, size_t n)
+ {
++#ifdef WINE_NEON_STRING
++    return neon_memcmp( ptr1, ptr2, n );
++#else
+     const unsigned char *p1 = ptr1, *p2 = ptr2;
+     size_t align;
+     int result;
+@@ -2784,6 +2794,7 @@ int __cdecl memcmp(const void *ptr1, const void *ptr2, size_t n)
+     n  -= align;
+ 
+     return memcmp_blocks(p1, p2, n);
++#endif
+ }
+ 
+ #if defined(__i386__) || (defined(__x86_64__) && !defined(__arm64ec__))
+@@ -3054,6 +3065,8 @@ void * __cdecl memmove(void *dst, const void *src, size_t n)
+ {
+ #if defined(__x86_64__) && !defined(__arm64ec__)
+     return sse2_memmove(dst, src, n);
++#elif defined(WINE_NEON_STRING)
++    return neon_memmove(dst, src, n);
+ #else
+     unsigned char *d = dst;
+     const unsigned char *s = src;
+@@ -3249,11 +3262,15 @@ void *__cdecl memset(void *dst, int c, size_t n)
+  */
+ char* __cdecl strchr(const char *str, int c)
+ {
++#ifdef WINE_NEON_STRING
++    return neon_strchr( str, c );
++#else
+     do
+     {
+         if (*str == (char)c) return (char*)str;
+     } while (*str++);
+     return NULL;
++#endif
+ }
+ 
+ /*********************************************************************
+@@ -3271,10 +3288,14 @@ char* __cdecl strrchr(const char *str, int c)
+  */
+ void* __cdecl memchr(const void *ptr, int c, size_t n)
+ {
++#ifdef WINE_NEON_STRING
++    return neon_memchr( ptr, c, n );
++#else
+     const unsigned char *p = ptr;
+ 
+     for (p = ptr; n; n--, p++) if (*p == (unsigned char)c) return (void *)(ULONG_PTR)p;
+     return NULL;
++#endif
+ }
+ 
+ /*********************************************************************
+@@ -3282,10 +3303,14 @@ void* __cdecl memchr(const void *ptr, int c, size_t n)
+  */
+ int __cdecl strcmp(const char *str1, const char *str2)
+ {
++#ifdef WINE_NEON_STRING
++    return neon_strcmp( str1, str2 );
++#else
+     while (*str1 && *str1 == *str2) { str1++; str2++; }
+     if ((unsigned char)*str1 > (unsigned char)*str2) return 1;
+     if ((unsigned char)*str1 < (unsigned char)*str2) return -1;
+     return 0;
++#endif
+ }
+ 
+ /*********************************************************************
+diff --git a/dlls/msvcrt/wcs.c b/dlls/msvcrt/wcs.c
+index 9ad7181311a..51ff0fed37c 100644
+--- a/dlls/msvcrt/wcs.c
++++ b/dlls/msvcrt/wcs.c
+@@ -31,6 +31,7 @@
+ #include "winternl.h"
+ #include "wtypes.h"
+ #include "wine/debug.h"
++#include "wine/neon_string.h"
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(msvcrt);
+ 
+@@ -2970,9 +2971,13 @@ wchar_t* CDECL wcsrchr(const wchar_t *str, wchar_t ch)
+  */
+ size_t CDECL wcslen(const wchar_t *str)
+ {
++#ifdef WINE_NEON_STRING
++    return neon_wcslen( (const uint16_t *)str );
++#else
+     const wchar_t *s = str;
+     while (*s) s++;
+     return s - str;
++#endif
+ }
+ 
+ /*********************************************************************
+diff --git a/dlls/ntdll/string.c b/dlls/ntdll/string.c
+index 05c17a17a51..45690a3418f 100644
+--- a/dlls/ntdll/string.c
++++ b/dlls/ntdll/string.c
+@@ -33,6 +33,7 @@
+ #include "winnls.h"
+ #include "winternl.h"
+ #include "ntdll_misc.h"
++#include "wine/neon_string.h"
+ 
+ 
+ /* same as wctypes except for TAB, which doesn't have C1_BLANK for some reason... */
+@@ -72,10 +73,14 @@ static const unsigned short ctypes[257] =
+  */
+ void * __cdecl memchr( const void *ptr, int c, size_t n )
+ {
++#ifdef WINE_NEON_STRING
++    return neon_memchr( ptr, c, n );
++#else
+     const unsigned char *p = ptr;
+ 
+     for (p = ptr; n; n--, p++) if (*p == (unsigned char)c) return (void *)(ULONG_PTR)p;
+     return NULL;
++#endif
+ }
+ 
+ 
+@@ -84,6 +89,9 @@ void * __cdecl memchr( const void *ptr, int c, size_t n )
+  */
+ int __cdecl memcmp( const void *ptr1, const void *ptr2, size_t n )
+ {
++#ifdef WINE_NEON_STRING
++    return neon_memcmp( ptr1, ptr2, n );
++#else
+     const unsigned char *p1, *p2;
+ 
+     for (p1 = ptr1, p2 = ptr2; n; n--, p1++, p2++)
+@@ -92,6 +100,7 @@ int __cdecl memcmp( const void *ptr1, const void *ptr2, size_t n )
+         if (*p1 > *p2) return 1;
+     }
+     return 0;
++#endif
+ }
+ 
+ 
+@@ -103,6 +112,9 @@ int __cdecl memcmp( const void *ptr1, const void *ptr2, size_t n )
+  */
+ void * __cdecl memcpy( void *dst, const void *src, size_t n )
+ {
++#ifdef WINE_NEON_STRING
++    return neon_memmove( dst, src, n );
++#else
+     unsigned char *d = dst;
+     const unsigned char *s = src;
+ 
+@@ -117,6 +129,7 @@ void * __cdecl memcpy( void *dst, const void *src, size_t n )
+         while (n--) *d-- = *s--;
+     }
+     return dst;
++#endif
+ }
+ 
+ 
+@@ -125,6 +138,9 @@ void * __cdecl memcpy( void *dst, const void *src, size_t n )
+  */
+ void * __cdecl memmove( void *dst, const void *src, size_t n )
+ {
++#ifdef WINE_NEON_STRING
++    return neon_memmove( dst, src, n );
++#else
+     unsigned char *d = dst;
+     const unsigned char *s = src;
+ 
+@@ -139,6 +155,7 @@ void * __cdecl memmove( void *dst, const void *src, size_t n )
+         while (n--) *d-- = *s--;
+     }
+     return dst;
++#endif
+ }
+ 
+ 
+@@ -358,8 +375,12 @@ errno_t __cdecl strcat_s( char *dst, size_t len, const char *src )
+  */
+ char * __cdecl strchr( const char *str, int c )
+ {
++#ifdef WINE_NEON_STRING
++    return neon_strchr( str, c );
++#else
+     do { if (*str == (char)c) return (char *)(ULONG_PTR)str; } while (*str++);
+     return NULL;
++#endif
+ }
+ 
+ 
+@@ -368,10 +389,14 @@ char * __cdecl strchr( const char *str, int c )
+  */
+ int __cdecl strcmp( const char *str1, const char *str2 )
+ {
++#ifdef WINE_NEON_STRING
++    return neon_strcmp( str1, str2 );
++#else
+     while (*str1 && *str1 == *str2) { str1++; str2++; }
+     if ((unsigned char)*str1 > (unsigned char)*str2) return 1;
+     if ((unsigned char)*str1 < (unsigned char)*str2) return -1;
+     return 0;
++#endif
+ }
+ 
+ 
+@@ -422,9 +447,13 @@ size_t __cdecl strcspn( const char *str, const char *reject )
+  */
+ size_t __cdecl strlen( const char *str )
+ {
++#ifdef WINE_NEON_STRING
++    return neon_strlen( str );
++#else
+     const char *s = str;
+     while (*s) s++;
+     return s - str;
++#endif
+ }
+ 
+ 
+diff --git a/dlls/ntdll/wcstring.c b/dlls/ntdll/wcstring.c
+index 5de12a1d246..6bbce1bad77 100644
+--- a/dlls/ntdll/wcstring.c
++++ b/dlls/ntdll/wcstring.c
+@@ -33,6 +33,7 @@
+ #include "winnls.h"
+ #include "winternl.h"
+ #include "ntdll_misc.h"
++#include "wine/neon_string.h"
+ 
+ static const unsigned short wctypes[256] =
+ {
+@@ -214,9 +215,13 @@ errno_t __cdecl wcscpy_s( wchar_t *dst, size_t len, const wchar_t *src )
+  */
+ size_t __cdecl wcslen( LPCWSTR str )
+ {
++#ifdef WINE_NEON_STRING
++    return neon_wcslen( (const uint16_t *)str );
++#else
+     const WCHAR *s = str;
+     while (*s) s++;
+     return s - str;
++#endif
+ }
+ 
+ 
+diff --git a/include/wine/neon_string.h b/include/wine/neon_string.h
+new file mode 100644
+index 00000000000..80285473b2f
+--- /dev/null
++++ b/include/wine/neon_string.h
+@@ -0,0 +1,251 @@
++/*
++ * NEON versions of the C runtime string and memory scans, for ntdll and msvcrt on ARM64 and ARM64EC.
++ *
++ * Copyright 2026 MetalSharp
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#ifndef __WINE_WINE_NEON_STRING_H
++#define __WINE_WINE_NEON_STRING_H
++
++#if defined(__aarch64__) || defined(__arm64ec__)
++
++#include <stddef.h>
++#include <stdint.h>
++#include <arm_neon.h>
++
++#define WINE_NEON_STRING 1
++
++/* Scans that stop at a terminator read whole aligned 16-byte blocks, so a load never crosses into the next
++ * page; the bytes before the start are masked off. Bounded functions only read inside their bounds. */
++
++/* One nibble per byte of a 16-byte compare result, 0 if no lane is set. */
++static inline uint64_t neon_mask8( uint8x16_t cmp )
++{
++    return vget_lane_u64( vreinterpret_u64_u8( vshrn_n_u16( vreinterpretq_u16_u8( cmp ), 4 )), 0 );
++}
++
++/* One byte per 16-bit lane of an 8-lane compare result. */
++static inline uint64_t neon_mask16( uint16x8_t cmp )
++{
++    return vget_lane_u64( vreinterpret_u64_u8( vmovn_u16( cmp )), 0 );
++}
++
++static inline size_t neon_strlen( const char *str )
++{
++    const uint8_t *p = (const uint8_t *)((uintptr_t)str & ~(uintptr_t)15);
++    uint64_t mask = neon_mask8( vceqzq_u8( vld1q_u8( p ))) & (~0ull << (((uintptr_t)str & 15) * 4));
++
++    while (!mask)
++    {
++        p += 16;
++        mask = neon_mask8( vceqzq_u8( vld1q_u8( p )));
++    }
++    return (const char *)p + __builtin_ctzll( mask ) / 4 - str;
++}
++
++static inline size_t neon_wcslen( const uint16_t *str )
++{
++    const uint16_t *s = str, *p;
++    uint64_t mask;
++
++    /* 16-byte blocks only line up with characters on an even address. The empty asm keeps the compiler from
++     * turning this loop back into a call to wcslen, which is this function in ntdll. */
++    if ((uintptr_t)s & 1)
++    {
++        while (*s)
++        {
++            s++;
++            __asm__( "" : "+r" (s) );
++        }
++        return s - str;
++    }
++    p = (const uint16_t *)((uintptr_t)s & ~(uintptr_t)15);
++    mask = neon_mask16( vceqzq_u16( vld1q_u16( p ))) & (~0ull << (((uintptr_t)s & 15) * 4));
++    while (!mask)
++    {
++        p += 8;
++        mask = neon_mask16( vceqzq_u16( vld1q_u16( p )));
++    }
++    return p + __builtin_ctzll( mask ) / 8 - str;
++}
++
++static inline void *neon_memchr( const void *ptr, int c, size_t n )
++{
++    const uint8_t *p = ptr, *end = p + n;
++    uint8x16_t ch = vdupq_n_u8( c );
++    uint64_t mask;
++
++    for (; end - p >= 16; p += 16)
++        if ((mask = neon_mask8( vceqq_u8( vld1q_u8( p ), ch ))))
++            return (void *)(p + __builtin_ctzll( mask ) / 4);
++    for (; p < end; p++) if (*p == (uint8_t)c) return (void *)p;
++    return NULL;
++}
++
++static inline char *neon_strchr( const char *str, int c )
++{
++    const uint8_t *p = (const uint8_t *)((uintptr_t)str & ~(uintptr_t)15);
++    uint8x16_t ch = vdupq_n_u8( c ), v = vld1q_u8( p );
++    uint64_t start = ~0ull << (((uintptr_t)str & 15) * 4);
++    uint64_t found = neon_mask8( vceqq_u8( v, ch )) & start, zero = neon_mask8( vceqzq_u8( v )) & start;
++
++    while (!found && !zero)
++    {
++        p += 16;
++        v = vld1q_u8( p );
++        found = neon_mask8( vceqq_u8( v, ch ));
++        zero = neon_mask8( vceqzq_u8( v ));
++    }
++    /* A match at or before the terminator counts; strchr(s, 0) finds the terminator. */
++    if (found && (!zero || __builtin_ctzll( found ) <= __builtin_ctzll( zero )))
++        return (char *)(p + __builtin_ctzll( found ) / 4);
++    return NULL;
++}
++
++static inline int neon_memcmp( const void *ptr1, const void *ptr2, size_t n )
++{
++    const uint8_t *p1 = ptr1, *p2 = ptr2;
++    uint64_t mask;
++
++    for (; n >= 16; n -= 16, p1 += 16, p2 += 16)
++    {
++        if ((mask = neon_mask8( vmvnq_u8( vceqq_u8( vld1q_u8( p1 ), vld1q_u8( p2 ))))))
++        {
++            size_t i = __builtin_ctzll( mask ) / 4;
++            return p1[i] < p2[i] ? -1 : 1;
++        }
++    }
++    for (; n; n--, p1++, p2++)
++        if (*p1 != *p2) return *p1 < *p2 ? -1 : 1;
++    return 0;
++}
++
++/* Both strings are read 16 bytes at a time while neither block crosses a page, then a byte at a time. */
++static inline int neon_strcmp( const char *str1, const char *str2 )
++{
++    const uint8_t *p1 = (const uint8_t *)str1, *p2 = (const uint8_t *)str2;
++
++    for (;;)
++    {
++        if (((uintptr_t)p1 & 4095) <= 4096 - 16 && ((uintptr_t)p2 & 4095) <= 4096 - 16)
++        {
++            uint8x16_t a = vld1q_u8( p1 ), b = vld1q_u8( p2 );
++            uint64_t mask = neon_mask8( vorrq_u8( vmvnq_u8( vceqq_u8( a, b )), vceqzq_u8( a )));
++            if (mask)
++            {
++                size_t i = __builtin_ctzll( mask ) / 4;
++                return p1[i] == p2[i] ? 0 : p1[i] < p2[i] ? -1 : 1;
++            }
++            p1 += 16;
++            p2 += 16;
++        }
++        else
++        {
++            if (*p1 != *p2) return *p1 < *p2 ? -1 : 1;
++            if (!*p1) return 0;
++            p1++;
++            p2++;
++        }
++    }
++}
++
++/* memmove with unaligned 32-byte blocks. Each step loads before it stores, and the head or tail block is loaded
++ * before the loop runs, so overlapping copies in either direction get the original bytes. */
++static inline void *neon_memmove( void *dst, const void *src, size_t n )
++{
++    uint8_t *d = dst;
++    const uint8_t *s = src;
++
++    if (n <= 32)
++    {
++        if (n >= 16)
++        {
++            uint8x16_t a = vld1q_u8( s ), b = vld1q_u8( s + n - 16 );
++            vst1q_u8( d, a );
++            vst1q_u8( d + n - 16, b );
++        }
++        else if (n >= 8)
++        {
++            uint8x8_t a = vld1_u8( s ), b = vld1_u8( s + n - 8 );
++            vst1_u8( d, a );
++            vst1_u8( d + n - 8, b );
++        }
++        else if (n >= 4)
++        {
++            uint32_t a = *(const uint32_t *)s, b = *(const uint32_t *)(s + n - 4);
++            *(uint32_t *)d = a;
++            *(uint32_t *)(d + n - 4) = b;
++        }
++        else if (n)
++        {
++            uint8_t a = s[0], b = s[n / 2], c = s[n - 1];
++            d[0] = a;
++            d[n / 2] = b;
++            d[n - 1] = c;
++        }
++        return dst;
++    }
++
++    if ((uintptr_t)d - (uintptr_t)s >= n)
++    {
++        uint8_t *dend = d + n;
++        uint8x16_t t0 = vld1q_u8( s + n - 32 ), t1 = vld1q_u8( s + n - 16 );
++
++        /* Aligned stores for long copies; only when the buffers are far enough apart that the unaligned head
++         * store can't overwrite source bytes still to be read. */
++        if (n >= 256 && (uintptr_t)s - (uintptr_t)d >= 64)
++        {
++            size_t skip = 16 - ((uintptr_t)d & 15);
++            vst1q_u8( d, vld1q_u8( s ));
++            d += skip;
++            s += skip;
++            n -= skip;
++        }
++        for (; n > 32; n -= 32, s += 32, d += 32)
++        {
++            uint8x16_t a = vld1q_u8( s ), b = vld1q_u8( s + 16 );
++            vst1q_u8( d, a );
++            vst1q_u8( d + 16, b );
++        }
++        vst1q_u8( dend - 32, t0 );
++        vst1q_u8( dend - 16, t1 );
++    }
++    else
++    {
++        uint8x16_t h0 = vld1q_u8( s ), h1 = vld1q_u8( s + 16 );
++
++        if (n >= 256 && (uintptr_t)d - (uintptr_t)s >= 64)
++        {
++            size_t skip = ((uintptr_t)(d + n) & 15);
++            vst1q_u8( d + n - 16, vld1q_u8( s + n - 16 ));
++            n -= skip;
++        }
++        for (; n > 32; n -= 32)
++        {
++            uint8x16_t a = vld1q_u8( s + n - 32 ), b = vld1q_u8( s + n - 16 );
++            vst1q_u8( d + n - 32, a );
++            vst1q_u8( d + n - 16, b );
++        }
++        vst1q_u8( d, h0 );
++        vst1q_u8( d + 16, h1 );
++    }
++    return dst;
++}
++
++#endif /* __aarch64__ || __arm64ec__ */
++
++#endif /* __WINE_WINE_NEON_STRING_H */
+-- 
+2.54.0 (Apple Git-157)
+
