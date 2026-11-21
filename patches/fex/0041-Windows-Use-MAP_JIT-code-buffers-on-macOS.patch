@@ -1,0 +1,381 @@
+From 755ba31d5ae5b1a3bb1e9013efaa156bb5e7b8ff Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@Averys-Mac-Mini.local>
+Date: Thu, 19 Nov 2026 01:24:58 -0700
+Subject: [PATCH 41/44] Windows: Use MAP_JIT code buffers on macOS
+
+MetalSharp's Wine can back the emulator's code buffers with MAP_JIT
+instead of emulating W+X memory with a fault and mprotect() calls on
+every code write. Ask for it at startup (ARM64EC and WoW64), and when
+granted, open a per-thread write window with
+pthread_jit_write_protect_np() (through the unix library) around every
+write to JIT memory: copying a compiled block in, loading cached code,
+linking and unlinking blocks, emitting the dispatcher, applying code
+cache relocations, and backpatching unaligned accesses (whose lock
+word lives in the block tail). The cache flush no longer needs Wine.
+Windows must not nest; thread-local storage isn't available early
+enough to count them.
+
+Cold-start probe, 8000 functions: 269 to 93 ms with Multiblock off,
+96 to 54 ms with it on; eight threads running the same code: 852 to
+270 ms and 198 to 82 ms; 32-bit: 287 to 93 ms. Results match.
+METALSHARP_NO_MAPJIT=1 keeps the emulated W+X memory.
+---
+ FEXCore/Source/Interface/Core/CodeCache.cpp   |  7 +++-
+ .../Interface/Core/Dispatcher/Dispatcher.cpp  |  1 +
+ FEXCore/Source/Interface/Core/JIT/JIT.cpp     | 10 ++++-
+ FEXCore/Source/Utils/Allocator.cpp            | 10 +++++
+ FEXCore/Source/Utils/ArchHelpers/Arm64.cpp    |  3 ++
+ .../include/FEXCore/Utils/AllocatorHooks.h    | 34 +++++++++++++++
+ Source/Windows/ARM64EC/Module.cpp             |  6 +++
+ Source/Windows/Common/FEXUnixLib.cpp          | 11 +++++
+ Source/Windows/Common/FEXUnixLib.h            |  4 ++
+ Source/Windows/UnixLib/FEXUnixLib.cpp         | 41 +++++++++++++++++++
+ Source/Windows/UnixLib/FEXUnixLib.h           |  7 ++++
+ Source/Windows/WOW64/Module.cpp               |  6 +++
+ 12 files changed, 138 insertions(+), 2 deletions(-)
+
+diff --git a/FEXCore/Source/Interface/Core/CodeCache.cpp b/FEXCore/Source/Interface/Core/CodeCache.cpp
+index 87a110c8459..3fa7fe652b5 100644
+--- a/FEXCore/Source/Interface/Core/CodeCache.cpp
++++ b/FEXCore/Source/Interface/Core/CodeCache.cpp
+@@ -566,6 +566,7 @@ static inline void ApplyPatchableCRCMoveRelocation(uint64_t SiteAddress, uint8_t
+ bool CodeCache::ApplyPackedCodeRelocations(uint64_t GuestEntry, std::span<std::byte> Code,
+                                            std::span<const DiskCache::BlobSmallRelocation> SmallRelocs,
+                                            std::span<const DiskCache::BlobThunkRelocation> ThunkRelocs) {
++  FEXCore::Allocator::ScopedJITWrite JITWrite;
+   CPU::Arm64Emitter Emitter(&CTX, Code.data(), Code.size_bytes());
+   for (auto& Reloc : SmallRelocs) {
+     LOGMAN_THROW_A_FMT(Reloc.Offset < Code.size_bytes(), "Invalid relocation offset");
+@@ -617,6 +618,7 @@ bool CodeCache::ApplyPackedCodeRelocations(uint64_t GuestEntry, std::span<std::b
+ 
+ bool CodeCache::ApplyCodeRelocations(uint64_t GuestEntry, std::span<std::byte> Code,
+                                      std::span<const FEXCore::CPU::Relocation> EntryRelocations, bool ForStorage) {
++  FEXCore::Allocator::ScopedJITWrite JITWrite;
+   CPU::Arm64Emitter Emitter(&CTX, Code.data(), Code.size_bytes());
+   for (size_t j = 0; j < EntryRelocations.size(); ++j) {
+     const FEXCore::CPU::Relocation& Reloc = EntryRelocations[j];
+@@ -989,7 +991,10 @@ void CodeCache::FinalizeCodePages(MappedCodeCacheFile& Code, std::span<std::byte
+ #else
+   // TODO: Implement lazy mapping on Windows
+ #ifdef _M_ARM64EC
+-  memcpy(Code.CodeBuffer.data() + StartOffset, Code.CodeBufferInFile.data() + StartOffset, Size);
++  {
++    FEXCore::Allocator::ScopedJITWrite JITWrite;
++    memcpy(Code.CodeBuffer.data() + StartOffset, Code.CodeBufferInFile.data() + StartOffset, Size);
++  }
+ #endif
+   for (size_t i = StartPage; i < EndPage; ++i) {
+     auto PageRelocations = SpanPageRelocations(Code, i);
+diff --git a/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp b/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp
+index 5bbb180f0e0..920e88dade6 100644
+--- a/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp
++++ b/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp
+@@ -52,6 +52,7 @@ Dispatcher::~Dispatcher() {
+ }
+ 
+ void Dispatcher::EmitDispatcher() {
++  FEXCore::Allocator::ScopedJITWrite JITWrite;
+   // The dispatcher computes nothing with FPRs, so it leaves the AFP bits to the code it enters.
+   EmitAFPState = false;
+   // Don't modify TMP3 since it contains our RIP once the block doesn't exist
+diff --git a/FEXCore/Source/Interface/Core/JIT/JIT.cpp b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+index 799e0d6ea75..f179e03ccc6 100644
+--- a/FEXCore/Source/Interface/Core/JIT/JIT.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+@@ -536,6 +536,7 @@ void Arm64JITCore::Op_Unhandled(const IR::IROp_Header* IROp, IR::Ref Node) {
+ }
+ 
+ static void DirectBlockDelinker(FEXCore::Context::ExitFunctionLinkData* Record, bool Call) {
++  FEXCore::Allocator::ScopedJITWrite JITWrite;
+   uintptr_t JumpThunkStartAddress = reinterpret_cast<uintptr_t>(Record) - 0x10;
+   uintptr_t CallerAddress = JumpThunkStartAddress + Record->CallerOffset;
+   auto BranchOffset = JumpThunkStartAddress / 4 - CallerAddress / 4;
+@@ -555,6 +556,7 @@ static void DirectBlockDelinker(FEXCore::Context::ExitFunctionLinkData* Record,
+ }
+ 
+ static void IndirectBlockDelinker(FEXCore::Context::ExitFunctionLinkData* Record) {
++  FEXCore::Allocator::ScopedJITWrite JITWrite;
+   uintptr_t JumpThunkStartAddress = reinterpret_cast<uintptr_t>(Record) - 0x10;
+   uint32_t BranchInst = 0;
+   ARMEmitter::Emitter BranchEmit(reinterpret_cast<uint8_t*>(&BranchInst), 4);
+@@ -607,6 +609,8 @@ uint64_t Arm64JITCore::ExitFunctionLink(FEXCore::Core::CpuStateFrame* Frame, FEX
+   // Guard the LookupCache lock with the code invalidation mutex, to avoid issues with forking
+   auto lk_inval = GuardSignalDeferringSection<std::shared_lock>(static_cast<Context::ContextImpl*>(Thread->CTX)->CodeInvalidationMutex, Thread);
+ 
++  // Patching below writes JIT code. Declared before the lock so the lock is released first.
++  FEXCore::Allocator::ScopedJITWrite JITWrite;
+   // Lock here is necessary to prevent simultaneous linking and delinking
+   auto lk = Thread->LookupCache->AcquireWriteLock();
+ 
+@@ -1269,6 +1273,7 @@ CPUBackend::CompiledCode Arm64JITCore::CompileCode(uint64_t Entry, uint64_t Size
+     CodeData.HostCodeOffset = CodeData.BlockBegin - CurrentCodeBuffer->GetBufferBase();
+ 
+     // Copy over CodeBuffer contents
++    FEXCore::Allocator::ScopedJITWrite JITWrite;
+     memcpy(AllocatedInfo.BufferAllocationOffset, TempCodeBuffer, CodeData.Size);
+   }
+ 
+@@ -1315,7 +1320,10 @@ CPUBackend::CompiledCode Arm64JITCore::LoadCachedCode(std::span<const uint8_t> H
+   auto AllocatedInfo = AllocateCodeBufferInSharedCache(HostBytes.size());
+ 
+   uint8_t* Dest = AllocatedInfo.BufferAllocationOffset;
+-  memcpy(Dest, HostBytes.data(), HostBytes.size());
++  {
++    FEXCore::Allocator::ScopedJITWrite JITWrite;
++    memcpy(Dest, HostBytes.data(), HostBytes.size());
++  }
+   ClearICache(Dest, HostBytes.size());
+   FEXCore::Allocator::FlushCodeWrites(Dest, HostBytes.size());
+ 
+diff --git a/FEXCore/Source/Utils/Allocator.cpp b/FEXCore/Source/Utils/Allocator.cpp
+index 18495ce6e0b..5b1694d3d1e 100644
+--- a/FEXCore/Source/Utils/Allocator.cpp
++++ b/FEXCore/Source/Utils/Allocator.cpp
+@@ -321,6 +321,16 @@ void VirtualTHPNOP(const void* Ptr, size_t Size, THPControl Control) {}
+ 
+ VirtualNamePtr VirtualName {VirtualNameNOP};
+ VirtualTHPPtr VirtualTHPControl {VirtualTHPNOP};
++JITWriteProtectPtr JITWriteProtect {};
++// No nesting count: thread-local storage isn't usable this early in the emulator DLL, and no write window
++// contains another (keep it that way: an inner window would end the outer one).
++void JITWriteBegin() {
++  JITWriteProtect(false);
++}
++
++void JITWriteEnd() {
++  JITWriteProtect(true);
++}
+ 
+ void SetupHooks(size_t PageSize, HookPtrs Ptrs) {
+   VirtualName = Ptrs.VirtualName;
+diff --git a/FEXCore/Source/Utils/ArchHelpers/Arm64.cpp b/FEXCore/Source/Utils/ArchHelpers/Arm64.cpp
+index 01e5bb22e93..07427da0968 100644
+--- a/FEXCore/Source/Utils/ArchHelpers/Arm64.cpp
++++ b/FEXCore/Source/Utils/ArchHelpers/Arm64.cpp
+@@ -1,5 +1,6 @@
+ // SPDX-License-Identifier: MIT
+ 
++#include <FEXCore/Utils/AllocatorHooks.h>
+ #include "Interface/Core/CPUBackend.h"
+ #include "Interface/Context/Context.h"
+ #include <FEXCore/Utils/SpinWaitLock.h>
+@@ -2103,6 +2104,8 @@ std::optional<int32_t> HandleUnalignedAccess(FEXCore::Core::InternalThreadState*
+   // Lock code mutex during any SIGBUS handling that potentially changes code.
+   // Due to code buffer sharing between threads, code must be carefully backpatched from last to first.
+   // Multiple threads can be attempting to handle the SIGBUS or even be executing the code being backpatched.
++  // The lock word lives in the block tail, in JIT memory, so the write window opens first and closes last.
++  FEXCore::Allocator::ScopedJITWrite JITWrite;
+   FEXCore::Utils::SpinWaitLock::UniqueSpinMutex lk(&InlineTail->SpinLockFutex);
+ 
+   if ((Instr & LDAXR_MASK) == LDAR_INST ||  // LDAR*
+diff --git a/FEXCore/include/FEXCore/Utils/AllocatorHooks.h b/FEXCore/include/FEXCore/Utils/AllocatorHooks.h
+index f9a14490a21..f91a10719a3 100644
+--- a/FEXCore/include/FEXCore/Utils/AllocatorHooks.h
++++ b/FEXCore/include/FEXCore/Utils/AllocatorHooks.h
+@@ -70,7 +70,36 @@ inline void* VirtualAlloc(size_t Size, bool Execute = false, bool Commit = true)
+ // Tell the OS that code was written to an executable allocation. Required semantics on Windows are
+ // only the icache flush (already done by ClearICache), but Wine on hosts that enforce W^X (macOS)
+ // uses it to make the pages executable again without taking an execute fault.
++// MetalSharp: set by the Windows frontend when the host maps code buffers as MAP_JIT (macOS): JIT memory is then
++// writable or executable per thread, switched by this call, and every write to it must sit in a ScopedJITWrite.
++using JITWriteProtectPtr = void (*)(bool Enable);
++FEX_DEFAULT_VISIBILITY extern JITWriteProtectPtr JITWriteProtect;
++FEX_DEFAULT_VISIBILITY void JITWriteBegin();
++FEX_DEFAULT_VISIBILITY void JITWriteEnd();
++
++// A window in which this thread may write JIT code (and may not execute it). Inert without MAP_JIT.
++// Windows must not nest: the inner one would end the outer one.
++class ScopedJITWrite final {
++public:
++  ScopedJITWrite() {
++    if (JITWriteProtect) {
++      JITWriteBegin();
++    }
++  }
++  ~ScopedJITWrite() {
++    if (JITWriteProtect) {
++      JITWriteEnd();
++    }
++  }
++  ScopedJITWrite(const ScopedJITWrite&) = delete;
++  ScopedJITWrite& operator=(const ScopedJITWrite&) = delete;
++};
++
+ inline void FlushCodeWrites(const void* Ptr, size_t Size) {
++  // MAP_JIT memory needs no W^X emulation: ClearICache already flushed the instruction cache.
++  if (JITWriteProtect) {
++    return;
++  }
+   ::FlushInstructionCache(GetCurrentProcess(), Ptr, Size);
+ }
+ 
+@@ -131,6 +160,11 @@ inline void* VirtualAlloc(void* Base, size_t Size, bool Execute = false, bool Co
+ 
+ inline void FlushCodeWrites(const void*, size_t) {}
+ 
++class ScopedJITWrite final {
++public:
++  ScopedJITWrite() = default;
++};
++
+ inline void VirtualFree(void* Ptr, size_t Size) {
+   FEXCore::Allocator::munmap(Ptr, Size);
+ }
+diff --git a/Source/Windows/ARM64EC/Module.cpp b/Source/Windows/ARM64EC/Module.cpp
+index 7c76fa3c0a1..f87885e46c9 100644
+--- a/Source/Windows/ARM64EC/Module.cpp
++++ b/Source/Windows/ARM64EC/Module.cpp
+@@ -738,6 +738,12 @@ NTSTATUS ProcessInit() {
+   FEX::Windows::Allocator::SetupHooks(NtDll);
+   FEX::Windows::UnixLib::Init(NtDll);
+   if (FEX::Windows::UnixLib::Available()) {
++    // MetalSharp: MAP_JIT code buffers on macOS, before anything allocates one. METALSHARP_NO_MAPJIT=1 keeps
++    // Wine's W+X emulation (for comparison).
++    const char* NoMapJit = getenv("METALSHARP_NO_MAPJIT");
++    if (!(NoMapJit && *NoMapJit == '1') && FEX::Windows::UnixLib::TryEnableMapJit()) {
++      FEXCore::Allocator::JITWriteProtect = FEX::Windows::UnixLib::JITWriteProtect;
++    }
+     FEXCore::DiskCache::SetFileMapper(FEX::Windows::UnixLib::MapFile);
+   }
+ 
+diff --git a/Source/Windows/Common/FEXUnixLib.cpp b/Source/Windows/Common/FEXUnixLib.cpp
+index f6b9738a40d..e10e55ee775 100644
+--- a/Source/Windows/Common/FEXUnixLib.cpp
++++ b/Source/Windows/Common/FEXUnixLib.cpp
+@@ -215,4 +215,15 @@ uint32_t GetPID() {
+   return GetCurrentProcessId();
+ }
+ 
++bool TryEnableMapJit() {
++  return Available() && Call(FEXUnixLibFunctions::EnableMapJit, nullptr) == STATUS_SUCCESS;
++}
++
++void JITWriteProtect(bool Enable) {
++  FEXUnixLib_JITWriteProtect Args {
++    .Enable = Enable,
++  };
++  Call(FEXUnixLibFunctions::JITWriteProtect, &Args);
++}
++
+ } // namespace FEX::Windows::UnixLib
+diff --git a/Source/Windows/Common/FEXUnixLib.h b/Source/Windows/Common/FEXUnixLib.h
+index c62a763a8f0..faffac856ea 100644
+--- a/Source/Windows/Common/FEXUnixLib.h
++++ b/Source/Windows/Common/FEXUnixLib.h
+@@ -53,4 +53,8 @@ void* MapFile(HANDLE FileHandle, uint64_t MapSize);
+ // Or returns the process ID otherwise.
+ uint32_t GetPID();
+ 
++// MetalSharp: asks Wine for MAP_JIT code buffers (macOS). On success, JIT writes must use JITWriteProtect.
++bool TryEnableMapJit();
++void JITWriteProtect(bool Enable);
++
+ } // namespace FEX::Windows::UnixLib
+diff --git a/Source/Windows/UnixLib/FEXUnixLib.cpp b/Source/Windows/UnixLib/FEXUnixLib.cpp
+index fd9a21e3a7f..6c8ce84d938 100644
+--- a/Source/Windows/UnixLib/FEXUnixLib.cpp
++++ b/Source/Windows/UnixLib/FEXUnixLib.cpp
+@@ -14,6 +14,12 @@ static inline int prctl(int, ...) {
+ #include <sys/prctl.h>
+ #endif
+ #include <unistd.h>
++#ifdef __APPLE__
++#include <cstring>
++#include <dlfcn.h>
++#include <mach-o/dyld.h>
++#include <pthread.h>
++#endif
+ 
+ #include "FEXUnixLib.h"
+ 
+@@ -195,6 +201,39 @@ static NTSTATUS FEXUnixLib_GetPIDHandler(void* _Args) {
+   Args->Result = ::getpid();
+   return STATUS_SUCCESS;
+ }
++// MetalSharp: on macOS, asks Wine to back the JIT code buffers with MAP_JIT memory. From then on every write to them
++// must be bracketed by JITWriteProtect(false/true) on the writing thread. Wine without the export keeps emulating W+X.
++static NTSTATUS FEXUnixLib_EnableMapJitHandler(void*) {
++#ifdef __APPLE__
++  using EnableFn = int (*)();
++  auto Enable = reinterpret_cast<EnableFn>(dlsym(RTLD_DEFAULT, "__wine_virtual_enable_map_jit"));
++  // ntdll.so may be loaded without RTLD_GLOBAL: look it up among the loaded images.
++  for (uint32_t i = 0, n = _dyld_image_count(); !Enable && i < n; i++) {
++    const char* Name = _dyld_get_image_name(i);
++    size_t Len = Name ? strlen(Name) : 0;
++    if (Len < 9 || strcmp(Name + Len - 9, "/ntdll.so")) {
++      continue;
++    }
++    if (void* Handle = dlopen(Name, RTLD_LAZY | RTLD_NOLOAD)) {
++      Enable = reinterpret_cast<EnableFn>(dlsym(Handle, "__wine_virtual_enable_map_jit"));
++      dlclose(Handle);
++    }
++  }
++  return Enable && Enable() ? STATUS_SUCCESS : STATUS_NOT_SUPPORTED;
++#else
++  return STATUS_NOT_SUPPORTED;
++#endif
++}
++
++static NTSTATUS FEXUnixLib_JITWriteProtectHandler(void* _Args) {
++#ifdef __APPLE__
++  pthread_jit_write_protect_np(reinterpret_cast<const FEXUnixLib_JITWriteProtect*>(_Args)->Enable);
++  return STATUS_SUCCESS;
++#else
++  return STATUS_NOT_SUPPORTED;
++#endif
++}
++
+ extern "C" const unixlib_entry_t __wine_unix_call_funcs[] = {
+   FEXUnixLib_SetHardwareTSOControlHandler,
+   FEXUnixLib_SetKernelUnalignedAtomicControlHandler,
+@@ -204,6 +243,8 @@ extern "C" const unixlib_entry_t __wine_unix_call_funcs[] = {
+   FEXUnixLib_DeleteSHMStatsFileHandler,
+   FEXUnixLib_MapFileHandler,
+   FEXUnixLib_GetPIDHandler,
++  FEXUnixLib_EnableMapJitHandler,
++  FEXUnixLib_JITWriteProtectHandler,
+ };
+ 
+ static_assert(sizeof(__wine_unix_call_funcs) / sizeof(__wine_unix_call_funcs[0]) == ToUnderlying(FEXUnixLibFunctions::MAX));
+diff --git a/Source/Windows/UnixLib/FEXUnixLib.h b/Source/Windows/UnixLib/FEXUnixLib.h
+index ed7f18ce63b..7ab598ab7dd 100644
+--- a/Source/Windows/UnixLib/FEXUnixLib.h
++++ b/Source/Windows/UnixLib/FEXUnixLib.h
+@@ -12,6 +12,8 @@ enum class FEXUnixLibFunctions : uint32_t {
+   DeleteSHMStatsFile,
+   MapFile,
+   GetPID,
++  EnableMapJit,
++  JITWriteProtect,
+   MAX,
+ };
+ 
+@@ -65,3 +67,8 @@ struct FEXUnixLib_GetPID {
+   uint32_t Result;
+ };
+ static_assert(sizeof(FEXUnixLib_GetPID) == 4);
++
++struct FEXUnixLib_JITWriteProtect {
++  bool Enable;
++};
++static_assert(sizeof(FEXUnixLib_JITWriteProtect) == 1);
+diff --git a/Source/Windows/WOW64/Module.cpp b/Source/Windows/WOW64/Module.cpp
+index a45a87b2dbe..8948d8048b0 100644
+--- a/Source/Windows/WOW64/Module.cpp
++++ b/Source/Windows/WOW64/Module.cpp
+@@ -535,6 +535,12 @@ void BTCpuProcessInit() {
+   FEX::Windows::Allocator::SetupHooks(NtDll);
+   FEX::Windows::UnixLib::Init(NtDll);
+   if (FEX::Windows::UnixLib::Available()) {
++    // MetalSharp: MAP_JIT code buffers on macOS (Wine maps the W+X memory FEX places above 4GB with MAP_JIT),
++    // before anything allocates one. METALSHARP_NO_MAPJIT=1 keeps Wine's W+X emulation (for comparison).
++    const char* NoMapJit = getenv("METALSHARP_NO_MAPJIT");
++    if (!(NoMapJit && *NoMapJit == '1') && FEX::Windows::UnixLib::TryEnableMapJit()) {
++      FEXCore::Allocator::JITWriteProtect = FEX::Windows::UnixLib::JITWriteProtect;
++    }
+     FEXCore::DiskCache::SetFileMapper(FEX::Windows::UnixLib::MapFile);
+   }
+ 
+-- 
+2.54.0 (Apple Git-157)
+
