@@ -159,9 +159,12 @@ const WCHAR *get_launcher_process_args( const WCHAR *app_name, const WCHAR *cmd_
     /* MetalSharp: any other Chromium browser process (its children take their settings from it): no sandbox, the
      * GPU in process and off, and SwiftShader for WebGL only, so its UI composites in software. With only the GPU in
      * process, Edge WebView2 (NoHesi Launcher) fails a CHECK creating the compositor's GPU context
-     * (and see chromium_disable_dcomp_fallback). */
-    if (!string_contains_ci( cmd_line, L"--type=" ) &&
-        !string_contains_ci( cmd_line, L"--use-angle=swiftshader-webgl" ) && is_chromium_browser( app_name ))
+     * (and see chromium_disable_dcomp_fallback). A browser whose command line already picks ANGLE's backend
+     * (--use-angle=) is left as its starter set it up: Chromium takes the last --use-angle, so ours would override
+     * the starter's, and Ubisoft Connect, which MetalSharp starts with WebGL on ANGLE's D3D11 for the GPU its login's
+     * bot protection checks, got SwiftShader's again (MetalSharp issue #824). */
+    if (!string_contains_ci( cmd_line, L"--type=" ) && !string_contains_ci( cmd_line, L"--use-angle=" ) &&
+        is_chromium_browser( app_name ))
         return L" --no-sandbox --in-process-gpu --disable-gpu --disable-d3d11 --enable-unsafe-swiftshader"
                L" --use-gl=angle --use-angle=swiftshader-webgl";
     return NULL;
