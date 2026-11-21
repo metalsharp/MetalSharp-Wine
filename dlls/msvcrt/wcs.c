@@ -31,6 +31,7 @@
 #include "winternl.h"
 #include "wtypes.h"
 #include "wine/debug.h"
+#include "wine/neon_string.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(msvcrt);
 
@@ -2970,9 +2971,13 @@ wchar_t* CDECL wcsrchr(const wchar_t *str, wchar_t ch)
  */
 size_t CDECL wcslen(const wchar_t *str)
 {
+#ifdef WINE_NEON_STRING
+    return neon_wcslen( (const uint16_t *)str );
+#else
     const wchar_t *s = str;
     while (*s) s++;
     return s - str;
+#endif
 }
 
 /*********************************************************************

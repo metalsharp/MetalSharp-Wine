@@ -391,9 +391,27 @@ static void *window_surface_get_shape( struct window_surface *surface, BITMAPINF
     return gdi_bits.ptr;
 }
 
+#ifdef __aarch64__
+#include <arm_neon.h>
+
+/* One shape byte for 8 pixels: bit 7 - i is clear where (bits[i] & mask) == value. */
+static inline BYTE shape_from_mask_neon( const UINT32 *bits, UINT32 mask, UINT32 value )
+{
+    static const uint8_t weights[8] = { 128, 64, 32, 16, 8, 4, 2, 1 };
+    uint32x4_t m = vdupq_n_u32( mask ), v = vdupq_n_u32( value );
+    uint32x4_t a = vceqq_u32( vandq_u32( vld1q_u32( bits ), m ), v );
+    uint32x4_t b = vceqq_u32( vandq_u32( vld1q_u32( bits + 4 ), m ), v );
+    uint8x8_t n = vmovn_u16( vcombine_u16( vmovn_u32( a ), vmovn_u32( b )));
+    return ~vaddv_u8( vand_u8( n, vld1_u8( weights )));
+}
+#endif
+
 static BYTE shape_from_alpha_mask( UINT32 *bits, UINT32 alpha_mask, UINT32 alpha )
 {
     BYTE i, bit, mask = 0;
+#ifdef __aarch64__
+    return shape_from_mask_neon( bits, alpha_mask, alpha );
+#endif
     for (i = 0, bit = 7; i < 8; i++, bit--) mask |= ((bits[i] & alpha_mask) == alpha) << bit;
     return ~mask;
 }
@@ -408,6 +426,9 @@ static BYTE shape_from_color_key_16( UINT16 *bits, UINT16 color_mask, UINT16 col
 static BYTE shape_from_color_key_32( UINT32 *bits, UINT32 color_mask, UINT32 color_key )
 {
     BYTE i, bit, mask = 0;
+#ifdef __aarch64__
+    return shape_from_mask_neon( bits, color_mask, color_key );
+#endif
     for (i = 0, bit = 7; i < 8; i++, bit--) mask |= ((bits[i] & color_mask) == color_key) << bit;
     return ~mask;
 }

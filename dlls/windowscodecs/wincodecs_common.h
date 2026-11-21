@@ -199,6 +199,10 @@ HRESULT read_png_chunk(IStream *stream, BYTE *type, BYTE **data, ULONG *data_siz
     return S_OK;
 }
 
+#if defined(__aarch64__) || defined(__arm64ec__)
+#include <arm_neon.h>
+#endif
+
 void reverse_bgr8(UINT bytesperpixel, LPBYTE bits, UINT width, UINT height, INT stride)
 {
     UINT x, y;
@@ -207,8 +211,29 @@ void reverse_bgr8(UINT bytesperpixel, LPBYTE bits, UINT width, UINT height, INT 
     for (y=0; y<height; y++)
     {
         pixel = bits + stride * (INT)y;
+        x = 0;
 
-        for (x=0; x<width; x++)
+#if defined(__aarch64__) || defined(__arm64ec__)
+        if (bytesperpixel == 4)
+            for (; x + 16 <= width; x += 16, pixel += 64)
+            {
+                uint8x16x4_t px = vld4q_u8(pixel);
+                uint8x16_t b = px.val[0];
+                px.val[0] = px.val[2];
+                px.val[2] = b;
+                vst4q_u8(pixel, px);
+            }
+        else if (bytesperpixel == 3)
+            for (; x + 16 <= width; x += 16, pixel += 48)
+            {
+                uint8x16x3_t px = vld3q_u8(pixel);
+                uint8x16_t b = px.val[0];
+                px.val[0] = px.val[2];
+                px.val[2] = b;
+                vst3q_u8(pixel, px);
+            }
+#endif
+        for (; x<width; x++)
         {
             temp = pixel[2];
             pixel[2] = pixel[0];

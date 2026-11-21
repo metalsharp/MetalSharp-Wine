@@ -32,6 +32,96 @@
 
 WINE_DEFAULT_DEBUG_CHANNEL(wincodecs);
 
+#if defined(__aarch64__) || defined(__arm64ec__)
+#include <arm_neon.h>
+#endif
+
+/* Undo premultiplied alpha in 32bpp BGRA or RGBA rows; alpha 0 and 255 are left alone. */
+static void unpremultiply_bgra(BYTE *bits, UINT stride, INT width, INT height)
+{
+    INT x, y;
+
+    for (y = 0; y < height; y++)
+    {
+        BYTE *row = bits + stride * y;
+
+        x = 0;
+#if defined(__aarch64__) || defined(__arm64ec__)
+        /* c * 255 / alpha with float division: both are below 2^24 and a quotient just below an integer is
+         * at least 1/255 away from it, so truncating the rounded quotient gives the integer division. Values
+         * over 255 (a channel above alpha) keep their low byte, as the BYTE store below does. */
+        for (; x + 8 <= width; x += 8)
+        {
+            uint8x8x4_t px = vld4_u8(row + 4 * x);
+            uint8x8_t skip = vorr_u8(vceqz_u8(px.val[3]), vceq_u8(px.val[3], vdup_n_u8(255)));
+            uint16x8_t a16 = vmovl_u8(px.val[3]);
+            float32x4_t a_lo = vcvtq_f32_u32(vmovl_u16(vget_low_u16(a16))), a_hi = vcvtq_f32_u32(vmovl_high_u16(a16));
+            int c;
+
+            if (vminv_u8(skip)) continue;
+            for (c = 0; c < 3; c++)
+            {
+                uint16x8_t n = vmull_u8(px.val[c], vdup_n_u8(255));
+                uint32x4_t q_lo = vcvtq_u32_f32(vdivq_f32(vcvtq_f32_u32(vmovl_u16(vget_low_u16(n))), a_lo));
+                uint32x4_t q_hi = vcvtq_u32_f32(vdivq_f32(vcvtq_f32_u32(vmovl_high_u16(n)), a_hi));
+                uint8x8_t q = vmovn_u16(vcombine_u16(vmovn_u32(q_lo), vmovn_u32(q_hi)));
+                px.val[c] = vbsl_u8(skip, px.val[c], q);
+            }
+            vst4_u8(row + 4 * x, px);
+        }
+#endif
+        for (; x < width; x++)
+        {
+            BYTE alpha = row[4*x+3];
+            if (alpha != 0 && alpha != 255)
+            {
+                row[4*x] = row[4*x] * 255 / alpha;
+                row[4*x+1] = row[4*x+1] * 255 / alpha;
+                row[4*x+2] = row[4*x+2] * 255 / alpha;
+            }
+        }
+    }
+}
+
+/* Premultiply 32bpp BGRA or RGBA rows by their alpha. */
+static void premultiply_bgra(BYTE *bits, UINT stride, INT width, INT height)
+{
+    INT x, y;
+
+    for (y = 0; y < height; y++)
+    {
+        BYTE *row = bits + stride * y;
+
+        x = 0;
+#if defined(__aarch64__) || defined(__arm64ec__)
+        /* (c * alpha + 127) / 255, exactly: v / 255 == (v + 1 + (v >> 8)) >> 8 for v <= 255 * 255 + 127.
+         * Alpha 255 gives c back, so no pixel needs skipping. */
+        for (; x + 8 <= width; x += 8)
+        {
+            uint8x8x4_t px = vld4_u8(row + 4 * x);
+            int c;
+
+            for (c = 0; c < 3; c++)
+            {
+                uint16x8_t v = vmlal_u8(vdupq_n_u16(127), px.val[c], px.val[3]);
+                px.val[c] = vshrn_n_u16(vaddq_u16(vaddq_u16(v, vdupq_n_u16(1)), vshrq_n_u16(v, 8)), 8);
+            }
+            vst4_u8(row + 4 * x, px);
+        }
+#endif
+        for (; x < width; x++)
+        {
+            BYTE alpha = row[4*x+3];
+            if (alpha != 255)
+            {
+                row[4*x] = (row[4*x] * alpha + 127) / 255;
+                row[4*x+1] = (row[4*x+1] * alpha + 127) / 255;
+                row[4*x+2] = (row[4*x+2] * alpha + 127) / 255;
+            }
+        }
+    }
+}
+
 struct FormatConverter;
 
 enum pixelformat {
@@ -770,22 +860,11 @@ static HRESULT copypixels_to_32bppBGRA(struct FormatConverter *This, const WICRe
         if (prc)
         {
             HRESULT res;
-            INT x, y;
 
             res = IWICBitmapSource_CopyPixels(This->source, prc, cbStride, cbBufferSize, pbBuffer);
             if (FAILED(res)) return res;
 
-            for (y=0; y<prc->Height; y++)
-                for (x=0; x<prc->Width; x++)
-                {
-                    BYTE alpha = pbBuffer[cbStride*y+4*x+3];
-                    if (alpha != 0 && alpha != 255)
-                    {
-                        pbBuffer[cbStride*y+4*x] = pbBuffer[cbStride*y+4*x] * 255 / alpha;
-                        pbBuffer[cbStride*y+4*x+1] = pbBuffer[cbStride*y+4*x+1] * 255 / alpha;
-                        pbBuffer[cbStride*y+4*x+2] = pbBuffer[cbStride*y+4*x+2] * 255 / alpha;
-                    }
-                }
+            unpremultiply_bgra(pbBuffer, cbStride, prc->Width, prc->Height);
         }
         return S_OK;
     case format_48bppRGB:
@@ -1122,22 +1201,11 @@ static HRESULT copypixels_to_32bppRGBA(struct FormatConverter *This, const WICRe
     case format_32bppPRGBA:
         if (prc)
         {
-            INT x, y;
 
             hr = IWICBitmapSource_CopyPixels(This->source, prc, cbStride, cbBufferSize, pbBuffer);
             if (FAILED(hr)) return hr;
 
-            for (y=0; y<prc->Height; y++)
-                for (x=0; x<prc->Width; x++)
-                {
-                    BYTE alpha = pbBuffer[cbStride*y+4*x+3];
-                    if (alpha != 0 && alpha != 255)
-                    {
-                        pbBuffer[cbStride*y+4*x] = pbBuffer[cbStride*y+4*x] * 255 / alpha;
-                        pbBuffer[cbStride*y+4*x+1] = pbBuffer[cbStride*y+4*x+1] * 255 / alpha;
-                        pbBuffer[cbStride*y+4*x+2] = pbBuffer[cbStride*y+4*x+2] * 255 / alpha;
-                    }
-                }
+            unpremultiply_bgra(pbBuffer, cbStride, prc->Width, prc->Height);
         }
         return S_OK;
 
@@ -1196,19 +1264,8 @@ static HRESULT copypixels_to_32bppPBGRA(struct FormatConverter *This, const WICR
         hr = copypixels_to_32bppBGRA(This, prc, cbStride, cbBufferSize, pbBuffer, source_format);
         if (SUCCEEDED(hr) && prc)
         {
-            INT x, y;
 
-            for (y=0; y<prc->Height; y++)
-                for (x=0; x<prc->Width; x++)
-                {
-                    BYTE alpha = pbBuffer[cbStride*y+4*x+3];
-                    if (alpha != 255)
-                    {
-                        pbBuffer[cbStride*y+4*x] = (pbBuffer[cbStride*y+4*x] * alpha + 127) / 255;
-                        pbBuffer[cbStride*y+4*x+1] = (pbBuffer[cbStride*y+4*x+1] * alpha + 127) / 255;
-                        pbBuffer[cbStride*y+4*x+2] = (pbBuffer[cbStride*y+4*x+2] * alpha + 127) / 255;
-                    }
-                }
+            premultiply_bgra(pbBuffer, cbStride, prc->Width, prc->Height);
         }
         return hr;
     }
@@ -1229,19 +1286,8 @@ static HRESULT copypixels_to_32bppPRGBA(struct FormatConverter *This, const WICR
         hr = copypixels_to_32bppRGBA(This, prc, cbStride, cbBufferSize, pbBuffer, source_format);
         if (SUCCEEDED(hr) && prc)
         {
-            INT x, y;
 
-            for (y=0; y<prc->Height; y++)
-                for (x=0; x<prc->Width; x++)
-                {
-                    BYTE alpha = pbBuffer[cbStride*y+4*x+3];
-                    if (alpha != 255)
-                    {
-                        pbBuffer[cbStride*y+4*x] = (pbBuffer[cbStride*y+4*x] * alpha + 127) / 255;
-                        pbBuffer[cbStride*y+4*x+1] = (pbBuffer[cbStride*y+4*x+1] * alpha + 127) / 255;
-                        pbBuffer[cbStride*y+4*x+2] = (pbBuffer[cbStride*y+4*x+2] * alpha + 127) / 255;
-                    }
-                }
+            premultiply_bgra(pbBuffer, cbStride, prc->Width, prc->Height);
         }
         return hr;
     }
