@@ -230,15 +230,18 @@ DEF_OP(PrintMsg) {
 }
 
 DEF_OP(ProcessorID) {
-  if (CTX->HostFeatures.SupportsCPUIndexInTPIDRRO) {
-    mrs(GetReg(Node), ARMEmitter::SystemRegister::TPIDRRO_EL0);
+  using CPUIndexSourceEnum = FEXCore::HostFeatures::CPUIndexSourceEnum;
+  switch (CTX->HostFeatures.CPUIndexSource) {
+  case CPUIndexSourceEnum::TPIDRRO: mrs(GetReg(Node), ARMEmitter::SystemRegister::TPIDRRO_EL0); return;
+  case CPUIndexSourceEnum::TPIDR_Low12:
+    mrs(GetReg(Node), ARMEmitter::SystemRegister::TPIDR_EL0);
+    and_(ARMEmitter::Size::i64Bit, GetReg(Node), GetReg(Node), 0xfff);
     return;
+  case CPUIndexSourceEnum::None: break;
   }
 #ifdef _WIN32
-  else {
-    // If on Windows and TPIDRRO isn't supported (like in wine), then this is a programming error.
-    ERROR_AND_DIE_FMT("Unsupported");
-  }
+  // If on Windows without a processor number register (like in wine), then this is a programming error.
+  ERROR_AND_DIE_FMT("Unsupported");
 #else
   // We always need to spill x8 since we can't know if it is live at this SSA location
   uint32_t SpillMask = 1U << 8;

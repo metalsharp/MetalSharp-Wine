@@ -14,6 +14,7 @@ enum class FEXUnixLibFunctions : uint32_t {
   GetPID,
   EnableMapJit,
   JITWriteProtect,
+  ProbeCPUIndexInTPIDR,
   MAX,
 };
 
@@ -72,3 +73,10 @@ struct FEXUnixLib_JITWriteProtect {
   bool Enable;
 };
 static_assert(sizeof(FEXUnixLib_JITWriteProtect) == 1);
+
+// Checks, on macOS, that the low 12 bits of TPIDR_EL0 hold the processor number pthread_cpu_number_np returns.
+struct FEXUnixLib_ProbeCPUIndexInTPIDR {
+  // In: the number of processors Wine reports.
+  uint32_t NumCPUs;
+};
+static_assert(sizeof(FEXUnixLib_ProbeCPUIndexInTPIDR) == 4);

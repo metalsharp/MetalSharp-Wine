@@ -57,4 +57,7 @@ uint32_t GetPID();
 bool TryEnableMapJit();
 void JITWriteProtect(bool Enable);
 
+// Whether the unix side confirmed, for NumCPUs processors, that TPIDR_EL0's low 12 bits hold the processor number.
+bool ProbeCPUIndexInTPIDR(uint32_t NumCPUs);
+
 } // namespace FEX::Windows::UnixLib
