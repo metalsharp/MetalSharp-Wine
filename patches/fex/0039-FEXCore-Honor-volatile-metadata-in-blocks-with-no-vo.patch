@@ -1,0 +1,55 @@
+From a8d8137a8948da07609f841b6231e0c608c9fe27 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@Averys-Mac-Mini.local>
+Date: Thu, 19 Nov 2026 01:24:58 -0700
+Subject: [PATCH 39/44] FEXCore: Honor volatile metadata in blocks with no
+ volatile accesses
+
+A block inside a range the volatile metadata covers was given its
+TSO override only if it also contained a listed volatile access. Most
+blocks contain none, so they fell back to full TSO emulation and the
+metadata barely helped: with TSO on, a probe's entity update loop ran
+in 64 ms with metadata against 35 ms with TSO off. Every block in a
+covered range now has TSO only for its listed accesses, and runs in
+35 ms. The frontend's own force-TSO flag still wins.
+---
+ FEXCore/Source/Interface/Core/Core.cpp | 10 ++++++----
+ 1 file changed, 6 insertions(+), 4 deletions(-)
+
+diff --git a/FEXCore/Source/Interface/Core/Core.cpp b/FEXCore/Source/Interface/Core/Core.cpp
+index 7b269ef6dc7..b3c978820ab 100644
+--- a/FEXCore/Source/Interface/Core/Core.cpp
++++ b/FEXCore/Source/Interface/Core/Core.cpp
+@@ -608,9 +608,11 @@ ContextImpl::GenerateIR(FEXCore::Core::InternalThreadState* Thread, uint64_t Gue
+       bool BlockInForceTSOValidRange = false;
+       auto InstForceTSOIt = ForceTSOInstructions.end();
+       if (ForceTSOValidRanges.Contains({Block.Entry, Block.Entry + Block.Size})) {
++        // The metadata covers this block, so only its listed instructions need TSO. A block with none of them
++        // listed is the common case and must not fall back to full TSO.
++        BlockInForceTSOValidRange = true;
+         if (auto It = ForceTSOInstructions.lower_bound(Block.Entry); It != ForceTSOInstructions.end() && *It < Block.Entry + Block.Size) {
+           InstForceTSOIt = It;
+-          BlockInForceTSOValidRange = true;
+         }
+       }
+ 
+@@ -749,14 +751,14 @@ ContextImpl::GenerateIR(FEXCore::Core::InternalThreadState* Thread, uint64_t Gue
+           Thread->OpDispatcher->ResetHandledLock();
+           Thread->OpDispatcher->ResetDecodeFailure();
+           IR::ForceTSOMode ForceTSO = IR::ForceTSOMode::NoOverride;
+-          if (BlockInForceTSOValidRange) {
++          if (DecodedInfo->Flags & X86Tables::DecodeFlags::FLAG_FORCE_TSO) {
++            ForceTSO = IR::ForceTSOMode::ForceEnabled;
++          } else if (BlockInForceTSOValidRange) {
+             if (InstForceTSOIt != ForceTSOInstructions.end() && *InstForceTSOIt == InstAddress) {
+               ForceTSO = IR::ForceTSOMode::ForceEnabled;
+             } else {
+               ForceTSO = IR::ForceTSOMode::ForceDisabled;
+             }
+-          } else if (DecodedInfo->Flags & X86Tables::DecodeFlags::FLAG_FORCE_TSO) {
+-            ForceTSO = IR::ForceTSOMode::ForceEnabled;
+           }
+ 
+           Thread->OpDispatcher->SetForceTSO(ForceTSO);
+-- 
+2.54.0 (Apple Git-157)
+
