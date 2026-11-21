@@ -27,6 +27,9 @@
 #include <math.h>	/* Insomnia - pow() function */
 #ifdef __SSE__
 #include <xmmintrin.h>
+#elif defined(__aarch64__) || defined(__arm64ec__)
+#include <arm_neon.h>
+#define USE_NEON_RESAMPLER
 #endif
 
 #define COBJMACROS
@@ -659,6 +662,44 @@ void downsample_sse(LONG64 opos_num, DWORD opos_num_step, float rem_float, float
 
 #endif
 
+#ifdef USE_NEON_RESAMPLER
+
+/* NEON version of upsample_sse, with the same order of operations. The compiler already vectorizes
+ * downsample's C loop, which has no reduction. */
+static void upsample_neon(LONG64 ipos_num, DWORD ipos_num_step, float rem_inv_float,
+        float rem_inv_step_float, UINT count, float *input, float *output)
+{
+    float32x4_t rem_inv = vdupq_n_f32(rem_inv_float);
+    float32x4_t rem_inv_step = vdupq_n_f32(rem_inv_step_float);
+    float32x4_t one = vdupq_n_f32(1.0f);
+    UINT i;
+
+    for (i = 0; i < count; ++i) {
+        UINT ipos = ipos_num >> FREQ_ADJUST_SHIFT;
+        UINT idx = ~(DWORD)ipos_num >> (FREQ_ADJUST_SHIFT - FIR_STEP_SHIFT) << FIR_WIDTH_SHIFT;
+        float32x4_t rem = vsubq_f32(one, rem_inv);
+        float32x4_t sum = vdupq_n_f32(0.0f);
+        float *cache = &input[ipos];
+        int j;
+
+        for (j = 0; j < FIR_WIDTH; j += 4) {
+            float32x4_t fir_value0 = vmulq_f32(vld1q_f32(&fir[idx + j]), rem_inv);
+            float32x4_t fir_value1 = vmulq_f32(vld1q_f32(&fir[idx + j + FIR_WIDTH]), rem);
+            sum = vaddq_f32(sum, vmulq_f32(vaddq_f32(fir_value0, fir_value1), vld1q_f32(&cache[j])));
+        }
+
+        /* Same pairing as the SSE reduction: (0+1) + (2+3). */
+        output[i] = (vgetq_lane_f32(sum, 0) + vgetq_lane_f32(sum, 1)) + (vgetq_lane_f32(sum, 2) + vgetq_lane_f32(sum, 3));
+
+        rem_inv = vaddq_f32(rem_inv, rem_inv_step);
+        rem_inv = vsubq_f32(rem_inv, vreinterpretq_f32_u32(vandq_u32(vreinterpretq_u32_f32(one), vcleq_f32(one, rem_inv))));
+
+        ipos_num += ipos_num_step;
+    }
+}
+
+#endif
+
 /**
  * Note that this function will overwrite up to FIR_WIDTH - 1 frames before and
  * after output[].
@@ -792,6 +833,8 @@ static void upsample(DWORD freq_adjust_num, DWORD freq_acc_start, UINT count, fl
 
 #ifdef __SSE__
     upsample_sse(ipos_num, ipos_num_step, rem_inv, rem_inv_step, count, input, output);
+#elif defined(USE_NEON_RESAMPLER)
+    upsample_neon(ipos_num, ipos_num_step, rem_inv, rem_inv_step, count, input, output);
 #else
     UINT i;
     for(i = 0; i < count; ++i) {
