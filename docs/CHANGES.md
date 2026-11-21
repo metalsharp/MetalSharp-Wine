@@ -36,7 +36,7 @@ x86_64 build. Assetto Corsa with Custom Shaders Patch runs and joins servers (Wi
 
 Both builds:
 
-- Mullion merged with upstream [dttdrv/mullion](https://github.com/dttdrv/mullion) main (`aaf2tbz/mullion` `metalsharp-2.1-main` at `0f62a783`), with nothing of upstream's left out; its NGX core is signed by the fork's CI for DLSS.
+- Mullion merged with upstream [dttdrv/mullion](https://github.com/dttdrv/mullion) main (`aaf2tbz/mullion` `metalsharp-2.1-main` at `1581eb8a`), with nothing of upstream's left out; its NGX core is signed by the fork's CI for DLSS.
 - **SteamVR games show in a headset** (Mullion `998c32a6`, [aaf2tbz/mullion#3](https://github.com/aaf2tbz/mullion/pull/3)). With `MULLION_METALVR` set, which MetalVR's setup does for the Steam prefix (`metalvr steamvr`), Mullion shares Direct3D 11 buffers and Direct3D 12 textures between processes: SteamVR's compositor learns from such a buffer which of a game's eye images is current, and without it a game ran but was black. Without the variable nothing changes.
 - VKD3D-Proton-MacOS 5.4 → 6.0.
 
