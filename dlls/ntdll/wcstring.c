@@ -33,6 +33,7 @@
 #include "winnls.h"
 #include "winternl.h"
 #include "ntdll_misc.h"
+#include "wine/neon_string.h"
 
 static const unsigned short wctypes[256] =
 {
@@ -214,9 +215,13 @@ errno_t __cdecl wcscpy_s( wchar_t *dst, size_t len, const wchar_t *src )
  */
 size_t __cdecl wcslen( LPCWSTR str )
 {
+#ifdef WINE_NEON_STRING
+    return neon_wcslen( (const uint16_t *)str );
+#else
     const WCHAR *s = str;
     while (*s) s++;
     return s - str;
+#endif
 }
 
 

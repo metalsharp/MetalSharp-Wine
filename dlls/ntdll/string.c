@@ -33,6 +33,7 @@
 #include "winnls.h"
 #include "winternl.h"
 #include "ntdll_misc.h"
+#include "wine/neon_string.h"
 
 
 /* same as wctypes except for TAB, which doesn't have C1_BLANK for some reason... */
@@ -72,10 +73,14 @@ static const unsigned short ctypes[257] =
  */
 void * __cdecl memchr( const void *ptr, int c, size_t n )
 {
+#ifdef WINE_NEON_STRING
+    return neon_memchr( ptr, c, n );
+#else
     const unsigned char *p = ptr;
 
     for (p = ptr; n; n--, p++) if (*p == (unsigned char)c) return (void *)(ULONG_PTR)p;
     return NULL;
+#endif
 }
 
 
@@ -84,6 +89,9 @@ void * __cdecl memchr( const void *ptr, int c, size_t n )
  */
 int __cdecl memcmp( const void *ptr1, const void *ptr2, size_t n )
 {
+#ifdef WINE_NEON_STRING
+    return neon_memcmp( ptr1, ptr2, n );
+#else
     const unsigned char *p1, *p2;
 
     for (p1 = ptr1, p2 = ptr2; n; n--, p1++, p2++)
@@ -92,6 +100,7 @@ int __cdecl memcmp( const void *ptr1, const void *ptr2, size_t n )
         if (*p1 > *p2) return 1;
     }
     return 0;
+#endif
 }
 
 
@@ -103,6 +112,9 @@ int __cdecl memcmp( const void *ptr1, const void *ptr2, size_t n )
  */
 void * __cdecl memcpy( void *dst, const void *src, size_t n )
 {
+#ifdef WINE_NEON_STRING
+    return neon_memmove( dst, src, n );
+#else
     unsigned char *d = dst;
     const unsigned char *s = src;
 
@@ -117,6 +129,7 @@ void * __cdecl memcpy( void *dst, const void *src, size_t n )
         while (n--) *d-- = *s--;
     }
     return dst;
+#endif
 }
 
 
@@ -125,6 +138,9 @@ void * __cdecl memcpy( void *dst, const void *src, size_t n )
  */
 void * __cdecl memmove( void *dst, const void *src, size_t n )
 {
+#ifdef WINE_NEON_STRING
+    return neon_memmove( dst, src, n );
+#else
     unsigned char *d = dst;
     const unsigned char *s = src;
 
@@ -139,6 +155,7 @@ void * __cdecl memmove( void *dst, const void *src, size_t n )
         while (n--) *d-- = *s--;
     }
     return dst;
+#endif
 }
 
 
@@ -358,8 +375,12 @@ errno_t __cdecl strcat_s( char *dst, size_t len, const char *src )
  */
 char * __cdecl strchr( const char *str, int c )
 {
+#ifdef WINE_NEON_STRING
+    return neon_strchr( str, c );
+#else
     do { if (*str == (char)c) return (char *)(ULONG_PTR)str; } while (*str++);
     return NULL;
+#endif
 }
 
 
@@ -368,10 +389,14 @@ char * __cdecl strchr( const char *str, int c )
  */
 int __cdecl strcmp( const char *str1, const char *str2 )
 {
+#ifdef WINE_NEON_STRING
+    return neon_strcmp( str1, str2 );
+#else
     while (*str1 && *str1 == *str2) { str1++; str2++; }
     if ((unsigned char)*str1 > (unsigned char)*str2) return 1;
     if ((unsigned char)*str1 < (unsigned char)*str2) return -1;
     return 0;
+#endif
 }
 
 
@@ -422,9 +447,13 @@ size_t __cdecl strcspn( const char *str, const char *reject )
  */
 size_t __cdecl strlen( const char *str )
 {
+#ifdef WINE_NEON_STRING
+    return neon_strlen( str );
+#else
     const char *s = str;
     while (*s) s++;
     return s - str;
+#endif
 }
 
 
