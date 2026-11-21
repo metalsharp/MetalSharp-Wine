@@ -135,15 +135,18 @@ void init_process_graphics_backend( const WCHAR *image_path )
     if (!parse_graphics_backend( backend, &configured_backend ))
         configured_backend = dxmt_runtime_available() ? PROCESS_GRAPHICS_BACKEND_DXMT
                                                       : PROCESS_GRAPHICS_BACKEND_WINE;
-    /* DXVK (opt-in) covers D3D9/10/11 and DXGI in x86_64 programs only; everything else, and
-     * every other kind of program, keeps the default backend. */
-    if (configured_backend == PROCESS_GRAPHICS_BACKEND_DXVK && !(is_arm64ec() && dxvk_runtime_available()))
+    /* DXVK (opt-in) covers D3D7 to D3D11 and DXGI in x86_64 programs, and D3D7 to D3D9 in 32-bit ones, when
+     * its lane for them is installed; native arm64 programs keep the default backend. */
+    if (configured_backend == PROCESS_GRAPHICS_BACKEND_DXVK &&
+        !(is_arm64ec() && dxvk_runtime_available( IMAGE_FILE_MACHINE_AMD64 )) &&
+        !(is_wow64() && main_image_info.Machine == IMAGE_FILE_MACHINE_I386 &&
+          dxvk_runtime_available( IMAGE_FILE_MACHINE_I386 )))
         configured_backend = dxmt_runtime_available() ? PROCESS_GRAPHICS_BACKEND_DXMT
                                                       : PROCESS_GRAPHICS_BACKEND_WINE;
     /* VKD3D-Proton (opt-in) is D3D12 and DXGI on Vulkan, with DXVK's D3D9/10/11, in x86_64
      * programs only, like DXVK. */
     if (configured_backend == PROCESS_GRAPHICS_BACKEND_VKD3D &&
-        !(is_arm64ec() && vkd3d_runtime_available() && dxvk_runtime_available()))
+        !(is_arm64ec() && vkd3d_runtime_available() && dxvk_runtime_available( IMAGE_FILE_MACHINE_AMD64 )))
         configured_backend = dxmt_runtime_available() ? PROCESS_GRAPHICS_BACKEND_DXMT
                                                       : PROCESS_GRAPHICS_BACKEND_WINE;
     process_graphics_backend = configured_backend;

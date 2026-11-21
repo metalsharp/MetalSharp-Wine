@@ -1345,20 +1345,27 @@ static char *zink_pe_path( const char *name, USHORT machine )
     return NULL;
 }
 
-/* DXVK 1.10.3 (macOS, x86_64): <dll_dir>/../dxvk/x86_64-windows, for GRAPHICS_BACKEND=dxvk */
-static char *dxvk_pe_path( const char *name )
+/* DXVK-MacOS, for GRAPHICS_BACKEND=dxvk: <dll_dir>/../dxvk/x86_64-windows holds its ARM64X build (ARM64EC, for
+ * FEX's x86_64 programs), <dll_dir>/../dxvk/i386-windows its i386 build (32-bit programs, which FEX runs too) */
+static char *dxvk_pe_path( const char *name, USHORT machine )
 {
+    const char *pe_dir;
     char *path;
 
-    if (!dll_dir || asprintf( &path, "%s/../dxvk/x86_64-windows/%s", dll_dir, name ) == -1) return NULL;
+    if (machine == IMAGE_FILE_MACHINE_I386) pe_dir = "i386-windows";
+    else if (machine == IMAGE_FILE_MACHINE_AMD64 || machine == IMAGE_FILE_MACHINE_ARM64) pe_dir = "x86_64-windows";
+    else return NULL;
+    if (!dll_dir || asprintf( &path, "%s/../dxvk/%s/%s", dll_dir, pe_dir, name ) == -1) return NULL;
     if (!access( path, R_OK )) return path;
     free( path );
     return NULL;
 }
 
-BOOL dxvk_runtime_available(void)
+/* The lane for programs of this machine: D3D11 marks the x86_64 one, D3D9 the i386 one (32-bit games are D3D9 at
+ * most, and ddraw.dll, D3D7 to 3, builds on it) */
+BOOL dxvk_runtime_available( USHORT machine )
 {
-    char *path = dxvk_pe_path( "d3d11.dll" );
+    char *path = dxvk_pe_path( machine == IMAGE_FILE_MACHINE_I386 ? "d3d9.dll" : "d3d11.dll", machine );
 
     free( path );
     return path != NULL;
@@ -1400,19 +1407,36 @@ static char *resolve_vkd3d_pe_path( const char *module )
     return NULL;
 }
 
-static char *resolve_dxvk_pe_path( const char *module )
+static char *resolve_dxvk_pe_path( const char *module, USHORT machine )
 {
-    /* and the lane's own NGX core and NVAPI, where it has them (DLSS on MetalFX) */
-    static const char *const names[] = { "d3d9.dll", "d3d10core.dll", "d3d11.dll", "dxgi.dll",
-                                         "nvngx.dll", "nvapi64.dll" };
+    /* ddraw.dll is d7vk's (D3D7, 6, 5 and 3 on DXVK's D3D9); and the lane's own NGX core and NVAPI, where it
+     * has them (DLSS on MetalFX) */
+    static const char *const names[] = { "ddraw.dll", "d3d8.dll", "d3d9.dll", "d3d10core.dll", "d3d11.dll",
+                                         "dxgi.dll", "nvngx.dll", "nvapi64.dll" };
     const char *name = strrchr( module, '/' );
     unsigned int i;
 
     if (!dxvk_graphics_backend_enabled()) return NULL;
     name = name ? name + 1 : module;
     for (i = 0; i < ARRAY_SIZE(names); i++)
-        if (!strcasecmp( name, names[i] )) return dxvk_pe_path( names[i] );
+        if (!strcasecmp( name, names[i] )) return dxvk_pe_path( names[i], machine );
     return NULL;
+}
+
+/* d7vk's ddraw.dll passes DirectDraw itself on to a real ddraw, which it loads as ddraw_.dll: Wine's own, installed
+ * in the prefix under that name (lib/wine/<arch>/ddraw_.dll). Its export name is ddraw.dll, so it must not be
+ * given the lane's ddraw.dll, which is d7vk again. */
+static BOOL is_d7vk_proxy_file( const UNICODE_STRING *nt_name )
+{
+    static const WCHAR proxy[] = {'d','d','r','a','w','_','.','d','l','l'};
+    unsigned int i, len = nt_name->Length / sizeof(WCHAR), start = 0;
+
+    for (i = 0; i < len; i++)
+        if (nt_name->Buffer[i] == '/' || nt_name->Buffer[i] == '\\') start = i + 1;
+    if (len - start != ARRAY_SIZE(proxy)) return FALSE;
+    for (i = 0; i < ARRAY_SIZE(proxy); i++)
+        if (ntdll_towlower( nt_name->Buffer[start + i] ) != proxy[i]) return FALSE;
+    return TRUE;
 }
 #endif
 
@@ -1514,11 +1538,13 @@ static NTSTATUS find_builtin_dll( UNICODE_STRING *nt_name, ANSI_STRING *exp_name
         }
     }
 
-    /* VKD3D-Proton and DXVK (GRAPHICS_BACKEND=vkd3d or dxvk, x86_64 programs): PE only, no unix side */
+    /* VKD3D-Proton and DXVK (GRAPHICS_BACKEND=vkd3d or dxvk; VKD3D-Proton for x86_64 programs, DXVK for x86_64
+     * and 32-bit ones): PE only, no unix side */
     {
         char *dxvk_pe = resolve_vkd3d_pe_path( file + pos + 1 );
 
-        if (!dxvk_pe) dxvk_pe = resolve_dxvk_pe_path( file + pos + 1 );
+        if (!dxvk_pe && !is_d7vk_proxy_file( nt_name ))
+            dxvk_pe = resolve_dxvk_pe_path( file + pos + 1, search_machine );
 
         if (dxvk_pe)
         {
