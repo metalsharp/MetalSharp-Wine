@@ -1,0 +1,69 @@
+From 5b700ec40d2dabc631860d77ba992eab7b7978c5 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Sat, 21 Nov 2026 11:24:07 -0700
+Subject: [PATCH] kernelbase, ntdll: A Chromium browser that picks ANGLE's
+ backend keeps it.
+
+MetalSharp Wine gives a Chromium browser without --use-angle=swiftshader-webgl
+its software-drawing switches, ending in --use-angle=swiftshader-webgl.
+Chromium takes the last --use-angle, so a browser whose starter chose another
+backend got SwiftShader's anyway: MetalSharp starts Ubisoft Connect with
+WebGL on ANGLE's D3D11 (--use-angle=d3d11), for the GPU its login's bot
+protection checks, and on 1.4.0 Connect's WebGL ran on SwiftShader again and
+a fresh login was blocked (MetalSharp issue #824).
+
+A command line that already has --use-angle= of any backend is now left as
+its starter set it up, by CreateProcess (kernelbase) and started directly
+(ntdll). A browser started without one gets the switches as before, as
+Ubisoft Connect does under FEX.
+---
+ dlls/kernelbase/launchers.c | 9 ++++++---
+ dlls/ntdll/unix/env.c       | 5 +++--
+ 2 files changed, 9 insertions(+), 5 deletions(-)
+
+diff --git a/dlls/kernelbase/launchers.c b/dlls/kernelbase/launchers.c
+index cd81d21..933df94 100644
+--- a/dlls/kernelbase/launchers.c
++++ b/dlls/kernelbase/launchers.c
+@@ -159,9 +159,12 @@ const WCHAR *get_launcher_process_args( const WCHAR *app_name, const WCHAR *cmd_
+     /* MetalSharp: any other Chromium browser process (its children take their settings from it): no sandbox, the
+      * GPU in process and off, and SwiftShader for WebGL only, so its UI composites in software. With only the GPU in
+      * process, Edge WebView2 (NoHesi Launcher) fails a CHECK creating the compositor's GPU context
+-     * (and see chromium_disable_dcomp_fallback). */
+-    if (!string_contains_ci( cmd_line, L"--type=" ) &&
+-        !string_contains_ci( cmd_line, L"--use-angle=swiftshader-webgl" ) && is_chromium_browser( app_name ))
++     * (and see chromium_disable_dcomp_fallback). A browser whose command line already picks ANGLE's backend
++     * (--use-angle=) is left as its starter set it up: Chromium takes the last --use-angle, so ours would override
++     * the starter's, and Ubisoft Connect, which MetalSharp starts with WebGL on ANGLE's D3D11 for the GPU its login's
++     * bot protection checks, got SwiftShader's again (MetalSharp issue #824). */
++    if (!string_contains_ci( cmd_line, L"--type=" ) && !string_contains_ci( cmd_line, L"--use-angle=" ) &&
++        is_chromium_browser( app_name ))
+         return L" --no-sandbox --in-process-gpu --disable-gpu --disable-d3d11 --enable-unsafe-swiftshader"
+                L" --use-gl=angle --use-angle=swiftshader-webgl";
+     return NULL;
+diff --git a/dlls/ntdll/unix/env.c b/dlls/ntdll/unix/env.c
+index 82686aa..ace585a 100644
+--- a/dlls/ntdll/unix/env.c
++++ b/dlls/ntdll/unix/env.c
+@@ -2109,7 +2109,8 @@ static BOOL wide_starts_with_ascii( const WCHAR *str, const char *prefix )
+ 
+ /* MetalSharp: a Chromium browser (CEF, Chrome, Edge/WebView2) started directly gets what kernelbase gives one started
+  * by CreateProcess (launchers.c): no sandbox, the GPU in process and off, and SwiftShader for WebGL only, so its UI
+- * composites in software. */
++ * composites in software. One whose command line already picks ANGLE's backend (--use-angle=) is left alone, as in
++ * kernelbase. */
+ static WCHAR **chromium_software_drawing( WCHAR **wargv )
+ {
+     static const char *const markers[] = { "libcef.dll", "chrome_elf.dll", "msedge_elf.dll" };
+@@ -2125,7 +2126,7 @@ static WCHAR **chromium_software_drawing( WCHAR **wargv )
+ 
+     for (argc = 1; wargv[argc]; argc++)
+         if (wide_starts_with_ascii( wargv[argc], "--type=" ) ||
+-            wide_starts_with_ascii( wargv[argc], "--use-angle=swiftshader-webgl" ))
++            wide_starts_with_ascii( wargv[argc], "--use-angle=" ))
+             return wargv;
+     for (p = wargv[0]; *p; p++) if (*p == '\\' || *p == '/') name = p + 1;
+     dir_len = name - wargv[0];
+-- 
+2.54.0 (Apple Git-157)
+
