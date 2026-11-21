@@ -8,6 +8,10 @@ x86_64 build:
 
 - **Ubisoft Connect's WebGL keeps the GPU MetalSharp starts it with** (metalsharp/MetalSharp#824): a Chromium browser whose command line already picks ANGLE's backend (`--use-angle=`) no longer gets MetalSharp Wine's software-drawing switches after it, whose `--use-angle=swiftshader-webgl` Chromium took instead. MetalSharp starts Connect with WebGL on ANGLE's D3D11 for the GPU its login's bot protection checks, and on 8.0 a fresh login was blocked. A browser started without `--use-angle=` gets the switches as before (x86_64 0077).
 
+arm64 build:
+
+- **Battle.net's login and main windows draw again** (#50): on 8.0 both stayed black on a fresh install, every time. Its pages loaded, but with the GPU in process alone Chromium composited them on the GPU, and that never reached the window. `Battle.net.exe` now gets `--in-process-gpu --disable-gpu-compositing` (WebGL keeps the GPU; the pages composite in software, as on the x86_64 build), whether its Launcher starts it or it is started directly (Wine 0190).
+
 ## 8.0
 
 Both builds:
