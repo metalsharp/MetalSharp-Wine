@@ -1,0 +1,377 @@
+From 3627d3971d6491d5ce8b3310295864f2ba96854a Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Sat, 21 Nov 2026 08:27:39 -0700
+Subject: [PATCH 185/188] win32u: NEON AlphaBlend, HALFTONE stretching and
+ glyph drawing for 32-bit RGB DIBs.
+
+All bit-exact with the C code:
+- AlphaBlend (blend_rects_8888): per-pixel alpha and constant alpha blend 8
+  pixels at a time, with an exact division by 255. Channels are combined
+  with OR as in blend_argb, so a source that isn't premultiplied gives the
+  same bits. Constant alpha 255 without source alpha, which
+  UpdateLayeredWindow uses, is a copy.
+- HALFTONE (halftone_888): the 32-bit fixed-point interpolation runs on all
+  four channels with a 32x32->64 multiply, and each source row is
+  interpolated across once and kept while the destination rows that use it
+  are drawn.
+- Glyphs (draw_glyph_8888): aa_color's divisions by 0xff - text and by text
+  become multiplies by a reciprocal, exact for these ranges, and the
+  per-level ranges a table lookup.
+
+Per 1920x1080 or 1280x800 frame, ms old -> new: HALFTONE 1280x720 to
+1920x1080 7.7 -> 2.3; glyphs over the screen 5.8 -> 1.6; per-pixel alpha
+0.56 -> 0.41; constant alpha 0.52 -> 0.27; UpdateLayeredWindow's blend 0.07
+-> 0.05.
+---
+ dlls/win32u/dibdrv/primitives.c | 294 ++++++++++++++++++++++++++++++++
+ 1 file changed, 294 insertions(+)
+
+diff --git a/dlls/win32u/dibdrv/primitives.c b/dlls/win32u/dibdrv/primitives.c
+index 3ed35d8ebd3..a6277917ee8 100644
+--- a/dlls/win32u/dibdrv/primitives.c
++++ b/dlls/win32u/dibdrv/primitives.c
+@@ -25,6 +25,9 @@
+ #include <assert.h>
+ 
+ #include "ntgdi_private.h"
++#ifdef __aarch64__
++#include <arm_neon.h>
++#endif
+ #include "dibdrv.h"
+ 
+ #include "wine/debug.h"
+@@ -4682,6 +4685,69 @@ static inline DWORD blend_rgb( BYTE dst_r, BYTE dst_g, BYTE dst_b, DWORD src, BL
+             blend_color( dst_r, src >> 16, blend.SourceConstantAlpha ) << 16);
+ }
+ 
++#ifdef __aarch64__
++/* v / 255 for v <= 255 * 255 + 127, the largest value the blends below produce: exact, as
++ * floor(v / 255) == (v + 1 + (v >> 8)) >> 8 for every v below 65535, and nothing overflows 16 bits. */
++static inline uint16x8_t neon_div255( uint16x8_t v )
++{
++    return vshrq_n_u16( vaddq_u16( vaddq_u16( v, vdupq_n_u16( 1 )), vshrq_n_u16( v, 8 )), 8 );
++}
++
++/* Rebuild DWORDs from per-channel sums the way the C code does: OR, so a sum over 255 sets bits of the next channel. */
++static inline void neon_store_channels( DWORD *dst, uint16x8_t b, uint16x8_t g, uint16x8_t r, uint16x8_t a )
++{
++    uint32x4_t lo = vorrq_u32( vorrq_u32( vmovl_u16( vget_low_u16( b )), vshll_n_u16( vget_low_u16( g ), 8 )),
++                               vorrq_u32( vshll_n_u16( vget_low_u16( r ), 16 ), vshlq_n_u32( vmovl_u16( vget_low_u16( a )), 24 )));
++    uint32x4_t hi = vorrq_u32( vorrq_u32( vmovl_high_u16( b ), vshll_high_n_u16( g, 8 )),
++                               vorrq_u32( vshll_high_n_u16( r, 16 ), vshlq_n_u32( vmovl_high_u16( a ), 24 )));
++    vst1q_u32( (uint32_t *)dst, lo );
++    vst1q_u32( (uint32_t *)dst + 4, hi );
++}
++
++/* blend_argb on 8 pixels at a time: premultiplied source over destination. */
++static void blend_row_argb_neon( DWORD *dst, const DWORD *src, int width )
++{
++    const uint16x8_t round = vdupq_n_u16( 127 );
++    int x = 0;
++
++    for (; x + 8 <= width; x += 8)
++    {
++        uint8x8x4_t s = vld4_u8( (const uint8_t *)(src + x) ), d = vld4_u8( (const uint8_t *)(dst + x) );
++        uint8x8_t inv = vmvn_u8( s.val[3] );
++
++        neon_store_channels( dst + x,
++                             vaddw_u8( neon_div255( vmlal_u8( round, d.val[0], inv )), s.val[0] ),
++                             vaddw_u8( neon_div255( vmlal_u8( round, d.val[1], inv )), s.val[1] ),
++                             vaddw_u8( neon_div255( vmlal_u8( round, d.val[2], inv )), s.val[2] ),
++                             vaddw_u8( neon_div255( vmlal_u8( round, d.val[3], inv )), s.val[3] ));
++    }
++    for (; x < width; x++) dst[x] = blend_argb( dst[x], src[x] );
++}
++
++/* blend_argb_constant_alpha on 8 pixels at a time (src_alpha: 0 keeps the source's alpha byte, 1 uses 255). */
++static void blend_row_constant_alpha_neon( DWORD *dst, const DWORD *src, int width, BYTE alpha, int no_src_alpha )
++{
++    const uint8x8_t a = vdup_n_u8( alpha ), inv = vdup_n_u8( 255 - alpha );
++    const uint16x8_t round = vdupq_n_u16( 127 );
++    int x = 0;
++
++    for (; x + 8 <= width; x += 8)
++    {
++        uint8x8x4_t s = vld4_u8( (const uint8_t *)(src + x) ), d = vld4_u8( (const uint8_t *)(dst + x) );
++        uint8x8x4_t out;
++        int i;
++
++        if (no_src_alpha) s.val[3] = vdup_n_u8( 255 );
++        for (i = 0; i < 4; i++)
++            out.val[i] = vmovn_u16( neon_div255( vmlal_u8( vmlal_u8( round, s.val[i], a ), d.val[i], inv )));
++        vst4_u8( (uint8_t *)(dst + x), out );
++    }
++    for (; x < width; x++)
++        dst[x] = no_src_alpha ? blend_argb_no_src_alpha( dst[x], src[x], alpha )
++                              : blend_argb_constant_alpha( dst[x], src[x], alpha );
++}
++#endif
++
+ static void blend_rects_8888(const dib_info *dst, int num, const RECT *rc,
+                              const dib_info *src, const POINT *offset, BLENDFUNCTION blend)
+ {
+@@ -4692,6 +4758,31 @@ static void blend_rects_8888(const dib_info *dst, int num, const RECT *rc,
+         DWORD *src_ptr = get_pixel_ptr_32( src, rc->left + offset->x, rc->top + offset->y );
+         DWORD *dst_ptr = get_pixel_ptr_32( dst, rc->left, rc->top );
+ 
++#ifdef __aarch64__
++        if (!(blend.AlphaFormat & AC_SRC_ALPHA) && blend.SourceConstantAlpha == 255)
++        {
++            /* blend_color( dst, src, 255 ) is src: a copy, with alpha 255 for BI_BITFIELDS sources. */
++            for (y = rc->top; y < rc->bottom; y++, dst_ptr += dst->stride / 4, src_ptr += src->stride / 4)
++            {
++                if (src->compression == BI_RGB) memmove( dst_ptr, src_ptr, (rc->right - rc->left) * 4 );
++                else for (x = 0; x < rc->right - rc->left; x++) dst_ptr[x] = src_ptr[x] | 0xff000000;
++            }
++            continue;
++        }
++        if (!(blend.AlphaFormat & AC_SRC_ALPHA))
++        {
++            for (y = rc->top; y < rc->bottom; y++, dst_ptr += dst->stride / 4, src_ptr += src->stride / 4)
++                blend_row_constant_alpha_neon( dst_ptr, src_ptr, rc->right - rc->left, blend.SourceConstantAlpha,
++                                               src->compression != BI_RGB );
++            continue;
++        }
++        if (blend.SourceConstantAlpha == 255)
++        {
++            for (y = rc->top; y < rc->bottom; y++, dst_ptr += dst->stride / 4, src_ptr += src->stride / 4)
++                blend_row_argb_neon( dst_ptr, src_ptr, rc->right - rc->left );
++            continue;
++        }
++#endif
+         if (blend.AlphaFormat & AC_SRC_ALPHA)
+         {
+             if (blend.SourceConstantAlpha == 255)
+@@ -6133,12 +6224,111 @@ static inline DWORD aa_rgb( BYTE r_dst, BYTE g_dst, BYTE b_dst, DWORD text, cons
+             aa_color( r_dst, text >> 16, range->r_min, range->r_max ) << 16);
+ }
+ 
++#ifdef __aarch64__
++/* aa_color on 8 pixels of one channel. Its divisions are by 0xff - text and by text, constant for the whole
++ * call: n / d == (n * ceil(2^31 / d)) >> 31 exactly for n <= 255 * 255, since the error stays below 1 / 255. */
++static inline uint8x8_t aa_color_neon( uint8x8_t dst, uint8x8_t text, uint8x8_t min_comp, uint8x8_t max_comp,
++                                       uint32x4_t recip_above, uint32x4_t recip_below )
++{
++    uint8x8_t above = vcgt_u8( dst, text );
++    uint8x8_t range = vbsl_u8( above, vsub_u8( max_comp, text ), vsub_u8( text, min_comp ));
++    uint16x8_t n = vmull_u8( vabd_u8( dst, text ), range );
++    int16x8_t above16 = vmovl_s8( vreinterpret_s8_u8( above ));
++    uint32x4_t r_lo = vbslq_u32( vreinterpretq_u32_s32( vmovl_s16( vget_low_s16( above16 ))), recip_above, recip_below );
++    uint32x4_t r_hi = vbslq_u32( vreinterpretq_u32_s32( vmovl_high_s16( above16 )), recip_above, recip_below );
++    uint32x4_t n_lo = vmovl_u16( vget_low_u16( n )), n_hi = vmovl_high_u16( n );
++    uint32x4_t q_lo = vcombine_u32( vshrn_n_u64( vmull_u32( vget_low_u32( n_lo ), vget_low_u32( r_lo )), 31 ),
++                                    vshrn_n_u64( vmull_high_u32( n_lo, r_lo ), 31 ));
++    uint32x4_t q_hi = vcombine_u32( vshrn_n_u64( vmull_u32( vget_low_u32( n_hi ), vget_low_u32( r_hi )), 31 ),
++                                    vshrn_n_u64( vmull_high_u32( n_hi, r_hi ), 31 ));
++    uint8x8_t q = vmovn_u16( vcombine_u16( vmovn_u32( q_lo ), vmovn_u32( q_hi )));
++    return vbsl_u8( above, vadd_u8( text, q ), vsub_u8( text, q ));
++}
++
++static inline uint32_t aa_recip( DWORD d )
++{
++    return d ? (uint32_t)(((1ull << 31) + d - 1) / d) : 0;
++}
++
++/* draw_glyph_8888 for 8 pixels at a time: levels <= 1 keep the pixel, >= 16 store text_pixel, others blend. */
++static void draw_glyph_8888_neon( const dib_info *dib, const RECT *rect, const dib_info *glyph,
++                                  const POINT *origin, DWORD text_pixel, const struct intensity_range *ranges )
++{
++    DWORD *dst_ptr = get_pixel_ptr_32( dib, rect->left, rect->top );
++    const BYTE *glyph_ptr = get_pixel_ptr_8( glyph, origin->x, origin->y );
++    int x, y, c, width = rect->right - rect->left;
++    BYTE min_tab[3][16], max_tab[3][16];
++    uint8x16_t min_comp[3], max_comp[3];
++    uint8x8_t text[4];
++    uint32x4_t recip_above[3], recip_below[3];
++
++    for (c = 0; c < 16; c++)
++    {
++        min_tab[0][c] = ranges[c].b_min; max_tab[0][c] = ranges[c].b_max;
++        min_tab[1][c] = ranges[c].g_min; max_tab[1][c] = ranges[c].g_max;
++        min_tab[2][c] = ranges[c].r_min; max_tab[2][c] = ranges[c].r_max;
++    }
++    for (c = 0; c < 3; c++)
++    {
++        BYTE t = text_pixel >> (8 * c);
++        min_comp[c] = vld1q_u8( min_tab[c] );
++        max_comp[c] = vld1q_u8( max_tab[c] );
++        text[c] = vdup_n_u8( t );
++        recip_above[c] = vdupq_n_u32( aa_recip( 0xff - t ));
++        recip_below[c] = vdupq_n_u32( aa_recip( t ));
++    }
++    text[3] = vdup_n_u8( text_pixel >> 24 );
++
++    for (y = rect->top; y < rect->bottom; y++)
++    {
++        for (x = 0; x + 8 <= width; x += 8)
++        {
++            uint8x8_t level = vld1_u8( glyph_ptr + x ), keep, full, lookup;
++            uint8x8x4_t d;
++
++            if (vmaxv_u8( level ) <= 1) continue;
++            if (vminv_u8( level ) >= 16)
++            {
++                vst1q_u32( (uint32_t *)(dst_ptr + x), vdupq_n_u32( text_pixel ));
++                vst1q_u32( (uint32_t *)(dst_ptr + x + 4), vdupq_n_u32( text_pixel ));
++                continue;
++            }
++            d = vld4_u8( (const uint8_t *)(dst_ptr + x) );
++            keep = vcle_u8( level, vdup_n_u8( 1 ));
++            full = vcge_u8( level, vdup_n_u8( 16 ));
++            lookup = vmin_u8( level, vdup_n_u8( 15 ));
++            for (c = 0; c < 3; c++)
++            {
++                uint8x8_t res = aa_color_neon( d.val[c], text[c], vqtbl1_u8( min_comp[c], lookup ),
++                                               vqtbl1_u8( max_comp[c], lookup ), recip_above[c], recip_below[c] );
++                d.val[c] = vbsl_u8( keep, d.val[c], vbsl_u8( full, text[c], res ));
++            }
++            /* aa_rgb leaves alpha 0 */
++            d.val[3] = vbsl_u8( keep, d.val[3], vand_u8( full, text[3] ));
++            vst4_u8( (uint8_t *)(dst_ptr + x), d );
++        }
++        for (; x < width; x++)
++        {
++            if (glyph_ptr[x] <= 1) continue;
++            if (glyph_ptr[x] >= 16) { dst_ptr[x] = text_pixel; continue; }
++            dst_ptr[x] = aa_rgb( dst_ptr[x] >> 16, dst_ptr[x] >> 8, dst_ptr[x], text_pixel, ranges + glyph_ptr[x] );
++        }
++        dst_ptr += dib->stride / 4;
++        glyph_ptr += glyph->stride;
++    }
++}
++#endif
++
+ static void draw_glyph_8888( const dib_info *dib, const RECT *rect, const dib_info *glyph,
+                              const POINT *origin, DWORD text_pixel, const struct intensity_range *ranges )
+ {
+     DWORD *dst_ptr = get_pixel_ptr_32( dib, rect->left, rect->top );
+     const BYTE *glyph_ptr = get_pixel_ptr_8( glyph, origin->x, origin->y );
+     int x, y;
++#ifdef __aarch64__
++    draw_glyph_8888_neon( dib, rect, glyph, origin, text_pixel, ranges );
++    return;
++#endif
+ 
+     for (y = rect->top; y < rect->bottom; y++)
+     {
+@@ -7482,6 +7672,106 @@ static void calc_halftone_params( const struct bitblt_coords *dst, const struct
+     *fixed_src_inc_y = mirrored_y ? -((INT64)src_height << 32) / dst_height : ((INT64)src_height << 32) / dst_height;
+ }
+ 
++#ifdef __aarch64__
++
++/* linear_interpolate on all four channels: start + ((end - start) * delta + 2^31) >> 32, exactly. The 32-bit
++ * delta is split as (delta ^ 2^31) + 2^31 so that a signed 32x32->64 multiply covers it. */
++static inline int32x4_t linear_interpolate_neon( int32x4_t start, int32x4_t end, UINT32 delta )
++{
++    int32x4_t diff = vsubq_s32( end, start );
++    int32x2_t d = vdup_n_s32( (int)(delta ^ 0x80000000u) );
++    int64x2_t round = vdupq_n_s64( 1ll << 31 );
++    int64x2_t lo = vaddq_s64( vmlal_s32( round, vget_low_s32( diff ), d ), vshll_n_s32( vget_low_s32( diff ), 31 ));
++    int64x2_t hi = vaddq_s64( vmlal_high_s32( round, diff, vcombine_s32( d, d )), vshll_high_n_s32( diff, 31 ));
++    return vaddq_s32( start, vcombine_s32( vshrn_n_s64( lo, 32 ), vshrn_n_s64( hi, 32 )));
++}
++
++static inline int32x4_t pixel_channels_neon( DWORD pixel )
++{
++    return vreinterpretq_s32_u32( vmovl_u16( vget_low_u16( vmovl_u8( vcreate_u8( pixel )))));
++}
++
++/* halftone_888 with each source row interpolated horizontally once and kept while the destination rows that
++ * use it are drawn. Gives the same pixels as the C code below; returns FALSE if it can't get its buffers. */
++static BOOL halftone_888_neon( const dib_info *dst_dib, const struct bitblt_coords *dst,
++                               const dib_info *src_dib, const struct bitblt_coords *src )
++{
++    int src_start_x, src_start_y, dst_x, dst_y, width, i, x0, y0, y1, row_y[2] = { INT_MIN, INT_MIN };
++    INT64 fixed_src_inc_x, fixed_src_inc_y, fixed_x, fixed_y;
++    RECT dst_rect, src_rect;
++    int32x4_t *rows[2];
++    DWORD *dst_ptr;
++    int *xs;
++    UINT32 *dxs, dy;
++
++    calc_halftone_params( dst, src, &dst_rect, &src_rect, &src_start_x, &src_start_y, &fixed_src_inc_x,
++                          &fixed_src_inc_y );
++    width = dst_rect.right - dst_rect.left;
++    if (width <= 0) return TRUE;
++    if (!(rows[0] = malloc( width * (2 * sizeof(int32x4_t) + sizeof(int) + sizeof(UINT32) )))) return FALSE;
++    rows[1] = rows[0] + width;
++    xs = (int *)(rows[1] + width);
++    dxs = (UINT32 *)(xs + width);
++
++    fixed_x = (INT64)src_start_x << 32;
++    for (dst_x = 0; dst_x < width; dst_x++)
++    {
++        fixed_x = clamp64( fixed_x, (INT64)src_rect.left << 32, (INT64)(src_rect.right - 1) << 32 );
++        xs[dst_x] = fixed_x >> 32;
++        dxs[dst_x] = fixed_x;
++        fixed_x += fixed_src_inc_x;
++    }
++
++    fixed_y = (INT64)src_start_y << 32;
++    dst_ptr = get_pixel_ptr_32( dst_dib, dst_rect.left, dst_rect.top );
++    for (dst_y = 0; dst_y < dst_rect.bottom - dst_rect.top; ++dst_y)
++    {
++        int32x4_t *top, *bottom;
++        int need[2];
++
++        fixed_y = clamp64( fixed_y, (INT64)src_rect.top << 32, (INT64)(src_rect.bottom - 1) << 32 );
++        y0 = fixed_y >> 32;
++        y1 = clamp( y0 + 1, src_rect.top, src_rect.bottom - 1 );
++        dy = fixed_y;
++
++        /* Fill the rows y0 and y1 that aren't cached, each in a buffer the other one isn't using. */
++        need[0] = y0;
++        need[1] = y1;
++        for (i = 0; i < 2; i++)
++        {
++            int slot;
++            const DWORD *src_ptr;
++
++            if (row_y[0] == need[i] || row_y[1] == need[i]) continue;
++            slot = (row_y[0] == need[!i]) ? 1 : 0;
++            src_ptr = get_pixel_ptr_32( src_dib, 0, need[i] );
++            for (dst_x = 0; dst_x < width; dst_x++)
++            {
++                x0 = xs[dst_x];
++                rows[slot][dst_x] = linear_interpolate_neon( pixel_channels_neon( src_ptr[x0] ),
++                        pixel_channels_neon( src_ptr[clamp( x0 + 1, src_rect.left, src_rect.right - 1 )] ),
++                        dxs[dst_x] );
++            }
++            row_y[slot] = need[i];
++        }
++        top = rows[row_y[0] == y0 ? 0 : 1];
++        bottom = rows[row_y[0] == y1 ? 0 : 1];
++
++        for (dst_x = 0; dst_x < width; dst_x++)
++        {
++            int32x4_t res = linear_interpolate_neon( top[dst_x], bottom[dst_x], dy );
++            uint8x8_t bytes = vmovn_u16( vcombine_u16( vmovn_u32( vreinterpretq_u32_s32( res )), vdup_n_u16( 0 )));
++            dst_ptr[dst_x] = vget_lane_u32( vreinterpret_u32_u8( bytes ), 0 ) & 0xffffff;
++        }
++
++        dst_ptr += dst_dib->stride / 4;
++        fixed_y += fixed_src_inc_y;
++    }
++    free( rows[0] );
++    return TRUE;
++}
++#endif
++
+ static void halftone_888( const dib_info *dst_dib, const struct bitblt_coords *dst,
+                           const dib_info *src_dib, const struct bitblt_coords *src )
+ {
+@@ -7495,6 +7785,10 @@ static void halftone_888( const dib_info *dst_dib, const struct bitblt_coords *d
+     UINT32 dx, dy;
+     BYTE r, g, b;
+ 
++#ifdef __aarch64__
++    if (halftone_888_neon( dst_dib, dst, src_dib, src )) return;
++#endif
++
+     calc_halftone_params( dst, src, &dst_rect, &src_rect, &src_start_x, &src_start_y, &fixed_src_inc_x,
+                           &fixed_src_inc_y );
+ 
+-- 
+2.54.0 (Apple Git-157)
+

@@ -46,6 +46,19 @@ arm64 build:
   - A system call writing to such a page failed with an access violation, so `QueryPerformanceCounter`, `GetSystemTimeAsFileTime`, `GetSystemTime`, `GetLocalTime` and `time()` returned 0. Wine now makes the page writable for the call's write, then puts its protection back and tells FEX it changed (Wine patch 0173).
   - A fault on `mov` to or from an absolute address resumed at an earlier instruction, so `cpuid` ran again with EAX overwritten and answered for the wrong leaf (leaf 1's features read as the vendor string). That `mov` now gets its own resume point (FEX 0036).
 - **Battle.net loads again** ([#50](https://github.com/metalsharp/MetalSharp-Wine/issues/50)). 7.0 gave it the software drawing arguments every Chromium browser gets, and with them it crashed in `vkCreateBuffer`. It gets `--in-process-gpu` alone again, as in 6.x (Wine patch 0174). The Mullion above (`959aa5ec`) fixes the 32-bit D3D11 path its login and store draw through, which 7.0's Mullion broke.
+- **Faster Wine code on Apple Silicon (NEON)** ([#73](https://github.com/metalsharp/MetalSharp-Wine/pull/73), Wine 0182-0188). x86_64 programs reach this code through ARM64EC, so they get the speedups too. Results are bit-exact with the code it replaces.
+  - **String and memory functions** in ntdll, msvcrt and ucrtbase: `strlen`, `wcslen`, `memchr`, `memcmp`, `strchr`, `strcmp` and `memmove`. They are 5-17x faster above 32 bytes; `strlen` of 1 KB from an x86_64 program is 240 -> 18 ns.
+  - **UTF-8 conversion of ASCII text** (`MultiByteToWideChar`, `WideCharToMultiByte`) is 5-28x faster.
+  - **GDI on 32-bit DIBs:**
+    - HALFTONE scaling: 3.4x;
+    - anti-aliased text: 3.5x;
+    - AlphaBlend: 1.4-1.9x;
+    - layered-window shape masks: 3x.
+  - **WIC** premultiply, unpremultiply and BGR swaps: 4-7x.
+  - **d3dx9/10/11:**
+    - format conversion between 8-bit channel formats: about 100x;
+    - box-filtered mipmaps of 8-bit UNORM formats: 17x.
+  - **DirectSound** resampling to a higher rate: 3.2x.
 - **Programs that use `rdtscp` or `rdpid` no longer stop with an illegal instruction** ([#70](https://github.com/metalsharp/MetalSharp-Wine/pull/70); Blender 5.3's Cycles render). Both now run and return the processor number Wine reports. CPUID still doesn't advertise them, because the call that answers them is slower (about 45 ns). `FEX_CPUINDEXINTPIDR=1` reads the number from the register macOS keeps it in instead: after a startup check of that undocumented layout, they cost about 8 ns and CPUID advertises them. If the check fails, they stay on the slower path (FEX patches 0043-0044, `tests/src/rdtscp.c`).
 - **Overwatch no longer hangs in FEX** ([#65](https://github.com/metalsharp/MetalSharp-Wine/pull/65)): memory, read-file and self-modifying-code notifications and debug register reads no longer wait on the thread list's lock. FEX also writes its code into `MAP_JIT` memory when ntdll offers it, instead of flipping page protections (`METALSHARP_NO_MAPJIT=1` turns that off). Blocks in an image's volatile-metadata ranges no longer fall back to full TSO, and TSO emulation is off by default (`FEX_TSOENABLED=1` turns it back on per game) (FEX patches 0037-0042).
 
