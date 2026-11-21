@@ -2109,7 +2109,8 @@ static BOOL wide_starts_with_ascii( const WCHAR *str, const char *prefix )
 
 /* MetalSharp: a Chromium browser (CEF, Chrome, Edge/WebView2) started directly gets what kernelbase gives one started
  * by CreateProcess (launchers.c): no sandbox, the GPU in process and off, and SwiftShader for WebGL only, so its UI
- * composites in software. */
+ * composites in software. One whose command line already picks ANGLE's backend (--use-angle=) is left alone, as in
+ * kernelbase. */
 static WCHAR **chromium_software_drawing( WCHAR **wargv )
 {
     static const char *const markers[] = { "libcef.dll", "chrome_elf.dll", "msedge_elf.dll" };
@@ -2125,7 +2126,7 @@ static WCHAR **chromium_software_drawing( WCHAR **wargv )
 
     for (argc = 1; wargv[argc]; argc++)
         if (wide_starts_with_ascii( wargv[argc], "--type=" ) ||
-            wide_starts_with_ascii( wargv[argc], "--use-angle=swiftshader-webgl" ))
+            wide_starts_with_ascii( wargv[argc], "--use-angle=" ))
             return wargv;
     for (p = wargv[0]; *p; p++) if (*p == '\\' || *p == '/') name = p + 1;
     dir_len = name - wargv[0];
