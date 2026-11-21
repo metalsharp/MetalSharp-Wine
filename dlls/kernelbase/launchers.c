@@ -43,6 +43,14 @@ struct launcher_process_policy
 /* A command line that already has them. */
 #define CHROMIUM_SOFTWARE_MARKER L"--use-angle=swiftshader-webgl"
 
+/* MetalSharp: what Battle.net's browser (Battle.net.exe) gets: the GPU in process, and compositing in software. With
+ * GPU compositing its login window and its main window stayed black: the browser drew its pages, but what the GPU
+ * composited never reached the window. WebGL keeps the GPU. ntdll gives the same to Battle.net.exe started directly
+ * (env.c, battlenet_args). */
+#define BATTLENET_ARGS L" --in-process-gpu --disable-gpu-compositing"
+/* A command line that already has them. */
+#define BATTLENET_MARKER L"--disable-gpu-compositing"
+
 static const struct launcher_process_policy launcher_process_policies[] =
 {
     /* WineForge-Internal: launcher-compat/steam-cef-swiftshader-v1. Every web helper process, as MetalSharp's x86_64
@@ -76,17 +84,17 @@ static const struct launcher_process_policy launcher_process_policies[] =
         {L"--type=", CHROMIUM_SOFTWARE_MARKER, NULL},
         CHROMIUM_SOFTWARE_ARGS,
     },
-    /* WineForge-Internal: launcher-compat/battlenet-in-process-gpu-v1. MetalSharp: the GPU in process alone, as before
-     * 7.0. Given CHROMIUM_SOFTWARE_ARGS, Battle.net no longer loaded, with an exception in winevulkan's vkCreateBuffer
-     * (metalsharp/MetalSharp-Wine#50). */
+    /* WineForge-Internal: launcher-compat/battlenet-in-process-gpu-v1. MetalSharp: the GPU in process, as before 7.0
+     * (given CHROMIUM_SOFTWARE_ARGS, Battle.net no longer loaded, with an exception in winevulkan's vkCreateBuffer), and
+     * composited in software (BATTLENET_ARGS, metalsharp/MetalSharp-Wine#50). */
     {
         L"Battle.net.exe",
         L"\\Program Files (x86)\\Battle.net\\",
         L"/Program Files (x86)/Battle.net/",
         NULL,
         NULL,
-        {L"--type=", L"--in-process-gpu", NULL},
-        L" --in-process-gpu",
+        {L"--type=", BATTLENET_MARKER, NULL},
+        BATTLENET_ARGS,
     },
     /* WineForge-Internal: launcher-compat/ubisoft-connect-in-process-gpu-v1. Its browser is upc.exe itself; its
      * renderers (UplayWebCore.exe --type=...) are left as they are. */
