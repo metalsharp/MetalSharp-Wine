@@ -266,6 +266,18 @@ void metalRegion(const Texture& tex, int& x, int& y, int& z, int& w, int& h, int
 void imageChanged(Context& ctx, Texture& tex) {
     ++tex.version;
     ctx.markDirty(kDirtyTextures | kDirtyFramebuffer);
+    // Another context of the share group sees what this one recorded once
+    // its command buffer is committed. GL has it see a change after a glFlush
+    // here and a bind there, but wined3d without CSMT gives each thread a
+    // context and flushes one only when its thread switches to another: a
+    // thread that only uploads never flushes, and what it wrote never reached
+    // the GPU (Call of Duty 4's Bink videos, whose planes Bink's thread copies
+    // with UpdateTexture and the render thread samples, were pink:
+    // MetalSharp-Wine #58). With other contexts current, a write outside a
+    // pass is committed now, which ends nothing; one inside a pass, on a
+    // thread that draws, goes with that thread's next commit.
+    if (ctx.share().currentContexts.load(std::memory_order_relaxed) > 1 && !ctx.stream().encoding())
+        ctx.stream().flush(true);
 }
 
 // Records the shape of image (face, level).

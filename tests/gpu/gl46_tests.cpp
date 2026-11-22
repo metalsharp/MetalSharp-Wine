@@ -1,10 +1,13 @@
 // GL 4.6 features (contexts above 4.5 go through the development override
 // until the version is advertised).
 #include <climits>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <string>
+#include <thread>
 
 #include "gpu.h"
 
@@ -1591,6 +1594,73 @@ TEST(gpu_shared_framebuffers) {
     glDeleteFramebuffers(1, &fbo);
     CHECK(wmgl_make_current(first.context, first.surface, first.surface));
     CHECK(!glIsFramebuffer(fbo));
+    glDeleteTextures(1, &tex);
+    wmgl_context_destroy(second);
+}
+
+// A texture one context of a share group uploads, current on a thread of
+// its own and never flushing, is seen by another current context: wined3d
+// without CSMT gives each thread a context and flushes one only when its
+// thread switches contexts, and Call of Duty 4's Bink thread copies its video
+// planes with UpdateTexture while the render thread samples them
+// (MetalSharp-Wine #58, where the video was pink: the render thread read
+// none of the uploads).
+TEST(gpu_shared_texture_upload_other_thread) {
+    gpu::Fixture first(64, 64, false, 46);
+    CHECK(first.ok);
+    if (!first.ok) return;
+    GLuint tex = 0, fbo = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexStorage2D(GL_TEXTURE_2D, 1, GL_R8, 16, 16);
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+    glFinish();
+    const int attribs[] = {0x2091, 4, 0x2092, 6, 0x9126, 1, 0};
+    int error = 0;
+    wmgl_context* second = wmgl_context_create(first.format, first.context, attribs, &error);
+    CHECK(second != nullptr);
+    if (!second) return;
+    std::mutex mutex;
+    std::condition_variable changed;
+    int step = 0;  // 1: uploaded, 2: read
+    bool current = false;
+    std::thread uploader([&] {
+        current = wmgl_make_current(second, first.surface, first.surface);
+        if (current) {
+            uint8_t texels[16 * 16];
+            std::memset(texels, 0x80, sizeof(texels));
+            glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+            glBindTexture(GL_TEXTURE_2D, tex);
+            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 16, 16, GL_RED, GL_UNSIGNED_BYTE, texels);
+        }
+        // and stays current, without a flush, while the other context reads
+        std::unique_lock<std::mutex> lock(mutex);
+        step = 1;
+        changed.notify_all();
+        changed.wait(lock, [&] { return step == 2; });
+        lock.unlock();
+        wmgl_make_current(nullptr, nullptr, nullptr);
+    });
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        changed.wait(lock, [&] { return step == 1; });
+    }
+    CHECK(current);
+    uint8_t pixel[4] = {};
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glReadPixels(4, 4, 1, 1, GL_RED, GL_UNSIGNED_BYTE, pixel);
+    CHECK_EQ(static_cast<int>(pixel[0]), 0x80);
+    CHECK_GL();
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        step = 2;
+    }
+    changed.notify_all();
+    uploader.join();
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &fbo);
     glDeleteTextures(1, &tex);
     wmgl_context_destroy(second);
 }
