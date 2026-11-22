@@ -1586,3 +1586,20 @@ COMPAT_TEST(compat_wined3d_luminance_and_alpha_planes) {
     glDeleteProgram(pA);
     CHECK_GL();
 }
+
+// OpenGL 1.x's GL_BLEND_SRC and GL_BLEND_DST are the first draw buffer's
+// colour blend factors in a compatibility context: City of Heroes' renderer
+// reads them as it starts, and got GL_INVALID_ENUM (WineMetalGL #94).
+COMPAT_TEST(gpu_compat_blend_src_dst) {
+    GLint src = -1, dst = -1;
+    glGetIntegerv(GL_BLEND_SRC, &src);
+    glGetIntegerv(GL_BLEND_DST, &dst);
+    CHECK_EQ(src, GL_ONE);
+    CHECK_EQ(dst, GL_ZERO);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glGetIntegerv(GL_BLEND_SRC, &src);
+    glGetIntegerv(GL_BLEND_DST, &dst);
+    CHECK_EQ(src, GL_SRC_ALPHA);
+    CHECK_EQ(dst, GL_ONE_MINUS_SRC_ALPHA);
+    CHECK_GL();
+}
