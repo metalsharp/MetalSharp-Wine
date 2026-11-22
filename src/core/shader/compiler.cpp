@@ -695,12 +695,20 @@ std::string shadingRateBuiltinsAs1x1(const std::string& glsl) {
 // atomics: a thread that adds to a texel atomically and then reads it may
 // not see its own add on Apple GPUs (GL's coherent images and program order
 // require it). Each statement with a texture atomic gets the texture's fence.
+// On the M6 (macOS 27.3) the fence is not enough: read() after an atomic and
+// a fence still returns the texel from before the atomic (81900 of 81920
+// texels in a Metal kernel doing only that), where atomic_load() returns the
+// atomic's result. So a texture with atomics is read with atomic_load(),
+// which takes the same coordinates: GL has atomics on 32-bit integer images
+// alone, which atomic_load reads as read() does.
 std::string fenceTextureAtomics(const std::string& msl) {
     if (msl.find(".atomic_") == std::string::npos) return msl;
     static const std::regex kAtomic(R"(\b(\w+)(\[[^\]]*\])?\.atomic_(fetch_\w+|exchange|compare_exchange_weak|store|load)\()");
     std::string out;
+    std::set<std::string> atomicTextures;
     size_t at = 0;
     for (auto it = std::sregex_iterator(msl.begin(), msl.end(), kAtomic); it != std::sregex_iterator(); ++it) {
+        atomicTextures.insert((*it)[1].str());
         const size_t end = msl.find(";\n", static_cast<size_t>(it->position(0)));
         if (end == std::string::npos || end < at) continue;
         out.append(msl, at, end + 1 - at);
@@ -708,6 +716,10 @@ std::string fenceTextureAtomics(const std::string& msl) {
         at = end + 1;
     }
     out.append(msl, at, std::string::npos);
+    for (const std::string& name : atomicTextures) {
+        const std::regex read("\\b(" + name + R"((?:\[[^\]]*\])?)\.read\()");
+        out = std::regex_replace(out, read, "$1.atomic_load(");
+    }
     return out;
 }
 
