@@ -1298,25 +1298,33 @@ static NTSTATUS open_builtin_pe_file( const char *name, OBJECT_ATTRIBUTES *attr,
  */
 #ifdef __APPLE__
 /***********************************************************************
- *           winemetalgl_opengl32_path
+ *           opengl32_override_path
  *
- * WineMetalGL (OpenGL 4.6 on Metal) is the default OpenGL when it is bundled: opengl32.dll is
- * its forwarder (lib/winemetalgl), which sends every export to the builtin winemetalgl.dll.
- * OPENGL_BACKEND=wine or WINEMETALGL=0 selects Wine's own opengl32.
+ * WineMetalGL (OpenGL 4.6 on Metal) is the default OpenGL when it is bundled. Its opengl32.dll, a
+ * forwarder that sends every export to the builtin winemetalgl.dll, is installed as the builtin
+ * opengl32 in lib/wine, so it is also the prefix's System32 copy, and Wine's own opengl32 is kept
+ * in lib/wine-opengl. OPENGL_BACKEND=wine or WINEMETALGL=0 selects Wine's: *wine_opengl is then
+ * set, as its unix side, opengl32.so, stays in lib/wine. Older bundles kept the forwarder in
+ * lib/winemetalgl and Wine's opengl32 in lib/wine; that layout still works.
  */
-static char *winemetalgl_opengl32_path( USHORT machine )
+static char *opengl32_override_path( USHORT machine, BOOL *wine_opengl )
 {
     const char *backend = getenv( "OPENGL_BACKEND" ), *enabled = getenv( "WINEMETALGL" ), *pe_dir;
+    BOOL use_wine = (backend && !strcmp( backend, "wine" )) || (enabled && !strcmp( enabled, "0" ));
     char *path;
 
-    if (backend && !strcmp( backend, "wine" )) return NULL;
-    if (enabled && !strcmp( enabled, "0" )) return NULL;
+    *wine_opengl = FALSE;
     if (machine == IMAGE_FILE_MACHINE_I386) pe_dir = "i386-windows";
     else if (machine == IMAGE_FILE_MACHINE_AMD64 || machine == IMAGE_FILE_MACHINE_ARM64)
         pe_dir = "aarch64-windows";  /* ARM64X */
     else return NULL;
-    if (asprintf( &path, "%s/../winemetalgl/%s/opengl32.dll", dll_dir, pe_dir ) == -1) return NULL;
-    if (!access( path, R_OK )) return path;
+    if (asprintf( &path, "%s/../%s/%s/opengl32.dll", dll_dir, use_wine ? "wine-opengl" : "winemetalgl",
+                  pe_dir ) == -1) return NULL;
+    if (!access( path, R_OK ))
+    {
+        *wine_opengl = use_wine;
+        return path;
+    }
     free( path );
     return NULL;
 }
@@ -1455,6 +1463,7 @@ static NTSTATUS find_builtin_dll( UNICODE_STRING *nt_name, ANSI_STRING *exp_name
     BOOL found_image = FALSE;
 #ifdef __APPLE__
     BOOL dxmt_runtime_pe = FALSE, winemetalgl_pe = FALSE;
+    char *wine_opengl_so = NULL;
 #endif
 
     InitializeObjectAttributes( &attr, nt_name, 0, 0, NULL );
@@ -1521,18 +1530,22 @@ static NTSTATUS find_builtin_dll( UNICODE_STRING *nt_name, ANSI_STRING *exp_name
 
     if (!strcmp( file + pos + 1, "opengl32.dll" ))
     {
-        char *forwarder = winemetalgl_opengl32_path( search_machine );
+        BOOL wine_opengl;
+        char *override = opengl32_override_path( search_machine, &wine_opengl );
 
-        if (forwarder)
+        if (override)
         {
-            status = open_builtin_pe_file( forwarder, &attr, module, size_ptr, image_info,
+            status = open_builtin_pe_file( override, &attr, module, size_ptr, image_info,
                                            limit_low, limit_high, load_machine, prefer_native, offset );
-            TRACE( "WineMetalGL opengl32 %s for %s -> %#lx\n",
-                   debugstr_a(forwarder), debugstr_us(nt_name), (long)status );
-            free( forwarder );
+            TRACE( "%s opengl32 %s for %s -> %#lx\n", wine_opengl ? "Wine" : "WineMetalGL",
+                   debugstr_a(override), debugstr_us(nt_name), (long)status );
+            free( override );
             if (status != STATUS_DLL_NOT_FOUND)
             {
-                winemetalgl_pe = TRUE;  /* a forwarder: no unix side */
+                if (!wine_opengl) winemetalgl_pe = TRUE;  /* a forwarder: no unix side */
+                else if (NT_SUCCESS(status) &&  /* Wine's opengl32.so, from lib/wine */
+                         asprintf( &wine_opengl_so, "%s%s/opengl32.so", dll_dir, so_dir ) == -1)
+                    wine_opengl_so = NULL;
                 goto done;
             }
         }
@@ -1664,6 +1677,7 @@ done:
         strcpy( ext, ".so" );
 #ifdef __APPLE__
         if (winemetalgl_pe) ;
+        else if (wine_opengl_so) set_builtin_unixlib_name( *module, wine_opengl_so );
         else if (dxmt_runtime_pe)
         {
             /* DXMT modules use the runtime's winemetal.so; the others have no unix side */
@@ -1681,6 +1695,9 @@ done:
 #endif
         set_builtin_unixlib_name( *module, ptr );
     }
+#ifdef __APPLE__
+    free( wine_opengl_so );
+#endif
     free( file );
     return status;
 }
