@@ -27,12 +27,11 @@ if [[ -f $MSC/libmetalirconverter.dylib ]]; then
   cp $MSC/LICENSE.metal-shaderconverter.rtf $MSC/ACKNOWLEDGEMENTS.metal-shaderconverter.rtf $D/share/licenses/metal-shaderconverter/
 fi
 # DirectXShaderCompiler's DXBC to DXIL converter (dxilconv, NCSA), which MoltenVK loads to hand VKD3D-Proton's DXBC
-# shaders to Metal Shader Converter: VKD3D-Proton-MacOS scripts/build-dxbcconverter.sh (after fetch-sources.sh dxc),
-# arm64 slice. Without it, DXBC shaders stay on SPIR-V.
+# shaders to Metal Shader Converter: built by scripts/build-vkd3d-proton.sh, arm64 slice. Without it, DXBC shaders
+# stay on SPIR-V.
 DXBC=$ROOT/src/vkd3d-proton/artifacts/dxbcconverter
-if [[ ! -f $DXBC/libdxbcconverter.dylib && -f $ROOT/src/vkd3d-proton/scripts/build-dxbcconverter.sh ]]; then
-  (cd $ROOT/src/vkd3d-proton && bash scripts/fetch-sources.sh dxc && bash scripts/build-dxbcconverter.sh) || true
-fi
+[[ -f $DXBC/libdxbcconverter.dylib ]] ||
+  echo "warning: no $DXBC/libdxbcconverter.dylib (scripts/build-vkd3d-proton.sh): DXBC shaders stay on SPIR-V" >&2
 if [[ -f $DXBC/libdxbcconverter.dylib ]]; then
   lipo $DXBC/libdxbcconverter.dylib -thin arm64 -output $D/lib/libdxbcconverter.dylib 2>/dev/null || cp $DXBC/libdxbcconverter.dylib $D/lib/
   mkdir -p $D/share/licenses/dxc; cp $DXBC/LICENSE.dxc.txt $D/share/licenses/dxc/LICENSE.dxilconv.txt

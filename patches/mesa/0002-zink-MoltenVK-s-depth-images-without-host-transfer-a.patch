@@ -1,0 +1,31 @@
+From: Avery Felts <averyfelts@aol.com>
+Subject: [PATCH] zink: MoltenVK's depth images without host transfer, at run time
+
+zink already leaves VK_IMAGE_USAGE_HOST_TRANSFER_BIT_EXT off images on MoltenVK,
+which cannot allocate a depth/stencil image with it (no memory type fits:
+memoryTypeBits is 0), but only when MVK_VERSION is defined, so only when zink
+is built against MoltenVK's headers. A Windows build running on Wine's Vulkan,
+with MoltenVK under it, never is: every depth/stencil allocation failed, so
+each WGL window's depth buffer was missing and the first wglMakeCurrent raised
+GL_OUT_OF_MEMORY ("Resizing framebuffer"). Check the driver ID instead.
+---
+diff --git a/src/gallium/drivers/zink/zink_resource.c b/src/gallium/drivers/zink/zink_resource.c
+index 678f455..35fa49b 100644
+--- a/src/gallium/drivers/zink/zink_resource.c
++++ b/src/gallium/drivers/zink/zink_resource.c
+@@ -605,12 +605,12 @@ check_ici(struct zink_screen *screen, VkImageCreateInfo *ici, uint64_t modifier)
+       image_props = props2.imageFormatProperties;
+       if (screen->info.have_EXT_host_image_copy && ici->usage & VK_IMAGE_USAGE_HOST_TRANSFER_BIT_EXT)
+          optimalDeviceAccess = hic.optimalDeviceAccess;
+-#if defined(MVK_VERSION)
+       // MoltenVK cannot allocate a depth buffer with VK_IMAGE_USAGE_HOST_TRANSFER_BIT_EXT
+       // As hic.identicalMemoryLayout is set, it is not needed?
+-      if (screen->info.have_EXT_host_image_copy && ici->usage & VK_IMAGE_USAGE_HOST_TRANSFER_BIT_EXT && hic.identicalMemoryLayout)
++      // Checked at run time: on Windows (Wine's Vulkan) MoltenVK is the driver without its headers.
++      if (screen->info.driver_props.driverID == VK_DRIVER_ID_MOLTENVK &&
++          screen->info.have_EXT_host_image_copy && ici->usage & VK_IMAGE_USAGE_HOST_TRANSFER_BIT_EXT && hic.identicalMemoryLayout)
+          optimalDeviceAccess = false;
+-#endif
+    } else
+       ret = VKSCR(GetPhysicalDeviceImageFormatProperties)(screen->pdev, ici->format, ici->imageType,
+                                                    ici->tiling, ici->usage, ici->flags, &image_props);

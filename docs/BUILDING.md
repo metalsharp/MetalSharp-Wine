@@ -24,14 +24,18 @@ The same changes are in `patches/` as git patches against the upstream tags. `pa
 | Path | Contents |
 |---|---|
 | `scripts/` | Build, staging, test, audit, benchmark, packaging and signing scripts |
-| `patches/` | `wine/`, `fex/`, `mullion/`, `winemetalgl/`, and `wine-x86_64/` (the x86_64 build, against WineForge `a05564cf`) |
+| `patches/` | `wine/`, `fex/`, `mullion/`, `winemetalgl/`, `mesa/` (applied by `build-kosmickrisp.sh`), and `wine-x86_64/` (the x86_64 build, against WineForge `a05564cf`) |
 | `resources/` | The app icon (`MetalSharp-Wine.icon`, an Icon Composer document) |
 | `tests/src/` | Smoke tests and benchmarks (native ARM64, x86_64 and i386) |
 | `docs/` | Status, testing, performance, the WineForge port plan, and provenance and licenses (`PROVENANCE.md`) |
 
 ## Building
 
-You need Xcode, the Metal Toolchain, and these Homebrew tools: cmake, ninja, meson, pkgconf, autoconf, automake, libtool, bison, flex, nasm, gettext and gperf.
+You need:
+- Xcode 26 and its Metal Toolchain (`xcodebuild -downloadComponent MetalToolchain`).
+- A macOS 15 SDK (`MacOSX15.x.sdk`, from Xcode 16), as `MACOS15_SDK`. Packaging uses it to hold the payloads that were linked on a newer macOS to macOS 15, after checking they need nothing newer (`scripts/macos-floor.py`).
+- These Homebrew tools: cmake, ninja, meson, pkgconf, bison, flex, nasm, gettext, gperf, zstd, xz, osslsigncode and gh (signed in), plus llvm, spirv-llvm-translator and libclc for KosmicKrisp and Zink, and a Rust toolchain (`cargo`) for MetalVR.
+- For an app that runs, a Developer ID certificate (`SIGN_IDENTITY`) and a provisioning profile with the cross-architecture entitlement (`PROFILE`, or the first one in `signing/`).
 
 ```bash
 git clone --recurse-submodules https://github.com/metalsharp/MetalSharp-Wine.git
@@ -43,33 +47,50 @@ Or, in an existing clone:
 zsh scripts/fetch-sources.sh
 ```
 
+Then:
+
 ```bash
-zsh scripts/build-all.sh
+MACOS15_SDK=<path>/MacOSX15.5.sdk SIGN_IDENTITY=<Developer ID> zsh scripts/build-all.sh
 ```
 
-That builds:
-1. The dependencies.
-2. The ARM64X runtimes.
-3. Wine.
-4. FEX.
-5. The tests.
+That builds `dist/MetalSharp-Wine.app`, with everything the release carries, in this order (`build-all.sh --list`):
+1. The toolchain (llvm-mingw 20261020, `fetch-toolchain.sh`), the dependencies, and the ARM64X runtimes.
+2. Wine, then FEX.
+3. Mullion, with its NGX core and NVAPI.
+4. WineMetalGL, WFDXCompat, and the Linux module host.
+5. The VKD3D-Proton lane with MetalSharp's MoltenVK and the DXBC converter (`build-vkd3d-proton.sh`), and DXVK-MacOS.
+6. The shader compilers, Mono and Gecko, the fonts, innoextract and cabextract.
+7. The MetalSharp app's payloads, KosmicKrisp, Zink and MetalVR.
+8. The tests.
+9. The Mach-O audit, the package (`dist/metalsharp-wine-<version>-arm64`, and its tarball), and the signed app.
 
-It then audits the Mach-O files and packages `dist/metalsharp-wine-<version>-arm64`.
+It checks the tools, `MACOS15_SDK` and `src/` before it starts. Each step logs to `logs/build-all/<n>-<step>.log`. When one fails, the run stops and names its log, and `build-all.sh <step>` carries on from there. `SKIP="metalvr zink"` leaves steps out.
 
-Packaging, so `build-all.sh` too, needs a macOS 15 SDK (`MACOS15_SDK=<path>/MacOSX15.x.sdk`). Some of the bundles' payloads were linked on a newer macOS without a deployment target. `scripts/macos-floor.py` uses the SDK to check that each one needs nothing macOS 15 lacks, then holds it to macOS 15. Both packagers run it.
+Some steps take what this repository does not build:
+- **Mullion's NGX core** (DLSS on MetalFX) has to carry Mullion's signature, so `build-mullion.sh` needs one of:
+  - `MULLION_NGX_SIGNING_KEY_FILE`, the signing key.
+  - `MULLION_SIGNED_NGX_DIR`, a signed core.
 
-The add-ons have their own scripts:
-- `build-llvm15.sh` and `build-mullion.sh`. DLSS needs Mullion's NGX core signed, so `build-mullion.sh` needs `MULLION_NGX_SIGNING_KEY_FILE` (the signing key) or `MULLION_SIGNED_NGX_DIR` (an unpacked signed Mullion release of `src/mullion`'s commit). `MULLION_NGX_UNSIGNED=1` builds without DLSS
+  Without either, `build-all.sh` fetches the newest core Mullion's `sign-ngx` workflow signed for an `src/mullion` whose NGX sources are the same (`fetch-signed-ngx.sh`, from `aaf2tbz/mullion`'s draft releases, so `gh` must be signed in as a collaborator). That script says how to sign one when none matches. `MULLION_NGX_UNSIGNED=1` builds without DLSS.
+- **The MetalSharp app's payloads** (Goldberg, the Steam installer, FNA/XNA, Unity Mono, SDL3, the shims, the host runtime) come from MetalSharp's bundles in `downloads/metalsharp-bundles/extract` when they are there. Otherwise `fetch-metalsharp-assets.sh` takes them from a MetalSharp Wine release: from `fetch-metalsharp-assets.sh <MetalSharp-Wine.app>`, or, with no argument, from the 8.0 tarball (about 1 GB, checked against its SHA-256).
+
+WineMetalGL's `opengl32.dll` is installed as the builtin `opengl32` (`lib/wine`), as Mullion's DLLs are, so a prefix's System32 copy is WineMetalGL's. Wine's own is in `lib/wine-opengl`, for `OPENGL_BACKEND=wine`. Run `build-winemetalgl.sh` again after `build-wine.sh install`, which puts Wine's back.
+
+Each step is also its own script:
+- `build-deps.sh`, `build-arm64ec-runtimes.sh`, `build-wine.sh` and `build-fex.sh`
+- `build-llvm15.sh` (which `build-mullion.sh` runs when needed) and `build-mullion.sh`
 - `build-winemetalgl.sh`
 - `build-wfdxcompat.sh` (after `build-mullion.sh`)
 - `build-linuxhost.sh`
-- `build-metalvr.sh`: VR. It needs a Rust toolchain (`cargo`) beside the tools above, for ALVR's `server_core`. `metalvr-prefix.sh` then makes MetalVR a prefix's OpenXR runtime
-- `stage-moltenvk.sh` and `stage-vkd3d-proton.sh` (built in `src/vkd3d-proton` with its own scripts)
+- `build-metalvr.sh`: VR. `metalvr-prefix.sh` then makes MetalVR a prefix's OpenXR runtime
+- `build-vkd3d-proton.sh`, which runs `src/vkd3d-proton`'s own scripts, then `stage-moltenvk.sh` and `stage-vkd3d-proton.sh`
 - `build-dxvk-macos.sh` then `stage-dxvk.sh`
 - `stage-shader-compilers.sh`
 - `fetch-addons.sh` (Mono and Gecko) and `fetch-fonts.sh`
 - `build-innoextract.sh` and `build-cabextract.sh`
-- `stage-metalsharp-assets.sh` and `stage-metalsharp-redist.sh`
+- `fetch-metalsharp-assets.sh`, `stage-metalsharp-assets.sh` and `stage-metalsharp-redist.sh`
+- `build-kosmickrisp.sh`, which fetches Mesa and applies `patches/mesa`, then `build-zink.sh`
+- `build-tests.sh`, `audit-macho.sh`, `package.sh` and `sign-app.sh`
 
 **The x86_64 build** (`MetalSharp-Wine-x86_64.app`) has its own scripts, all named `*-x86_64.sh`: `build-wine-x86_64.sh`, `build-deps-x86_64.sh`, `build-mullion-x86_64.sh`, `build-winemetalgl-x86_64.sh` and `package-x86_64.sh`. The steps are in [`docs/X86_64.md`](X86_64.md).
 

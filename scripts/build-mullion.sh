@@ -10,7 +10,8 @@
 # with NVEXT on (the certificate is src/mullion/src/nvngx/signing/mullion-ngx.pem). Either
 #   MULLION_NGX_SIGNING_KEY_FILE=<PEM private key>   signs the core built here, or
 #   MULLION_SIGNED_NGX_DIR=<signed Mullion release>  takes that release's aarch64-windows/nvngx.dll (Mullion's CI
-#                                                    signs it; use the release of src/mullion's commit).
+#                                                    signs it; use the release of src/mullion's commit), or the
+#                                                    arm64ec-nvngx.dll of Mullion's sign-ngx workflow artifact.
 # The core installed is then checked against the certificate. With neither, the build stops before building, since
 # an unsigned core gives every game no DLSS; MULLION_NGX_UNSIGNED=1 builds one anyway, for a build without DLSS.
 # As Wine builtins nvngx.dll and nvapi64.dll reach every prefix's System32, where
@@ -24,8 +25,11 @@ NGX_DIR=${MULLION_SIGNED_NGX_DIR:+${MULLION_SIGNED_NGX_DIR:A}}
 if [[ -n $MULLION_NGX_SIGNING_KEY_FILE ]]; then
   [[ -f $MULLION_NGX_SIGNING_KEY_FILE ]] || { echo "error: no MULLION_NGX_SIGNING_KEY_FILE" >&2; exit 1; }
 elif [[ -n $NGX_DIR ]]; then
-  [[ -f $NGX_DIR/aarch64-windows/nvngx.dll ]] ||
-    { echo "error: MULLION_SIGNED_NGX_DIR has no aarch64-windows/nvngx.dll" >&2; exit 1; }
+  # an unpacked release has aarch64-windows/nvngx.dll; Mullion's sign-ngx workflow's artifact has arm64ec-nvngx.dll
+  NGX_DLL=$NGX_DIR/aarch64-windows/nvngx.dll
+  [[ -f $NGX_DLL ]] || NGX_DLL=$NGX_DIR/arm64ec-nvngx.dll
+  [[ -f $NGX_DLL ]] ||
+    { echo "error: MULLION_SIGNED_NGX_DIR has no aarch64-windows/nvngx.dll or arm64ec-nvngx.dll" >&2; exit 1; }
 elif [[ $MULLION_NGX_UNSIGNED != 1 ]]; then
   echo "error: nvngx.dll needs Mullion's signature, or no game gets DLSS: set MULLION_NGX_SIGNING_KEY_FILE or" >&2
   echo "       MULLION_SIGNED_NGX_DIR (see this script), or MULLION_NGX_UNSIGNED=1 to build without DLSS" >&2
@@ -62,7 +66,7 @@ if [[ -n $MULLION_NGX_SIGNING_KEY_FILE ]]; then
   osslsigncode sign -certs $CERT -key $MULLION_NGX_SIGNING_KEY_FILE -n "Mullion NGX" \
     -h sha256 -in $B/nvngx/nvngx.dll -out $R/aarch64-windows/nvngx.dll >/dev/null
 elif [[ -n $NGX_DIR ]]; then
-  cp $NGX_DIR/aarch64-windows/nvngx.dll $R/aarch64-windows/
+  cp $NGX_DLL $R/aarch64-windows/nvngx.dll
 else
   echo "warning: nvngx.dll is unsigned (MULLION_NGX_UNSIGNED=1): NGX will not load it, so no game gets DLSS" >&2
   cp $B/nvngx/nvngx.dll $R/aarch64-windows/

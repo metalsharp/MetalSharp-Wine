@@ -3,6 +3,7 @@
 export ROOT=${ROOT:-${${(%):-%x}:A:h:h}}  # the checkout this file is in
 export PREFIX=$ROOT/deps/prefix
 export MINGW=$ROOT/toolchain/llvm-mingw-20261020-ucrt-macos-universal
+export LLVM_MINGW=${LLVM_MINGW:-$MINGW}  # src/vkd3d-proton's scripts take the toolchain as LLVM_MINGW
 export JOBS=10
 
 export MACOSX_DEPLOYMENT_TARGET=15.0
@@ -27,7 +28,7 @@ unset PKG_CONFIG_PATH
 # binutils: GNU dlltool writes long-format import libraries, which lld cannot delay-load from, so
 # every i386 delay import silently became a load-time import (and an import cycle via ucrtbase).
 SHIMS=$ROOT/toolchain/mingw-shims
-if [[ ! -d $SHIMS ]]; then
+if [[ ! -d $SHIMS && -d $MINGW/bin ]]; then  # scripts/fetch-toolchain.sh fetches the toolchain
   mkdir -p $SHIMS
   for t in $MINGW/bin/*-w64-mingw32-*; do ln -sf $t $SHIMS/; done
 fi
