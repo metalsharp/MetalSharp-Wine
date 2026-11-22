@@ -4,6 +4,18 @@ The [release notes](https://github.com/metalsharp/MetalSharp-Wine/releases) have
 
 ## Unreleased
 
+Both builds:
+
+- Mullion at `aaf2tbz/mullion` `metalsharp-2.1-main` `2a311095` (from `1581eb8a`), with dttdrv/mullion main merged again. Its NGX core is signed by the fork's CI for DLSS.
+- **MetalFX upscaling no longer holds games to 48 frames a second on a 144 Hz display.** With MetalFX on, a game's display modes are emulated and the screen keeps its own refresh, so a 60 Hz mode's frames waited three of its refreshes. They now wait two, and the game's own limit holds them to 60. The upscaled frame is also the display's size, where it was the window's size before going fullscreen.
+- **DLSS gives MetalFX more of what games pass it**: the bias mask as MetalFX's reactive mask, inputs whose content starts inside their textures, and display-resolution motion vectors read directly (macOS 27). Render sizes are within the scales MetalFX takes on the device, and DLSS's statistics report the scaler's memory.
+- **Direct3D 11 tessellates on Metal's tessellator** where it tessellates as Direct3D does, about twice as fast at high factors. A draw whose vertex shader reads what the pass's pixel shaders wrote no longer reads stale data.
+- **Shader model 6.8** is reported, with its comparison sampling and start locations, and a 6.8 wave size range the GPU cannot run is refused.
+- **Geometry shaders run several invocations a mesh threadgroup** where they fit, as Metal Shader Converter does: points-to-quads shaders about 10% cheaper on the CPU.
+- NVAPI answers its ray tracing caps and extended acceleration structure builds. An adapter now has a device ID of its vendor's (AMD's 744c by default, where it was 0000), and `dxgi.customSubSysId` and `dxgi.customRevision` are new.
+- New options: `d3d11.samplerLodBias` and `d3d12.samplerLodBias`, as DXVK's; `d3d12.ignoreFailedPipelines` (off by default), which gives a game a pipeline Mullion cannot make as one that draws nothing.
+- Shader caches are rebuilt once (converter version 127).
+
 x86_64 build:
 
 - **Ubisoft Connect's WebGL keeps the GPU MetalSharp starts it with** (metalsharp/MetalSharp#824): a Chromium browser whose command line already picks ANGLE's backend (`--use-angle=`) no longer gets MetalSharp Wine's software-drawing switches after it, whose `--use-angle=swiftshader-webgl` Chromium took instead. MetalSharp starts Connect with WebGL on ANGLE's D3D11 for the GPU its login's bot protection checks, and on 8.0 a fresh login was blocked. A browser started without `--use-angle=` gets the switches as before (x86_64 0077).
