@@ -86,13 +86,14 @@ for f in $(find $D -type f \( -name '*.dylib' -o -name '*.so' -o -perm -u+x \));
   args=()
   # dylib ids
   id=$(otool -D $f | sed -n 2p)
-  if [[ $id == $PREFIX/lib/* ]]; then args+=(-id @rpath/${id#$PREFIX/lib/})
+  # any deps/prefix, not only this tree's: a build tree copied or moved from another still names that one's
+  if [[ $id == /*/deps/prefix/lib/* ]]; then args+=(-id @rpath/${id##*/deps/prefix/lib/})
   # any other id that names a build machine's path (the build tree, Homebrew, /tmp) is its own name under @rpath
   elif [[ $id == /* && $id != /usr/lib/* && $id != /System/* ]]; then args+=(-id @rpath/${id:t})
   fi
   # dependencies
-  for dep in $(otool -L $f | tail -n +2 | awk '{print $1}' | grep "^$PREFIX/lib/"); do
-    args+=(-change $dep @rpath/${dep#$PREFIX/lib/})
+  for dep in $(otool -L $f | tail -n +2 | awk '{print $1}' | grep '^/.*/deps/prefix/lib/'); do
+    args+=(-change $dep @rpath/${dep##*/deps/prefix/lib/})
   done
   # rpaths: drop absolute ones, add the relative one
   for rp in $(otool -l $f | awk '/LC_RPATH/{getline; getline; print $2}'); do
