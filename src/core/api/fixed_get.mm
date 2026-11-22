@@ -244,6 +244,10 @@ int getFixedState(Context& ctx, GLenum pname, double* values, char& kind) {
     case GL_MAX_PROGRAM_MATRICES_ARB: return o.ints({FixedState::kProgramMatrices});
     case GL_MAX_PROGRAM_MATRIX_STACK_DEPTH_ARB: return o.ints({FixedState::kProgramMatrixDepth});
     case GL_MAX_LIGHTS: return o.ints({FixedState::kLights});
+    // OpenGL 1.x's names of the first draw buffer's colour blend factors,
+    // which City of Heroes' renderer reads as it starts (WineMetalGL #94)
+    case GL_BLEND_SRC: return o.ints({static_cast<double>(s.blend[0].srcRGB)});
+    case GL_BLEND_DST: return o.ints({static_cast<double>(s.blend[0].dstRGB)});
     case GL_MAX_CLIP_PLANES: return o.ints({FixedState::kClipPlanes});
     case GL_MAX_TEXTURE_UNITS: case GL_MAX_TEXTURE_COORDS: return o.ints({FixedState::kTextureUnits});
     case GL_MAX_EVAL_ORDER: return o.ints({8});
