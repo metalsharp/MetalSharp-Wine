@@ -17,11 +17,24 @@ done
 O=$ROOT/install/lib/vkd3d-proton
 rm -rf $O; mkdir -p $O/x86_64-windows
 cp $VKD3D/d3d12.dll $VKD3D/d3d12core.dll $O/x86_64-windows/
-# the lane's own NGX core and NVAPI (DLSS on MetalFX; MetalVulkan scripts/build-ngx-arm64x.sh), which Wine
-# loads for this lane in place of Mullion's builtins of those names
-NGX=${2:-$WS/artifacts/build/ngx/aarch64-windows}
-[[ -f $NGX/nvngx.dll && -f $NGX/nvapi64.dll ]] && cp $NGX/nvngx.dll $NGX/nvapi64.dll $O/x86_64-windows/
-for f in $O/x86_64-windows/*.dll; do
+# the lane's own NGX core and NVAPI (DLSS on MetalFX), which Wine loads for this lane in place of Mullion's builtins
+# of those names: the given folder, else src/metalvulkan's own build (scripts/build-ngx-arm64x.sh) when its nvngx.dll
+# is signed, else MetalVulkan's release (fetch-metalvulkan-ngx.sh). NGX loads only a signed core, and without them
+# the lane has no DLSS, so staging stops rather than leave them out.
+NGX=$2
+if [[ -z $NGX ]]; then
+  NGX=$WS/artifacts/build/ngx/aarch64-windows
+  [[ -f $NGX/nvngx.dll && -f $NGX/nvapi64.dll ]] && command -v osslsigncode >/dev/null &&
+    osslsigncode verify -CAfile $WS/ngx/signing/mullion-ngx.pem -in $NGX/nvngx.dll >/dev/null 2>&1 ||
+    NGX=$(zsh ${0:A:h}/fetch-metalvulkan-ngx.sh) ||
+    { echo "stage-vkd3d-proton: no signed NGX core for the lane (DLSS): see scripts/fetch-metalvulkan-ngx.sh" >&2; exit 1; }
+fi
+for f in nvngx.dll nvapi64.dll; do
+  [[ -f $NGX/$f ]] || { echo "missing: $NGX/$f" >&2; exit 1; }
+done
+cp $NGX/nvngx.dll $NGX/nvapi64.dll $O/x86_64-windows/
+# Wine's builtin marker: MetalVulkan's NGX DLLs carry it already, inside nvngx.dll's signed bytes.
+for f in $O/x86_64-windows/d3d12.dll $O/x86_64-windows/d3d12core.dll; do
   python3 - $f <<'PY'
 import struct, sys
 with open(sys.argv[1], "r+b") as f:
@@ -36,6 +49,6 @@ cp $ROOT/src/wine/COPYING.LIB $O/LICENSE
 {
   echo "VKD3D-Proton $(git -C $WS/sources/vkd3d-proton describe --always --tags 2>/dev/null) (ARM64X, src/metalvulkan)"
   echo "DXGI and D3D11 to D3D3: the DXVK lane's DXVK (MetalVulkan's dxvk/) (lib/dxvk)"
-  [[ -f $O/x86_64-windows/nvngx.dll ]] && echo "NGX core and NVAPI $(git -C $WS describe --always --dirty 2>/dev/null) (ARM64X, ngx/)"
+  echo "NGX core and NVAPI (ARM64X, ngx/, signed): ${NGX:h:t}/${NGX:t}"
 } > $O/VERSION
 echo "vkd3d-proton:"; cat $O/VERSION; ls $O/x86_64-windows
