@@ -5,7 +5,7 @@
 #   install-x86_64/lib/dxmt/{x86_64-windows,i386-windows,x86_64-unix}
 #   x86_64-windows also has nvngx.dll (NGX core for DLSS on MetalFX) and nvapi64.dll, and d3d12.dll/d3d12core.dll.
 # Mullion's DXGI trusts Mullion's NGX certificate (src/nvngx/signing/mullion-ngx.pem), as on the arm64 build. NGX checks
-# the signature of System32's nvngx.dll, which the x86_64 MetalSharp Wine takes from VKD3D-Proton-MacOS's release
+# the signature of System32's nvngx.dll, which the x86_64 MetalSharp Wine takes from MetalVulkan's release
 # (signed by its CI), and then Wine loads this lane's core by name; MULLION_NGX_SIGNING_KEY_FILE signs this one too.
 #   X86_WINE_BUILD=<Wine 11.17 x86_64 build tree> build-mullion-x86_64.sh
 set -e

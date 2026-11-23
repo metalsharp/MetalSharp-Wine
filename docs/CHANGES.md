@@ -2,12 +2,13 @@
 
 The [release notes](https://github.com/metalsharp/MetalSharp-Wine/releases) have the full list for each release.
 
-## Unreleased
+## 9.0
 
 Both builds:
 
 - **DLLs that an application's own file system serves now load** (#66). Some protectors and packers serve DLLs that are not on disk by hooking `NtOpenFile` and `NtCreateSection` and handing out their own handles. EXOCAD DentalCAD 3.3 and DentalDB load their main assemblies this way. Wine's loader asked the system about such a section, which failed, and then rejected the DLL as the wrong architecture (`0xc000007b`, or `0x800700c1` in .NET). It now reads the image's details from the mapped section, as Windows' loader does (Wine 0193, x86_64 0079).
 - Mullion at `aaf2tbz/mullion` `metalsharp-2.1-main` `2a311095` (from `1581eb8a`), with dttdrv/mullion main merged again. Its NGX core is signed by the fork's CI for DLSS.
+- **MetalVulkan 7.0** ([metalsharp/MetalVulkan](https://github.com/metalsharp/MetalVulkan), formerly VKD3D-Proton-MacOS) is MetalSharp's Vulkan: MoltenVK 1.4.3 with VKD3D-Proton, and now DXVK too, which moved in from DXVK-MacOS with its history (`dxvk/`). `src/metalvulkan` replaces `src/vkd3d-proton` and `src/dxvk-macos`. DXVK's `ResolveSubresource` can be detoured on this build too (Custom Shaders Patch), and its D3D9 constant updates, push data, spin waits and d7vk's vertex processing run on NEON.
 - **MetalFX upscaling no longer holds games to 48 frames a second on a 144 Hz display.** With MetalFX on, a game's display modes are emulated and the screen keeps its own refresh, so a 60 Hz mode's frames waited three of its refreshes. They now wait two, and the game's own limit holds them to 60. The upscaled frame is also the display's size, where it was the window's size before going fullscreen.
 - **DLSS gives MetalFX more of what games pass it**: the bias mask as MetalFX's reactive mask, inputs whose content starts inside their textures, and display-resolution motion vectors read directly (macOS 27). Render sizes are within the scales MetalFX takes on the device, and DLSS's statistics report the scaler's memory.
 - **Direct3D 11 tessellates on Metal's tessellator** where it tessellates as Direct3D does, about twice as fast at high factors. A draw whose vertex shader reads what the pass's pixel shaders wrote no longer reads stale data.
@@ -24,6 +25,8 @@ x86_64 build:
 
 arm64 build:
 
+- **The VKD3D lane (`GRAPHICS_BACKEND=vkd3d`) is one DXVK from Direct3D 12 down to Direct3D 3.** Its DXGI and Direct3D 11 and 10 were DXVK 2.7.1, while Direct3D 9 to 3 and 32-bit programs came from the DXVK lane's DXVK-MacOS. They are now all one DXVK, the same build as the DXVK lane's, with VKD3D-Proton for Direct3D 12. VKD3D-Proton's descriptor copies, spin waits and Metal Shader Converter argument pushes run on NEON, where the ARM64X build had no SIMD at all: CopyDescriptors' set scan is 3.6 to 4.6 times faster from 32 descriptors.
+- **64-bit programs load `d3d8.dll`.** Wine built Direct3D 8 for 32-bit programs only, so a 64-bit one's `LoadLibrary("d3d8.dll")` failed on every lane: the DXVK and VKD3D lanes give DXVK's `d3d8.dll` only in place of a builtin the prefix has. It is now built for arm64 too: those lanes run it on DXVK-MacOS, and the Wine lane on wined3d (Wine 0196).
 - **Counter-Strike 2 runs on Mullion.**
   - Its D3D11 renderer crashed 25 to 45 s in: a race in its own lock-free buffer pool, which emulation widens. It now runs its job pool on 4 threads (`-threads 4`, unless its command line names a count), which keeps it stable. With 6 or more threads it crashed (Wine 0195).
   - It no longer says the graphics driver is out of date. Direct3D 9 described a GeForce GTX 470 with a 2010 driver, while DXGI described Mullion's AMD GPU. For games on Mullion, Direct3D 9 now describes the same GPU as DXGI (Wine 0194).

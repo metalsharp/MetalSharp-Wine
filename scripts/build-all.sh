@@ -18,7 +18,7 @@
 set -e
 S=${0:A:h}
 source $S/env.sh
-NAME=${NAME:-metalsharp-wine-8.0-arm64}
+NAME=${NAME:-metalsharp-wine-9.0-arm64}
 LOG=$ROOT/logs/build-all
 
 steps=(
@@ -78,7 +78,7 @@ xcrun -sdk macosx metal -v >/dev/null 2>&1 ||
 [[ -d ${MACOS15_SDK:-/nonexistent} ]] ||
   { echo "build-all: set MACOS15_SDK to a macOS 15 SDK (MacOSX15.x.sdk, from Xcode 16): packaging needs it" >&2; exit 1; }
 [[ -f $ROOT/src/wine/configure && -f $ROOT/src/FEX/CMakeLists.txt && -f $ROOT/src/mullion/meson.build &&
-   -f $ROOT/src/vkd3d-proton/scripts/build-moltenvk.sh && -f $ROOT/src/winemetalgl/CMakeLists.txt ]] ||
+   -f $ROOT/src/metalvulkan/scripts/build-moltenvk.sh && -f $ROOT/src/winemetalgl/CMakeLists.txt ]] ||
   { echo "build-all: src/ is not checked out (zsh scripts/fetch-sources.sh)" >&2; exit 1; }
 if ! skipped mullion && [[ -z $MULLION_SIGNED_NGX_DIR && -z $MULLION_NGX_SIGNING_KEY_FILE &&
                            $MULLION_NGX_UNSIGNED != 1 ]]; then

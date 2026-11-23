@@ -1,5 +1,5 @@
 #!/bin/zsh
-# DXVK-MacOS 3.1 (src/dxvk-macos, built by build-dxvk-macos.sh) as the opt-in GRAPHICS_BACKEND=dxvk, on MoltenVK:
+# DXVK 3.1 (src/metalvulkan/dxvk, built by build-dxvk-macos.sh) as the opt-in GRAPHICS_BACKEND=dxvk, on MoltenVK:
 # the ARM64X build in install/lib/dxvk/x86_64-windows for x86_64 programs (D3D7 to D3D11, as ARM64EC under FEX),
 # the i386 build in install/lib/dxvk/i386-windows for 32-bit ones (D3D7 to D3D9). ddraw.dll is d7vk's (D3D7, 6, 5
 # and 3); the loader gives it Wine's own ddraw.dll as ddraw_.dll, for DirectDraw itself. Each DLL gets the Wine
@@ -7,7 +7,7 @@
 #   stage-dxvk.sh [ARM64X build dir] [NGX dir] [i386 build dir]
 set -e
 source ${0:A:h}/env.sh
-D=$ROOT/src/dxvk-macos
+D=$ROOT/src/metalvulkan/dxvk
 B=${1:-$D/build-arm64x}
 B32=${3:-$D/build-i386}
 O=$ROOT/install/lib/dxvk
@@ -38,9 +38,9 @@ for f in $X86; do
   cp $B32/src/$f.dll $O/i386-windows/
   stamp $O/i386-windows/${f:t}.dll
 done
-# the NGX core and NVAPI for DLSS on MetalFX (VKD3D-Proton-MacOS's ngx/, scripts/build-ngx-arm64x.sh), which Wine
+# the NGX core and NVAPI for DLSS on MetalFX (MetalVulkan's ngx/, scripts/build-ngx-arm64x.sh), which Wine
 # loads for this lane in place of Mullion's builtins of those names
-NGX=${2:-$ROOT/src/vkd3d-proton/artifacts/build/ngx/aarch64-windows}
+NGX=${2:-$ROOT/src/metalvulkan/artifacts/build/ngx/aarch64-windows}
 if [[ -f $NGX/nvngx.dll && -f $NGX/nvapi64.dll ]]; then
   for f in nvngx nvapi64; do
     cp $NGX/$f.dll $O/x86_64-windows/
@@ -57,5 +57,5 @@ for a in i386-windows aarch64-windows; do
 done
 cp $D/LICENSE $O/LICENSE
 cp $D/subprojects/dxbc-spirv/LICENSE $O/LICENSE.dxbc-spirv
-echo "DXVK-MacOS $(git -C $D describe --always --tags 2>/dev/null) (metalsharp/DXVK-MacOS, ARM64X and i386)" > $O/VERSION
+echo "DXVK $(cat $D/RELEASE) (metalsharp/MetalVulkan $(git -C $D describe --always --tags --first-parent 2>/dev/null), ARM64X and i386)" > $O/VERSION
 echo "dxvk: $(cat $O/VERSION)"

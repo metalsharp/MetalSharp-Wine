@@ -13,8 +13,7 @@ The modified sources are kept in this repository as branches, and `main` links t
 | `src/wfdxcompat` | [`source/wfdxcompat`](https://github.com/metalsharp/MetalSharp-Wine/tree/source/wfdxcompat) | WineForge DXCompat, built ARM64EC for Mullion: the Rockstar launcher companion |
 | `src/linuxhost` | [`source/linuxhost`](https://github.com/metalsharp/MetalSharp-Wine/tree/source/linuxhost) | The Linux module host: runs the x86_64 Linux code Easy Anti-Cheat's EOS bootstrapper loads into itself. Developed in [metalsharp/Proton](https://github.com/metalsharp/Proton) (`darwin/linuxhost`) |
 | `src/mullion` | [aaf2tbz/mullion](https://github.com/aaf2tbz/mullion) `metalsharp-2.1-main` | Mullion (DXMT fork). Developed there and sent upstream to [dttdrv/mullion](https://github.com/dttdrv/mullion) as pull requests |
-| `src/dxvk-macos` | [metalsharp/DXVK-MacOS](https://github.com/metalsharp/DXVK-MacOS) `main` | DXVK-MacOS 3.1, DXVK 3.1.1 ported to MoltenVK: the `GRAPHICS_BACKEND=dxvk` lane, built as ARM64X |
-| `src/vkd3d-proton` | [metalsharp/VKD3D-Proton-MacOS](https://github.com/metalsharp/VKD3D-Proton-MacOS) `main` | VKD3D-Proton macOS: the `GRAPHICS_BACKEND=vkd3d` lane (D3D12 on Vulkan, with DXVK's DXGI and D3D10/11) and MetalSharp's MoltenVK, as patches on the upstream projects |
+| `src/metalvulkan` | [metalsharp/MetalVulkan](https://github.com/metalsharp/MetalVulkan) `main` | MetalVulkan: MetalSharp's MoltenVK (Vulkan 1.4 on Metal), and VKD3D-Proton (`GRAPHICS_BACKEND=vkd3d`, D3D12) and DXVK (`dxvk/`, with d7vk: DXGI and Direct3D 11 to 3) on it. VKD3D-Proton and MoltenVK are patches on the upstream projects; DXVK is in the repository, built as ARM64X and i386 for the dxvk lane and the vkd3d lane alike |
 | `src/metalvr` | [metalsharp/MetalVR](https://github.com/metalsharp/MetalVR) `main` | MetalVR: an OpenXR runtime for Windows VR games on Mullion's Direct3D 11 (`metalvr_openxr.dll`), and `metalvrd`, the native server that composes and encodes their frames and streams them to a headset through ALVR. `scripts/build-metalvr.sh` builds it with its own scripts and installs it ([its `docs/METALSHARP_WINE.md`](https://github.com/metalsharp/MetalVR/blob/main/docs/METALSHARP_WINE.md)). No release has carried it yet |
 
 The branches are full source trees with their upstream history (Wine's is large), which is why they are linked rather than merged into `main`. `legacy-1.x` holds the previous MetalSharp Wine (VKMT) history.
@@ -58,7 +57,7 @@ That builds `dist/MetalSharp-Wine.app`, with everything the release carries, in 
 2. Wine, then FEX.
 3. Mullion, with its NGX core and NVAPI.
 4. WineMetalGL, WFDXCompat, and the Linux module host.
-5. The VKD3D-Proton lane with MetalSharp's MoltenVK and the DXBC converter (`build-vkd3d-proton.sh`), and DXVK-MacOS.
+5. The VKD3D-Proton lane with MetalSharp's MoltenVK and the DXBC converter (`build-vkd3d-proton.sh`), and DXVK (`build-dxvk-macos.sh`), both from `src/metalvulkan`.
 6. The shader compilers, Mono and Gecko, the fonts, innoextract and cabextract.
 7. The MetalSharp app's payloads, KosmicKrisp, Zink and MetalVR.
 8. The tests.
@@ -83,7 +82,7 @@ Each step is also its own script:
 - `build-wfdxcompat.sh` (after `build-mullion.sh`)
 - `build-linuxhost.sh`
 - `build-metalvr.sh`: VR. `metalvr-prefix.sh` then makes MetalVR a prefix's OpenXR runtime
-- `build-vkd3d-proton.sh`, which runs `src/vkd3d-proton`'s own scripts, then `stage-moltenvk.sh` and `stage-vkd3d-proton.sh`
+- `build-vkd3d-proton.sh`, which runs `src/metalvulkan`'s own scripts, then `stage-moltenvk.sh` and `stage-vkd3d-proton.sh`
 - `build-dxvk-macos.sh` then `stage-dxvk.sh`
 - `stage-shader-compilers.sh`
 - `fetch-addons.sh` (Mono and Gecko) and `fetch-fonts.sh`

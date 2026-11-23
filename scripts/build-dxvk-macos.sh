@@ -1,5 +1,6 @@
 #!/bin/zsh
-# DXVK-MacOS 3.1 (src/dxvk-macos: metalsharp/DXVK-MacOS, DXVK 3.1.1 ported to MoltenVK) for GRAPHICS_BACKEND=dxvk:
+# DXVK (src/metalvulkan/dxvk: DXVK 3.1.1 ported to MoltenVK, in metalsharp/MetalVulkan) for GRAPHICS_BACKEND=dxvk
+# and the VKD3D lane's DXGI and D3D11 to D3D3:
 # D3D7 to D3D11 and DXGI on MoltenVK (ddraw.dll, D3D7/6/5/3, is d7vk's). Built as ARM64X PE modules
 # (build-arm64x.txt), which x86_64 programs load as ARM64EC under FEX and native arm64 programs load as arm64, and
 # as i386 (build-win32.txt) for 32-bit programs, which FEX runs. stage-dxvk.sh installs them.
@@ -7,8 +8,8 @@
 set -e
 source ${0:A:h}/env.sh
 unset CFLAGS CXXFLAGS OBJCFLAGS LDFLAGS CPPFLAGS CC CXX OBJC  # macOS flags would reach the PE cross compilers
-D=$ROOT/src/dxvk-macos
-[[ -f $D/build-arm64x.txt ]] || { echo "src/dxvk-macos missing (fetch-sources.sh)" >&2; exit 1; }
+D=$ROOT/src/metalvulkan/dxvk
+[[ -f $D/build-arm64x.txt ]] || { echo "src/metalvulkan/dxvk missing (fetch-sources.sh)" >&2; exit 1; }
 export PATH=$MINGW/bin:$PATH
 # Its MoltenVK patch to dxbc-spirv, as its release workflow applies it (once: a tree that has it is left alone).
 P=$D/patches/dxbc-spirv-moltenvk.patch
