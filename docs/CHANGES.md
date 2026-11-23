@@ -6,6 +6,7 @@ The [release notes](https://github.com/metalsharp/MetalSharp-Wine/releases) have
 
 Both builds:
 
+- **DLLs that an application's own file system serves now load** (#66). Some protectors and packers serve DLLs that are not on disk by hooking `NtOpenFile` and `NtCreateSection` and handing out their own handles. EXOCAD DentalCAD 3.3 and DentalDB load their main assemblies this way. Wine's loader asked the system about such a section, which failed, and then rejected the DLL as the wrong architecture (`0xc000007b`, or `0x800700c1` in .NET). It now reads the image's details from the mapped section, as Windows' loader does (Wine 0193, x86_64 0079).
 - Mullion at `aaf2tbz/mullion` `metalsharp-2.1-main` `2a311095` (from `1581eb8a`), with dttdrv/mullion main merged again. Its NGX core is signed by the fork's CI for DLSS.
 - **MetalFX upscaling no longer holds games to 48 frames a second on a 144 Hz display.** With MetalFX on, a game's display modes are emulated and the screen keeps its own refresh, so a 60 Hz mode's frames waited three of its refreshes. They now wait two, and the game's own limit holds them to 60. The upscaled frame is also the display's size, where it was the window's size before going fullscreen.
 - **DLSS gives MetalFX more of what games pass it**: the bias mask as MetalFX's reactive mask, inputs whose content starts inside their textures, and display-resolution motion vectors read directly (macOS 27). Render sizes are within the scales MetalFX takes on the device, and DLSS's statistics report the scaler's memory.
