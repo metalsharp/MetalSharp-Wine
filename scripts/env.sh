@@ -3,7 +3,7 @@
 export ROOT=${ROOT:-${${(%):-%x}:A:h:h}}  # the checkout this file is in
 export PREFIX=$ROOT/deps/prefix
 export MINGW=$ROOT/toolchain/llvm-mingw-20261020-ucrt-macos-universal
-export LLVM_MINGW=${LLVM_MINGW:-$MINGW}  # src/vkd3d-proton's scripts take the toolchain as LLVM_MINGW
+export LLVM_MINGW=${LLVM_MINGW:-$MINGW}  # src/metalvulkan's scripts take the toolchain as LLVM_MINGW
 export JOBS=10
 
 export MACOSX_DEPLOYMENT_TARGET=15.0

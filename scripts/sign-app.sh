@@ -10,7 +10,7 @@
 set -e
 S=${0:A:h}
 source $S/env.sh
-D=$ROOT/dist/${NAME:-metalsharp-wine-8.0-arm64}   # package.sh's output
+D=$ROOT/dist/${NAME:-metalsharp-wine-9.0-arm64}   # package.sh's output
 APP=$ROOT/dist/MetalSharp-Wine.app
 BUNDLE_ID=${BUNDLE_ID:-com.metalsharp.wine}
 IDENTITY=${SIGN_IDENTITY:--}
@@ -71,9 +71,9 @@ cat > $APP/Contents/Info.plist <<EOF
   <key>CFBundleName</key><string>MetalSharp Wine</string>
   <key>CFBundleDisplayName</key><string>MetalSharp Wine</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>8.0</string>
-  <key>CFBundleVersion</key><string>8.0</string>
-  <key>CFBundleGetInfoString</key><string>MetalSharp Wine 8.0 (Wine 11.20, arm64, FEX)</string>
+  <key>CFBundleShortVersionString</key><string>9.0</string>
+  <key>CFBundleVersion</key><string>9.0</string>
+  <key>CFBundleGetInfoString</key><string>MetalSharp Wine 9.0 (Wine 11.20, arm64, FEX)</string>
   <key>LSMinimumSystemVersion</key><string>15.0</string>
   <key>LSApplicationCategoryType</key><string>public.app-category.games</string>
 </dict></plist>

@@ -3,7 +3,7 @@
 # All dependency references become @rpath, absolute rpaths are removed, binaries are re-signed.
 set -e
 source ${0:A:h}/env.sh
-NAME=${1:-metalsharp-wine-8.0-arm64}
+NAME=${1:-metalsharp-wine-9.0-arm64}
 D=$ROOT/dist/$NAME
 rm -rf $D; mkdir -p $D
 rsync -a $ROOT/install/ $D/
@@ -17,9 +17,9 @@ if [[ -f $ROOT/deps/moltenvk/libMoltenVK.dylib ]]; then
 fi
 # Metal Shader Converter's library (Apple, shipped unmodified and Apple-signed under its license, section 2B), which
 # MoltenVK loads to convert DXIL shaders for VKD3D-Proton (docs/MSC-BRIDGE-CONTRACT.md), with its license and
-# acknowledgements: the files VKD3D-Proton-MacOS's MoltenVK package carries (its fetch script checks their SHA-256s).
-MSC=$ROOT/src/vkd3d-proton/artifacts/metal-shaderconverter
-MSC_FETCH=$ROOT/src/vkd3d-proton/scripts/fetch-metal-shaderconverter.sh
+# acknowledgements: the files MetalVulkan's MoltenVK package carries (its fetch script checks their SHA-256s).
+MSC=$ROOT/src/metalvulkan/artifacts/metal-shaderconverter
+MSC_FETCH=$ROOT/src/metalvulkan/scripts/fetch-metal-shaderconverter.sh
 [[ -f $MSC/libmetalirconverter.dylib || ! -f $MSC_FETCH ]] || bash $MSC_FETCH
 if [[ -f $MSC/libmetalirconverter.dylib ]]; then
   cp $MSC/libmetalirconverter.dylib $D/lib/
@@ -29,7 +29,7 @@ fi
 # DirectXShaderCompiler's DXBC to DXIL converter (dxilconv, NCSA), which MoltenVK loads to hand VKD3D-Proton's DXBC
 # shaders to Metal Shader Converter: built by scripts/build-vkd3d-proton.sh, arm64 slice. Without it, DXBC shaders
 # stay on SPIR-V.
-DXBC=$ROOT/src/vkd3d-proton/artifacts/dxbcconverter
+DXBC=$ROOT/src/metalvulkan/artifacts/dxbcconverter
 [[ -f $DXBC/libdxbcconverter.dylib ]] ||
   echo "warning: no $DXBC/libdxbcconverter.dylib (scripts/build-vkd3d-proton.sh): DXBC shaders stay on SPIR-V" >&2
 if [[ -f $DXBC/libdxbcconverter.dylib ]]; then

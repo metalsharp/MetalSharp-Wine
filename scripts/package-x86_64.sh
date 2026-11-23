@@ -23,11 +23,11 @@
 #
 # from the bundles release (metalsharp/MetalSharp, tag bundles) with these upgrades:
 #   lib/dxmt                Mullion (x86_64 and i386 PE, x86_64 unix side), in place of DXMT 0.80
-#   vkd3d/vkd3d-proton      the VKD3D lane's D3D12 half: VKD3D-Proton-MacOS's release d3d12/d3d12core, with DXVK-MacOS's
+#   vkd3d/vkd3d-proton      the VKD3D lane's D3D12 half: MetalVulkan's release d3d12/d3d12core, with its DXVK's
 #                           dxgi/d3d11/d3d10core (the lane's DXGI), and the NGX core and NVAPI (DLSS on MetalFX)
-#   vkd3d/dxvk              its D3D11 to D3D8 half: DXVK-MacOS's release (x86_64 and i386), with the same NGX core
+#   vkd3d/dxvk              its D3D11 to D3D8 half: MetalVulkan's DXVK packages (x86_64 and i386), with the same NGX core
 #                           and NVAPI
-#   MoltenVK                VKD3D-Proton-MacOS's universal MoltenVK, Metal Shader Converter and dxbcconverter
+#   MoltenVK                MetalVulkan's universal MoltenVK, Metal Shader Converter and dxbcconverter
 #   d3dmetal-gptk4-beta3    D3DMetal from Game Porting Toolkit 4.0 beta 3, Apple-signed and kept so: the D3DMetal lane
 #                           (with DLSS on MetalFX) on macOS 27 and later
 #   d3dmetal-gptk3          D3DMetal from Game Porting Toolkit 3.0 (its evaluation environment's redist), Apple-signed and
@@ -154,15 +154,15 @@ printf '{"schema":"metalsharp-dxmt-runtime-v1","version":"%s","source":"bundled:
   "$(sed -n 's/^Mullion \([0-9a-f]*\).*/mullion-\1/p' "$MULLION/VERSION")" > "$C/lib/dxmt/metalsharp-dxmt-runtime.json"
 cp -p "$MULLION/x86_64-windows/winemetal.dll" "$C/lib/wine/x86_64-windows/winemetal.dll"
 # NGX loads a core only if System32's nvngx.dll is signed by a certificate the game's DXGI trusts (Mullion's and
-# DXVK-MacOS's both trust Mullion NGX, VKD3D-Proton-MacOS's CI key), then Wine loads the lane's own core by name. The
-# NGX core and NVAPI (NGX: VKD3D-Proton-MacOS's x86_64 release, Wine builtins, signed by its CI) are Wine builtins,
+# DXVK's both trust Mullion NGX, MetalVulkan's CI key), then Wine loads the lane's own core by name. The
+# NGX core and NVAPI (NGX: MetalVulkan's x86_64 release, Wine builtins, signed by its CI) are Wine builtins,
 # which wineboot puts in every prefix's System32 (wine.inf); without them System32 has only a placeholder
 cp -p "$NGX/nvngx.dll" "$NGX/nvapi64.dll" "$C/lib/wine/x86_64-windows/"
 cp -p "$MULLION/i386-windows/winemetal.dll" "$C/lib/wine/i386-windows/winemetal.dll"
 cp -p "$MULLION/x86_64-unix/winemetal.so" "$C/lib/wine/x86_64-unix/winemetal.so"
 
-# The VKD3D lane, D3D12 to D3D8 on MoltenVK, from the VKD3D-Proton-MacOS and DXVK-MacOS releases as they are.
-# Its D3D12 half: VKD3D-Proton's d3d12/d3d12core, DXVK-MacOS's DXGI (and d3d11/d3d10core, which the backend stages
+# The VKD3D lane, D3D12 to D3D8 on MoltenVK, from MetalVulkan's release as it is.
+# Its D3D12 half: VKD3D-Proton's d3d12/d3d12core, DXVK's DXGI (and d3d11/d3d10core, which the backend stages
 # from here too), DLSS's NGX core and NVAPI
 L="$M/vkd3d/vkd3d-proton"
 mkdir -p "$L/x86_64-windows"
@@ -173,7 +173,7 @@ cp -p "$NGX/nvngx.dll" "$NGX/nvapi64.dll" "$L/x86_64-windows/"
 mark_builtin "$L/x86_64-windows/nvngx.dll" "$L/x86_64-windows/nvapi64.dll"
 for f in "$VKD3D"/LICENSE* "$VKD3D"/SHA256SUMS "$VKD3D"/licenses; do [ -e "$f" ] && cp -Rp "$f" "$L/"; done
 
-# Its D3D11 to D3D8 half: DXVK-MacOS (x86_64 and i386) with the same NGX core and NVAPI, and the bundle's D3D9
+# Its D3D11 to D3D8 half: DXVK (x86_64 and i386) with the same NGX core and NVAPI, and the bundle's D3D9
 # MoltenVK settings
 L="$M/vkd3d/dxvk"
 mkdir -p "$L/x86_64-windows" "$L/i386-windows"
@@ -186,7 +186,7 @@ for f in "$DXVK"/LICENSE "$DXVK"/LICENSE.dxbc-spirv "$DXVK"/SHA256SUMS; do [ -e 
 # Wine loads the lane by itself for GRAPHICS_BACKEND=vkd3d (ntdll's VKD3D lane resolver, as on MetalSharp Wine), from
 # its builtin path, which takes only DLLs with Wine's builtin marker
 mark_builtin "$M"/vkd3d/vkd3d-proton/x86_64-windows/*.dll "$L"/x86_64-windows/*.dll "$L"/i386-windows/*.dll
-basename "$DXVK" | sed 's/^dxvk-macos-\(.*\)-x86_64$/DXVK-MacOS \1/' > "$L/VERSION"
+basename "$DXVK" | sed -E 's/^dxvk(-macos)?-(.*)-x86_64$/DXVK \2 (MetalVulkan)/' > "$L/VERSION"
 # The lane's ddraw.dll (D3D7, 6, 5 and 3, d7vk's) passes DirectDraw itself on to Wine's own ddraw, which it loads as
 # ddraw_.dll: a copy that wineboot installs into the prefix like any builtin, and that ntdll does not give the
 # lane's ddraw.dll (is_d7vk_proxy_file())

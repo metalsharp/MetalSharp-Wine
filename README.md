@@ -77,8 +77,7 @@ The first run makes the prefix. Switches such as the Direct3D backend are in [do
 ## Reporting problems
 
 - **A game's rendering on Mullion** (the default Direct3D backend): [dttdrv/mullion](https://github.com/dttdrv/mullion).
-- **On VKD3D-Proton** (`GRAPHICS_BACKEND=vkd3d`): [metalsharp/VKD3D-Proton-MacOS](https://github.com/metalsharp/VKD3D-Proton-MacOS).
-- **On DXVK** (`GRAPHICS_BACKEND=dxvk`): [metalsharp/DXVK-MacOS](https://github.com/metalsharp/DXVK-MacOS).
+- **On VKD3D-Proton or DXVK** (`GRAPHICS_BACKEND=vkd3d` or `dxvk`), or MoltenVK: [metalsharp/MetalVulkan](https://github.com/metalsharp/MetalVulkan).
 - **Anything else:** this repository's [issues](https://github.com/metalsharp/MetalSharp-Wine/issues).
 
 

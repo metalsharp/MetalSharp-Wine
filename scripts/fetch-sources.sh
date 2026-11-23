@@ -7,11 +7,11 @@
 #   src/mullion      Mullion (DXMT fork, aaf2tbz/mullion); its work goes upstream as pull requests
 #   src/wfdxcompat   WFDXCompat + the ARM64EC launcher companion (branch source/wfdxcompat)
 #   src/linuxhost    the Linux module host for Easy Anti-Cheat (branch source/linuxhost, from metalsharp/Proton)
-#   src/vkd3d-proton VKD3D-Proton macOS (metalsharp/MetalVulkan): the GRAPHICS_BACKEND=vkd3d lane and
-#                    MoltenVK. Its own scripts/fetch-sources.sh fetches the VKD3D-Proton, MoltenVK and DXVK
-#                    sources it patches, for stage-vkd3d-proton.sh and stage-moltenvk.sh
-#   src/dxvk-macos   DXVK-MacOS 3.1 (metalsharp/DXVK-MacOS, branch main): the GRAPHICS_BACKEND=dxvk lane, built as
-#                    ARM64X by build-dxvk-macos.sh, with its own submodules (dxbc-spirv, Vulkan and SPIR-V headers)
+#   src/metalvulkan  MetalVulkan (metalsharp/MetalVulkan, branch main): MetalSharp's MoltenVK, and the
+#                    GRAPHICS_BACKEND=vkd3d and dxvk lanes. Its dxvk/ is DXVK (with d7vk's ddraw), built as ARM64X and
+#                    i386 by build-dxvk-macos.sh, with its submodules (dxbc-spirv, Vulkan and SPIR-V headers); its own
+#                    scripts/fetch-sources.sh fetches the VKD3D-Proton and MoltenVK sources it patches, for
+#                    build-vkd3d-proton.sh, stage-vkd3d-proton.sh and stage-moltenvk.sh
 #   src/metalvr      MetalVR (metalsharp/MetalVR, branch main): the OpenXR runtime and streaming server for VR
 #                    games, built and installed by build-metalvr.sh with MetalVR's own scripts, which fetch the
 #                    OpenXR headers, ALVR and OpenComposite it builds against into src/metalvr/external
@@ -22,7 +22,7 @@
 set -e
 source ${0:A:h}/env.sh
 if [[ -f $ROOT/.gitmodules ]] && git -C $ROOT rev-parse --git-dir >/dev/null 2>&1; then
-  git -C $ROOT submodule update --init src/wine src/FEX src/winemetalgl src/mullion src/wfdxcompat src/linuxhost src/vkd3d-proton src/dxvk-macos src/metalvr
+  git -C $ROOT submodule update --init src/wine src/FEX src/winemetalgl src/mullion src/wfdxcompat src/linuxhost src/metalvulkan src/metalvr
   [[ ${1:-} = x86_64 ]] && git -C $ROOT submodule update --init src/wine-x86_64
 else
   REPO=${METALSHARP_WINE_REPO:-https://github.com/metalsharp/MetalSharp-Wine.git}
@@ -37,11 +37,10 @@ else
   clone wfdxcompat $REPO source/wfdxcompat
   clone linuxhost $REPO source/linuxhost
   clone mullion https://github.com/aaf2tbz/mullion.git metalsharp-2.1-main
-  clone vkd3d-proton https://github.com/metalsharp/MetalVulkan.git main
-  clone dxvk-macos https://github.com/metalsharp/DXVK-MacOS.git main
+  clone metalvulkan https://github.com/metalsharp/MetalVulkan.git main
   clone metalvr https://github.com/metalsharp/MetalVR.git main
   [[ ${1:-} = x86_64 ]] && clone wine-x86_64 $REPO source/wine-x86_64
 fi
-git -C $ROOT/src/dxvk-macos submodule update --init --recursive
+git -C $ROOT/src/metalvulkan submodule update --init --recursive
 git -C $ROOT/src/FEX submodule update --init --recursive
 echo "sources ready in $ROOT/src"

@@ -1,12 +1,12 @@
 #!/bin/zsh
-# MetalSharp's MoltenVK 1.4.3 (src/vkd3d-proton/sources/MoltenVK: moltenvk-vkmt with the VKD3D-Proton work,
+# MetalSharp's MoltenVK 1.4.3 (src/metalvulkan/sources/MoltenVK: moltenvk-vkmt with the VKD3D-Proton work,
 # scripts/build-moltenvk.sh there), arm64 slice (this Wine is arm64-only); package.sh uses it instead of the
 # 1.4.2 from build-deps.sh.
 #   stage-moltenvk.sh [path/to/libMoltenVK.dylib]
 set -e
 source ${0:A:h}/env.sh
-MVK=$ROOT/src/vkd3d-proton/sources/MoltenVK
-SRC=${1:-$ROOT/src/vkd3d-proton/artifacts/mvk-new/libMoltenVK.dylib}
+MVK=$ROOT/src/metalvulkan/sources/MoltenVK
+SRC=${1:-$ROOT/src/metalvulkan/artifacts/mvk-new/libMoltenVK.dylib}
 strings $SRC | grep -qx '1.4.3' || { echo "no MoltenVK 1.4.3 version string in $SRC" >&2; exit 1; }
 O=$ROOT/deps/moltenvk
 rm -rf $O; mkdir -p $O
