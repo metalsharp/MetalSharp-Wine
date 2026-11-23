@@ -10,6 +10,11 @@ source ${0:A:h}/env.sh
 unset CFLAGS CXXFLAGS OBJCFLAGS LDFLAGS CPPFLAGS CC CXX OBJC  # macOS flags would reach the PE cross compilers
 D=$ROOT/src/metalvulkan/dxvk
 [[ -f $D/build-arm64x.txt ]] || { echo "src/metalvulkan/dxvk missing (fetch-sources.sh)" >&2; exit 1; }
+# DXVK's submodules (the Vulkan, SPIR-V and DirectX headers, dxbc-spirv, libdisplay-info) are src/metalvulkan's, which
+# fetch-sources.sh checks out; a tree where they are not yet gets them here, as meson can't build without them
+if [[ ! -f $D/include/vulkan/include/vulkan/vulkan.h || ! -f $D/subprojects/dxbc-spirv/meson.build ]]; then
+  git -C $ROOT/src/metalvulkan submodule update --init --recursive
+fi
 export PATH=$MINGW/bin:$PATH
 # Its MoltenVK patch to dxbc-spirv, as its release workflow applies it (once: a tree that has it is left alone).
 P=$D/patches/dxbc-spirv-moltenvk.patch
