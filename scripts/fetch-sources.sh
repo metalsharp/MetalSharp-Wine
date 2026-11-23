@@ -7,7 +7,7 @@
 #   src/mullion      Mullion (DXMT fork, aaf2tbz/mullion); its work goes upstream as pull requests
 #   src/wfdxcompat   WFDXCompat + the ARM64EC launcher companion (branch source/wfdxcompat)
 #   src/linuxhost    the Linux module host for Easy Anti-Cheat (branch source/linuxhost, from metalsharp/Proton)
-#   src/vkd3d-proton VKD3D-Proton macOS (metalsharp/VKD3D-Proton-MacOS): the GRAPHICS_BACKEND=vkd3d lane and
+#   src/vkd3d-proton VKD3D-Proton macOS (metalsharp/MetalVulkan): the GRAPHICS_BACKEND=vkd3d lane and
 #                    MoltenVK. Its own scripts/fetch-sources.sh fetches the VKD3D-Proton, MoltenVK and DXVK
 #                    sources it patches, for stage-vkd3d-proton.sh and stage-moltenvk.sh
 #   src/dxvk-macos   DXVK-MacOS 3.1 (metalsharp/DXVK-MacOS, branch main): the GRAPHICS_BACKEND=dxvk lane, built as
@@ -37,7 +37,7 @@ else
   clone wfdxcompat $REPO source/wfdxcompat
   clone linuxhost $REPO source/linuxhost
   clone mullion https://github.com/aaf2tbz/mullion.git metalsharp-2.1-main
-  clone vkd3d-proton https://github.com/metalsharp/VKD3D-Proton-MacOS.git main
+  clone vkd3d-proton https://github.com/metalsharp/MetalVulkan.git main
   clone dxvk-macos https://github.com/metalsharp/DXVK-MacOS.git main
   clone metalvr https://github.com/metalsharp/MetalVR.git main
   [[ ${1:-} = x86_64 ]] && clone wine-x86_64 $REPO source/wine-x86_64

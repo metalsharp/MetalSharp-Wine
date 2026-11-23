@@ -21,7 +21,7 @@
 	branch = source/wfdxcompat
 [submodule "src/vkd3d-proton"]
 	path = src/vkd3d-proton
-	url = https://github.com/metalsharp/VKD3D-Proton-MacOS.git
+	url = https://github.com/metalsharp/MetalVulkan.git
 	branch = main
 [submodule "src/dxvk-macos"]
 	path = src/dxvk-macos
