@@ -131,6 +131,9 @@ cp -p "$MEDIA"/libexec/gstreamer-1.0/gst-plugin-scanner "$C/libexec/gstreamer-1.
 
 # etc: the runtime's, with the conf files MetalSharp keeps per lane. dxmt.conf stays for older MetalSharp builds.
 cp -Rp "$RT/wine/etc" "$M/etc"
+# The bundle's etc/etc is a stale copy nothing reads: Vulkan ICD files for Homebrew's MoltenVK and another machine's
+# home folder. MetalSharp uses etc/vulkan/icd.d (relative to the runtime) and etc/mscompatdb_rules.toml.
+rm -rf "$M/etc/etc"
 cp -p "$AS/wine/etc/dxmt.conf" "$M/etc/dxmt.conf"
 cp -p "$HERE/x86_64/mullion.conf" "$HERE/x86_64/vkd3d.conf" "$HERE/x86_64/dxvk.conf" "$M/etc/"
 
@@ -246,6 +249,8 @@ cp -p "$R/shims/libsteam_api.dylib" "$R/steam-bridge/libsteam_api.dylib"
 cp -Rp "$AS/shader-cache" "$M/shader-cache"
 mkdir -p "$M/scripts" "$M/assets"
 cp -Rp "$WORK/metalsharp-scripts-tools/scripts/tools" "$M/scripts/tools"
+# a developer's test targets (game paths on the machine that made the bundle), which nothing in MetalSharp reads
+rm -f "$M/scripts/tools/configs/proof-targets.json"
 cp -Rp "$WORK/metalsharp-steam/steam" "$M/steam"
 for d in gptk sdl3 xna unity-mono prebuilt-launchers; do [ -d "$AS/$d" ] && cp -Rp "$AS/$d" "$M/assets/$d"; done
 # the asset bundle's GPTK copy links its unix modules to ../../external, one level too far up
