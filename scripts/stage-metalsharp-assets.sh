@@ -12,11 +12,22 @@
 # can't run them, and notarization rejects them); x86_64-only dylibs are kept for the app's
 # Rosetta routes. sign-app.sh signs every Mach-O here.
 #   stage-metalsharp-assets.sh [path/to/metalsharp-bundles/extract]
+# Without MetalSharp's bundles, they come from a release's share/metalsharp (fetch-metalsharp-assets.sh, which
+# build-all.sh runs first), staged as it is but for this repository's winemac.conf.
 set -e
 source ${0:A:h}/env.sh
 X=${1:-$ROOT/downloads/metalsharp-bundles/extract}
 O=$ROOT/install/share/metalsharp
 rm -rf $O/assets $O/goldberg $O/fnalibs $O/steam $O/tools $O/etc $O/archives  # not runtime/ or redist/ (stage-metalsharp-redist.sh)
+REL=$ROOT/downloads/metalsharp-release-assets/metalsharp
+if [[ ! -d $X && -d $REL/assets ]]; then
+  mkdir -p $O
+  rsync -a --exclude=/runtime --exclude=/redist $REL/ $O/
+  cp $ROOT/resources/winemac.conf $O/assets/wine/etc/winemac.conf
+  echo "metalsharp assets (from $REL): $(du -sh $O | cut -f1), $(find $O -type f | wc -l | tr -d ' ') files"
+  exit 0
+fi
+[[ -d $X ]] || { echo "stage-metalsharp-assets: no $X; run fetch-metalsharp-assets.sh" >&2; exit 1; }
 mkdir -p $O/assets/wine/etc $O/tools $O/etc
 for a in goldberg fna-kickstart xna fnalibs unity-mono sdl3 shims prebuilt-launchers; do
   rsync -a $X/metalsharp-assets/assets/$a $O/assets/

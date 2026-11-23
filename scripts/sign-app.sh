@@ -10,7 +10,7 @@
 set -e
 S=${0:A:h}
 source $S/env.sh
-D=$ROOT/dist/metalsharp-wine-8.0-arm64
+D=$ROOT/dist/${NAME:-metalsharp-wine-8.0-arm64}   # package.sh's output
 APP=$ROOT/dist/MetalSharp-Wine.app
 BUNDLE_ID=${BUNDLE_ID:-com.metalsharp.wine}
 IDENTITY=${SIGN_IDENTITY:--}

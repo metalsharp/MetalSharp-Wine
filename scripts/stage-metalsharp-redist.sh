@@ -36,7 +36,11 @@ FONTS=(andale32 0524fe42951adc3a7eb870e32f0920313c71f170c859b5f770d82b4ee111e970
 for f in ${(k)FONTS}; do fetch https://github.com/pushcx/corefonts/raw/master/$f.exe $f.exe $FONTS[$f]; done
 
 rm -rf $O/runtime/host $O/redist; mkdir -p $O/runtime $O/redist/vcrun2022 $O/redist/corefonts
-rsync -a $X/metalsharp-runtime/runtime/host $O/runtime/
+REL=$ROOT/downloads/metalsharp-release-assets/metalsharp   # fetch-metalsharp-assets.sh, without the bundles
+if [[ -d $X ]]; then rsync -a $X/metalsharp-runtime/runtime/host $O/runtime/
+elif [[ -d $REL/runtime/host ]]; then rsync -a $REL/runtime/host $O/runtime/
+else echo "stage-metalsharp-redist: no $X; run fetch-metalsharp-assets.sh" >&2; exit 1
+fi
 cp $DL/vc_redist.x64.exe $DL/vc_redist.x86.exe $O/redist/vcrun2022/
 echo "Microsoft Visual C++ 2015-2022 Redistributable 14.44.35211.0" > $O/redist/vcrun2022/VERSION
 for f in ${(k)FONTS}; do cp $DL/$f.exe $O/redist/corefonts/; done

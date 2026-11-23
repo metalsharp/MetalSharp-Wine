@@ -15,6 +15,7 @@ Both builds:
 - NVAPI answers its ray tracing caps and extended acceleration structure builds. An adapter now has a device ID of its vendor's (AMD's 744c by default, where it was 0000), and `dxgi.customSubSysId` and `dxgi.customRevision` are new.
 - New options: `d3d11.samplerLodBias` and `d3d12.samplerLodBias`, as DXVK's; `d3d12.ignoreFailedPipelines` (off by default), which gives a game a pipeline Mullion cannot make as one that draws nothing.
 - Shader caches are rebuilt once (converter version 127).
+- **MetalVR 0.2.5** (from 0.2.1), its latest release: MetalFX spatial upscaling of each eye, SteamVR rendering with the headset's own fields of view and IPD, the tracking sample each frame was rendered with, and Touch controllers without SteamVR's grip offset.
 
 x86_64 build:
 
@@ -22,6 +23,9 @@ x86_64 build:
 
 arm64 build:
 
+- **WineMetalGL's `opengl32.dll` is the builtin `opengl32`**, as Mullion's DLLs are builtins: it is in `lib/wine`, so a prefix's System32 and SysWOW64 copies are WineMetalGL's where they were Wine's. Wine's own moves to `lib/wine-opengl`, which `OPENGL_BACKEND=wine` or `WINEMETALGL=0` still loads (Wine 0192).
+- **Zink (`SharpGL_Switch=1`) on MoltenVK has a depth buffer and OpenGL 3.3.** Every depth/stencil image failed to allocate, so a window had none, and the first `wglMakeCurrent` raised `GL_OUT_OF_MEMORY`. Zink now also translates the 10:10:10:2 vertex formats Metal lacks, which held it to OpenGL 3.2 (`patches/mesa` 0002, 0003). OpenGL 4.0 still needs RGB32 texel buffers.
+- `scripts/build-all.sh` builds the whole app, with everything the release carries, from a fresh clone. It checks what it needs first and fetches the toolchain, a signed Mullion NGX core and the MetalSharp app's payloads. Each step is logged, and a run picks up from the step that failed (`docs/BUILDING.md`).
 - **Battle.net's login and main windows draw again** (#50): on 8.0 both stayed black on a fresh install, every time. Its pages loaded, but with the GPU in process alone Chromium composited them on the GPU, and that never reached the window. `Battle.net.exe` now gets `--in-process-gpu --disable-gpu-compositing` (WebGL keeps the GPU; the pages composite in software, as on the x86_64 build), whether its Launcher starts it or it is started directly (Wine 0190).
 
 ## 8.0

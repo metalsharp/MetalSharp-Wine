@@ -20,7 +20,7 @@ It runs ARM64, x86_64 and 32-bit x86 Windows programs, with Direct3D 9 through 1
 | Shader compilers | Microsoft's DXC 1.9 (`dxcompiler.dll`, `dxil.dll`; ARM64 and x86) and the ARM64 `d3dcompiler_47.dll` are installed into every prefix, for programs that compile HLSL at run time |
 | OpenGL | **WineMetalGL 4.0.0** (OpenGL 4.6 on Metal), the default, with MetalFX upscaling, a frame rate limit (`WINEMETALGL_MAX_FRAME_RATE`) and per-game settings in `winemetalgl.conf` beside a game's `.exe`. `SharpGL_Switch=1` uses Mesa's **Zink** (OpenGL on Vulkan, `lib/zink`) in its place. `OPENGL_BACKEND=wine` selects Wine's own, whose Vulkan renderer now runs at feature level 10 and above on MoltenVK |
 | Vulkan | MoltenVK 1.4.3 (MetalSharp build from VKD3D-Proton-MacOS 6.0: the pipeline cache is saved during long compiles and keyed on the shader sources, and compiled Metal libraries and binary archives are cached). `SharpVK_Switch=1` uses Mesa's **KosmicKrisp** (Vulkan on Metal, macOS 26 and later) in its place |
-| VR | **MetalVR 0.2.1**: the OpenXR runtime for VR games on Mullion (`lib/metalvr`) and `metalvrd`, which streams them to a headset; Steam's service survives SteamVR starting (gdi32's D3DKMT scheduling priority) |
+| VR | **MetalVR 0.2.5**: the OpenXR runtime for VR games on Mullion (`lib/metalvr`) and `metalvrd`, which streams them to a headset; Steam's service survives SteamVR starting (gdi32's D3DKMT scheduling priority) |
 | Media | FFmpeg 8.0 (LGPL, VideoToolbox/AudioToolbox) and GStreamer 1.26 |
 | .NET / HTML | Wine Mono 11.3.99, its main at c019b64ba8 (arm64, x86, x86_64) and Wine Gecko 2.47.4 (x86, x86_64) |
 | Sync | msync (shared-memory synchronization; on by default, `WINEMSYNC=0` turns it off) |

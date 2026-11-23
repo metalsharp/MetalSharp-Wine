@@ -27,12 +27,11 @@ if [[ -f $MSC/libmetalirconverter.dylib ]]; then
   cp $MSC/LICENSE.metal-shaderconverter.rtf $MSC/ACKNOWLEDGEMENTS.metal-shaderconverter.rtf $D/share/licenses/metal-shaderconverter/
 fi
 # DirectXShaderCompiler's DXBC to DXIL converter (dxilconv, NCSA), which MoltenVK loads to hand VKD3D-Proton's DXBC
-# shaders to Metal Shader Converter: VKD3D-Proton-MacOS scripts/build-dxbcconverter.sh (after fetch-sources.sh dxc),
-# arm64 slice. Without it, DXBC shaders stay on SPIR-V.
+# shaders to Metal Shader Converter: built by scripts/build-vkd3d-proton.sh, arm64 slice. Without it, DXBC shaders
+# stay on SPIR-V.
 DXBC=$ROOT/src/vkd3d-proton/artifacts/dxbcconverter
-if [[ ! -f $DXBC/libdxbcconverter.dylib && -f $ROOT/src/vkd3d-proton/scripts/build-dxbcconverter.sh ]]; then
-  (cd $ROOT/src/vkd3d-proton && bash scripts/fetch-sources.sh dxc && bash scripts/build-dxbcconverter.sh) || true
-fi
+[[ -f $DXBC/libdxbcconverter.dylib ]] ||
+  echo "warning: no $DXBC/libdxbcconverter.dylib (scripts/build-vkd3d-proton.sh): DXBC shaders stay on SPIR-V" >&2
 if [[ -f $DXBC/libdxbcconverter.dylib ]]; then
   lipo $DXBC/libdxbcconverter.dylib -thin arm64 -output $D/lib/libdxbcconverter.dylib 2>/dev/null || cp $DXBC/libdxbcconverter.dylib $D/lib/
   mkdir -p $D/share/licenses/dxc; cp $DXBC/LICENSE.dxc.txt $D/share/licenses/dxc/LICENSE.dxilconv.txt
@@ -87,13 +86,14 @@ for f in $(find $D -type f \( -name '*.dylib' -o -name '*.so' -o -perm -u+x \));
   args=()
   # dylib ids
   id=$(otool -D $f | sed -n 2p)
-  if [[ $id == $PREFIX/lib/* ]]; then args+=(-id @rpath/${id#$PREFIX/lib/})
+  # any deps/prefix, not only this tree's: a build tree copied or moved from another still names that one's
+  if [[ $id == /*/deps/prefix/lib/* ]]; then args+=(-id @rpath/${id##*/deps/prefix/lib/})
   # any other id that names a build machine's path (the build tree, Homebrew, /tmp) is its own name under @rpath
   elif [[ $id == /* && $id != /usr/lib/* && $id != /System/* ]]; then args+=(-id @rpath/${id:t})
   fi
   # dependencies
-  for dep in $(otool -L $f | tail -n +2 | awk '{print $1}' | grep "^$PREFIX/lib/"); do
-    args+=(-change $dep @rpath/${dep#$PREFIX/lib/})
+  for dep in $(otool -L $f | tail -n +2 | awk '{print $1}' | grep '^/.*/deps/prefix/lib/'); do
+    args+=(-change $dep @rpath/${dep##*/deps/prefix/lib/})
   done
   # rpaths: drop absolute ones, add the relative one
   for rp in $(otool -l $f | awk '/LC_RPATH/{getline; getline; print $2}'); do
