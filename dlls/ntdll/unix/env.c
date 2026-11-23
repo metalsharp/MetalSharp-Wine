@@ -1009,6 +1009,55 @@ static void set_launch_var( WCHAR **env, SIZE_T *pos, SIZE_T *size, const char *
     else unsetenv( name );
 }
 
+/* MetalSharp: Direct3D 9 (wined3d) describes the GPU Mullion's DXGI does, as Windows shows every API the same one: the
+ * one MetalSharp shows the game (a DLSS game's NVIDIA one, its winemac.conf section's), the one MULLION_CONFIG names
+ * (dxgi.customVendorId, dxgi.customDeviceId), else Mullion's AMD Radeon RX 7900 XTX. wined3d's own choice for a GPU it
+ * does not know, Apple's, was a GeForce GTX 470 with a 2010 driver: Counter-Strike 2 checked that driver version
+ * against its minimum for the vendor DXGI gave (AMD's) and said the graphics driver was out of date. A
+ * VideoPciVendorID or VideoPciDeviceID already in WINE_D3D_CONFIG is kept. */
+static void set_wined3d_gpu( WCHAR **env, SIZE_T *pos, SIZE_T *size, const char *backend )
+{
+    static const WCHAR d3d_configW[] = {'W','I','N','E','_','D','3','D','_','C','O','N','F','I','G'};
+    static const WCHAR mullion_configW[] = {'M','U','L','L','I','O','N','_','C','O','N','F','I','G'};
+    unsigned int vendor = 0x1002, device = 0x744c, override_vendor, override_device;
+    const char *description, *driver_version, *id;
+    char config[512], mullion[512];
+    WCHAR *value;
+    int len = 0;
+
+    if (!backend || (strcasecmp( backend, "dxmt" ) && strcasecmp( backend, "mullion" ))) return;
+    switch (ntdll_get_gpu_override( &override_vendor, &override_device, &description, &driver_version ))
+    {
+    case -1: return;  /* not a game MetalSharp started */
+    case 1:
+        vendor = override_vendor;
+        device = override_device;
+        break;
+    default:
+        if ((value = get_env_var( *env, *pos, mullion_configW, ARRAY_SIZE(mullion_configW) )))
+        {
+            len = ntdll_wcstoumbs( value, wcslen( value ), mullion, sizeof(mullion) - 1, FALSE );
+            free( value );
+            mullion[len < 0 ? 0 : len] = 0;
+            if ((id = strstr( mullion, "dxgi.customVendorId=" ))) vendor = strtoul( id + 20, NULL, 16 );
+            if ((id = strstr( mullion, "dxgi.customDeviceId=" ))) device = strtoul( id + 20, NULL, 16 );
+            len = 0;
+        }
+        break;
+    }
+    if ((value = get_env_var( *env, *pos, d3d_configW, ARRAY_SIZE(d3d_configW) )))
+    {
+        len = ntdll_wcstoumbs( value, wcslen( value ), config, sizeof(config) - 64, FALSE );
+        free( value );
+        if (len < 0) return;
+    }
+    config[len] = 0;
+    if (strstr( config, "VideoPci" )) return;
+    snprintf( config + len, sizeof(config) - len, "%sVideoPciVendorID=0x%04x,VideoPciDeviceID=0x%04x",
+              len ? "," : "", vendor, device );
+    set_launch_var( env, pos, size, "WINE_D3D_CONFIG", config );
+}
+
 /* MetalSharp: a game's saved resolution follows the main display, and a DLSS game is set up for it
  * (saved_resolution.c): a game shown an NVIDIA GPU is shown one by Mullion, or DXVK's DXGI on VKD3D-Proton's lane,
  * as well (their NVIDIA extension on,
@@ -1043,6 +1092,7 @@ static void fit_launch_resolution( WCHAR **env, SIZE_T *pos, SIZE_T *size, const
     /* a launched game's programs are set up as it is (saved_resolution.c) */
     if (metalsharp_launched_by()) set_launch_var( env, pos, size, "METALSHARP_LAUNCHED_BY", metalsharp_launched_by() );
     set_launch_var( env, pos, size, "METALSHARP_HIDE_WINE_EXPORTS", metalsharp_dlss_game() & 2 ? "1" : NULL );
+    set_wined3d_gpu( env, pos, size, backend );
     if (!metalsharp_dlss_game() ||
         ntdll_get_gpu_override( &vendor, &device, &description, &driver_version ) != 1 || vendor != 0x10de)
         return;
