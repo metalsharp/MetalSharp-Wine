@@ -3,7 +3,8 @@ name: Notarize release
 # The app is built and signed (Developer ID, hardened runtime) on a Mac, then uploaded to a draft
 # release as MetalSharp-Wine-<version>-<arch>.zip: arm64 (MetalSharp-Wine.app, with the provisioning
 # profile) or x86_64 (MetalSharp-Wine-x86_64.app, scripts/package-x86_64.sh). This notarizes that zip
-# with Apple, staples the ticket into the app, and replaces the asset and its line in SHA256SUMS.
+# with Apple, staples the ticket into the app, replaces the asset, and writes SHA256SUMS again from the release's
+# assets as they are then (so runs for both apps, one after the other or not, leave it right for all of them).
 on:
   workflow_dispatch:
     inputs:
@@ -15,6 +16,11 @@ on:
         type: choice
         options: [arm64, x86_64]
         default: arm64
+
+# one run per release at a time: each rewrites the release's SHA256SUMS
+concurrency:
+  group: notarize-${{ inputs.tag }}
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -29,7 +35,7 @@ jobs:
     steps:
       - name: Download the signed app
         run: |
-          gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p "MetalSharp-Wine-*-$ARCH.zip" -p SHA256SUMS
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p "MetalSharp-Wine-*-$ARCH.zip"
           ls -l
           echo "ZIP=$(ls MetalSharp-Wine-*-"$ARCH".zip)" >> "$GITHUB_ENV"
           if [ "$ARCH" = x86_64 ]; then echo "APP=MetalSharp-Wine-x86_64.app" >> "$GITHUB_ENV"; else echo "APP=MetalSharp-Wine.app" >> "$GITHUB_ENV"; fi
@@ -62,10 +68,24 @@ jobs:
           spctl -a -vv "app/$APP"
           rm "$ZIP"
           ditto -c -k --keepParent "app/$APP" "$ZIP"
-          grep -v " $ZIP\$" SHA256SUMS > SHA256SUMS.new || true
-          shasum -a 256 "$ZIP" >> SHA256SUMS.new
-          mv SHA256SUMS.new SHA256SUMS
-          cat SHA256SUMS
 
       - name: Upload the notarized app
-        run: gh release upload "$TAG" -R "$GITHUB_REPOSITORY" --clobber "$ZIP" SHA256SUMS
+        run: gh release upload "$TAG" -R "$GITHUB_REPOSITORY" --clobber "$ZIP"
+
+      # From every asset the release holds now, not a copy downloaded before: another run (the other app's) may have
+      # replaced its zip since this one started. GitHub's digest of each asset, or the asset itself where it has none.
+      - name: SHA256SUMS
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
+            --jq ".[] | select(.tag_name == \"$TAG\") | .assets[] | select(.name != \"SHA256SUMS\") | [.name, (.digest // \"\")] | @tsv" |
+          while IFS=$'\t' read -r name digest; do
+            if [ -n "$digest" ]; then
+              echo "${digest#sha256:}  $name"
+            else
+              echo "$(gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p "$name" -O - | shasum -a 256 | cut -d' ' -f1)  $name"
+            fi
+          done > SHA256SUMS
+          cat SHA256SUMS
+          [ -s SHA256SUMS ]
+          gh release upload "$TAG" -R "$GITHUB_REPOSITORY" --clobber SHA256SUMS
