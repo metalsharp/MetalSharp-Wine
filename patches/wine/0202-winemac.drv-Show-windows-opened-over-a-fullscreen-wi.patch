@@ -1,0 +1,95 @@
+From f8cbbb7b09ceb4170457e50e2b96b8f534b433be Mon Sep 17 00:00:00 2001
+From: Mason <masond3v@protonmail.com>
+Date: Sun, 15 Nov 2026 10:51:50 -0500
+Subject: [PATCH 202/203] winemac.drv: Show windows opened over a fullscreen
+ window above it.
+
+A game in DXGI fullscreen is topmost and stays fullscreen on macOS when one of
+its dialogs takes the focus, unlike on Windows, so the dialog (Custom Shaders
+Patch's "Failed to launch the race") opened behind it, out of sight. Keep a
+window shown while a fullscreen window of the program is on the active space
+in front of it, as if topmost, until it's hidden.
+---
+ dlls/winemac.drv/cocoa_window.h |  1 +
+ dlls/winemac.drv/cocoa_window.m | 32 +++++++++++++++++++++++++++++++-
+ 2 files changed, 32 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/winemac.drv/cocoa_window.h b/dlls/winemac.drv/cocoa_window.h
+index a5ee46d..b0decd1 100644
+--- a/dlls/winemac.drv/cocoa_window.h
++++ b/dlls/winemac.drv/cocoa_window.h
+@@ -31,6 +31,7 @@ @interface WineWindow : NSPanel <NSWindowDelegate>
+     BOOL noForeground;
+     BOOL preventsAppActivation;
+     BOOL floating;
++    BOOL aboveFullscreen;
+     BOOL resizable;
+     BOOL maximized;
+     BOOL fullscreen;
+diff --git a/dlls/winemac.drv/cocoa_window.m b/dlls/winemac.drv/cocoa_window.m
+index 522ff4c..d67de92 100644
+--- a/dlls/winemac.drv/cocoa_window.m
++++ b/dlls/winemac.drv/cocoa_window.m
+@@ -1158,6 +1158,29 @@ - (BOOL) isOrderedIn
+         return [self wouldBeVisible] || [self isMiniaturized];
+     }
+ 
++    /* MetalSharp: a window shown while one of the program's fullscreen windows is up on the active
++     * space (an error dialog over a game in DXGI fullscreen, e.g. Custom Shaders Patch's "Failed to
++     * launch the race") would open under it: the game is topmost, and macOS doesn't take it out of
++     * fullscreen as Windows does when the dialog takes the focus. Keep such windows above it, as if
++     * topmost, until they're hidden. */
++    - (BOOL) floating
++    {
++        return floating || aboveFullscreen;
++    }
++
++    - (BOOL) shownOverFullscreenWindow
++    {
++        for (NSWindow* window in [NSApp windows])
++        {
++            WineWindow* other = (WineWindow*)window;
++
++            if (other == self || ![other isKindOfClass:[WineWindow class]]) continue;
++            if (other.fullscreen && [other isVisible] && [other isOnActiveSpace] && ![other isMiniaturized])
++                return YES;
++        }
++        return NO;
++    }
++
+     - (NSInteger) minimumLevelForActive:(BOOL)active
+     {
+         NSInteger level;
+@@ -1219,7 +1242,7 @@ - (void) setMacDrvState:(const struct macdrv_window_state*)state
+         self.disabled = state->disabled;
+         self.noForeground = state->no_foreground;
+ 
+-        if (self.floating != state->floating)
++        if (floating != state->floating)
+         {
+             self.floating = state->floating;
+             if (state->floating)
+@@ -1660,6 +1683,11 @@ - (void) orderBelow:(WineWindow*)prev orAbove:(WineWindow*)next activate:(BOOL)a
+                 [NSApp unhide:nil];
+             wasVisible = [self isVisible];
+ 
++            if (!wasVisible)
++                aboveFullscreen = !fullscreen && !self.noForeground && [self shownOverFullscreenWindow];
++            if (aboveFullscreen)
++                prev = next = nil; /* order it in front of the fullscreen window */
++
+             /* MetalSharp: bring Wine to the front whenever one of its windows
+                is shown, so a game or launcher doesn't open behind the app that
+                started it. Windows that don't take the foreground (tooltips,
+@@ -1784,6 +1812,8 @@ - (void) doOrderOut
+         BOOL wasVisible = [self isVisible];
+         BOOL wasOnActiveSpace = [self isOnActiveSpace];
+ 
++        aboveFullscreen = FALSE;
++
+         [self endWindowDragging];
+         [controller windowWillOrderOut:self];
+ 
+-- 
+2.54.0 (Apple Git-157)
+
