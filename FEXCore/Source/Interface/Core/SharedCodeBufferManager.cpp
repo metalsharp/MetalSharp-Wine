@@ -2,10 +2,13 @@
 #include "Interface/Core/LookupCache.h"
 #include "Interface/Core/SharedCodeBufferManager.h"
 
+#include <FEXCore/Config/Config.h>
 #include <FEXCore/fextl/memory.h>
 #include <FEXCore/Utils/AllocatorHooks.h>
 #include <FEXCore/Utils/LogManager.h>
 #include <FEXCore/Utils/MathUtils.h>
+
+#include <algorithm>
 
 #ifndef _WIN32
 #include <FEXCore/Utils/PrctlUtils.h>
@@ -13,8 +16,18 @@
 
 namespace FEXCore::CPU {
 static constexpr size_t INITIAL_CODE_SIZE = 1024 * 1024 * 16;
-// We don't want to move above 128MB atm because that means we will have to encode longer jumps
-static constexpr size_t MAX_CODE_SIZE = 1024 * 1024 * 128;
+// MaxCodeBufferSize, 1 GiB by default. Code in a buffer of more than 128 MiB can be out of direct branch range of
+// other code there: block links then go through the link record's host code pointer (see Arm64JITCore's
+// ExitFunctionLink), and the dispatcher and other shared routines are always reached through pointers. With multiblock,
+// Overwatch's hot code alone took more than 128 MiB, so it was all discarded and compiled again hundreds of times
+// during startup (minutes before its window, against 28 seconds with 1 GiB).
+static size_t MaxCodeSize() {
+  static const size_t Size = [] {
+    FEX_CONFIG_OPT(MaxCodeBufferSize, MAXCODEBUFFERSIZE);
+    return std::max<size_t>(MaxCodeBufferSize(), 128) * 1024 * 1024;
+  }();
+  return Size;
+}
 
 CodeBuffer::CodeBuffer(size_t Size, bool ShouldBeNamed)
   : AllocatedSize(Size) {
@@ -102,11 +115,11 @@ fextl::shared_ptr<CodeBuffer> SharedCodeBufferManager::StartLargerCodeBuffer() {
   }
 
   auto NewCodeBufferSize = GetLatest()->TotalAllocationSize();
-  NewCodeBufferSize = std::min<size_t>(NewCodeBufferSize * 2, MAX_CODE_SIZE);
+  NewCodeBufferSize = std::min<size_t>(NewCodeBufferSize * 2, MaxCodeSize());
   return AllocateNew(NewCodeBufferSize);
 }
 
 fextl::shared_ptr<CodeBuffer> SharedCodeBufferManager::StartMaximalCodeBuffer() {
-  return AllocateNew(MAX_CODE_SIZE);
+  return AllocateNew(MaxCodeSize());
 }
 } // namespace FEXCore::CPU
