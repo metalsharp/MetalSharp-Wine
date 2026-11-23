@@ -2750,6 +2750,8 @@ static NTSTATUS get_dll_load_path_search_flags( LPCWSTR module, DWORD flags, WCH
 }
 
 
+static NTSTATUS get_mapped_image_info( HANDLE mapping, SECTION_IMAGE_INFORMATION *info, BOOL *valid );
+
 /***********************************************************************
  *	open_dll_file
  *
@@ -2804,8 +2806,24 @@ static NTSTATUS open_dll_file( UNICODE_STRING *nt_name, WINE_MODREF **pwm, HANDL
                               NULL, &size, PAGE_EXECUTE_READ, SEC_IMAGE, handle );
     if (!status)
     {
-        NtQuerySection( *mapping, SectionImageInformation, image_info, sizeof(*image_info), NULL );
-        if (!is_valid_binary( handle, image_info ))
+        BOOL valid;
+
+        if (NtQuerySection( *mapping, SectionImageInformation, image_info, sizeof(*image_info), NULL ))
+        {
+            /* a section of an in-process file system's own */
+            status = get_mapped_image_info( *mapping, image_info, &valid );
+            TRACE( "%s: no section information, %s from the mapped headers (%#lx)\n", debugstr_us(nt_name),
+                   valid ? "a valid image" : "not a valid image", status );
+            if (status)
+            {
+                NtClose( *mapping );
+                *mapping = NULL;
+                NtClose( handle );
+                return STATUS_INVALID_IMAGE_FORMAT;
+            }
+        }
+        else valid = is_valid_binary( handle, image_info );
+        if (!valid)
         {
             TRACE( "%s is for arch %x, continuing search\n", debugstr_us(nt_name), image_info->Machine );
             status = STATUS_NOT_SUPPORTED;
@@ -2814,6 +2832,119 @@ static NTSTATUS open_dll_file( UNICODE_STRING *nt_name, WINE_MODREF **pwm, HANDL
         }
     }
     NtClose( handle );
+    return status;
+}
+
+
+/***********************************************************************
+ *	get_mapped_image_info
+ *
+ * NtQuerySection failed on the section NtCreateSection just returned for an opened file: an in-process file system
+ * (a protector or packer hooking NtOpenFile and NtCreateSection to serve DLLs that are not on disk, as EXOCAD's
+ * applications do) gave handles of its own, which only the calls it hooks take. Windows' loader only maps such a
+ * section, so map it the same way and take the image information from its headers, as the server does from the
+ * file. Also returns whether it is a binary is_valid_binary() would take.
+ */
+static NTSTATUS get_mapped_image_info( HANDLE mapping, SECTION_IMAGE_INFORMATION *info, BOOL *valid )
+{
+    void *module = NULL;
+    SIZE_T len = 0;
+    const IMAGE_NT_HEADERS *nt;
+    const IMAGE_SECTION_HEADER *sec;
+    const IMAGE_COR20_HEADER *cor;
+    ULONG size, i, entry, alignment, code_size;
+    ULONGLONG base;
+    NTSTATUS status = NtMapViewOfSection( mapping, NtCurrentProcess(), &module, 0, 0, NULL, &len,
+                                          ViewShare, 0, PAGE_READONLY );
+
+    if (!NT_SUCCESS(status)) return status;
+    memset( info, 0, sizeof(*info) );
+    *valid = FALSE;
+    status = STATUS_INVALID_IMAGE_FORMAT;
+    if (!(nt = RtlImageNtHeader( module ))) goto done;
+
+    switch (nt->OptionalHeader.Magic)
+    {
+    case IMAGE_NT_OPTIONAL_HDR32_MAGIC:
+    {
+        const IMAGE_OPTIONAL_HEADER32 *opt = &((const IMAGE_NT_HEADERS32 *)nt)->OptionalHeader;
+        base = opt->ImageBase;
+        entry = opt->AddressOfEntryPoint;
+        alignment = opt->SectionAlignment;
+        code_size = opt->SizeOfCode;
+        info->MaximumStackSize = opt->SizeOfStackReserve;
+        info->CommittedStackSize = opt->SizeOfStackCommit;
+        info->SubSystemType = opt->Subsystem;
+        info->MinorSubsystemVersion = opt->MinorSubsystemVersion;
+        info->MajorSubsystemVersion = opt->MajorSubsystemVersion;
+        info->MinorOperatingSystemVersion = opt->MinorOperatingSystemVersion;
+        info->MajorOperatingSystemVersion = opt->MajorOperatingSystemVersion;
+        info->DllCharacteristics = opt->DllCharacteristics;
+        info->CheckSum = opt->CheckSum;
+        break;
+    }
+    case IMAGE_NT_OPTIONAL_HDR64_MAGIC:
+    {
+        const IMAGE_OPTIONAL_HEADER64 *opt = &((const IMAGE_NT_HEADERS64 *)nt)->OptionalHeader;
+        base = opt->ImageBase;
+        entry = opt->AddressOfEntryPoint;
+        alignment = opt->SectionAlignment;
+        code_size = opt->SizeOfCode;
+        info->MaximumStackSize = opt->SizeOfStackReserve;
+        info->CommittedStackSize = opt->SizeOfStackCommit;
+        info->SubSystemType = opt->Subsystem;
+        info->MinorSubsystemVersion = opt->MinorSubsystemVersion;
+        info->MajorSubsystemVersion = opt->MajorSubsystemVersion;
+        info->MinorOperatingSystemVersion = opt->MinorOperatingSystemVersion;
+        info->MajorOperatingSystemVersion = opt->MajorOperatingSystemVersion;
+        info->DllCharacteristics = opt->DllCharacteristics;
+        info->CheckSum = opt->CheckSum;
+        break;
+    }
+    default:
+        goto done;
+    }
+    info->TransferAddress = entry ? (void *)(ULONG_PTR)(base + entry) : NULL;
+    info->ImageCharacteristics = nt->FileHeader.Characteristics;
+    info->Machine = nt->FileHeader.Machine;
+    info->ImageContainsCode = code_size || entry || (alignment & (page_size - 1));
+    sec = IMAGE_FIRST_SECTION( nt );
+    for (i = 0; i < nt->FileHeader.NumberOfSections; i++)
+        if (sec[i].Characteristics & IMAGE_SCN_MEM_EXECUTE) info->ImageContainsCode = TRUE;
+    if (alignment & (page_size - 1)) info->ImageMappedFlat = 1;
+
+    if ((cor = RtlImageDirectoryEntryToData( module, TRUE, IMAGE_DIRECTORY_ENTRY_COM_DESCRIPTOR, &size )))
+    {
+        info->LoaderFlags = 1;
+        if (size >= sizeof(*cor) && (cor->Flags & COMIMAGE_FLAGS_ILONLY))
+        {
+            info->ComPlusILOnly = 1;
+            if (nt->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC)
+            {
+                if (!(cor->Flags & COMIMAGE_FLAGS_32BITREQUIRED)) info->ComPlusNativeReady = 1;
+                if (cor->Flags & COMIMAGE_FLAGS_32BITPREFERRED) info->ComPlusPrefer32bit = 1;
+            }
+        }
+    }
+
+    /* is_valid_binary(), on the mapped headers */
+    if (info->Machine == current_machine) *valid = TRUE;
+#ifdef _WIN64
+    else if (NtCurrentTeb()->WowTebOffset) *valid = TRUE;
+    else if (!info->ImageContainsCode || info->ComPlusNativeReady) *valid = TRUE;
+    else if (nt->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC && info->ComPlusILOnly) *valid = TRUE;
+    else if (current_machine == IMAGE_FILE_MACHINE_AMD64 && nt->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC)
+    {
+        const IMAGE_LOAD_CONFIG_DIRECTORY64 *cfg = RtlImageDirectoryEntryToData( module, TRUE,
+                                                                                 IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG, &size );
+        if (cfg && min( size, cfg->Size ) > offsetof( IMAGE_LOAD_CONFIG_DIRECTORY64, CHPEMetadataPointer ) &&
+            cfg->CHPEMetadataPointer)
+            *valid = TRUE;
+    }
+#endif
+    status = STATUS_SUCCESS;
+done:
+    NtUnmapViewOfSection( NtCurrentProcess(), module );
     return status;
 }
 
@@ -2899,7 +3030,9 @@ static NTSTATUS load_native_dll( LPCWSTR load_path, const UNICODE_STRING *nt_nam
         return STATUS_SUCCESS;
     }
 #ifdef _WIN64
-    if (status == STATUS_IMAGE_MACHINE_TYPE_MISMATCH && !convert_to_pe64( module, image_info ))
+    /* a 32-bit IL-only image an in-process file system mapped (see get_mapped_image_info) may not report it */
+    if ((status == STATUS_IMAGE_MACHINE_TYPE_MISMATCH || (NT_SUCCESS(status) && image_info->ComPlusILOnly)) &&
+        !convert_to_pe64( module, image_info ))
         status = STATUS_INVALID_IMAGE_FORMAT;
 #endif
     if (NT_SUCCESS(status)) status = build_module( load_path, nt_name, &module, image_info, id,
