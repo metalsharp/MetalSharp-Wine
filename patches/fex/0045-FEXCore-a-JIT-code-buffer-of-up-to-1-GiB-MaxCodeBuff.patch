@@ -1,0 +1,109 @@
+From 5e260aa72fb95e420c4d963064adfce546f60b5d Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Sun, 22 Nov 2026 18:14:59 -0700
+Subject: [PATCH] FEXCore: a JIT code buffer of up to 1 GiB (MaxCodeBufferSize)
+
+The code buffer stopped growing at 128 MiB, and when an allocation does not
+fit, all compiled code is discarded. With multiblock, Overwatch's hot code
+alone took more than that: during startup the buffer was cleared 328 times
+and the same entry points were compiled again and again (216,000 recompiles,
+252 s of the 271 s of JIT time across threads, 42.7 GB of host code), and its
+window took 111 s to appear, against 23 s without multiblock. Each of its
+compiles averages 700 instructions in 140 blocks, so the cost was the buffer,
+not multiblock.
+
+MaxCodeBufferSize (MiB, 1024 by default, at least 128) sets the limit. The
+128 MiB cap kept code within direct branch range; nothing needs that:
+- Block links go through the link record's host code pointer when the target
+  is out of range (ExitFunctionLink).
+- The dispatcher and other shared routines are reached through pointers.
+- The *_OrRestart branches only reach labels in the block being compiled,
+  whose jump thunks it emits at its own end.
+
+The buffer grows by doubling from 16 MiB as before, and only pages written
+use memory.
+
+Overwatch through Steam with multiblock on: window after 26 s (28 s with 1
+GiB during testing, 8 clears, the doubling steps, 3.7 GB of host code).
+---
+ .../Source/Interface/Config/Config.json.in    | 10 +++++++++
+ .../Core/SharedCodeBufferManager.cpp          | 21 +++++++++++++++----
+ 2 files changed, 27 insertions(+), 4 deletions(-)
+
+diff --git a/FEXCore/Source/Interface/Config/Config.json.in b/FEXCore/Source/Interface/Config/Config.json.in
+index 3f968378660..1a14b85ddb7 100644
+--- a/FEXCore/Source/Interface/Config/Config.json.in
++++ b/FEXCore/Source/Interface/Config/Config.json.in
+@@ -18,6 +18,16 @@
+           "Maximum number of instruction to store in a block"
+         ]
+       },
++      "MaxCodeBufferSize": {
++        "Type": "uint32",
++        "Default": "1024",
++        "AffectsCodeGen": "false",
++        "Desc": [
++          "Maximum size of the JIT code buffer, in MiB (at least 128).",
++          "When it is full, all compiled code is discarded and compiled again: code whose hot set does not fit",
++          "is compiled over and over, which large multiblocks make likely. Memory is only used as code is written."
++        ]
++      },
+       "EnableCodeCachingWIP": {
+         "Type": "bool",
+         "Default": "false",
+diff --git a/FEXCore/Source/Interface/Core/SharedCodeBufferManager.cpp b/FEXCore/Source/Interface/Core/SharedCodeBufferManager.cpp
+index eee5023649e..f6afa8a5ff1 100644
+--- a/FEXCore/Source/Interface/Core/SharedCodeBufferManager.cpp
++++ b/FEXCore/Source/Interface/Core/SharedCodeBufferManager.cpp
+@@ -2,19 +2,32 @@
+ #include "Interface/Core/LookupCache.h"
+ #include "Interface/Core/SharedCodeBufferManager.h"
+ 
++#include <FEXCore/Config/Config.h>
+ #include <FEXCore/fextl/memory.h>
+ #include <FEXCore/Utils/AllocatorHooks.h>
+ #include <FEXCore/Utils/LogManager.h>
+ #include <FEXCore/Utils/MathUtils.h>
+ 
++#include <algorithm>
++
+ #ifndef _WIN32
+ #include <FEXCore/Utils/PrctlUtils.h>
+ #endif
+ 
+ namespace FEXCore::CPU {
+ static constexpr size_t INITIAL_CODE_SIZE = 1024 * 1024 * 16;
+-// We don't want to move above 128MB atm because that means we will have to encode longer jumps
+-static constexpr size_t MAX_CODE_SIZE = 1024 * 1024 * 128;
++// MaxCodeBufferSize, 1 GiB by default. Code in a buffer of more than 128 MiB can be out of direct branch range of
++// other code there: block links then go through the link record's host code pointer (see Arm64JITCore's
++// ExitFunctionLink), and the dispatcher and other shared routines are always reached through pointers. With multiblock,
++// Overwatch's hot code alone took more than 128 MiB, so it was all discarded and compiled again hundreds of times
++// during startup (minutes before its window, against 28 seconds with 1 GiB).
++static size_t MaxCodeSize() {
++  static const size_t Size = [] {
++    FEX_CONFIG_OPT(MaxCodeBufferSize, MAXCODEBUFFERSIZE);
++    return std::max<size_t>(MaxCodeBufferSize(), 128) * 1024 * 1024;
++  }();
++  return Size;
++}
+ 
+ CodeBuffer::CodeBuffer(size_t Size, bool ShouldBeNamed)
+   : AllocatedSize(Size) {
+@@ -102,11 +115,11 @@ fextl::shared_ptr<CodeBuffer> SharedCodeBufferManager::StartLargerCodeBuffer() {
+   }
+ 
+   auto NewCodeBufferSize = GetLatest()->TotalAllocationSize();
+-  NewCodeBufferSize = std::min<size_t>(NewCodeBufferSize * 2, MAX_CODE_SIZE);
++  NewCodeBufferSize = std::min<size_t>(NewCodeBufferSize * 2, MaxCodeSize());
+   return AllocateNew(NewCodeBufferSize);
+ }
+ 
+ fextl::shared_ptr<CodeBuffer> SharedCodeBufferManager::StartMaximalCodeBuffer() {
+-  return AllocateNew(MAX_CODE_SIZE);
++  return AllocateNew(MaxCodeSize());
+ }
+ } // namespace FEXCore::CPU
+-- 
+2.54.0 (Apple Git-157)
+

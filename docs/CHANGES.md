@@ -23,6 +23,7 @@ x86_64 build:
 
 arm64 build:
 
+- **Games with a lot of hot code start in seconds with multiblock on.** FEX's code buffer stopped growing at 128 MiB and discarded all compiled code whenever it was full. With multiblock, Overwatch's hot code alone was larger than that: the buffer was cleared 328 times during startup, and its window took about 110 s to appear (23 s with multiblock off). The buffer now grows to 1 GiB, which `FEX_MAXCODEBUFFERSIZE` (MiB) changes, and Overwatch's window appears after 26 s with multiblock on (FEX 0045).
 - **WineMetalGL's `opengl32.dll` is the builtin `opengl32`**, as Mullion's DLLs are builtins: it is in `lib/wine`, so a prefix's System32 and SysWOW64 copies are WineMetalGL's where they were Wine's. Wine's own moves to `lib/wine-opengl`, which `OPENGL_BACKEND=wine` or `WINEMETALGL=0` still loads (Wine 0192).
 - **Zink (`SharpGL_Switch=1`) on MoltenVK has a depth buffer and OpenGL 3.3.** Every depth/stencil image failed to allocate, so a window had none, and the first `wglMakeCurrent` raised `GL_OUT_OF_MEMORY`. Zink now also translates the 10:10:10:2 vertex formats Metal lacks, which held it to OpenGL 3.2 (`patches/mesa` 0002, 0003). OpenGL 4.0 still needs RGB32 texel buffers.
 - `scripts/build-all.sh` builds the whole app, with everything the release carries, from a fresh clone. It checks what it needs first and fetches the toolchain, a signed Mullion NGX core and the MetalSharp app's payloads. Each step is logged, and a run picks up from the step that failed (`docs/BUILDING.md`).
