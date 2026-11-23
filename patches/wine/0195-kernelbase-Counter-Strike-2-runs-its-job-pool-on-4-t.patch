@@ -1,0 +1,64 @@
+From 1b4507dde5b8f74838b094d4998aa6cdce389d1b Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Sun, 22 Nov 2026 19:40:36 -0700
+Subject: [PATCH 195/195] kernelbase: Counter-Strike 2 runs its job pool on 4
+ threads.
+
+cs2.exe in Counter-Strike Global Offensive\game\bin\win64 gets -threads 4,
+unless its command line already has -threads.
+
+With more threads (its default on a 12-core Mac, or 6 or 8), its D3D11
+renderer crashed 25 to 45 s in on Mullion. The crash was in
+rendersystemdx11's pool of recycled buffers: a lock-free queue whose nodes
+come from tier0's CTSListBase had a node in the queue and in the free list
+at once. A job thread (GlobPool) then read the null next of the queue's
+head, at rendersystemdx11.dll+0x4a74e.
+
+This is a race in the game's own lock-free code, and x86's memory ordering
+doesn't prevent it either. None of these changed it:
+- FEX's ordering emulation in full (vector and memcpy loads and stores too);
+- strict split-lock emulation;
+- multiblock off.
+
+Only fewer threads did: 4 ran without a crash several times. Emulation
+widens the window between the queue's reads and its compare-exchanges, and
+Mullion's maps (about 25,000 WRITE_DISCARD maps a second) keep the pool busy.
+DXVK's D3D11 and CS2's Vulkan renderer did not crash.
+
+Steam's client starts CS2 from its 32-bit process, so the rule is in both
+kernelbase builds.
+---
+ dlls/kernelbase/launchers.c | 17 +++++++++++++++++
+ 1 file changed, 17 insertions(+)
+
+diff --git a/dlls/kernelbase/launchers.c b/dlls/kernelbase/launchers.c
+index 39dededc126..c1dc0425530 100644
+--- a/dlls/kernelbase/launchers.c
++++ b/dlls/kernelbase/launchers.c
+@@ -96,6 +96,23 @@ static const struct launcher_process_policy launcher_process_policies[] =
+         {L"--type=", BATTLENET_MARKER, NULL},
+         BATTLENET_ARGS,
+     },
++    /* MetalSharp: Counter-Strike 2 runs its job pool on 4 threads (-threads 4), unless its command line names a count.
++     * With more (its default on a 12-core Mac, or 6 or 8), its D3D11 renderer crashed 25 to 45 s in on Mullion:
++     * rendersystemdx11's pool of recycled buffers, a lock-free queue with nodes from tier0's CTSListBase, had a node
++     * in the queue and in the free list at once, and a job thread (GlobPool) read the null next of the queue's head.
++     * It is a race in the game's own lock-free code, which x86's memory ordering doesn't prevent either: FEX's
++     * ordering emulation in full (vector and memcpy stores too), strict split locks, and multiblock off changed
++     * nothing; only fewer threads did. Emulation widens the window between the queue's reads and its compare-exchanges
++     * enough for 6 threads to hit it, and Mullion's rate of maps (25,000 a second) keeps the pool busy. */
++    {
++        L"cs2.exe",
++        L"\\Counter-Strike Global Offensive\\game\\bin\\win64\\",
++        L"/Counter-Strike Global Offensive/game/bin/win64/",
++        NULL,
++        NULL,
++        {L"-threads", NULL, NULL},
++        L" -threads 4",
++    },
+     /* WineForge-Internal: launcher-compat/ubisoft-connect-in-process-gpu-v1. Its browser is upc.exe itself; its
+      * renderers (UplayWebCore.exe --type=...) are left as they are. */
+     {
+-- 
+2.54.0 (Apple Git-157)
+
