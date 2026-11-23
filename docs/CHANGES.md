@@ -17,6 +17,7 @@ Both builds:
 - NVAPI answers its ray tracing caps and extended acceleration structure builds. An adapter now has a device ID of its vendor's (AMD's 744c by default, where it was 0000), and `dxgi.customSubSysId` and `dxgi.customRevision` are new.
 - New options: `d3d11.samplerLodBias` and `d3d12.samplerLodBias`, as DXVK's; `d3d12.ignoreFailedPipelines` (off by default), which gives a game a pipeline Mullion cannot make as one that draws nothing.
 - Shader caches are rebuilt once (converter version 127).
+- **WineMetalGL 4.1.0** (from 4.0.0): videos a game decodes on a thread of its own play (Call of Duty 4's Bink videos were pink, #58), City of Heroes' blend-state queries are answered, and image atomics work around a Metal bug on the M6.
 - **MetalVR 0.2.5** (from 0.2.1), its latest release: MetalFX spatial upscaling of each eye, SteamVR rendering with the headset's own fields of view and IPD, the tracking sample each frame was rendered with, and Touch controllers without SteamVR's grip offset.
 
 x86_64 build:
