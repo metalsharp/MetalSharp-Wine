@@ -25,6 +25,7 @@ x86_64 build:
 arm64 build:
 
 - **The VKD3D lane (`GRAPHICS_BACKEND=vkd3d`) is one DXVK from Direct3D 12 down to Direct3D 3.** Its DXGI and Direct3D 11 and 10 were DXVK 2.7.1, while Direct3D 9 to 3 and 32-bit programs came from the DXVK lane's DXVK-MacOS. They are now all DXVK-MacOS, the same build as the DXVK lane's, with VKD3D-Proton for Direct3D 12; VKD3D-Proton-MacOS takes DXVK-MacOS in place of 2.7.1 too. VKD3D-Proton's descriptor copies, spin waits and Metal Shader Converter argument pushes run on NEON, where the ARM64X build had no SIMD at all: CopyDescriptors' set scan is 3.6 to 4.6 times faster from 32 descriptors.
+- **64-bit programs load `d3d8.dll`.** Wine built Direct3D 8 for 32-bit programs only, so a 64-bit one's `LoadLibrary("d3d8.dll")` failed on every lane: the DXVK and VKD3D lanes give DXVK's `d3d8.dll` only in place of a builtin the prefix has. It is now built for arm64 too: those lanes run it on DXVK-MacOS, and the Wine lane on wined3d (Wine 0196).
 - **Counter-Strike 2 runs on Mullion.**
   - Its D3D11 renderer crashed 25 to 45 s in: a race in its own lock-free buffer pool, which emulation widens. It now runs its job pool on 4 threads (`-threads 4`, unless its command line names a count), which keeps it stable. With 6 or more threads it crashed (Wine 0195).
   - It no longer says the graphics driver is out of date. Direct3D 9 described a GeForce GTX 470 with a 2010 driver, while DXGI described Mullion's AMD GPU. For games on Mullion, Direct3D 9 now describes the same GPU as DXGI (Wine 0194).
