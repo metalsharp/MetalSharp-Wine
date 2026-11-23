@@ -24,6 +24,9 @@ x86_64 build:
 
 arm64 build:
 
+- **Counter-Strike 2 runs on Mullion.**
+  - Its D3D11 renderer crashed 25 to 45 s in: a race in its own lock-free buffer pool, which emulation widens. It now runs its job pool on 4 threads (`-threads 4`, unless its command line names a count), which keeps it stable. With 6 or more threads it crashed (Wine 0195).
+  - It no longer says the graphics driver is out of date. Direct3D 9 described a GeForce GTX 470 with a 2010 driver, while DXGI described Mullion's AMD GPU. For games on Mullion, Direct3D 9 now describes the same GPU as DXGI (Wine 0194).
 - **Games with a lot of hot code start in seconds with multiblock on.** FEX's code buffer stopped growing at 128 MiB and discarded all compiled code whenever it was full. With multiblock, Overwatch's hot code alone was larger than that: the buffer was cleared 328 times during startup, and its window took about 110 s to appear (23 s with multiblock off). The buffer now grows to 1 GiB, which `FEX_MAXCODEBUFFERSIZE` (MiB) changes, and Overwatch's window appears after 26 s with multiblock on (FEX 0045).
 - **WineMetalGL's `opengl32.dll` is the builtin `opengl32`**, as Mullion's DLLs are builtins: it is in `lib/wine`, so a prefix's System32 and SysWOW64 copies are WineMetalGL's where they were Wine's. Wine's own moves to `lib/wine-opengl`, which `OPENGL_BACKEND=wine` or `WINEMETALGL=0` still loads (Wine 0192).
 - **Zink (`SharpGL_Switch=1`) on MoltenVK has a depth buffer and OpenGL 3.3.** Every depth/stencil image failed to allocate, so a window had none, and the first `wglMakeCurrent` raised `GL_OUT_OF_MEMORY`. Zink now also translates the 10:10:10:2 vertex formats Metal lacks, which held it to OpenGL 3.2 (`patches/mesa` 0002, 0003). OpenGL 4.0 still needs RGB32 texel buffers.
