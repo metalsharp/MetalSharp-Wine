@@ -96,6 +96,23 @@ static const struct launcher_process_policy launcher_process_policies[] =
         {L"--type=", BATTLENET_MARKER, NULL},
         BATTLENET_ARGS,
     },
+    /* MetalSharp: Counter-Strike 2 runs its job pool on 4 threads (-threads 4), unless its command line names a count.
+     * With more (its default on a 12-core Mac, or 6 or 8), its D3D11 renderer crashed 25 to 45 s in on Mullion:
+     * rendersystemdx11's pool of recycled buffers, a lock-free queue with nodes from tier0's CTSListBase, had a node
+     * in the queue and in the free list at once, and a job thread (GlobPool) read the null next of the queue's head.
+     * It is a race in the game's own lock-free code, which x86's memory ordering doesn't prevent either: FEX's
+     * ordering emulation in full (vector and memcpy stores too), strict split locks, and multiblock off changed
+     * nothing; only fewer threads did. Emulation widens the window between the queue's reads and its compare-exchanges
+     * enough for 6 threads to hit it, and Mullion's rate of maps (25,000 a second) keeps the pool busy. */
+    {
+        L"cs2.exe",
+        L"\\Counter-Strike Global Offensive\\game\\bin\\win64\\",
+        L"/Counter-Strike Global Offensive/game/bin/win64/",
+        NULL,
+        NULL,
+        {L"-threads", NULL, NULL},
+        L" -threads 4",
+    },
     /* WineForge-Internal: launcher-compat/ubisoft-connect-in-process-gpu-v1. Its browser is upc.exe itself; its
      * renderers (UplayWebCore.exe --type=...) are left as they are. */
     {
