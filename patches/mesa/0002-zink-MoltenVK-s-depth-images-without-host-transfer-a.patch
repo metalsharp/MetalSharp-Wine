@@ -1,5 +1,8 @@
+From 7e154c1c93fbb200cd25a479329dcbeb8e4d721e Mon Sep 17 00:00:00 2001
 From: Avery Felts <averyfelts@aol.com>
-Subject: [PATCH] zink: MoltenVK's depth images without host transfer, at run time
+Date: Sun, 22 Nov 2026 17:23:32 -0700
+Subject: [PATCH 2/3] zink: MoltenVK's depth images without host transfer, at
+ run time
 
 zink already leaves VK_IMAGE_USAGE_HOST_TRANSFER_BIT_EXT off images on MoltenVK,
 which cannot allocate a depth/stencil image with it (no memory type fits:
@@ -9,6 +12,9 @@ with MoltenVK under it, never is: every depth/stencil allocation failed, so
 each WGL window's depth buffer was missing and the first wglMakeCurrent raised
 GL_OUT_OF_MEMORY ("Resizing framebuffer"). Check the driver ID instead.
 ---
+ src/gallium/drivers/zink/zink_resource.c | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
 diff --git a/src/gallium/drivers/zink/zink_resource.c b/src/gallium/drivers/zink/zink_resource.c
 index 678f455..35fa49b 100644
 --- a/src/gallium/drivers/zink/zink_resource.c
@@ -29,3 +35,6 @@ index 678f455..35fa49b 100644
     } else
        ret = VKSCR(GetPhysicalDeviceImageFormatProperties)(screen->pdev, ici->format, ici->imageType,
                                                     ici->tiling, ici->usage, ici->flags, &image_props);
+-- 
+2.54.0 (Apple Git-157)
+

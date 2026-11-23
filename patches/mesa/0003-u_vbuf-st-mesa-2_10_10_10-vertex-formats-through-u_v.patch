@@ -1,5 +1,7 @@
+From e92ef49efb02feba77c21799d234b042128c1c64 Mon Sep 17 00:00:00 2001
 From: Avery Felts <averyfelts@aol.com>
-Subject: [PATCH] u_vbuf, st/mesa: 2_10_10_10 vertex formats through u_vbuf
+Date: Sun, 22 Nov 2026 17:23:32 -0700
+Subject: [PATCH 3/3] u_vbuf, st/mesa: 2_10_10_10 vertex formats through u_vbuf
 
 Metal has only the RGBA normalized 10:10:10:2 vertex formats, so on MoltenVK
 zink has no BGRA or scaled ones and GL_ARB_vertex_type_2_10_10_10_rev was not
@@ -9,6 +11,10 @@ supported for the vertex format extensions (cso enables u_vbuf for it). Zink on
 MoltenVK reaches OpenGL 3.3; drawing with all four kinds (RGBA and BGRA
 normalized, scaled and signed normalized) gives the expected colours.
 ---
+ src/gallium/auxiliary/util/u_vbuf.c    |  9 ++++++
+ src/mesa/state_tracker/st_extensions.c | 45 ++++++++++++++++++++++++--
+ 2 files changed, 51 insertions(+), 3 deletions(-)
+
 diff --git a/src/gallium/auxiliary/util/u_vbuf.c b/src/gallium/auxiliary/util/u_vbuf.c
 index 774d6a0..662846f 100644
 --- a/src/gallium/auxiliary/util/u_vbuf.c
@@ -99,3 +105,6 @@ index 5141068..f56568d 100644
  
     /* Figure out GLSL support and set GLSLVersion to it. */
     consts->GLSLVersion = screen->caps.glsl_feature_level;
+-- 
+2.54.0 (Apple Git-157)
+
