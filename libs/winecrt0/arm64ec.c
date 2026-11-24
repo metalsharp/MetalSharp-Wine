@@ -32,7 +32,11 @@
 #include "winnt.h"
 #include "wine/asm.h"
 
+/* Weak: a module linked against the mingw-w64 CRT instead of by winegcc (Mullion's DLLs) gets __chpe_metadata from
+ * the CRT's chpe.o, now that winebuild generates it and winecrt0 no longer does. chpe.o defines this same helper,
+ * and the CRT's copy then wins instead of the link failing on a duplicate symbol. */
 __ASM_GLOBAL_FUNC( __icall_helper_arm64ec,
+                   ".weak __icall_helper_arm64ec\n\t"
                    "stp fp, lr, [sp, #-0x10]!\n\t"
                    ".seh_save_fplr_x 16\n\t"
                    "mov fp, sp\n\t"
