@@ -44,7 +44,7 @@ mv $U/wine $LOADER_APP/Contents/MacOS/wine
 install_name_tool -add_rpath @executable_path/../../../../.. $LOADER_APP/Contents/MacOS/wine 2>/dev/null
 ln -s wine.app/Contents/MacOS/wine $U/wine
 [[ -n $PROFILE ]] && cp $PROFILE $LOADER_APP/Contents/embedded.provisionprofile
-sed -e "s/org\.winehq\.wine/$BUNDLE_ID/" -e 's/@PACKAGE_VERSION@/11.20/' \
+sed -e "s/org\.winehq\.wine/$BUNDLE_ID/" -e 's/@PACKAGE_VERSION@/11.22/' \
     $ROOT/src/wine/loader/wine_info.plist.in > $LOADER_APP/Contents/Info.plist
 
 # The app icon (Icon Composer document in resources/), compiled into an asset catalog (the macOS 26
@@ -73,7 +73,7 @@ cat > $APP/Contents/Info.plist <<EOF
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>9.0</string>
   <key>CFBundleVersion</key><string>9.0</string>
-  <key>CFBundleGetInfoString</key><string>MetalSharp Wine 9.0 (Wine 11.20, arm64, FEX)</string>
+  <key>CFBundleGetInfoString</key><string>MetalSharp Wine 9.0 (Wine 11.22, arm64, FEX)</string>
   <key>LSMinimumSystemVersion</key><string>15.0</string>
   <key>LSApplicationCategoryType</key><string>public.app-category.games</string>
 </dict></plist>

@@ -6,7 +6,7 @@ Last updated: 2026-10-23.
 
 | Area | State |
 |---|---|
-| Build | Wine 11.20 builds as native arm64 macOS (minimum 15.0), with PE archs arm64ec/aarch64/i386 and every requested feature (`scripts/build-all.sh`) |
+| Build | Wine 11.22 builds as native arm64 macOS (minimum 15.0), with PE archs arm64ec/aarch64/i386 and every requested feature (`scripts/build-all.sh`) |
 | ARM64 Windows code | Runs natively: cmd, CPython 3.14, Wine's own programs and test suites |
 | x86_64 Windows code | Runs through FEX-2610 (fork, ARM64EC). Checksums are bit-identical to native ARM64 in every benchmark; CPython x64 passes its workload |
 | i386 Windows code | Runs through FEX (WoW64, `libwow64fex.dll`) in the signed `MetalSharp-Wine.app`, which has the cross-architecture entitlement (low 4GB, 4K pages). 211 conformance units, 99.996% of checks pass; every benchmark checksum matches native |
@@ -20,7 +20,7 @@ Last updated: 2026-10-23.
 | WineForge features | Launcher compatibility, msync, PE patches, native fullscreen, GCMouse and the native Steam bridge are ported. See `docs/WINEFORGE-PORT-PLAN.md` |
 | No Rosetta / no hardware TSO | Holds. FEX is built without its unix library, so it never enables hardware TSO. Memory ordering is software-emulated (LRCPC/LSE); the ordering test reports 0 violations |
 | Audit | Mach-O audit: arm64-only, minos ≤ 15.0, no newer libc symbols, no foreign library paths. Strict relocatable audit of `dist/` |
-| Packaging | Relocatable `dist/` bundle with FEX, all dependencies, licenses and a `.tar.xz` with SHA-256. `scripts/sign-app.sh` wraps it as `dist/MetalSharp-Wine.app` (bundle name "MetalSharp Wine"; `wine --version` reports `wine-11.20-… (MetalSharp Wine 2.1)` from `src/wine/METALSHARP_VERSION`), signed with the Developer ID and provisioning profile. It is signed with the hardened runtime, so it can be notarized (`HARDENED=0` opts out) |
+| Packaging | Relocatable `dist/` bundle with FEX, all dependencies, licenses and a `.tar.xz` with SHA-256. `scripts/sign-app.sh` wraps it as `dist/MetalSharp-Wine.app` (bundle name "MetalSharp Wine"; `wine --version` reports `wine-11.22-… (MetalSharp Wine 2.1)` from `src/wine/METALSHARP_VERSION`), signed with the Developer ID and provisioning profile. It is signed with the hardened runtime, so it can be notarized (`HARDENED=0` opts out) |
 
 ## Wine patches (`patches/wine/`, branch `metalsharp-arm64`)
 
