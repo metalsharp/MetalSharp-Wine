@@ -440,6 +440,11 @@ static void dump_irp_params( const char *prefix, const union irp_params *data )
         dump_uint64( ",file=", &data->write.file );
         fputc( '}', stderr );
         break;
+    case IRP_CALL_SET_INFO:
+        fprintf( stderr, "%s{SET_INFO,class=%08x", prefix, data->set_info.class );
+        dump_uint64( ",file=", &data->set_info.file );
+        fputc( '}', stderr );
+        break;
     case IRP_CALL_FLUSH:
         fprintf( stderr, "%s{FLUSH", prefix );
         dump_uint64( ",file=", &data->flush.file );
@@ -1661,7 +1666,7 @@ static void dump_varargs_monitor_infos( const char *prefix, data_size_t size )
     fprintf( stderr,"%s{", prefix );
     while (len > 0)
     {
-        dump_rectangle( "{raw:", &monitor->virt );
+        dump_rectangle( "{raw:", &monitor->raw );
         dump_rectangle( ",virt:", &monitor->virt );
         fprintf( stderr, ",flags:%#x", monitor->flags );
         dump_ratio( ",dpi:", &monitor->dpi );

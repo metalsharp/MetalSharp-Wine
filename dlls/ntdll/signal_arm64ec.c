@@ -893,6 +893,7 @@ NTSTATUS SYSCALL_API NtReadFile( HANDLE handle, HANDLE event, PIO_APC_ROUTINE ap
 NTSTATUS SYSCALL_API NtSetContextThread( HANDLE handle, const CONTEXT *context )
 {
     ARM64_NT_CONTEXT arm_ctx;
+
     NTSTATUS status;
 
     context_x64_to_arm( &arm_ctx, (ARM64EC_NT_CONTEXT *)context );

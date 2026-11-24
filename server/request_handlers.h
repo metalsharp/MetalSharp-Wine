@@ -59,6 +59,7 @@ DECL_HANDLER(get_handle_fd);
 DECL_HANDLER(get_directory_cache_entry);
 DECL_HANDLER(flush);
 DECL_HANDLER(get_file_info);
+DECL_HANDLER(set_file_info);
 DECL_HANDLER(get_volume_info);
 DECL_HANDLER(lock_file);
 DECL_HANDLER(unlock_file);
@@ -149,7 +150,6 @@ DECL_HANDLER(write);
 DECL_HANDLER(ioctl);
 DECL_HANDLER(set_irp_result);
 DECL_HANDLER(create_named_pipe);
-DECL_HANDLER(set_named_pipe_info);
 DECL_HANDLER(create_window);
 DECL_HANDLER(destroy_window);
 DECL_HANDLER(get_desktop_window);
@@ -247,7 +247,6 @@ DECL_HANDLER(get_system_handles);
 DECL_HANDLER(get_tcp_connections);
 DECL_HANDLER(get_udp_endpoints);
 DECL_HANDLER(create_mailslot);
-DECL_HANDLER(set_mailslot_info);
 DECL_HANDLER(create_directory);
 DECL_HANDLER(open_directory);
 DECL_HANDLER(get_directory_entries);
@@ -280,10 +279,8 @@ DECL_HANDLER(get_thread_completion);
 DECL_HANDLER(query_completion);
 DECL_HANDLER(set_completion_info);
 DECL_HANDLER(add_fd_completion);
-DECL_HANDLER(set_fd_completion_mode);
 DECL_HANDLER(set_fd_disp_info);
 DECL_HANDLER(set_fd_name_info);
-DECL_HANDLER(set_fd_eof_info);
 DECL_HANDLER(get_window_layered_info);
 DECL_HANDLER(set_window_layered_info);
 DECL_HANDLER(alloc_user_handle);
@@ -320,6 +317,8 @@ DECL_HANDLER(d3dkmt_share_objects);
 DECL_HANDLER(d3dkmt_object_open_name);
 DECL_HANDLER(d3dkmt_mutex_acquire);
 DECL_HANDLER(d3dkmt_mutex_release);
+DECL_HANDLER(d3dkmt_sync_wait);
+DECL_HANDLER(d3dkmt_sync_signal);
 DECL_HANDLER(alpc_create_port);
 
 typedef void (*req_handler)( const void *req, void *reply );
@@ -377,6 +376,7 @@ static const req_handler req_handlers[REQ_NB_REQUESTS] =
     (req_handler)req_get_directory_cache_entry,
     (req_handler)req_flush,
     (req_handler)req_get_file_info,
+    (req_handler)req_set_file_info,
     (req_handler)req_get_volume_info,
     (req_handler)req_lock_file,
     (req_handler)req_unlock_file,
@@ -467,7 +467,6 @@ static const req_handler req_handlers[REQ_NB_REQUESTS] =
     (req_handler)req_ioctl,
     (req_handler)req_set_irp_result,
     (req_handler)req_create_named_pipe,
-    (req_handler)req_set_named_pipe_info,
     (req_handler)req_create_window,
     (req_handler)req_destroy_window,
     (req_handler)req_get_desktop_window,
@@ -565,7 +564,6 @@ static const req_handler req_handlers[REQ_NB_REQUESTS] =
     (req_handler)req_get_tcp_connections,
     (req_handler)req_get_udp_endpoints,
     (req_handler)req_create_mailslot,
-    (req_handler)req_set_mailslot_info,
     (req_handler)req_create_directory,
     (req_handler)req_open_directory,
     (req_handler)req_get_directory_entries,
@@ -598,10 +596,8 @@ static const req_handler req_handlers[REQ_NB_REQUESTS] =
     (req_handler)req_query_completion,
     (req_handler)req_set_completion_info,
     (req_handler)req_add_fd_completion,
-    (req_handler)req_set_fd_completion_mode,
     (req_handler)req_set_fd_disp_info,
     (req_handler)req_set_fd_name_info,
-    (req_handler)req_set_fd_eof_info,
     (req_handler)req_get_window_layered_info,
     (req_handler)req_set_window_layered_info,
     (req_handler)req_alloc_user_handle,
@@ -638,6 +634,8 @@ static const req_handler req_handlers[REQ_NB_REQUESTS] =
     (req_handler)req_d3dkmt_object_open_name,
     (req_handler)req_d3dkmt_mutex_acquire,
     (req_handler)req_d3dkmt_mutex_release,
+    (req_handler)req_d3dkmt_sync_wait,
+    (req_handler)req_d3dkmt_sync_signal,
     (req_handler)req_alpc_create_port,
 };
 
@@ -761,6 +759,7 @@ C_ASSERT( offsetof(struct terminate_process_request, handle) == 12 );
 C_ASSERT( offsetof(struct terminate_process_request, exit_code) == 16 );
 C_ASSERT( sizeof(struct terminate_process_request) == 24 );
 C_ASSERT( offsetof(struct terminate_process_reply, self) == 8 );
+C_ASSERT( offsetof(struct terminate_process_reply, exit_code) == 12 );
 C_ASSERT( sizeof(struct terminate_process_reply) == 16 );
 C_ASSERT( offsetof(struct terminate_thread_request, handle) == 12 );
 C_ASSERT( offsetof(struct terminate_thread_request, exit_code) == 16 );
@@ -1030,6 +1029,12 @@ C_ASSERT( offsetof(struct get_file_info_request, handle) == 12 );
 C_ASSERT( offsetof(struct get_file_info_request, info_class) == 16 );
 C_ASSERT( sizeof(struct get_file_info_request) == 24 );
 C_ASSERT( sizeof(struct get_file_info_reply) == 8 );
+C_ASSERT( offsetof(struct set_file_info_request, handle) == 12 );
+C_ASSERT( offsetof(struct set_file_info_request, async) == 16 );
+C_ASSERT( offsetof(struct set_file_info_request, info_class) == 56 );
+C_ASSERT( sizeof(struct set_file_info_request) == 64 );
+C_ASSERT( offsetof(struct set_file_info_reply, wait) == 8 );
+C_ASSERT( sizeof(struct set_file_info_reply) == 16 );
 C_ASSERT( offsetof(struct get_volume_info_request, handle) == 12 );
 C_ASSERT( offsetof(struct get_volume_info_request, async) == 16 );
 C_ASSERT( offsetof(struct get_volume_info_request, info_class) == 56 );
@@ -1498,9 +1503,6 @@ C_ASSERT( sizeof(struct create_named_pipe_request) == 56 );
 C_ASSERT( offsetof(struct create_named_pipe_reply, handle) == 8 );
 C_ASSERT( offsetof(struct create_named_pipe_reply, created) == 12 );
 C_ASSERT( sizeof(struct create_named_pipe_reply) == 16 );
-C_ASSERT( offsetof(struct set_named_pipe_info_request, handle) == 12 );
-C_ASSERT( offsetof(struct set_named_pipe_info_request, flags) == 16 );
-C_ASSERT( sizeof(struct set_named_pipe_info_request) == 24 );
 C_ASSERT( offsetof(struct create_window_request, parent) == 12 );
 C_ASSERT( offsetof(struct create_window_request, owner) == 16 );
 C_ASSERT( offsetof(struct create_window_request, atom) == 20 );
@@ -1948,15 +1950,14 @@ C_ASSERT( offsetof(struct add_clipboard_listener_request, window) == 12 );
 C_ASSERT( sizeof(struct add_clipboard_listener_request) == 16 );
 C_ASSERT( offsetof(struct remove_clipboard_listener_request, window) == 12 );
 C_ASSERT( sizeof(struct remove_clipboard_listener_request) == 16 );
-C_ASSERT( offsetof(struct create_token_request, token_id) == 12 );
+C_ASSERT( offsetof(struct create_token_request, auth_id) == 12 );
 C_ASSERT( offsetof(struct create_token_request, access) == 20 );
 C_ASSERT( offsetof(struct create_token_request, primary) == 24 );
 C_ASSERT( offsetof(struct create_token_request, impersonation_level) == 28 );
 C_ASSERT( offsetof(struct create_token_request, expire) == 32 );
 C_ASSERT( offsetof(struct create_token_request, group_count) == 40 );
-C_ASSERT( offsetof(struct create_token_request, primary_group) == 44 );
-C_ASSERT( offsetof(struct create_token_request, priv_count) == 48 );
-C_ASSERT( sizeof(struct create_token_request) == 56 );
+C_ASSERT( offsetof(struct create_token_request, priv_count) == 44 );
+C_ASSERT( sizeof(struct create_token_request) == 48 );
 C_ASSERT( offsetof(struct create_token_reply, token) == 8 );
 C_ASSERT( sizeof(struct create_token_reply) == 16 );
 C_ASSERT( offsetof(struct open_token_request, handle) == 12 );
@@ -2055,13 +2056,6 @@ C_ASSERT( offsetof(struct create_mailslot_request, max_msgsize) == 32 );
 C_ASSERT( sizeof(struct create_mailslot_request) == 40 );
 C_ASSERT( offsetof(struct create_mailslot_reply, handle) == 8 );
 C_ASSERT( sizeof(struct create_mailslot_reply) == 16 );
-C_ASSERT( offsetof(struct set_mailslot_info_request, handle) == 12 );
-C_ASSERT( offsetof(struct set_mailslot_info_request, read_timeout) == 16 );
-C_ASSERT( offsetof(struct set_mailslot_info_request, flags) == 24 );
-C_ASSERT( sizeof(struct set_mailslot_info_request) == 32 );
-C_ASSERT( offsetof(struct set_mailslot_info_reply, read_timeout) == 8 );
-C_ASSERT( offsetof(struct set_mailslot_info_reply, max_msgsize) == 16 );
-C_ASSERT( sizeof(struct set_mailslot_info_reply) == 24 );
 C_ASSERT( offsetof(struct create_directory_request, access) == 12 );
 C_ASSERT( sizeof(struct create_directory_request) == 16 );
 C_ASSERT( offsetof(struct create_directory_reply, handle) == 8 );
@@ -2228,9 +2222,6 @@ C_ASSERT( offsetof(struct add_fd_completion_request, information) == 24 );
 C_ASSERT( offsetof(struct add_fd_completion_request, status) == 32 );
 C_ASSERT( offsetof(struct add_fd_completion_request, async) == 36 );
 C_ASSERT( sizeof(struct add_fd_completion_request) == 40 );
-C_ASSERT( offsetof(struct set_fd_completion_mode_request, handle) == 12 );
-C_ASSERT( offsetof(struct set_fd_completion_mode_request, flags) == 16 );
-C_ASSERT( sizeof(struct set_fd_completion_mode_request) == 24 );
 C_ASSERT( offsetof(struct set_fd_disp_info_request, handle) == 12 );
 C_ASSERT( offsetof(struct set_fd_disp_info_request, flags) == 16 );
 C_ASSERT( sizeof(struct set_fd_disp_info_request) == 24 );
@@ -2240,9 +2231,6 @@ C_ASSERT( offsetof(struct set_fd_name_info_request, namelen) == 20 );
 C_ASSERT( offsetof(struct set_fd_name_info_request, link) == 24 );
 C_ASSERT( offsetof(struct set_fd_name_info_request, flags) == 28 );
 C_ASSERT( sizeof(struct set_fd_name_info_request) == 32 );
-C_ASSERT( offsetof(struct set_fd_eof_info_request, handle) == 12 );
-C_ASSERT( offsetof(struct set_fd_eof_info_request, eof) == 16 );
-C_ASSERT( sizeof(struct set_fd_eof_info_request) == 24 );
 C_ASSERT( offsetof(struct get_window_layered_info_request, handle) == 12 );
 C_ASSERT( sizeof(struct get_window_layered_info_request) == 16 );
 C_ASSERT( offsetof(struct get_window_layered_info_reply, color_key) == 8 );
@@ -2366,8 +2354,8 @@ C_ASSERT( offsetof(struct get_inproc_alert_fd_reply, handle) == 8 );
 C_ASSERT( sizeof(struct get_inproc_alert_fd_reply) == 16 );
 C_ASSERT( offsetof(struct d3dkmt_object_create_request, type) == 12 );
 C_ASSERT( offsetof(struct d3dkmt_object_create_request, fd) == 16 );
-C_ASSERT( offsetof(struct d3dkmt_object_create_request, value) == 20 );
-C_ASSERT( sizeof(struct d3dkmt_object_create_request) == 24 );
+C_ASSERT( offsetof(struct d3dkmt_object_create_request, value) == 24 );
+C_ASSERT( sizeof(struct d3dkmt_object_create_request) == 32 );
 C_ASSERT( offsetof(struct d3dkmt_object_create_reply, global) == 8 );
 C_ASSERT( offsetof(struct d3dkmt_object_create_reply, handle) == 12 );
 C_ASSERT( sizeof(struct d3dkmt_object_create_reply) == 16 );
@@ -2417,6 +2405,16 @@ C_ASSERT( offsetof(struct d3dkmt_mutex_release_request, key_value) == 20 );
 C_ASSERT( offsetof(struct d3dkmt_mutex_release_request, fence_value) == 24 );
 C_ASSERT( offsetof(struct d3dkmt_mutex_release_request, runtime_size) == 32 );
 C_ASSERT( sizeof(struct d3dkmt_mutex_release_request) == 40 );
+C_ASSERT( offsetof(struct d3dkmt_sync_wait_request, sync) == 12 );
+C_ASSERT( offsetof(struct d3dkmt_sync_wait_request, fence_value) == 16 );
+C_ASSERT( offsetof(struct d3dkmt_sync_wait_request, wait_handle) == 20 );
+C_ASSERT( offsetof(struct d3dkmt_sync_wait_request, wait_status) == 24 );
+C_ASSERT( sizeof(struct d3dkmt_sync_wait_request) == 32 );
+C_ASSERT( offsetof(struct d3dkmt_sync_wait_reply, wait_handle) == 8 );
+C_ASSERT( sizeof(struct d3dkmt_sync_wait_reply) == 16 );
+C_ASSERT( offsetof(struct d3dkmt_sync_signal_request, sync) == 12 );
+C_ASSERT( offsetof(struct d3dkmt_sync_signal_request, fence_value) == 16 );
+C_ASSERT( sizeof(struct d3dkmt_sync_signal_request) == 24 );
 C_ASSERT( offsetof(struct alpc_create_port_request, flags) == 12 );
 C_ASSERT( offsetof(struct alpc_create_port_request, max_msg_len) == 16 );
 C_ASSERT( sizeof(struct alpc_create_port_request) == 24 );

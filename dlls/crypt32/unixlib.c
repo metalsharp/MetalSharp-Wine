@@ -567,6 +567,9 @@ static NTSTATUS close_cert_store( void *args )
 
 static NTSTATUS export_cert_store( void *args )
 {
+    /* GnuTLS randomizes the PBKDF2 salt length between 12 and 21 bytes, which can also grow
+     * enclosing ASN.1 DER length headers by up to 7 bytes if a boundary is crossed. */
+    static const DWORD max_salt_size_variance = 16;
     struct export_cert_store_params *params = args;
     gnutls_pkcs12_t p12 = NULL;
     gnutls_pkcs12_bag_t cert_bag = NULL, key_bag = NULL;
@@ -656,12 +659,12 @@ static NTSTATUS export_cert_store( void *args )
     if (!params->pfx_data)
     {
         /* Size query. */
-        *params->pfx_size = out.size + 8;
+        *params->pfx_size = out.size + max_salt_size_variance;
         status = STATUS_SUCCESS;
     }
     else if (*params->pfx_size < out.size)
     {
-        *params->pfx_size = out.size + 8;
+        *params->pfx_size = out.size + max_salt_size_variance;
         status = STATUS_BUFFER_TOO_SMALL;
     }
     else
@@ -829,16 +832,14 @@ static BOOL base64_to_cert( const char *str )
     return TRUE;
 }
 
-/* Reads the file fd, and imports any certificates in it into store. */
-static void import_certs_from_file( int fd )
+/* Reads the file fp, and imports any certificates in it into store. */
+static void import_certs_from_file( FILE *fp )
 {
-    FILE *fp = fdopen(fd, "r");
     char line[1024];
     BOOL in_cert = FALSE;
     struct DynamicBuffer saved_cert = { 0, 0, NULL };
     int num_certs = 0;
 
-    if (!fp) return;
     TRACE("\n");
     while (fgets(line, sizeof(line), fp))
     {
@@ -861,7 +862,6 @@ static void import_certs_from_file( int fd )
     }
     free( saved_cert.data );
     TRACE("Read %d certs\n", num_certs);
-    fclose(fp);
 }
 
 static void import_certs_from_path(LPCSTR path, BOOL allow_dir);
@@ -916,19 +916,19 @@ static void import_certs_from_dir( LPCSTR path )
  */
 static void import_certs_from_path(LPCSTR path, BOOL allow_dir)
 {
-    int fd;
+    FILE *fp;
 
     TRACE("(%s, %d)\n", debugstr_a(path), allow_dir);
 
-    fd = open(path, O_RDONLY);
-    if (fd != -1)
+    fp = fopen(path, "r");
+    if (fp)
     {
         struct stat st;
 
-        if (fstat(fd, &st) == 0)
+        if (fstat(fileno(fp), &st) == 0)
         {
             if (S_ISREG(st.st_mode))
-                import_certs_from_file(fd);
+                import_certs_from_file(fp);
             else if (S_ISDIR(st.st_mode))
             {
                 if (allow_dir)
@@ -940,7 +940,7 @@ static void import_certs_from_path(LPCSTR path, BOOL allow_dir)
             else
                 ERR("%s: invalid file type\n", path);
         }
-        close(fd);
+        fclose(fp);
     }
 }
 

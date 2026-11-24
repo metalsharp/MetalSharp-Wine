@@ -44,6 +44,8 @@
     NSWindow *owner;
     BOOL owned, failed;
     BOOL observingOptions, settingOptions, updateQueued;
+    NSTimeInterval burstStart;
+    int burstCount;
 }
 + (instancetype) sharedController;
 - (void) update;
@@ -188,15 +190,26 @@ BOOL macdrv_cocoa_fullscreen_managed(NSWindow *window)
     @try
     {
         NSApplicationPresentationOptions options = macdrv_cocoa_fullscreen_options(window, savedOptions);
-        NSApplicationPresentationOptions controlled = NSApplicationPresentationHideDock |
-            NSApplicationPresentationAutoHideDock | NSApplicationPresentationHideMenuBar |
-            NSApplicationPresentationAutoHideMenuBar | NSApplicationPresentationAutoHideToolbar;
-#ifdef MAC_OS_VERSION_27_0
-        if (@available(macOS 27.0, *)) controlled |= NSApplicationPresentationDisableScreenCornerInteractions;
-#endif
-        if (NSApp.presentationOptions != options ||
-            ((NSApp.currentSystemPresentationOptions ^ options) & controlled))
+        /* MetalSharp: apply the options when what this app asks for differs, not whenever the system's current
+         * options differ: macOS doesn't always take them (while focus moves between apps, say), and setting them
+         * notifies this observer again, which looped on the main thread and could hang the display. As a last
+         * resort, stop after many changes in a second until the window's state changes. */
+        if (NSApp.presentationOptions != options)
+        {
+            NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+            if (now - burstStart > 1.0)
+            {
+                burstStart = now;
+                burstCount = 0;
+            }
+            if (++burstCount > 20)
+            {
+                failed = YES;
+                NSLog(@"Wine fullscreen presentation: macOS keeps changing the options; leaving them");
+                return;
+            }
             [self setOptions:options];
+        }
     }
     @catch (NSException *exception)
     {
