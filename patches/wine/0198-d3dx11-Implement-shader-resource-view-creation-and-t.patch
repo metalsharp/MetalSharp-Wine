@@ -1,0 +1,549 @@
+From cda47b9284af6dafe9a236020fa44c923a87150a Mon Sep 17 00:00:00 2001
+From: Mason <masond3v@protonmail.com>
+Date: Sun, 15 Nov 2026 10:19:57 -0500
+Subject: [PATCH 198/203] d3dx11: Implement shader resource view creation and
+ texture saving.
+
+Assetto Corsa imports D3DX11CreateShaderResourceViewFromFileW, a stub that
+aborted the game at startup. Custom Shaders Patch saves textures (fake
+shadows, previews) with D3DX11SaveTextureToMemory, which returned E_NOTIMPL
+and left it a NULL blob. DDS files are written with the DX10 header and every
+mip level and layer, as native D3DX11 does.
+---
+ dlls/d3dx11_43/d3dx11_43.spec |   8 +-
+ dlls/d3dx11_43/texture.c      | 473 +++++++++++++++++++++++++++++++++-
+ 2 files changed, 463 insertions(+), 18 deletions(-)
+
+diff --git a/dlls/d3dx11_43/d3dx11_43.spec b/dlls/d3dx11_43/d3dx11_43.spec
+index 2033d60..442509a 100644
+--- a/dlls/d3dx11_43/d3dx11_43.spec
++++ b/dlls/d3dx11_43/d3dx11_43.spec
+@@ -15,11 +15,11 @@
+ @ stub D3DX11CreateAsyncShaderResourceViewProcessor
+ @ stub D3DX11CreateAsyncTextureInfoProcessor
+ @ stub D3DX11CreateAsyncTextureProcessor
+-@ stub D3DX11CreateShaderResourceViewFromFileA
+-@ stub D3DX11CreateShaderResourceViewFromFileW
++@ stdcall D3DX11CreateShaderResourceViewFromFileA(ptr str ptr ptr ptr ptr)
++@ stdcall D3DX11CreateShaderResourceViewFromFileW(ptr wstr ptr ptr ptr ptr)
+ @ stdcall D3DX11CreateShaderResourceViewFromMemory(ptr ptr long ptr ptr ptr ptr)
+-@ stub D3DX11CreateShaderResourceViewFromResourceA
+-@ stub D3DX11CreateShaderResourceViewFromResourceW
++@ stdcall D3DX11CreateShaderResourceViewFromResourceA(ptr long str ptr ptr ptr ptr)
++@ stdcall D3DX11CreateShaderResourceViewFromResourceW(ptr long wstr ptr ptr ptr ptr)
+ @ stdcall D3DX11CreateTextureFromFileA(ptr str ptr ptr ptr ptr)
+ @ stdcall D3DX11CreateTextureFromFileW(ptr wstr ptr ptr ptr ptr)
+ @ stdcall D3DX11CreateTextureFromMemory(ptr ptr long ptr ptr ptr ptr)
+diff --git a/dlls/d3dx11_43/texture.c b/dlls/d3dx11_43/texture.c
+index efac4de..b0d7ec6 100644
+--- a/dlls/d3dx11_43/texture.c
++++ b/dlls/d3dx11_43/texture.c
+@@ -772,14 +772,206 @@ HRESULT WINAPI D3DX11CreateTextureFromResourceW(ID3D11Device *device, HMODULE mo
+     return hr;
+ }
+ 
++static HRESULT create_srv_for_texture(ID3D11Device *device, ID3D11Resource *texture,
++        ID3D11ShaderResourceView **view)
++{
++    D3D11_SHADER_RESOURCE_VIEW_DESC desc = { 0 };
++    D3D11_RESOURCE_DIMENSION dimension;
++
++    ID3D11Resource_GetType(texture, &dimension);
++    switch (dimension)
++    {
++        case D3D11_RESOURCE_DIMENSION_TEXTURE2D:
++        {
++            D3D11_TEXTURE2D_DESC tex_desc;
++
++            ID3D11Texture2D_GetDesc((ID3D11Texture2D *)texture, &tex_desc);
++            desc.Format = tex_desc.Format;
++            if (tex_desc.MiscFlags & D3D11_RESOURCE_MISC_TEXTURECUBE)
++            {
++                if (tex_desc.ArraySize > 6)
++                {
++                    desc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURECUBEARRAY;
++                    desc.TextureCubeArray.MipLevels = tex_desc.MipLevels;
++                    desc.TextureCubeArray.NumCubes = tex_desc.ArraySize / 6;
++                }
++                else
++                {
++                    desc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURECUBE;
++                    desc.TextureCube.MipLevels = tex_desc.MipLevels;
++                }
++            }
++            else if (tex_desc.ArraySize > 1)
++            {
++                desc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DARRAY;
++                desc.Texture2DArray.MipLevels = tex_desc.MipLevels;
++                desc.Texture2DArray.ArraySize = tex_desc.ArraySize;
++            }
++            else
++            {
++                desc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
++                desc.Texture2D.MipLevels = tex_desc.MipLevels;
++            }
++            break;
++        }
++
++        case D3D11_RESOURCE_DIMENSION_TEXTURE3D:
++        {
++            D3D11_TEXTURE3D_DESC tex_desc;
++
++            ID3D11Texture3D_GetDesc((ID3D11Texture3D *)texture, &tex_desc);
++            desc.Format = tex_desc.Format;
++            desc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE3D;
++            desc.Texture3D.MipLevels = tex_desc.MipLevels;
++            break;
++        }
++
++        default:
++            return ID3D11Device_CreateShaderResourceView(device, texture, NULL, view);
++    }
++
++    return ID3D11Device_CreateShaderResourceView(device, texture, &desc, view);
++}
++
++static HRESULT create_srv(ID3D11Device *device, const void *data, SIZE_T size,
++        D3DX11_IMAGE_LOAD_INFO *load_info, ID3D11ShaderResourceView **view)
++{
++    ID3D11Resource *texture;
++    HRESULT hr;
++
++    if (FAILED(hr = create_texture(device, data, size, load_info, &texture)))
++        return hr;
++    hr = create_srv_for_texture(device, texture, view);
++    ID3D11Resource_Release(texture);
++    return hr;
++}
++
+ HRESULT WINAPI D3DX11CreateShaderResourceViewFromMemory(ID3D11Device *device, const void *data,
+         SIZE_T data_size, D3DX11_IMAGE_LOAD_INFO *load_info, ID3DX11ThreadPump *pump,
+         ID3D11ShaderResourceView **view, HRESULT *hresult)
+ {
+-    FIXME("device %p, data %p, data_size %Iu, load_info %p, pump %p, view %p, hresult %p stub!\n",
++    HRESULT hr;
++
++    TRACE("device %p, data %p, data_size %Iu, load_info %p, pump %p, view %p, hresult %p.\n",
+             device, data, data_size, load_info, pump, view, hresult);
+ 
+-    return E_NOTIMPL;
++    if (!device)
++        return E_INVALIDARG;
++    if (!data)
++        return E_FAIL;
++
++    if (pump)
++        FIXME("D3DX11 thread pump is currently unimplemented.\n");
++
++    hr = create_srv(device, data, data_size, load_info, view);
++    if (hresult)
++        *hresult = hr;
++    return hr;
++}
++
++HRESULT WINAPI D3DX11CreateShaderResourceViewFromFileW(ID3D11Device *device, const WCHAR *src_file,
++        D3DX11_IMAGE_LOAD_INFO *load_info, ID3DX11ThreadPump *pump, ID3D11ShaderResourceView **view,
++        HRESULT *hresult)
++{
++    void *buffer = NULL;
++    DWORD size = 0;
++    HRESULT hr;
++
++    TRACE("device %p, src_file %s, load_info %p, pump %p, view %p, hresult %p.\n",
++            device, debugstr_w(src_file), load_info, pump, view, hresult);
++
++    if (!device)
++        return E_INVALIDARG;
++    if (!src_file)
++        return E_FAIL;
++
++    if (pump)
++        FIXME("D3DX11 thread pump is currently unimplemented.\n");
++
++    if (SUCCEEDED((hr = load_file(src_file, &buffer, &size))))
++    {
++        hr = create_srv(device, buffer, size, load_info, view);
++        free(buffer);
++    }
++    if (hresult)
++        *hresult = hr;
++    return hr;
++}
++
++HRESULT WINAPI D3DX11CreateShaderResourceViewFromFileA(ID3D11Device *device, const char *src_file,
++        D3DX11_IMAGE_LOAD_INFO *load_info, ID3DX11ThreadPump *pump, ID3D11ShaderResourceView **view,
++        HRESULT *hresult)
++{
++    WCHAR *buffer;
++    int str_len;
++    HRESULT hr;
++
++    TRACE("device %p, src_file %s, load_info %p, pump %p, view %p, hresult %p.\n",
++            device, debugstr_a(src_file), load_info, pump, view, hresult);
++
++    if (!device)
++        return E_INVALIDARG;
++    if (!src_file)
++        return E_FAIL;
++
++    if (!(str_len = MultiByteToWideChar(CP_ACP, 0, src_file, -1, NULL, 0)))
++        return HRESULT_FROM_WIN32(GetLastError());
++    if (!(buffer = malloc(str_len * sizeof(*buffer))))
++        return E_OUTOFMEMORY;
++    MultiByteToWideChar(CP_ACP, 0, src_file, -1, buffer, str_len);
++    hr = D3DX11CreateShaderResourceViewFromFileW(device, buffer, load_info, pump, view, hresult);
++    free(buffer);
++    return hr;
++}
++
++HRESULT WINAPI D3DX11CreateShaderResourceViewFromResourceW(ID3D11Device *device, HMODULE module,
++        const WCHAR *resource, D3DX11_IMAGE_LOAD_INFO *load_info, ID3DX11ThreadPump *pump,
++        ID3D11ShaderResourceView **view, HRESULT *hresult)
++{
++    uint32_t size;
++    void *buffer;
++    HRESULT hr;
++
++    TRACE("device %p, module %p, resource %s, load_info %p, pump %p, view %p, hresult %p.\n",
++            device, module, debugstr_w(resource), load_info, pump, view, hresult);
++
++    if (!device)
++        return E_INVALIDARG;
++
++    if (pump)
++        FIXME("D3DX11 thread pump is currently unimplemented.\n");
++
++    if (FAILED((hr = d3dx_load_resource_w(module, resource, &buffer, &size))))
++        return hr;
++    hr = create_srv(device, buffer, size, load_info, view);
++    if (hresult)
++        *hresult = hr;
++    return hr;
++}
++
++HRESULT WINAPI D3DX11CreateShaderResourceViewFromResourceA(ID3D11Device *device, HMODULE module,
++        const char *resource, D3DX11_IMAGE_LOAD_INFO *load_info, ID3DX11ThreadPump *pump,
++        ID3D11ShaderResourceView **view, HRESULT *hresult)
++{
++    uint32_t size;
++    void *buffer;
++    HRESULT hr;
++
++    TRACE("device %p, module %p, resource %s, load_info %p, pump %p, view %p, hresult %p.\n",
++            device, module, debugstr_a(resource), load_info, pump, view, hresult);
++
++    if (!device)
++        return E_INVALIDARG;
++
++    if (pump)
++        FIXME("D3DX11 thread pump is currently unimplemented.\n");
++
++    if (FAILED((hr = d3dx_load_resource_a(module, resource, &buffer, &size))))
++        return hr;
++    hr = create_srv(device, buffer, size, load_info, view);
++    if (hresult)
++        *hresult = hr;
++    return hr;
+ }
+ 
+ HRESULT WINAPI D3DX11CreateTextureFromMemory(ID3D11Device *device, const void *data,
+@@ -805,31 +997,284 @@ HRESULT WINAPI D3DX11CreateTextureFromMemory(ID3D11Device *device, const void *d
+     return hr;
+ }
+ 
+-HRESULT WINAPI D3DX11SaveTextureToFileW(ID3D11DeviceContext *context, ID3D11Resource *texture,
+-        D3DX11_IMAGE_FILE_FORMAT format, const WCHAR *filename)
++static HRESULT d3dx11_buffer_create(unsigned int size, struct d3dx_buffer *buffer)
+ {
+-    FIXME("context %p, texture %p, format %u, filename %s stub!\n",
+-            context, texture, format, debugstr_w(filename));
++    ID3D10Blob *blob;
++    HRESULT hr;
+ 
+-    return E_NOTIMPL;
++    if (FAILED(hr = D3DCreateBlob(size, &blob)))
++        return hr;
++    buffer->buffer_iface = blob;
++    buffer->buffer_data = ID3D10Blob_GetBufferPointer(blob);
++    return S_OK;
+ }
+ 
+-HRESULT WINAPI D3DX11SaveTextureToFileA(ID3D11DeviceContext *context, ID3D11Resource *texture,
+-        D3DX11_IMAGE_FILE_FORMAT format, const char *filename)
++static void d3dx11_buffer_destroy(struct d3dx_buffer *buffer)
+ {
+-    FIXME("context %p, texture %p, format %u, filename %s stub!\n",
+-            context, texture, format, debugstr_a(filename));
++    ID3D10Blob_Release((ID3D10Blob *)buffer->buffer_iface);
++}
+ 
+-    return E_NOTIMPL;
++static const struct d3dx_buffer_wrapper d3dx11_buffer_wrapper =
++{
++    d3dx11_buffer_create,
++    d3dx11_buffer_destroy,
++};
++
++/* D3DX11 writes DDS files with the DX10 extended header, which covers every DXGI format, and with
++ * every mip level and array layer of the texture. */
++static HRESULT save_texture2d_to_dds(ID3D11DeviceContext *context, ID3D11Texture2D *texture,
++        const D3D11_TEXTURE2D_DESC *desc, enum d3dx_pixel_format_id format, ID3D10Blob **buffer)
++{
++    struct
++    {
++        uint32_t dxgi_format;
++        uint32_t resource_dimension;
++        uint32_t misc_flags;
++        uint32_t array_size;
++        uint32_t misc_flags2;
++    } dxt10 = { 0 };
++    D3D11_TEXTURE2D_DESC staging_desc = *desc;
++    uint32_t row_pitch, slice_pitch, rows, layer, level, y;
++    D3D11_MAPPED_SUBRESOURCE map;
++    struct dds_header header;
++    ID3D11Texture2D *staging;
++    SIZE_T size, offset;
++    ID3D11Device *device;
++    ID3D10Blob *blob;
++    uint8_t *dst;
++    HRESULT hr;
++
++    if (desc->SampleDesc.Count > 1)
++    {
++        FIXME("Multisampled textures are not supported.\n");
++        return E_NOTIMPL;
++    }
++
++    size = sizeof(header) + sizeof(dxt10);
++    for (level = 0; level < desc->MipLevels; ++level)
++    {
++        if (FAILED(hr = d3dx_calculate_pixels_size(format, max(1, desc->Width >> level),
++                max(1, desc->Height >> level), &row_pitch, &slice_pitch)))
++            return hr;
++        size += (SIZE_T)slice_pitch * desc->ArraySize;
++    }
++
++    staging_desc.Usage = D3D11_USAGE_STAGING;
++    staging_desc.BindFlags = 0;
++    staging_desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
++    staging_desc.MiscFlags = desc->MiscFlags & D3D11_RESOURCE_MISC_TEXTURECUBE;
++    ID3D11DeviceContext_GetDevice(context, &device);
++    hr = ID3D11Device_CreateTexture2D(device, &staging_desc, NULL, &staging);
++    ID3D11Device_Release(device);
++    if (FAILED(hr))
++        return hr;
++    ID3D11DeviceContext_CopyResource(context, (ID3D11Resource *)staging, (ID3D11Resource *)texture);
++
++    if (FAILED(hr = D3DCreateBlob(size, &blob)))
++    {
++        ID3D11Texture2D_Release(staging);
++        return hr;
++    }
++    dst = ID3D10Blob_GetBufferPointer(blob);
++
++    memset(&header, 0, sizeof(header));
++    header.signature = ('D' | ('D' << 8) | ('S' << 16) | (' ' << 24));
++    header.size = sizeof(header) - FIELD_OFFSET(struct dds_header, size);
++    header.flags = DDS_CAPS | DDS_HEIGHT | DDS_WIDTH | DDS_PIXELFORMAT;
++    header.height = desc->Height;
++    header.width = desc->Width;
++    header.caps = DDS_CAPS_TEXTURE;
++    if (desc->MipLevels > 1)
++    {
++        header.flags |= DDS_MIPMAPCOUNT;
++        header.caps |= DDS_CAPS_MIPMAP | DDS_CAPS_COMPLEX;
++    }
++    header.miplevels = desc->MipLevels;
++    header.pixel_format.size = sizeof(header.pixel_format);
++    header.pixel_format.flags = DDS_PF_FOURCC;
++    header.pixel_format.fourcc = ('D' | ('X' << 8) | ('1' << 16) | ('0' << 24));
++    dxt10.dxgi_format = desc->Format;
++    dxt10.resource_dimension = D3D11_RESOURCE_DIMENSION_TEXTURE2D;
++    dxt10.array_size = desc->ArraySize;
++    if (desc->MiscFlags & D3D11_RESOURCE_MISC_TEXTURECUBE)
++    {
++        header.caps |= DDS_CAPS_COMPLEX;
++        header.caps2 |= DDS_CAPS2_CUBEMAP | DDS_CAPS2_CUBEMAP_ALL_FACES;
++        dxt10.misc_flags = D3D11_RESOURCE_MISC_TEXTURECUBE;
++        dxt10.array_size = desc->ArraySize / 6;
++    }
++    memcpy(dst, &header, sizeof(header));
++    memcpy(dst + sizeof(header), &dxt10, sizeof(dxt10));
++    offset = sizeof(header) + sizeof(dxt10);
++
++    for (layer = 0; layer < desc->ArraySize && SUCCEEDED(hr); ++layer)
++    {
++        for (level = 0; level < desc->MipLevels; ++level)
++        {
++            unsigned int sub = level + layer * desc->MipLevels;
++
++            d3dx_calculate_pixels_size(format, max(1, desc->Width >> level),
++                    max(1, desc->Height >> level), &row_pitch, &slice_pitch);
++            if (FAILED(hr = ID3D11DeviceContext_Map(context, (ID3D11Resource *)staging, sub, D3D11_MAP_READ, 0, &map)))
++                break;
++            rows = row_pitch ? slice_pitch / row_pitch : 0;
++            for (y = 0; y < rows; ++y)
++                memcpy(dst + offset + (SIZE_T)y * row_pitch, (const uint8_t *)map.pData + (SIZE_T)y * map.RowPitch, row_pitch);
++            ID3D11DeviceContext_Unmap(context, (ID3D11Resource *)staging, sub);
++            offset += slice_pitch;
++        }
++    }
++    ID3D11Texture2D_Release(staging);
++
++    if (FAILED(hr))
++    {
++        ID3D10Blob_Release(blob);
++        return hr;
++    }
++    *buffer = blob;
++    return S_OK;
+ }
+ 
+ HRESULT WINAPI D3DX11SaveTextureToMemory(ID3D11DeviceContext *context, ID3D11Resource *texture,
+         D3DX11_IMAGE_FILE_FORMAT format, ID3D10Blob **buffer, UINT flags)
+ {
+-    FIXME("context %p, texture %p, format %u, buffer %p, flags %#x stub!\n",
++    const struct pixel_format_desc *fmt_desc;
++    D3D11_MAPPED_SUBRESOURCE map;
++    D3D11_RESOURCE_DIMENSION dimension;
++    D3D11_TEXTURE2D_DESC desc;
++    ID3D11Texture2D *staging = NULL;
++    ID3D11Resource *src = texture;
++    struct d3dx_buffer dst_buffer;
++    struct d3dx_pixels pixels;
++    ID3D11Device *device;
++    HRESULT hr;
++
++    TRACE("context %p, texture %p, format %u, buffer %p, flags %#x.\n",
+             context, texture, format, buffer, flags);
+ 
+-    return E_NOTIMPL;
++    if (!context || !texture || !buffer)
++        return E_INVALIDARG;
++    *buffer = NULL;
++
++    ID3D11Resource_GetType(texture, &dimension);
++    if (dimension != D3D11_RESOURCE_DIMENSION_TEXTURE2D)
++    {
++        FIXME("Unhandled resource dimension %u.\n", dimension);
++        return E_NOTIMPL;
++    }
++    ID3D11Texture2D_GetDesc((ID3D11Texture2D *)texture, &desc);
++    fmt_desc = get_d3dx_pixel_format_info(d3dx_pixel_format_id_from_dxgi_format(desc.Format));
++    if (fmt_desc->format == D3DX_PIXEL_FORMAT_COUNT)
++    {
++        FIXME("Unhandled DXGI format %#x.\n", desc.Format);
++        return E_NOTIMPL;
++    }
++
++    if (format == D3DX11_IFF_DDS)
++    {
++        hr = save_texture2d_to_dds(context, (ID3D11Texture2D *)texture, &desc, fmt_desc->format, buffer);
++        if (FAILED(hr))
++            WARN("Failed to save DXGI format %#x to DDS, hr %#lx.\n", desc.Format, hr);
++        return hr;
++    }
++    if (desc.MipLevels > 1 || desc.ArraySize > 1)
++        TRACE("Saving the first subresource of %u mips, %u layers.\n", desc.MipLevels, desc.ArraySize);
++
++    if (desc.Usage != D3D11_USAGE_STAGING || !(desc.CPUAccessFlags & D3D11_CPU_ACCESS_READ)
++            || desc.SampleDesc.Count > 1)
++    {
++        D3D11_TEXTURE2D_DESC staging_desc = desc;
++
++        staging_desc.MipLevels = 1;
++        staging_desc.ArraySize = 1;
++        staging_desc.SampleDesc.Count = 1;
++        staging_desc.SampleDesc.Quality = 0;
++        staging_desc.Usage = D3D11_USAGE_STAGING;
++        staging_desc.BindFlags = 0;
++        staging_desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
++        staging_desc.MiscFlags = 0;
++
++        ID3D11DeviceContext_GetDevice(context, &device);
++        hr = ID3D11Device_CreateTexture2D(device, &staging_desc, NULL, &staging);
++        ID3D11Device_Release(device);
++        if (FAILED(hr))
++            return hr;
++        if (desc.SampleDesc.Count > 1)
++            ID3D11DeviceContext_ResolveSubresource(context, (ID3D11Resource *)staging, 0, texture, 0, desc.Format);
++        else
++            ID3D11DeviceContext_CopySubresourceRegion(context, (ID3D11Resource *)staging, 0, 0, 0, 0, texture, 0, NULL);
++        src = (ID3D11Resource *)staging;
++    }
++
++    if (FAILED(hr = ID3D11DeviceContext_Map(context, src, 0, D3D11_MAP_READ, 0, &map)))
++        goto done;
++
++    hr = d3dx_pixels_init(map.pData, map.RowPitch, map.DepthPitch, NULL, fmt_desc->format,
++            0, 0, desc.Width, desc.Height, 0, 1, &pixels);
++    if (SUCCEEDED(hr))
++        hr = d3dx_save_pixels_to_memory(&pixels, fmt_desc, (enum d3dx_image_file_format)format,
++                &d3dx11_buffer_wrapper, &dst_buffer);
++    ID3D11DeviceContext_Unmap(context, src, 0);
++    if (SUCCEEDED(hr))
++        *buffer = (ID3D10Blob *)dst_buffer.buffer_iface;
++    else
++        WARN("Failed to save DXGI format %#x to file format %u, hr %#lx.\n", desc.Format, format, hr);
++
++done:
++    if (staging)
++        ID3D11Texture2D_Release(staging);
++    return hr;
++}
++
++HRESULT WINAPI D3DX11SaveTextureToFileW(ID3D11DeviceContext *context, ID3D11Resource *texture,
++        D3DX11_IMAGE_FILE_FORMAT format, const WCHAR *filename)
++{
++    ID3D10Blob *blob;
++    DWORD written;
++    HANDLE file;
++    HRESULT hr;
++
++    TRACE("context %p, texture %p, format %u, filename %s.\n",
++            context, texture, format, debugstr_w(filename));
++
++    if (!filename)
++        return E_INVALIDARG;
++    if (FAILED(hr = D3DX11SaveTextureToMemory(context, texture, format, &blob, 0)))
++        return hr;
++
++    file = CreateFileW(filename, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
++    if (file == INVALID_HANDLE_VALUE)
++        hr = HRESULT_FROM_WIN32(GetLastError());
++    else
++    {
++        if (!WriteFile(file, ID3D10Blob_GetBufferPointer(blob), ID3D10Blob_GetBufferSize(blob), &written, NULL))
++            hr = HRESULT_FROM_WIN32(GetLastError());
++        CloseHandle(file);
++    }
++    ID3D10Blob_Release(blob);
++    return hr;
++}
++
++HRESULT WINAPI D3DX11SaveTextureToFileA(ID3D11DeviceContext *context, ID3D11Resource *texture,
++        D3DX11_IMAGE_FILE_FORMAT format, const char *filename)
++{
++    WCHAR *buffer;
++    int len;
++    HRESULT hr;
++
++    TRACE("context %p, texture %p, format %u, filename %s.\n",
++            context, texture, format, debugstr_a(filename));
++
++    if (!filename)
++        return E_INVALIDARG;
++    if (!(len = MultiByteToWideChar(CP_ACP, 0, filename, -1, NULL, 0)))
++        return HRESULT_FROM_WIN32(GetLastError());
++    if (!(buffer = malloc(len * sizeof(*buffer))))
++        return E_OUTOFMEMORY;
++    MultiByteToWideChar(CP_ACP, 0, filename, -1, buffer, len);
++    hr = D3DX11SaveTextureToFileW(context, texture, format, buffer);
++    free(buffer);
++    return hr;
+ }
+ 
+ HRESULT WINAPI D3DX11LoadTextureFromTexture(ID3D11DeviceContext *context, ID3D11Resource *src_texture,
+-- 
+2.54.0 (Apple Git-157)
+
