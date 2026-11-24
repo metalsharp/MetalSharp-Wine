@@ -86,7 +86,11 @@ static HRESULT WINAPI d3dcompiler_include_from_file_open(ID3DInclude *iface, D3D
     ULONG read;
     DWORD len;
 
-    if ((initial_dir = strrchr(include->initial_filename, '\\')))
+    /* Paths may use either separator (e.g. Custom Shaders Patch's "...\\shaders/clouds.fx"). */
+    initial_dir = strrchr(include->initial_filename, '\\');
+    if (!initial_dir || (strrchr(include->initial_filename, '/') > initial_dir))
+        initial_dir = strrchr(include->initial_filename, '/');
+    if (initial_dir)
     {
         len = initial_dir - include->initial_filename + 1;
         initial_dir = include->initial_filename;
