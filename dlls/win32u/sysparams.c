@@ -167,6 +167,7 @@ static pthread_mutex_t display_lock = PTHREAD_MUTEX_INITIALIZER;
 
 BOOL emulate_modeset = FALSE;
 BOOL decorated_mode = TRUE;
+BOOL use_egl = TRUE;
 UINT64 thunk_lock_callback = 0;
 
 #define VIRTUAL_HMONITOR ((HMONITOR)(UINT_PTR)(0x10000 + 1))
@@ -1830,6 +1831,12 @@ static BOOL write_gpu_to_registry( const struct gpu *gpu, const struct pci_id *p
     set_reg_value( hkey, memory_sizeW, REG_DWORD, &value, sizeof(value) );
 
     set_reg_ascii_value( hkey, "DriverVersion", driver_vendor_to_version( pci->vendor ) );
+    if (pci->vendor == 0x1002 /* AMD */)
+    {
+        set_reg_ascii_value( hkey, "RadeonSoftwareEdition", "AMD Software: Adrenalin Edition" );
+        /* some version in the future */
+        set_reg_ascii_value( hkey, "RadeonSoftwareVersion", "28.10.10" );
+    }
     NtClose( hkey );
 
 
@@ -2277,7 +2284,7 @@ static UINT add_screen_size( SIZE *sizes, UINT count, SIZE size )
     while (i < count && memcmp( sizes + i, &size, sizeof(size) )) i++;
     if (i < count) return 0;
 
-    TRACE( "adding size %s\n", wine_dbgstr_point((POINT *)&size) );
+    TRACE( "adding size %s\n", debugstr_size( &size ) );
     sizes[i] = size;
     return 1;
 }
@@ -2497,14 +2504,14 @@ static void free_gpu_infos( struct list *infos )
 
 static void release_display_manager_ctx( struct device_manager_ctx *ctx )
 {
+    if (!list_empty( &sources )) last_query_display_time = 0;
+    if (ctx->gpu_count) cleanup_devices();
+
     if (ctx->mutex)
     {
         release_display_device_init_mutex( ctx->mutex );
         ctx->mutex = 0;
     }
-
-    if (!list_empty( &sources )) last_query_display_time = 0;
-    if (ctx->gpu_count) cleanup_devices();
 
     free_gpu_infos( &ctx->vulkan_gpus );
     free_gpu_infos( &ctx->opengl_gpus );
@@ -6307,6 +6314,8 @@ void sysparams_init(void)
         grab_fullscreen = IS_OPTION_TRUE( buffer[0] );
     if (!get_config_key( hkey, appkey, "Decorated", buffer, sizeof(buffer) ))
         decorated_mode = IS_OPTION_TRUE( buffer[0] );
+    if (!get_config_key( hkey, appkey, "UseEGL", buffer, sizeof(buffer) ))
+        use_egl = IS_OPTION_TRUE( buffer[0] );
     if (!get_config_key( hkey, appkey, "EmulateModeset", buffer, sizeof(buffer) ))
         emulate_modeset = IS_OPTION_TRUE( buffer[0] );
     /* MetalSharp: a game shown a display divided by its MetalFX factor changes modes as emulated ones */

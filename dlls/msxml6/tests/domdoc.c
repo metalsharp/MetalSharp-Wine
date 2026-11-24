@@ -1195,7 +1195,7 @@ static void test_dtd_validation(void)
     hr = IXMLDOMParseError_get_errorCode(err, &res);
     ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
     /* XML_ELEMENT_ID_NOT_FOUND */
-    todo_wine ok(res == 0xC00CE00E, "Unexpected code %#lx.\n", res);
+    ok(res == 0xc00ce00e, "Unexpected code %#lx.\n", res);
     IXMLDOMParseError_Release(err);
 
     hr = IXMLDOMDocument2_loadXML(doc, _bstr_(email_xml_11), NULL);
@@ -1207,7 +1207,7 @@ static void test_dtd_validation(void)
     hr = IXMLDOMParseError_get_errorCode(err, &res);
     ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
     /* XML_EMPTY_NOT_ALLOWED */
-    todo_wine ok(res == 0xC00CE011, "Unexpected code %#lx.\n", res);
+    ok(res == 0xc00ce011, "Unexpected code %#lx.\n", res);
     IXMLDOMParseError_Release(err);
 
     hr = IXMLDOMDocument2_loadXML(doc, _bstr_(email_xml_13), NULL);
@@ -1231,7 +1231,7 @@ static void test_dtd_validation(void)
     hr = IXMLDOMParseError_get_errorCode(err, &res);
     ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
     /* XML_INVALID_CONTENT */
-    todo_wine ok(res == 0xC00CE014, "Unexpected code %#lx.\n", res);
+    ok(res == 0xc00ce014, "Unexpected code %#lx.\n", res);
     IXMLDOMParseError_Release(err);
 
     hr = IXMLDOMDocument2_loadXML(doc, _bstr_(email_xml_14_1), NULL);
@@ -1292,7 +1292,7 @@ static void test_dtd_validation(void)
     hr = IXMLDOMParseError_get_errorCode(err, &res);
     ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
     /* XML_ILLEGAL_TEXT */
-    todo_wine ok(res == 0xC00CE018, "Unexpected code %#lx.\n", res);
+    ok(res == 0xc00ce018, "Unexpected code %#lx.\n", res);
     IXMLDOMParseError_Release(err);
 
     hr = IXMLDOMDocument2_loadXML(doc, _bstr_(email_xml_18_1), NULL);
@@ -1311,14 +1311,12 @@ static void test_dtd_validation(void)
     ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
     err = NULL;
     hr = IXMLDOMDocument2_validate(doc, &err);
-    todo_wine
     ok(hr == S_FALSE, "Unexpected hr %#lx.\n", hr);
     res = 0;
     hr = IXMLDOMParseError_get_errorCode(err, &res);
-    todo_wine
     ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
     /* XML_REQUIRED_ATTRIBUTE_MISSING */
-    todo_wine ok(res == 0xC00CE020, "Unexpected code %#lx.\n", res);
+    ok(res == 0xc00ce020, "Unexpected code %#lx.\n", res);
     IXMLDOMParseError_Release(err);
 
     /* Multiple validation errors */
@@ -1563,6 +1561,7 @@ static void test_encoding(void)
 
 static void test_validateNode(void)
 {
+    IXMLDOMDocumentFragment *frag;
     IXMLDOMDocumentType *doctype;
     IXMLDOMNamedNodeMap *attrs;
     IXMLDOMElement *element;
@@ -1623,7 +1622,6 @@ static void test_validateNode(void)
     hr = IXMLDOMDocument3_get_documentElement(doc, &element);
     ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
     hr = IXMLDOMDocument3_validateNode(doc, (IXMLDOMNode *)element, &err);
-    todo_wine
     ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
     IXMLDOMParseError_Release(err);
 
@@ -1632,7 +1630,6 @@ static void test_validateNode(void)
     hr = IXMLDOMNamedNodeMap_get_item(attrs, 0, &node);
     ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
     hr = IXMLDOMDocument3_validateNode(doc, node, &err);
-    todo_wine
     ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
     IXMLDOMParseError_Release(err);
     IXMLDOMNode_Release(node);
@@ -1645,9 +1642,68 @@ static void test_validateNode(void)
     hr = IXMLDOMAttribute_put_text(attr, _bstr_(L"value"));
     ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
     hr = IXMLDOMDocument3_validateNode(doc, (IXMLDOMNode *)attr, &err);
-    todo_wine
     ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
     IXMLDOMAttribute_Release(attr);
+
+    /* Validate fragment. */
+    hr = IXMLDOMDocument3_createDocumentFragment(doc, &frag);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+
+    hr = IXMLDOMDocument3_validateNode(doc, (IXMLDOMNode *)frag, &err);
+    ok(hr == S_FALSE, "Unexpected hr %#lx.\n", hr);
+    hr = IXMLDOMParseError_get_errorCode(err, &res);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    /* Can't use validateNode() on document fragments. */
+    ok(res == 0xc00ce208, "Unexpected code %#lx.\n", res);
+    IXMLDOMParseError_Release(err);
+
+    hr = IXMLDOMDocument3_createElement(doc, _bstr_(L"to"), &element);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    hr = IXMLDOMElement_put_text(element, _bstr_(L"wine-patches@winehq.org"));
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+
+    hr = IXMLDOMDocumentFragment_appendChild(frag, (IXMLDOMNode *)element, NULL);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+
+    hr = IXMLDOMDocument3_validateNode(doc, (IXMLDOMNode *)frag, &err);
+    ok(hr == S_FALSE, "Unexpected hr %#lx.\n", hr);
+    hr = IXMLDOMParseError_get_errorCode(err, &res);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    /* Can't use validateNode() on document fragments. */
+    ok(res == 0xc00ce208, "Unexpected code %#lx.\n", res);
+    IXMLDOMParseError_Release(err);
+
+    IXMLDOMElement_Release(element);
+    IXMLDOMDocumentFragment_Release(frag);
+
+    /* Validate detached element, that has same ID value as another in-tree element. */
+    hr = IXMLDOMDocument3_createElement(doc, _bstr_(L"attachment"), &element);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    hr = IXMLDOMElement_put_text(element, _bstr_(L"some-text"));
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    V_VT(&v) = VT_BSTR;
+    V_BSTR(&v) = _bstr_(L"patch1");
+    hr = IXMLDOMElement_setAttribute(element, _bstr_(L"id"), v);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+
+    /* Validated against existing tree. */
+    hr = IXMLDOMDocument3_validateNode(doc, (IXMLDOMNode *)element, &err);
+    ok(hr == S_FALSE, "Unexpected hr %#lx.\n", hr);
+    hr = IXMLDOMParseError_get_errorCode(err, &res);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    ok(res == 0xc00ce200, "Unexpected code %#lx.\n", res);
+    IXMLDOMParseError_Release(err);
+
+    V_VT(&v) = VT_BSTR;
+    V_BSTR(&v) = _bstr_(L"patch2");
+    hr = IXMLDOMElement_setAttribute(element, _bstr_(L"id"), v);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+
+    hr = IXMLDOMDocument3_validateNode(doc, (IXMLDOMNode *)element, &err);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    IXMLDOMParseError_Release(err);
+
+    IXMLDOMElement_Release(element);
 
     IXMLDOMDocument3_Release(doc);
 

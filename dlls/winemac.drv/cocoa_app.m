@@ -2527,15 +2527,7 @@ static void fkeys_apply(void)
 
     - (void)applicationWillBecomeActive:(NSNotification *)notification
     {
-        macdrv_event* event = macdrv_create_event(APP_ACTIVATED, nil);
-        event->deliver = 1;
-
-        [eventQueuesLock lock];
-        for (WineEventQueue* queue in eventQueues)
-            [queue postEvent:event];
-        [eventQueuesLock unlock];
-
-        macdrv_release_event(event);
+        macdrv_update_clipboard_async();
     }
 
     - (void)applicationWillResignActive:(NSNotification *)notification
@@ -2937,15 +2929,4 @@ void macdrv_set_cocoa_retina_mode(bool new_mode)
     OnMainThread(^{
         [[WineApplicationController sharedController] setRetinaMode:new_mode];
     });
-}
-
-bool macdrv_is_any_wine_window_visible(void)
-{
-    __block bool ret = false;
-
-    OnMainThread(^{
-        ret = [[WineApplicationController sharedController] isAnyWineWindowVisible];
-    });
-
-    return ret;
 }
