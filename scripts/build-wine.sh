@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Configure, build and install Wine 11.20 as native arm64 macOS (minos 15.0)
+# Configure, build and install Wine 11.22 as native arm64 macOS (minos 15.0)
 # with PE archs arm64ec (x86_64 via ARM64EC), aarch64 and i386 (WoW64).
 # Usage: build-wine.sh [configure|build|install|all]   (default: all)
 set -e

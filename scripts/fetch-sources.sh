@@ -1,7 +1,7 @@
 #!/bin/zsh
 # Check out the source trees the build scripts use, into src/. In a clone of this repository they
 # are submodules pinned to the commits a release was built from:
-#   src/wine         Wine 11.20 + MetalSharp (branch source/wine of this repository)
+#   src/wine         Wine 11.22 + MetalSharp (branch source/wine of this repository)
 #   src/FEX          FEX-2610 + MetalSharp (branch source/fex), with its own submodules
 #   src/winemetalgl  WineMetalGL, arm64 Wine module (branch source/winemetalgl)
 #   src/mullion      Mullion (DXMT fork, aaf2tbz/mullion); its work goes upstream as pull requests

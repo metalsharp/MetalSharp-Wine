@@ -6,7 +6,7 @@ The modified sources are kept in this repository as branches, and `main` links t
 
 | Submodule | Branch | Contents |
 |---|---|---|
-| `src/wine` | [`source/wine`](https://github.com/metalsharp/MetalSharp-Wine/tree/source/wine) | Wine 11.20 + WineForge + MetalSharp (`wine-11.20` tag plus 139 commits) |
+| `src/wine` | [`source/wine`](https://github.com/metalsharp/MetalSharp-Wine/tree/source/wine) | Wine 11.22 + WineForge + MetalSharp (`wine-11.22` tag plus 107 commits). `patches/wine` is the same work as patches against `wine-11.20`; the branch also merges Wine 11.22 and its macOS fixes (#64, #107) |
 | `src/wine-x86_64` | [`source/wine-x86_64`](https://github.com/metalsharp/MetalSharp-Wine/tree/source/wine-x86_64) | **x86_64 build:** Wine 11.17 as ported by WineForge, plus 59 MetalSharp commits. `scripts/fetch-sources.sh x86_64` fetches it ([`docs/X86_64.md`](X86_64.md)) |
 | `src/FEX` | [`source/fex`](https://github.com/metalsharp/MetalSharp-Wine/tree/source/fex) | FEX-2610 + MetalSharp (34 commits). It is not upstreamed |
 | `src/winemetalgl` | [`source/winemetalgl`](https://github.com/metalsharp/MetalSharp-Wine/tree/source/winemetalgl) | WineMetalGL's arm64 Wine module |
