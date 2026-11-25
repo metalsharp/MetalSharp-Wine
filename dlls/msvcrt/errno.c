@@ -330,6 +330,41 @@ char* CDECL _strerror(const char* str)
     return data->strerror_buffer;
 }
 
+#if _MSVCR_VER >= 80
+
+/**********************************************************************
+ *		_strerror_s	(MSVCR80.@)
+ */
+int CDECL _strerror_s(char *buffer, size_t nc, const char *str)
+{
+    const char *msg;
+    size_t len = 0;
+    int err;
+
+    if (!MSVCRT_CHECK_PMT(buffer != NULL)) return EINVAL;
+    if (!MSVCRT_CHECK_PMT(nc > 0)) return EINVAL;
+
+    err = *_errno();
+    if (err < 0 || err > MSVCRT__sys_nerr) err = MSVCRT__sys_nerr;
+    msg = MSVCRT__sys_errlist[err];
+
+    /* "str: message", or the message alone without str. Unlike _strerror there
+     * is no trailing newline, and the result is truncated to fit the buffer. */
+    buffer[0] = '\0';
+    if (str && *str)
+    {
+        while (*str && len < nc - 1) buffer[len++] = *str++;
+        if (len < nc - 1) buffer[len++] = ':';
+        if (len < nc - 1) buffer[len++] = ' ';
+    }
+    while (*msg && len < nc - 1) buffer[len++] = *msg++;
+    buffer[len] = '\0';
+
+    return 0;
+}
+
+#endif /* _MSVCR_VER >= 80 */
+
 /*********************************************************************
  *		perror (MSVCRT.@)
  */
