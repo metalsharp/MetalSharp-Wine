@@ -1,0 +1,240 @@
+From 2864a90318c3cf0fdf0e46aec9b1494a6a06aa8f Mon Sep 17 00:00:00 2001
+From: Mason <masond3v@protonmail.com>
+Date: Wed, 25 Nov 2026 18:25:44 -0500
+Subject: [PATCH 204/204] msvcrt: Implement _strerror_s.
+
+ucrtbase and msvcr80 to msvcr120 exported _strerror_s as a stub, so a
+program that formats an error message with it aborted. GTA V Enhanced's
+Epic Games launcher (PlayGTAV.exe) calls it while it prepares the Epic
+launch, and stopped there before the Rockstar Games Launcher started.
+
+The message is "str: <message for errno>", or the message alone when
+str is NULL or empty, with no trailing newline, truncated to the buffer
+like strerror_s.
+---
+ dlls/msvcr100/msvcr100.spec         |  2 +-
+ dlls/msvcr110/msvcr110.spec         |  2 +-
+ dlls/msvcr120/msvcr120.spec         |  2 +-
+ dlls/msvcr120_app/msvcr120_app.spec |  2 +-
+ dlls/msvcr80/msvcr80.spec           |  2 +-
+ dlls/msvcr90/msvcr90.spec           |  2 +-
+ dlls/msvcrt/errno.c                 | 35 +++++++++++++++++++++++++++++
+ dlls/ucrtbase/tests/misc.c          | 30 +++++++++++++++++++++++++
+ dlls/ucrtbase/ucrtbase.spec         |  4 ++--
+ include/msvcrt/string.h             |  1 +
+ 10 files changed, 74 insertions(+), 8 deletions(-)
+
+diff --git a/dlls/msvcr100/msvcr100.spec b/dlls/msvcr100/msvcr100.spec
+index 348aa7e5e78..f09285b48db 100644
+--- a/dlls/msvcr100/msvcr100.spec
++++ b/dlls/msvcr100/msvcr100.spec
+@@ -1511,7 +1511,7 @@
+ @ cdecl _strdate_s(ptr long)
+ @ cdecl _strdup(str)
+ @ cdecl _strerror(long)
+-@ stub _strerror_s
++@ cdecl _strerror_s(ptr long str)
+ @ cdecl _strftime_l(ptr long str ptr ptr)
+ @ cdecl _stricmp(str str)
+ @ cdecl _stricmp_l(str str ptr)
+diff --git a/dlls/msvcr110/msvcr110.spec b/dlls/msvcr110/msvcr110.spec
+index 00a3657ae8e..64392b17c24 100644
+--- a/dlls/msvcr110/msvcr110.spec
++++ b/dlls/msvcr110/msvcr110.spec
+@@ -1697,7 +1697,7 @@
+ @ cdecl _strdate_s(ptr long)
+ @ cdecl _strdup(str)
+ @ cdecl _strerror(long)
+-@ stub _strerror_s
++@ cdecl _strerror_s(ptr long str)
+ @ cdecl _strftime_l(ptr long str ptr ptr)
+ @ cdecl _stricmp(str str)
+ @ cdecl _stricmp_l(str str ptr)
+diff --git a/dlls/msvcr120/msvcr120.spec b/dlls/msvcr120/msvcr120.spec
+index d107ee059ad..1b43cd9c653 100644
+--- a/dlls/msvcr120/msvcr120.spec
++++ b/dlls/msvcr120/msvcr120.spec
+@@ -1709,7 +1709,7 @@
+ @ cdecl _strdate_s(ptr long)
+ @ cdecl _strdup(str)
+ @ cdecl _strerror(long)
+-@ stub _strerror_s
++@ cdecl _strerror_s(ptr long str)
+ @ cdecl _strftime_l(ptr long str ptr ptr)
+ @ cdecl _stricmp(str str)
+ @ cdecl _stricmp_l(str str ptr)
+diff --git a/dlls/msvcr120_app/msvcr120_app.spec b/dlls/msvcr120_app/msvcr120_app.spec
+index 8014857bda1..825f3823787 100644
+--- a/dlls/msvcr120_app/msvcr120_app.spec
++++ b/dlls/msvcr120_app/msvcr120_app.spec
+@@ -1420,7 +1420,7 @@
+ @ cdecl _strdate_s(ptr long) msvcr120._strdate_s
+ @ cdecl _strdup(str) msvcr120._strdup
+ @ cdecl _strerror(long) msvcr120._strerror
+-@ stub _strerror_s
++@ cdecl _strerror_s(ptr long str) msvcr120._strerror_s
+ @ cdecl _strftime_l(ptr long str ptr ptr) msvcr120._strftime_l
+ @ cdecl _stricmp(str str) msvcr120._stricmp
+ @ cdecl _stricmp_l(str str ptr) msvcr120._stricmp_l
+diff --git a/dlls/msvcr80/msvcr80.spec b/dlls/msvcr80/msvcr80.spec
+index 917a6e35d8c..1d4b32726b2 100644
+--- a/dlls/msvcr80/msvcr80.spec
++++ b/dlls/msvcr80/msvcr80.spec
+@@ -1043,7 +1043,7 @@
+ @ cdecl _strdate_s(ptr long)
+ @ cdecl _strdup(str)
+ @ cdecl _strerror(long)
+-@ stub _strerror_s
++@ cdecl _strerror_s(ptr long str)
+ @ cdecl _strftime_l(ptr long str ptr ptr)
+ @ cdecl _stricmp(str str)
+ @ cdecl _stricmp_l(str str ptr)
+diff --git a/dlls/msvcr90/msvcr90.spec b/dlls/msvcr90/msvcr90.spec
+index d5a7c49c4ba..c71ade876ec 100644
+--- a/dlls/msvcr90/msvcr90.spec
++++ b/dlls/msvcr90/msvcr90.spec
+@@ -1018,7 +1018,7 @@
+ @ cdecl _strdate_s(ptr long)
+ @ cdecl _strdup(str)
+ @ cdecl _strerror(long)
+-@ stub _strerror_s
++@ cdecl _strerror_s(ptr long str)
+ @ cdecl _strftime_l(ptr long str ptr ptr)
+ @ cdecl _stricmp(str str)
+ @ cdecl _stricmp_l(str str ptr)
+diff --git a/dlls/msvcrt/errno.c b/dlls/msvcrt/errno.c
+index e011eff46aa..27546445e51 100644
+--- a/dlls/msvcrt/errno.c
++++ b/dlls/msvcrt/errno.c
+@@ -330,6 +330,41 @@ char* CDECL _strerror(const char* str)
+     return data->strerror_buffer;
+ }
+ 
++#if _MSVCR_VER >= 80
++
++/**********************************************************************
++ *		_strerror_s	(MSVCR80.@)
++ */
++int CDECL _strerror_s(char *buffer, size_t nc, const char *str)
++{
++    const char *msg;
++    size_t len = 0;
++    int err;
++
++    if (!MSVCRT_CHECK_PMT(buffer != NULL)) return EINVAL;
++    if (!MSVCRT_CHECK_PMT(nc > 0)) return EINVAL;
++
++    err = *_errno();
++    if (err < 0 || err > MSVCRT__sys_nerr) err = MSVCRT__sys_nerr;
++    msg = MSVCRT__sys_errlist[err];
++
++    /* "str: message", or the message alone without str. Unlike _strerror there
++     * is no trailing newline, and the result is truncated to fit the buffer. */
++    buffer[0] = '\0';
++    if (str && *str)
++    {
++        while (*str && len < nc - 1) buffer[len++] = *str++;
++        if (len < nc - 1) buffer[len++] = ':';
++        if (len < nc - 1) buffer[len++] = ' ';
++    }
++    while (*msg && len < nc - 1) buffer[len++] = *msg++;
++    buffer[len] = '\0';
++
++    return 0;
++}
++
++#endif /* _MSVCR_VER >= 80 */
++
+ /*********************************************************************
+  *		perror (MSVCRT.@)
+  */
+diff --git a/dlls/ucrtbase/tests/misc.c b/dlls/ucrtbase/tests/misc.c
+index 96307151f28..aa4c16e2d8f 100644
+--- a/dlls/ucrtbase/tests/misc.c
++++ b/dlls/ucrtbase/tests/misc.c
+@@ -19,6 +19,7 @@
+ #include <errno.h>
+ #include <stdarg.h>
+ #include <stdlib.h>
++#include <string.h>
+ #include <wchar.h>
+ #include <stdio.h>
+ #include <math.h>
+@@ -2211,6 +2212,34 @@ static void test_rint(void)
+     fesetround(rounding_mode);
+ }
+ 
++static void test__strerror_s(void)
++{
++    char buf[256];
++    int ret;
++
++    errno = ENOENT;
++    ret = _strerror_s(buf, sizeof(buf), NULL);
++    ok(!ret, "ret = %d\n", ret);
++    ok(!strcmp(buf, "No such file or directory"), "buf = %s\n", buf);
++
++    errno = ENOENT;
++    ret = _strerror_s(buf, sizeof(buf), "");
++    ok(!ret, "ret = %d\n", ret);
++    ok(!strcmp(buf, "No such file or directory"), "buf = %s\n", buf);
++
++    errno = ENOENT;
++    ret = _strerror_s(buf, sizeof(buf), "open");
++    ok(!ret, "ret = %d\n", ret);
++    ok(!strcmp(buf, "open: No such file or directory"), "buf = %s\n", buf);
++    ok(errno == ENOENT, "errno = %d\n", errno);
++
++    errno = ENOENT;
++    memset(buf, 'x', sizeof(buf));
++    ret = _strerror_s(buf, 8, "open");
++    ok(!ret, "ret = %d\n", ret);
++    ok(!strcmp(buf, "open: N"), "buf = %s\n", buf);
++}
++
+ START_TEST(misc)
+ {
+     int arg_c;
+@@ -2265,4 +2294,5 @@ START_TEST(misc)
+     test_carg();
+     test_cargf();
+     test_rint();
++    test__strerror_s();
+ }
+diff --git a/dlls/ucrtbase/ucrtbase.spec b/dlls/ucrtbase/ucrtbase.spec
+index 25dd65c03a1..a424f271a29 100644
+--- a/dlls/ucrtbase/ucrtbase.spec
++++ b/dlls/ucrtbase/ucrtbase.spec
+@@ -1362,7 +1362,7 @@
+ @ cdecl _o__strdate_s(ptr long) _strdate_s
+ @ cdecl _o__strdup(str) _strdup
+ @ cdecl _o__strerror(long) _strerror
+-@ stub _o__strerror_s
++@ cdecl _o__strerror_s(ptr long str) _strerror_s
+ @ cdecl _o__strftime_l(ptr long str ptr ptr) _strftime_l
+ @ cdecl _o__stricmp(str str) _stricmp
+ @ cdecl _o__stricmp_l(str str ptr) _stricmp_l
+@@ -1929,7 +1929,7 @@
+ @ cdecl _strdate_s(ptr long)
+ @ cdecl _strdup(str)
+ @ cdecl _strerror(long)
+-@ stub _strerror_s
++@ cdecl _strerror_s(ptr long str)
+ @ cdecl _strftime_l(ptr long str ptr ptr)
+ @ cdecl _stricmp(str str)
+ @ cdecl _stricmp_l(str str ptr)
+diff --git a/include/msvcrt/string.h b/include/msvcrt/string.h
+index 24279394e2e..5f0cd1b09b4 100644
+--- a/include/msvcrt/string.h
++++ b/include/msvcrt/string.h
+@@ -25,6 +25,7 @@ _ACRTIMP int   __cdecl _strcmpi(const char*,const char*);
+ _ACRTIMP int   __cdecl _strcoll_l(const char*, const char*, _locale_t);
+ _ACRTIMP char* __cdecl _strdup(const char*) __WINE_DEALLOC(free) __WINE_MALLOC;
+ _ACRTIMP char* __cdecl _strerror(const char*);
++_ACRTIMP errno_t __cdecl _strerror_s(char*,size_t,const char*);
+ _ACRTIMP errno_t __cdecl strerror_s(char*,size_t,int);
+ _ACRTIMP int   __cdecl _stricmp(const char*,const char*);
+ _ACRTIMP int   __cdecl _stricoll(const char*,const char*);
+-- 
+2.54.0 (Apple Git-157)
+
