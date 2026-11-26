@@ -130,6 +130,76 @@ static void *clone_environment_with_var( const void *base_env, const WCHAR *name
     return env;
 }
 
+static BOOL is_epic_updater_image( const WCHAR *path )
+{
+    static const WCHAR suffix[] =
+        L"\\Epic Games\\Launcher\\Portal\\Binaries\\Win64\\EpicGamesUpdater.exe";
+    const WCHAR *end;
+    SIZE_T length = ARRAY_SIZE(suffix) - 1, i;
+
+    if (!path) return FALSE;
+    while (*path == ' ' || *path == '\t') ++path;
+    end = path + wcslen(path);
+    while (end > path && (end[-1] == ' ' || end[-1] == '\t')) --end;
+    if (end - path >= 2 && *path == '"' && end[-1] == '"')
+    {
+        ++path;
+        --end;
+    }
+    if ((SIZE_T)(end - path) < length) return FALSE;
+    path = end - length;
+    for (i = 0; i < length; ++i)
+    {
+        WCHAR a = path[i], b = suffix[i];
+        if (a == '/') a = '\\';
+        if (towupper(a) != towupper(b)) return FALSE;
+    }
+    return TRUE;
+}
+
+static void *get_epic_updater_environment( void **free_env )
+{
+    static const WCHAR *names[] = {L"GRAPHICS_BACKEND", L"ACTIVE_GRAPHICS_BACKEND",
+                                  L"WFDXCOMPAT_RUNTIME_DIR", L"D3DMETAL_RUNTIME_DIR"};
+    void *copy = NULL, *next;
+    WCHAR *value;
+    DWORD size, length, error;
+    unsigned int i;
+
+    if (!environment) return NULL;
+    for (i = 0; i < ARRAY_SIZE(names); ++i)
+    {
+        SetLastError(ERROR_SUCCESS);
+        size = GetEnvironmentVariableW(names[i], NULL, 0);
+        error = GetLastError();
+        if (!size && error == ERROR_ENVVAR_NOT_FOUND) continue;
+        if (!size && error != ERROR_SUCCESS) goto failed;
+        if (!size) size = 1;
+        if (!(value = malloc(size * sizeof(WCHAR)))) goto failed;
+        value[0] = 0;
+        SetLastError(ERROR_SUCCESS);
+        length = GetEnvironmentVariableW(names[i], value, size);
+        error = GetLastError();
+        if (length >= size || (!length && error != ERROR_SUCCESS))
+        {
+            free(value);
+            goto failed;
+        }
+        next = clone_environment_with_var(copy ? copy : environment, names[i], value);
+        free(value);
+        if (!next) goto failed;
+        free(copy);
+        copy = next;
+    }
+    *free_env = copy;
+    return copy ? copy : environment;
+
+failed:
+    free(copy);
+    WINE_WARN("could not preserve Epic updater runtime identity\n");
+    return environment;
+}
+
 /*
  * MetalSharp launcher-compat: pass Epic's EOS session GUID to the service host.
  * MetalSharp-Internal: launcher-compat/epic-launcher-v1.
@@ -144,6 +214,11 @@ static void *get_service_process_environment( const WCHAR *path, DWORD service_a
     const WCHAR *client_id;
 
     *free_env = NULL;
+
+    /* CreateEnvironmentBlock deliberately excludes parent application settings.
+     * Keep this updater's WineForge runtime identity for its commandlet only. */
+    if (is_win64 && is_epic_updater_image(path))
+        return get_epic_updater_environment(free_env);
 
     if (!path || !wcsistr( path, eosh_hostW )) return environment;
     if (!(client_id = find_service_arg_value( service_argc, service_argv, client_idW ))) return environment;
@@ -927,6 +1002,37 @@ static DWORD get_service_binary_path(const struct service_entry *service_entry, 
     return ERROR_SUCCESS;
 }
 
+static WCHAR *get_windir_path( const WCHAR *path )
+{
+    WCHAR buffer[MAX_PATH];
+    int len = GetWindowsDirectoryW( buffer, MAX_PATH );
+    int len2 = wcslen( path );
+    WCHAR *ret = malloc( (len + len2 + 2) * sizeof(WCHAR) );
+    swprintf( ret, len + len2 + 2, L"%s\\%s", buffer, path );
+    return ret;
+}
+
+static BOOL get_binary_type(WCHAR *path, DWORD *type)
+{
+    BOOL ret = FALSE;
+    WCHAR *str = NULL;
+
+    if (!wcsnicmp( path, L"\\SystemRoot\\", 12 ))
+    {
+        path = str = get_windir_path( path + 12 );
+    }
+    else if (RtlDetermineDosPathNameType_U( path ) == RtlPathTypeRelative)
+    {
+        path = str = get_windir_path( path );
+    }
+    else if (!wcsncmp( path, L"\\??\\", 4 ))
+        path = path + 4;
+
+    ret = GetBinaryTypeW(path, type);
+    free(str);
+    return ret;
+}
+
 static DWORD get_winedevice_binary_path(struct service_entry *service_entry, WCHAR **path, BOOL *is_wow64)
 {
     WCHAR system_dir[MAX_PATH];
@@ -934,7 +1040,7 @@ static DWORD get_winedevice_binary_path(struct service_entry *service_entry, WCH
 
     if (!is_win64)
         *is_wow64 = FALSE;
-    else if (GetBinaryTypeW(*path, &type))
+    else if (get_binary_type(*path, &type))
         *is_wow64 = (type == SCS_32BIT_BINARY);
     else
         *is_wow64 = service_entry->is_wow64;

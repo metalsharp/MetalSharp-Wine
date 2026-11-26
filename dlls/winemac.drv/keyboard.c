@@ -29,10 +29,7 @@
 #endif
 
 #include "config.h"
-
 #include "macdrv.h"
-#include "winuser.h"
-#include "wine/server.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(keyboard);
 WINE_DECLARE_DEBUG_CHANNEL(key);
@@ -62,7 +59,7 @@ static BOOL is_ime_hkl( HKL hkl )
     case MAKELANGID(LANG_TIGRINYA, SUBLANG_TIGRINYA_ETHIOPIA): return TRUE;
     case MAKELANGID(LANG_VIETNAMESE, SUBLANG_VIETNAMESE_VIETNAM): return TRUE;
     case MAKELANGID(LANG_YI, SUBLANG_YI_PRC): return TRUE;
-    default: return (HIWORD(hkl) & 0xe000) == 0xe000;
+    default: return (HIWORD(hkl) & 0xf000) == 0xe000;
     }
 }
 
@@ -1040,13 +1037,14 @@ void macdrv_keyboard_changed(const macdrv_event *event)
     thread_data->keyboard_type = event->keyboard_changed.keyboard_type;
     thread_data->iso_keyboard = event->keyboard_changed.iso_keyboard;
     thread_data->active_keyboard_layout = macdrv_get_hkl_from_source(event->keyboard_changed.input_source);
+    thread_data->ime_open = macdrv_get_ime_open_status(event->keyboard_changed.input_source);
     thread_data->dead_key_state = 0;
 
     macdrv_compute_keyboard_layout(thread_data);
 
     NtUserActivateKeyboardLayout(thread_data->active_keyboard_layout, 0);
 
-    send_message(get_active_window(), WM_CANCELMODE, 0, 0);
+    send_message(get_active_window(GetCurrentThreadId()), WM_CANCELMODE, 0, 0);
 }
 
 
@@ -1144,69 +1142,6 @@ void macdrv_hotkey_press(const macdrv_event *event)
 
 
 /***********************************************************************
- *              ImeToAsciiEx (MACDRV.@)
- */
-UINT macdrv_ImeToAsciiEx(UINT vkey, UINT vsc, const BYTE *state, HIMC himc)
-{
-    struct macdrv_thread_data *thread_data = macdrv_thread_data();
-    unsigned int flags;
-    int keyc;
-    bool ret;
-    BOOL repeat = !!(vsc & KF_REPEAT);
-
-    TRACE("himc %p, vkey %#x state %p repeat %u\n",
-          himc, vkey, state, repeat);
-
-    if (!state) return STATUS_SUCCESS;
-
-    if (vsc & KF_UP)
-    {
-        /* Only key down events should be sent to the Cocoa input context. We do
-           not handle key ups, and instead let those go through as a normal
-           WM_KEYUP. */
-        return STATUS_NOT_IMPLEMENTED;
-    }
-
-    switch (vkey)
-    {
-        case VK_KANA:
-        case VK_KANJI:
-            TRACE("Skipping metakey\n");
-            return STATUS_NOT_IMPLEMENTED;
-    }
-
-    flags = thread_data->last_modifiers;
-    if (state[VK_SHIFT] & 0x80)
-        flags |= NX_SHIFTMASK;
-    else
-        flags &= ~(NX_SHIFTMASK | NX_DEVICELSHIFTKEYMASK | NX_DEVICERSHIFTKEYMASK);
-    if (state[VK_CAPITAL] & 0x01)
-        flags |= NX_ALPHASHIFTMASK;
-    else
-        flags &= ~NX_ALPHASHIFTMASK;
-    if (state[VK_CONTROL] & 0x80)
-        flags |= NX_CONTROLMASK;
-    else
-        flags &= ~(NX_CONTROLMASK | NX_DEVICELCTLKEYMASK | NX_DEVICERCTLKEYMASK);
-    if (state[VK_MENU] & 0x80)
-        flags |= NX_COMMANDMASK;
-    else
-        flags &= ~(NX_COMMANDMASK | NX_DEVICELCMDKEYMASK | NX_DEVICERCMDKEYMASK);
-
-    /* Find the Mac keycode corresponding to the scan code */
-    for (keyc = 0; keyc < ARRAY_SIZE(thread_data->keyc2vkey); keyc++)
-        if (thread_data->keyc2vkey[keyc] == vkey) break;
-
-    if (keyc >= ARRAY_SIZE(thread_data->keyc2vkey)) return 0;
-
-    TRACE("flags 0x%08x keyc 0x%04x\n", flags, keyc);
-    ret = macdrv_send_keydown_to_input_source(keyc, flags, repeat, himc);
-    NtUserMsgWaitForMultipleObjectsEx(0, NULL, 0, QS_POSTMESSAGE | QS_SENDMESSAGE, 0);
-    return ret ? STATUS_SUCCESS : STATUS_NOT_IMPLEMENTED;
-}
-
-
-/***********************************************************************
  *              ActivateKeyboardLayout (MACDRV.@)
  */
 BOOL macdrv_ActivateKeyboardLayout(HKL hkl, UINT flags)
@@ -1217,10 +1152,8 @@ BOOL macdrv_ActivateKeyboardLayout(HKL hkl, UINT flags)
 
     TRACE("hkl %p flags %04x\n", hkl, flags);
 
-    NtUserPostMessage( NULL, WM_WINE_IME_NOTIFY, IMN_WINE_SET_OPEN_STATUS, is_ime_hkl(hkl) );
-
     if (hkl == thread_data->active_keyboard_layout)
-        return TRUE;
+        goto done;
 
     pthread_mutex_lock(&layout_list_mutex);
     update_layout_list();
@@ -1249,6 +1182,7 @@ BOOL macdrv_ActivateKeyboardLayout(HKL hkl, UINT flags)
                 macdrv_get_input_source_info(&thread_data->keyboard_layout_uchr, &thread_data->keyboard_type,
                                              &thread_data->iso_keyboard, NULL);
                 thread_data->active_keyboard_layout = hkl;
+                thread_data->ime_open = macdrv_get_ime_open_status(layout->input_source);
                 thread_data->dead_key_state = 0;
 
                 macdrv_compute_keyboard_layout(thread_data);
@@ -1258,7 +1192,11 @@ BOOL macdrv_ActivateKeyboardLayout(HKL hkl, UINT flags)
     }
     pthread_mutex_unlock(&layout_list_mutex);
 
-    return ret;
+    if (!ret) return FALSE;
+
+done:
+    NtUserPostMessage( NULL, WM_WINE_IME_NOTIFY, IMN_WINE_SET_OPEN_STATUS, thread_data->ime_open );
+    return TRUE;
 }
 
 

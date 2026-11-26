@@ -1348,7 +1348,9 @@ INT WINAPI NtGdiGetDIBitsInternal( HDC hdc, HBITMAP hbitmap, UINT startscan, UIN
 
     if (err) goto done;
 
-    if (!is_bitmapobj_dib( bmp ) && (src_info->bmiHeader.biBitCount != 1 && src_info->bmiHeader.biBitCount != 32))
+    if (!is_bitmapobj_dib( bmp ) && NtGdiGetDeviceCaps( hdc, TECHNOLOGY ) == DT_RASDISPLAY &&
+        src_info->bmiHeader.biBitCount != 1 && src_info->bmiHeader.biBitCount != 32 &&
+        !(src_info->bmiHeader.biBitCount == 8 && NtGdiGetDeviceCaps( hdc, BITSPIXEL ) == 8))
         goto done;
 
     /* fill out the src colour table, if it needs one */
@@ -1542,7 +1544,7 @@ HBITMAP WINAPI NtGdiCreateDIBSection( HDC hdc, HANDLE section, DWORD offset, con
 
         map_offset.QuadPart = offset - (offset % system_info.AllocationGranularity);
         map_size = bmp->dib.dsBmih.biSizeImage + (offset - map_offset.QuadPart);
-        if (NtMapViewOfSection( section, GetCurrentProcess(), &mapBits, 0, 0, &map_offset,
+        if (NtMapViewOfSection( section, GetCurrentProcess(), &mapBits, zero_bits, 0, &map_offset,
                                 &map_size, ViewShare, 0, PAGE_READWRITE ))
             goto error;
         bmp->dib.dsBm.bmBits = (char *)mapBits + (offset - map_offset.QuadPart);

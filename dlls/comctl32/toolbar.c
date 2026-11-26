@@ -1446,10 +1446,10 @@ TOOLBAR_WrapToolbar(TOOLBAR_INFO *infoPtr)
 	    /* 	If the current button is a separator and not hidden,  */
 	    /*	go to the next until it reaches a non separator.      */
 	    /*	Wrap the last separator if it is before a button.     */
-	    while( ( ((btnPtr[i].fsStyle & BTNS_SEP) &&
+	    while( i < infoPtr->nNumButtons &&
+	           ( ((btnPtr[i].fsStyle & BTNS_SEP) &&
 		      !(btnPtr[i].fsStyle & BTNS_DROPDOWN)) ||
-		     (btnPtr[i].fsState & TBSTATE_HIDDEN) ) &&
-			i < infoPtr->nNumButtons )
+		     (btnPtr[i].fsState & TBSTATE_HIDDEN) ) )
 	    {
 		i++;
 		bFound = TRUE;
@@ -5678,6 +5678,7 @@ TOOLBAR_LButtonDown (TOOLBAR_INFO *infoPtr, WPARAM wParam, LPARAM lParam)
                 }
                 /* otherwise drop through and process as pushed */
             }
+            SetCapture (infoPtr->hwndSelf);
             infoPtr->bCaptured = TRUE;
             infoPtr->nButtonDown = nHit;
             infoPtr->bDragOutSent = FALSE;
@@ -5689,7 +5690,6 @@ TOOLBAR_LButtonDown (TOOLBAR_INFO *infoPtr, WPARAM wParam, LPARAM lParam)
             if (btnPtr->fsState & TBSTATE_ENABLED)
                 InvalidateRect(infoPtr->hwndSelf, &btnPtr->rect, TRUE);
             UpdateWindow(infoPtr->hwndSelf);
-            SetCapture (infoPtr->hwndSelf);
         }
 
         memset(&nmtb, 0, sizeof(nmtb));

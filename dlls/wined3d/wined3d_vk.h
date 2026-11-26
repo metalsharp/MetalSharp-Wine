@@ -991,6 +991,7 @@ struct wined3d_texture_vk
     struct wined3d_image_vk image;
     enum VkImageLayout layout;
     uint32_t bind_mask;
+    uint64_t image_generation;
 
     VkDescriptorImageInfo default_image_info;
 };
@@ -1103,6 +1104,7 @@ struct wined3d_view_vk
         VkDescriptorImageInfo vk_image_info;
     } u;
     uint64_t command_buffer_id;
+    uint64_t image_generation;
 };
 
 struct wined3d_shader_resource_view_vk
@@ -1132,6 +1134,8 @@ void wined3d_shader_resource_view_vk_update_buffer(struct wined3d_shader_resourc
         struct wined3d_context_vk *context_vk);
 void wined3d_shader_resource_view_vk_update_layout(struct wined3d_shader_resource_view_vk *srv_vk,
         VkImageLayout layout);
+const VkDescriptorImageInfo *wined3d_shader_resource_view_vk_get_image_info(
+        struct wined3d_shader_resource_view_vk *srv_vk, struct wined3d_context_vk *context_vk);
 
 struct wined3d_unordered_access_view_vk
 {

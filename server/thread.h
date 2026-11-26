@@ -1,5 +1,6 @@
 /*
  * Wine server threads
+ * WineForge-Internal: msync-v6.
  *
  * Copyright (C) 1998 Alexandre Julliard
  *
@@ -52,6 +53,10 @@ struct thread
     struct object          obj;           /* object header */
     struct object         *sync;          /* sync object for wait/signal */
     struct inproc_sync    *alert_sync;    /* inproc sync for user apc alerts */
+#ifdef __APPLE__
+
+    unsigned int           msync_wait_slot; /* owned until thread cleanup */
+#endif
     struct list            entry;         /* entry in system-wide thread list */
     struct list            proc_entry;    /* entry in per-process thread list */
     struct list            desktop_entry; /* entry in per-desktop thread list */
@@ -60,7 +65,6 @@ struct thread
     struct list            mutex_list;    /* list of currently owned mutexes */
     struct list            d3dkmt_mutexes;/* list of currently owned d3dkmt mutexes */
     unsigned int           system_regs;   /* which system regs have been set */
-    unsigned int           msync_wait_slot; /* msync shared wait slot (0 if none) */
     struct msg_queue      *queue;         /* message queue */
     struct thread_wait    *wait;          /* current wait condition if sleeping */
     struct list            system_apc;    /* queue of system async procedure calls */

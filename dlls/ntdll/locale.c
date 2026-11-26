@@ -341,6 +341,8 @@ void locale_init(void)
     system_ui_languages_default = dup_ui_languages( langs, len );
     if (user_key) NtClose( user_key );
 
+    actctx_init();
+
     if (!RtlQueryActivationContextApplicationSettings( 0, NULL, L"http://schemas.microsoft.com/SMI/2019/WindowsSettings",
                                                        L"activeCodePage", locale, ARRAY_SIZE(locale), NULL ))
     {
@@ -394,7 +396,14 @@ ULONG get_resource_lcids( LANGID *langs, ULONG size, LCID lcid )
     if (PRIMARYLANGID(lcid) != LANG_NEUTRAL)  /* explicit language */
     {
         const NLS_LOCALE_LCID_INDEX *entry = find_lcid_entry( locale_table, lcid );
-        if (entry) append_ui_lang_with_neutral( merged, &len, entry->idx );
+        if (!entry)  /* invalid locale, use it anyway */
+        {
+            if (len < size) langs[len++] = lcid;
+            if (len < size) langs[len++] = MAKELANGID( PRIMARYLANGID(lcid), SUBLANG_NEUTRAL );
+            if (len < size) langs[len++] = MAKELANGID( LANG_NEUTRAL, SUBLANG_NEUTRAL );
+            return len;
+        }
+        append_ui_lang_with_neutral( merged, &len, entry->idx );
         merged[len++] = 0;  /* neutral */
     }
     else
@@ -406,6 +415,7 @@ ULONG get_resource_lcids( LANGID *langs, ULONG size, LCID lcid )
         if (SUBLANGID(lcid) != SUBLANG_SYS_DEFAULT)
             append_ui_languages_with_neutral( merged, &len, user_ui_languages_default );
         append_ui_languages_with_neutral( merged, &len, system_ui_languages );
+        append_ui_lang_lcid( merged, &len, MAKELANGID( LANG_ENGLISH, SUBLANG_DEFAULT ));
         RtlReleaseSRWLockShared( &locale_srwlock );
     }
 

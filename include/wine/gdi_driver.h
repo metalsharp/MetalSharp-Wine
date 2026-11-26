@@ -38,6 +38,7 @@
 #include "shellapi.h"
 #include "ddk/d3dkmthk.h"
 #include "kbd.h"
+#include "wine/vulkan.h"
 #include "wine/list.h"
 #include "wine/debug.h"
 
@@ -56,6 +57,11 @@ static inline const char *debugstr_window_rects( const struct window_rects *rect
 {
     return wine_dbg_sprintf( "{ window %s, client %s, visible %s }", wine_dbgstr_rect( &rects->window ),
                              wine_dbgstr_rect( &rects->client ), wine_dbgstr_rect( &rects->visible ) );
+}
+
+static inline const char *debugstr_size( const SIZE *size )
+{
+    return wine_dbgstr_point( (POINT *)size );
 }
 
 /* convert a visible rect to the corresponding window rect, using the window_rects offsets */
@@ -249,6 +255,7 @@ static inline void push_dc_driver( PHYSDEV *dev, PHYSDEV physdev, const struct g
 struct client_surface;
 struct client_surface_funcs
 {
+    const UINT size; /* size of the implementation struct */
     void (*destroy)( struct client_surface *surface );
     /* detach the surface from its window, called from window owner thread */
     void (*detach)( struct client_surface *surface );
@@ -256,6 +263,8 @@ struct client_surface_funcs
     void (*update)( struct client_surface *surface );
     /* present the client surface if necessary, hdc != NULL when offscreen, called from render thread */
     void (*present)( struct client_surface *surface, HDC hdc );
+    /* try to set the client surface color space directly for vulkan pass-through */
+    BOOL (*set_color_space)( struct client_surface *surface, VkColorSpaceKHR color_space );
 };
 
 struct client_surface
@@ -273,7 +282,7 @@ struct client_surface
     BOOL                               raw;            /* use the raw physical position and size for the host client surface */
 };
 
-W32KAPI void *client_surface_create( UINT size, const struct client_surface_funcs *funcs, HWND hwnd, int format, BOOL raw );
+W32KAPI void *client_surface_create( const struct client_surface_funcs *funcs, HWND hwnd, int format, BOOL raw );
 W32KAPI void client_surface_add_ref( struct client_surface *surface );
 W32KAPI void client_surface_release( struct client_surface *surface );
 W32KAPI void client_surface_present( struct client_surface *surface );
@@ -292,6 +301,7 @@ struct window_surface;
 
 struct window_surface_funcs
 {
+    const UINT size; /* size of the implementation struct */
     void  (*set_clip)( struct window_surface *surface, const RECT *rects, UINT count );
     BOOL  (*flush)( struct window_surface *surface, const RECT *rect, const RECT *dirty,
                     const BITMAPINFO *color_info, const void *color_bits, BOOL shape_changed,
@@ -320,7 +330,7 @@ struct window_surface
     /* driver-specific fields here */
 };
 
-W32KAPI struct window_surface *window_surface_create( UINT size, const struct window_surface_funcs *funcs, HWND hwnd,
+W32KAPI struct window_surface *window_surface_create( const struct window_surface_funcs *funcs, HWND hwnd,
                                                       const RECT *rect, BITMAPINFO *info, HBITMAP bitmap );
 W32KAPI void window_surface_add_ref( struct window_surface *surface );
 W32KAPI void window_surface_release( struct window_surface *surface );
@@ -377,7 +387,7 @@ struct user_driver_funcs
     const KBDTABLES *(*pKbdLayerDescriptor)(HKL);
     void    (*pReleaseKbdTables)(const KBDTABLES *);
     /* IME functions */
-    UINT    (*pImeToAsciiEx)(UINT,UINT,const BYTE*,HIMC);
+    UINT    (*pImeToAsciiEx)(UINT,UINT,const BYTE*,void *);
     void    (*pNotifyIMEStatus)(HWND,UINT);
     BOOL    (*pSetIMECompositionRect)(HWND,RECT);
     /* cursor/icon functions */

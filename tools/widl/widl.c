@@ -778,7 +778,7 @@ int main(int argc,char *argv[])
       write_dlldata_list(filenames, 0 /* FIXME */ );
       return 0;
     }
-    else if (files.count > 1) {
+    else if (files.count > 1 && !(do_metadata && !do_everything)) {
       fprintf(stderr, "%s", usage);
       return 1;
     }
@@ -827,7 +827,7 @@ int main(int argc,char *argv[])
   if (!idfile_name && do_idfile)
       idfile_name = replace_extension( get_basename(input_name), ".idl", "_i.c" );
 
-  if (!metadata_name && do_metadata)
+  if (!metadata_name && do_metadata && files.count == 1)
       metadata_name = replace_extension( get_basename(input_name), ".idl", ".winmd" );
 
   if (do_proxies) proxy_token = dup_basename_token(proxy_name,"_p.c");
@@ -840,14 +840,37 @@ int main(int argc,char *argv[])
 
   atexit(rm_tempfile);
   if (preprocess_only) exit( wpp_parse( input_name, stdout ) );
-  parser_in = open_input_file( input_name );
+  if (files.count == 1)
+  {
+    parser_in = open_input_file( input_name );
+    header_token = make_token(header_name);
 
-  header_token = make_token(header_name);
-
-  init_types();
-  ret = parser_parse();
-  close_all_inputs();
+    init_types();
+    ret = parser_parse();
+    close_all_inputs();
+  }
+  else
+  {
+    STRARRAY_FOR_EACH( file, &files )
+    {
+      init_types();
+      input_name = xstrdup( file );
+      if (do_metadata)
+        metadata_name = replace_extension( get_basename(input_name), ".idl", ".winmd" );
+      idl_name = get_basename( input_name );
+      parser_in = open_input_file( input_name );
+      ret = parser_parse();
+      close_all_inputs();
+      if (ret) break;
+      parser_reset();
+    }
+  }
   if (ret) exit(1);
+  if (do_metadata)
+  {
+    metadata_name = output_name;
+    finalize_metadata();
+  }
 
   /* Everything has been done successfully, don't delete any files.  */
   set_everything(FALSE);

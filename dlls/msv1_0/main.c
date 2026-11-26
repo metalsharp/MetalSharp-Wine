@@ -424,6 +424,7 @@ static void ntlm_pool_release_ctx( struct ntlm_auth_ctx *ctx )
     if (ntlm_chat( ctx, buf, sizeof(buf), &len ) || strcmp( buf, "OK" ))
     {
         ntlm_cleanup( &elem->ctx );
+        free( elem->cmd );
         free( elem );
         return;
     }
@@ -447,6 +448,7 @@ static void ntlm_pool_cleanup( void )
     {
         list_remove( &cur->entry );
         ntlm_cleanup( &cur->ctx );
+        free( cur->cmd );
         free( cur );
     }
 }
@@ -679,7 +681,11 @@ static NTSTATUS map_auth_data( void *auth_data, SEC_WINNT_AUTH_IDENTITY_W **ret 
     }
     memcpy( *ret, &id, sizeof(id) );
 
-    if (status) free( *ret );
+    if (status)
+    {
+        free( *ret );
+        *ret = NULL;
+    }
     return status;
 }
 
@@ -837,7 +843,7 @@ static NTSTATUS NTAPI ntlm_SpQueryCredentialsAttributes( LSA_SEC_HANDLE handle, 
 
     if (cred->token)
     {
-        DWORD username_len = sizeof(username_buf);
+        DWORD username_len = ARRAY_SIZE(username_buf);
         char tmp[256];
         TOKEN_USER *token_user = (TOKEN_USER *)tmp;
         DWORD size = sizeof(tmp);
@@ -858,7 +864,7 @@ static NTSTATUS NTAPI ntlm_SpQueryCredentialsAttributes( LSA_SEC_HANDLE handle, 
                 return SEC_E_INTERNAL_ERROR;
             }
         }
-        domain_len = sizeof(domain) - sizeof(WCHAR);
+        domain_len = ARRAY_SIZE(domain) - 1;
         r = LookupAccountSidW( NULL, token_user->User.Sid, username_buf, &username_len,
                 domain, &domain_len, &use);
         if (token_user != (TOKEN_USER *)tmp) free( token_user );

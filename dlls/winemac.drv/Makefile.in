@@ -4,11 +4,13 @@ IMPORTS   = uuid rpcrt4 user32 gdi32 win32u
 DELAYIMPORTS = advapi32 ole32 shell32 imm32
 UNIX_LIBS    = \
 	-lwin32u \
+	-framework Accelerate \
 	-framework AppKit \
 	-framework Carbon \
 	-framework Foundation \
 	-weak_framework GameController \
 	-framework IOKit \
+	-framework IOSurface \
 	-framework Metal \
 	-framework OpenGL \
 	-framework QuartzCore \
@@ -36,6 +38,7 @@ SOURCES = \
 	event.c \
 	gdi.c \
 	image.c \
+	ime.c \
 	keyboard.c \
 	macdrv_main.c \
 	mouse.c \

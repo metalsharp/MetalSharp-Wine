@@ -720,6 +720,9 @@ struct async_callback
     IMFSourceReaderCallback IMFSourceReaderCallback_iface;
     LONG refcount;
     HANDLE event;
+    BOOL expected;
+    HRESULT expected_hr;
+    DWORD expected_stream_index;
 };
 
 static struct async_callback *impl_from_IMFSourceReaderCallback(IMFSourceReaderCallback *iface)
@@ -761,8 +764,20 @@ static ULONG WINAPI async_callback_Release(IMFSourceReaderCallback *iface)
 static HRESULT WINAPI async_callback_OnReadSample(IMFSourceReaderCallback *iface, HRESULT hr, DWORD stream_index,
         DWORD stream_flags, LONGLONG timestamp, IMFSample *sample)
 {
-    ok(0, "Unexpected call.\n");
-    return E_NOTIMPL;
+    struct async_callback *callback = impl_from_IMFSourceReaderCallback(iface);
+
+    ok(callback->expected, "Unexpected call.\n");
+    if (callback->expected)
+    {
+        ok(callback->expected_hr == hr, "Unexpected hr %#lx (expected %#lx)\n", hr,
+                callback->expected_hr);
+        ok(callback->expected_stream_index == stream_index, "Unexpected stream_index %lu\n",
+                stream_index);
+        SetEvent(callback->event);
+        callback->expected = FALSE;
+    }
+
+    return S_OK;
 }
 
 static HRESULT WINAPI async_callback_OnFlush(IMFSourceReaderCallback *iface, DWORD stream_index)
@@ -794,6 +809,7 @@ static struct async_callback *create_async_callback(void)
     callback = calloc(1, sizeof(*callback));
     callback->IMFSourceReaderCallback_iface.lpVtbl = &async_callback_vtbl;
     callback->refcount = 1;
+    callback->event = CreateEventW(NULL, FALSE, FALSE, NULL);
 
     return callback;
 }
@@ -1420,7 +1436,7 @@ static void test_source_reader_from_media_source(void)
     struct test_source *test_source;
     IMFMediaType *media_type;
     HRESULT hr;
-    DWORD actual_index, stream_flags;
+    DWORD actual_index, stream_flags, wait_result;
     IMFSample *sample;
     LONGLONG timestamp;
     IMFAttributes *attributes;
@@ -1655,6 +1671,71 @@ static void test_source_reader_from_media_source(void)
     ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
     ok(get_refcount(attributes) > refcount, "Unexpected refcount.\n");
 
+    /* Test ReadSample with various indices before selection. */
+    callback->expected = TRUE;
+    callback->expected_hr = MF_E_INVALIDREQUEST;
+    callback->expected_stream_index = MF_SOURCE_READER_ANY_STREAM;
+    hr = IMFSourceReader_ReadSample(reader, MF_SOURCE_READER_ANY_STREAM, 0, NULL, NULL, NULL, NULL);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    wait_result = WaitForSingleObject(callback->event, 1000);
+    ok(!wait_result, "Callback not called\n");
+
+    /* After this point, almost all request on reader returns E_INVALIDREQUEST.
+     * so recreate the reader & source. */
+    IMFSourceReader_Release(reader);
+    IMFMediaSource_Release(source);
+
+    source = create_test_source(audio_streams, 3);
+    ok(!!source, "Failed to create test source.\n");
+    hr = MFCreateSourceReaderFromMediaSource(source, attributes, &reader);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+
+    callback->expected = TRUE;
+    callback->expected_stream_index = 0;
+    hr = IMFSourceReader_ReadSample(reader, 0, 0, NULL, NULL, NULL, NULL);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    wait_result = WaitForSingleObject(callback->event, 1000);
+    ok(!wait_result, "Callback not called\n");
+
+    IMFSourceReader_Release(reader);
+    IMFMediaSource_Release(source);
+
+    source = create_test_source(audio_streams, 3);
+    ok(!!source, "Failed to create test source.\n");
+    hr = MFCreateSourceReaderFromMediaSource(source, attributes, &reader);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+
+    callback->expected = TRUE;
+    callback->expected_stream_index = MF_SOURCE_READER_FIRST_AUDIO_STREAM;
+    hr = IMFSourceReader_ReadSample(reader, MF_SOURCE_READER_FIRST_AUDIO_STREAM, 0, NULL, NULL, NULL, NULL);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    wait_result = WaitForSingleObject(callback->event, 1000);
+    ok(!wait_result, "Callback not called\n");
+
+    IMFSourceReader_Release(reader);
+    IMFMediaSource_Release(source);
+
+    source = create_test_source(audio_streams, 3);
+    ok(!!source, "Failed to create test source.\n");
+    hr = MFCreateSourceReaderFromMediaSource(source, attributes, &reader);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+
+    callback->expected = TRUE;
+    callback->expected_hr = MF_E_INVALIDSTREAMNUMBER;
+    callback->expected_stream_index = MF_SOURCE_READER_FIRST_VIDEO_STREAM;
+    hr = IMFSourceReader_ReadSample(reader, MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0, NULL, NULL, NULL, NULL);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    wait_result = WaitForSingleObject(callback->event, 1000);
+    ok(!wait_result, "Callback not called\n");
+
+    IMFSourceReader_Release(reader);
+    IMFMediaSource_Release(source);
+
+    source = create_test_source(audio_streams, 3);
+    ok(!!source, "Failed to create test source.\n");
+    hr = MFCreateSourceReaderFromMediaSource(source, attributes, &reader);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+
     hr = IMFSourceReader_SetStreamSelection(reader, 0, TRUE);
     ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
 
@@ -1864,11 +1945,42 @@ done:
 
 static void test_sink_writer_create(void)
 {
+    IMFMediaType *media_type, *first_media_type, *input_type, *pcm_audio_type;
     WCHAR temp_path[MAX_PATH], temp_file[MAX_PATH];
+    IMFSinkWriterEx *writer_ex = NULL;
+    IMFMediaTypeHandler *handler;
+    IMFStreamSink *stream_sink;
+    IMFTransform *transform;
     IMFSinkWriter *writer;
     IMFByteStream *stream;
     IMFAttributes *attr;
+    IMFMediaSink *sink;
+    GUID guid = {0};
+    DWORD flags;
     HRESULT hr;
+
+    static const struct attribute_desc pcm_audio_type_desc[] =
+    {
+        ATTR_GUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio),
+        ATTR_GUID(MF_MT_SUBTYPE, MFAudioFormat_PCM),
+        ATTR_UINT32(MF_MT_AUDIO_NUM_CHANNELS, 2),
+        ATTR_UINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, 48000),
+        ATTR_UINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, 4 * 48000),
+        ATTR_UINT32(MF_MT_AUDIO_BLOCK_ALIGNMENT, 4),
+        ATTR_UINT32(MF_MT_AUDIO_BITS_PER_SAMPLE, 16),
+        {0},
+    };
+    static const struct attribute_desc float_audio_type_desc[] =
+    {
+        ATTR_GUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio),
+        ATTR_GUID(MF_MT_SUBTYPE, MFAudioFormat_Float),
+        ATTR_UINT32(MF_MT_AUDIO_NUM_CHANNELS, 2),
+        ATTR_UINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, 48000),
+        ATTR_UINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, 8 * 48000),
+        ATTR_UINT32(MF_MT_AUDIO_BLOCK_ALIGNMENT, 8),
+        ATTR_UINT32(MF_MT_AUDIO_BITS_PER_SAMPLE, 32),
+        {0},
+    };
 
     GetTempPathW(ARRAY_SIZE(temp_path), temp_path);
     GetTempFileNameW(temp_path, L"mf", 0, temp_file);
@@ -1930,6 +2042,145 @@ static void test_sink_writer_create(void)
     ok(hr == E_INVALIDARG, "Unexpected hr %#lx.\n", hr);
     ok(!writer, "Unexpected pointer %p.\n", writer);
 
+    hr = MFCreateAudioRenderer(NULL, &sink);
+    if (hr == MF_E_NO_AUDIO_PLAYBACK_DEVICE)
+    {
+        skip("No audio playback device available.\n");
+        goto done;
+    }
+    ok(hr == S_OK, "Failed to create renderer, hr %#lx.\n", hr);
+    hr = IMFMediaSink_GetStreamSinkByIndex(sink, 0, &stream_sink);
+    ok(hr == S_OK, "Failed to get a stream, hr %#lx.\n", hr);
+    hr = IMFStreamSink_GetMediaTypeHandler(stream_sink, &handler);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+
+    hr = IMFMediaTypeHandler_GetCurrentMediaType(handler, &media_type);
+    ok(hr == MF_E_NOT_INITIALIZED, "Unexpected hr %#lx.\n", hr);
+    hr = IMFMediaTypeHandler_GetMediaTypeByIndex(handler, 0, &first_media_type);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+
+    hr = MFCreateSinkWriterFromMediaSink(sink, NULL, &writer);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    hr = IMFSinkWriter_QueryInterface(writer, &IID_IMFSinkWriterEx, (void **)&writer_ex);
+    ok(hr == S_OK, "QueryInterface returned %#lx.\n", hr);
+
+    /* Creating a sink writer on the media sink sets its type to the first available. */
+    hr = IMFMediaTypeHandler_GetCurrentMediaType(handler, &media_type);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    hr = IMFMediaType_IsEqual(media_type, first_media_type, &flags);
+    ok(flags & MF_MEDIATYPE_EQUAL_MAJOR_TYPES, "Mismatching major types.\n");
+    ok(flags & MF_MEDIATYPE_EQUAL_FORMAT_TYPES, "Mismatching format types.\n");
+    ok(flags & MF_MEDIATYPE_EQUAL_FORMAT_DATA, "Mismatching format data.\n");
+    IMFMediaType_Release(media_type);
+
+    IMFMediaType_Release(first_media_type);
+
+    /* SetInputMediaType() overwrites the stream sink current type
+     * if not initialised before writer creation. */
+    hr = MFCreateMediaType(&input_type);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    init_media_type(input_type, float_audio_type_desc, -1);
+    hr = IMFSinkWriter_SetInputMediaType(writer, 0, input_type, NULL);
+    /* Not all Windows machines succeed here. */
+    flaky
+    ok(hr == S_OK, "SetInputMediaType returned %#lx.\n", hr);
+    if (FAILED(hr))
+    {
+        skip("SetInputMediaType failed, skipping tests.\n");
+        goto skipped;
+    }
+
+    hr = IMFMediaTypeHandler_GetCurrentMediaType(handler, &media_type);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    hr = IMFMediaType_IsEqual(media_type, input_type, &flags);
+    ok(flags & MF_MEDIATYPE_EQUAL_MAJOR_TYPES, "Mismatching major types.\n");
+    ok(flags & MF_MEDIATYPE_EQUAL_FORMAT_TYPES, "Mismatching format types.\n");
+    ok(flags & MF_MEDIATYPE_EQUAL_FORMAT_DATA, "Mismatching format data.\n");
+    IMFMediaType_Release(media_type);
+
+    hr = IMFSinkWriterEx_GetTransformForStream(writer_ex, 0, 0, &guid, &transform);
+    ok(hr == MF_E_INVALIDINDEX, "GetTransformForStream returned %#lx.\n", hr);
+
+    /* Setting the same type is a no-op. */
+    hr = IMFSinkWriter_SetInputMediaType(writer, 0, input_type, NULL);
+    ok(hr == S_OK, "SetInputMediaType returned %#lx.\n", hr);
+
+    hr = IMFSinkWriterEx_GetTransformForStream(writer_ex, 0, 0, &guid, &transform);
+    ok(hr == MF_E_INVALIDINDEX, "GetTransformForStream returned %#lx.\n", hr);
+
+    /* SetInputMediaType() does not overwrite the stream sink current type
+     * a second time. A transform is inserted. */
+    hr = MFCreateMediaType(&pcm_audio_type);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    init_media_type(pcm_audio_type, pcm_audio_type_desc, -1);
+    hr = IMFSinkWriter_SetInputMediaType(writer, 0, pcm_audio_type, NULL);
+    ok(hr == S_OK, "SetInputMediaType returned %#lx.\n", hr);
+
+    hr = IMFMediaTypeHandler_GetCurrentMediaType(handler, &media_type);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    hr = IMFMediaType_IsEqual(media_type, pcm_audio_type, &flags);
+    ok(flags & MF_MEDIATYPE_EQUAL_MAJOR_TYPES, "Mismatching major types.\n");
+    ok(!(flags & MF_MEDIATYPE_EQUAL_FORMAT_TYPES), "Matching format types.\n");
+    IMFMediaType_Release(media_type);
+
+    hr = IMFSinkWriterEx_GetTransformForStream(writer_ex, 0, 0, &guid, &transform);
+    ok(hr == S_OK, "GetTransformForStream returned %#lx.\n", hr);
+    if (hr == S_OK)
+    IMFTransform_Release(transform);
+    ok(IsEqualGUID(&guid, &MFT_CATEGORY_AUDIO_EFFECT), "Unexpected guid %s.\n", debugstr_guid(&guid));
+
+    IMFMediaTypeHandler_Release(handler);
+    IMFStreamSink_Release(stream_sink);
+    IMFSinkWriterEx_Release(writer_ex);
+    IMFSinkWriter_Release(writer);
+    IMFMediaSink_Release(sink);
+
+    hr = MFCreateAudioRenderer(NULL, &sink);
+    ok(hr == S_OK, "Failed to create renderer, hr %#lx.\n", hr);
+    hr = IMFMediaSink_GetStreamSinkByIndex(sink, 0, &stream_sink);
+    ok(hr == S_OK, "Failed to get a stream, hr %#lx.\n", hr);
+
+    /* SetInputMediaType() does not overwrite the stream sink current type
+     * if it was initialised. A transform is inserted. */
+    hr = IMFStreamSink_GetMediaTypeHandler(stream_sink, &handler);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    hr = IMFMediaTypeHandler_SetCurrentMediaType(handler, input_type);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+
+    hr = MFCreateSinkWriterFromMediaSink(sink, NULL, &writer);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    hr = IMFSinkWriter_QueryInterface(writer, &IID_IMFSinkWriterEx, (void **)&writer_ex);
+    ok(hr == S_OK, "QueryInterface returned %#lx.\n", hr);
+
+    hr = IMFSinkWriterEx_GetTransformForStream(writer_ex, 0, 0, &guid, &transform);
+    ok(hr == MF_E_INVALIDINDEX, "GetTransformForStream returned %#lx.\n", hr);
+
+    hr = IMFSinkWriter_SetInputMediaType(writer, 0, pcm_audio_type, NULL);
+    ok(hr == S_OK, "SetInputMediaType returned %#lx.\n", hr);
+    hr = IMFMediaTypeHandler_GetCurrentMediaType(handler, &media_type);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    hr = IMFMediaType_IsEqual(media_type, pcm_audio_type, &flags);
+    ok(flags & MF_MEDIATYPE_EQUAL_MAJOR_TYPES, "Mismatching major types.\n");
+    ok(!(flags & MF_MEDIATYPE_EQUAL_FORMAT_TYPES), "Matching format types.\n");
+    IMFMediaType_Release(media_type);
+
+    hr = IMFSinkWriterEx_GetTransformForStream(writer_ex, 0, 0, &guid, &transform);
+    ok(hr == S_OK, "GetTransformForStream returned %#lx.\n", hr);
+    if (hr == S_OK)
+    IMFTransform_Release(transform);
+    ok(IsEqualGUID(&guid, &MFT_CATEGORY_AUDIO_EFFECT), "Unexpected guid %s.\n", debugstr_guid(&guid));
+
+    IMFSinkWriterEx_Release(writer_ex);
+    IMFMediaType_Release(pcm_audio_type);
+
+skipped:
+    IMFMediaType_Release(input_type);
+    IMFMediaTypeHandler_Release(handler);
+    IMFStreamSink_Release(stream_sink);
+    IMFSinkWriter_Release(writer);
+    IMFMediaSink_Release(sink);
+
+done:
     IMFByteStream_Release(stream);
     IMFAttributes_Release(attr);
 }

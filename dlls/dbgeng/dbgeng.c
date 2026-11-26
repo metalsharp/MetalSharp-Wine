@@ -3522,16 +3522,16 @@ static HRESULT STDMETHODCALLTYPE debugcontrol_GetLastEventInformation(IDebugCont
     return E_NOTIMPL;
 }
 
-static HRESULT STDMETHODCALLTYPE debugcontrol_GetCurrentTimeDate(IDebugControl4 *iface, ULONG timedate)
+static HRESULT STDMETHODCALLTYPE debugcontrol_GetCurrentTimeDate(IDebugControl4 *iface, ULONG *timedate)
 {
-    FIXME("%p, %lu stub.\n", iface, timedate);
+    FIXME("%p, %p stub.\n", iface, timedate);
 
     return E_NOTIMPL;
 }
 
-static HRESULT STDMETHODCALLTYPE debugcontrol_GetCurrentSystemUpTime(IDebugControl4 *iface, ULONG uptime)
+static HRESULT STDMETHODCALLTYPE debugcontrol_GetCurrentSystemUpTime(IDebugControl4 *iface, ULONG *uptime)
 {
-    FIXME("%p, %lu stub.\n", iface, uptime);
+    FIXME("%p, %p stub.\n", iface, uptime);
 
     return E_NOTIMPL;
 }
@@ -4446,6 +4446,13 @@ static HRESULT STDMETHODCALLTYPE debugsystemobjects_SetCurrentThreadId(IDebugSys
     return E_NOTIMPL;
 }
 
+static HRESULT STDMETHODCALLTYPE debugsystemobjects_GetCurrentProcessId(IDebugSystemObjects *iface, ULONG *id)
+{
+    FIXME("%p, %p stub.\n", iface, id);
+
+    return E_NOTIMPL;
+}
+
 static HRESULT STDMETHODCALLTYPE debugsystemobjects_SetCurrentProcessId(IDebugSystemObjects *iface, ULONG id)
 {
     FIXME("%p, %lu stub.\n", iface, id);
@@ -4639,6 +4646,7 @@ static const IDebugSystemObjectsVtbl debugsystemobjectsvtbl =
     debugsystemobjects_GetEventProcess,
     debugsystemobjects_GetCurrentThreadId,
     debugsystemobjects_SetCurrentThreadId,
+    debugsystemobjects_GetCurrentProcessId,
     debugsystemobjects_SetCurrentProcessId,
     debugsystemobjects_GetNumberThreads,
     debugsystemobjects_GetTotalNumberThreads,

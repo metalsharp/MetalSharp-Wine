@@ -11,7 +11,7 @@ import urllib.request
 import zipfile
 from clang.cindex import Cursor, CursorKind, Index, TypeKind, TokenGroup
 
-SQLITE_VERSION = "3530200"
+SQLITE_VERSION = "3540100"
 
 REPLACE_STRINGS = [
     #Uppercase in Windows.h breaks clang compilation.
@@ -414,7 +414,7 @@ if not Path(dir).is_dir():
     fn = "sqlite-amalgamation-" + SQLITE_VERSION + ".zip";
     if not Path(fn).is_file():
         url = "https://sqlite.org/2026/" + fn;
-        print("Dowloading", url);
+        print("Downloading", url);
         urllib.request.urlretrieve(url, fn);
     print("\nExtracting source");
     with zipfile.ZipFile(fn, 'r') as zip:

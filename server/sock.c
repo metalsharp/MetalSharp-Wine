@@ -494,6 +494,7 @@ static const struct fd_ops sock_fd_ops =
     .poll_event      = sock_poll_event,
     .get_fd_type     = sock_get_fd_type,
     .get_file_info   = default_fd_get_file_info,
+    .set_file_info   = default_fd_set_file_info,
     .ioctl           = sock_ioctl,
     .cancel_async    = sock_cancel_async,
     .reselect_async  = sock_reselect_async,
@@ -2986,7 +2987,7 @@ static void sock_ioctl( struct fd *fd, ioctl_code_t code, struct async *async )
     {
         const struct afd_message_select_params *params = get_req_data();
 
-        if (get_req_data_size() < sizeof(params))
+        if (get_req_data_size() < sizeof(*params))
         {
             set_error( STATUS_BUFFER_TOO_SMALL );
             return;
@@ -3970,7 +3971,7 @@ DECL_HANDLER(recv_socket)
     sock->pending_events &= ~(req->oob ? AFD_POLL_OOB : AFD_POLL_READ);
     sock->reported_events &= ~(req->oob ? AFD_POLL_OOB : AFD_POLL_READ);
 
-    if ((async = create_request_async( fd, get_fd_comp_flags( fd ), &req->async, 0 )))
+    if ((async = create_request_async( fd, &req->async, 0 )))
     {
         set_error( status );
 
@@ -4101,8 +4102,7 @@ DECL_HANDLER(send_socket)
         release_object( completion );
     }
 
-    if ((async = create_request_async( fd, get_fd_comp_flags( fd ), &req->async,
-                                       req->flags & SERVER_SOCKET_IO_SYSTEM )))
+    if ((async = create_request_async( fd, &req->async, req->flags & SERVER_SOCKET_IO_SYSTEM )))
     {
         struct send_req *send_req;
         struct iosb *iosb = async_get_iosb( async );

@@ -832,10 +832,10 @@ static void create_computer_name_keys(void)
     HKEY key, subkey;
 
     if (gethostname( buffer, sizeof(buffer) )) return;
-    hints.ai_flags = AI_CANONNAME;
+    hints.ai_flags = AI_CANONNAME | AI_DNS_ONLY;
     if (getaddrinfo( buffer, NULL, &hints, &res ) != 0)
         res = NULL;
-    else if (res->ai_canonname && strcasecmp( res->ai_canonname, "localhost" ) != 0)
+    else if (res->ai_canonname && stricmp( res->ai_canonname, "localhost" ) != 0)
         name = res->ai_canonname;
     dot = strchr( name, '.' );
     if (dot) *dot++ = 0;

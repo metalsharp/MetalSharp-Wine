@@ -5395,7 +5395,7 @@ static void test_swapchain_present(IUnknown *device, BOOL is_d3d12)
     IDXGIFactory *factory;
     IDXGIOutput *output;
     BOOL fullscreen;
-    unsigned int i;
+    unsigned int i, j;
     ULONG refcount;
     HRESULT hr;
 
@@ -5440,8 +5440,12 @@ static void test_swapchain_present(IUnknown *device, BOOL is_d3d12)
 
         /* Minimised window. */
         ShowWindow(swapchain_desc.OutputWindow, SW_MINIMIZE);
-        hr = IDXGISwapChain_Present(swapchain, 0, flags[i]);
-        ok(hr == (is_d3d12 ? S_OK : DXGI_STATUS_OCCLUDED), "Test %u: Got unexpected hr %#lx.\n", i, hr);
+        for (j = 0; j < 5; ++j)
+        {
+            hr = IDXGISwapChain_Present(swapchain, 0, flags[i]);
+            ok(hr == (is_d3d12 ? S_OK : DXGI_STATUS_OCCLUDED),
+                    "Test %u, present %u: Got unexpected hr %#lx.\n", i, j, hr);
+        }
         ShowWindow(swapchain_desc.OutputWindow, SW_NORMAL);
 
         /* Hidden window. */
@@ -7929,6 +7933,31 @@ static void test_frame_latency_event(IUnknown *device, BOOL is_d3d12)
     wait_result = WaitForSingleObject(semaphore, 100);
     ok(wait_result == WAIT_TIMEOUT, "Got unexpected wait result %#lx.\n", wait_result);
 
+    /* occluded frames release the semaphore too */
+    ShowWindow(window, SW_MINIMIZE);
+
+    hr = IDXGISwapChain2_Present(swapchain2, 0, DXGI_PRESENT_TEST);
+    todo_wine_if(is_d3d12)
+    ok(hr == DXGI_STATUS_OCCLUDED || broken(hr == S_OK) /* <= Win10 22H2 */, "Got unexpected hr %#lx.\n", hr);
+    wait_result = WaitForSingleObject(semaphore, 100);
+    ok(wait_result == WAIT_TIMEOUT, "Got unexpected wait result %#lx.\n", wait_result);
+
+    for (i = 0; i < 5; i++)
+    {
+        hr = IDXGISwapChain2_Present(swapchain2, 0, 0);
+        todo_wine_if(is_d3d12)
+        ok(hr == DXGI_STATUS_OCCLUDED || broken(hr == S_OK) /* <= Win10 22H2 */,
+                "Present %u: got unexpected hr %#lx.\n", i, hr);
+
+        wait_result = WaitForSingleObject(semaphore, 100);
+        ok(!wait_result, "Present %u: got unexpected wait result %#lx.\n", i, wait_result);
+    }
+
+    wait_result = WaitForSingleObject(semaphore, 100);
+    ok(wait_result == WAIT_TIMEOUT, "Got unexpected wait result %#lx.\n", wait_result);
+
+    ShowWindow(window, SW_RESTORE);
+
     if (is_d3d12)
     {
         hr = IUnknown_QueryInterface(device, &IID_ID3D12CommandQueue, (void **)&queue);
@@ -8088,7 +8117,7 @@ static void test_colour_space_support(IUnknown *device, BOOL is_d3d12)
         }
 
         hr = IDXGISwapChain3_SetColorSpace1(swapchain3, colour_spaces[i]);
-        ok(hr == (support & DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT) ? S_OK : E_INVALIDARG,
+        ok(hr == ((support & DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT) ? S_OK : E_INVALIDARG),
                 "Got unexpected hr %#lx for text %u.\n", hr, i);
     }
 

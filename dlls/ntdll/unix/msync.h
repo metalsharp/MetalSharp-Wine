@@ -1,5 +1,6 @@
 /*
- * WineForge userspace synchronization client state
+ * msync client shared state
+ * WineForge-Internal: msync-v6.
  *
  * Copyright (C) 2026 Radim Vesely
  *

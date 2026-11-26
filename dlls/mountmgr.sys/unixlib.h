@@ -113,6 +113,39 @@ struct match_unixdev_params
     ULONGLONG unix_dev;
 };
 
+struct cdrom_open_params
+{
+    const char *unix_device;
+    struct cdrom *cdrom;
+};
+
+struct cdrom_read_params
+{
+    struct cdrom *cdrom;
+    void *output;
+    UINT64 offset;
+    unsigned int size;
+    unsigned int ret_size;
+};
+
+struct cdrom_ioctl_params
+{
+    struct cdrom *cdrom;
+    unsigned int code;
+    const void *input;
+    void *output;
+    unsigned int input_size;
+    unsigned int output_size;
+    unsigned int ret_size;
+    int wow64;
+};
+
+struct dismount_params
+{
+    char *unix_device;
+    char *unix_mount;
+};
+
 struct detect_ports_params
 {
     char *names;
@@ -163,6 +196,11 @@ enum mountmgr_funcs
     unix_read_volume_file,
     unix_match_unixdev,
     unix_check_device_access,
+    unix_cdrom_open,
+    unix_cdrom_close,
+    unix_cdrom_read,
+    unix_cdrom_ioctl,
+    unix_dismount,
     unix_detect_serial_ports,
     unix_detect_parallel_ports,
     unix_set_shell_folder,
@@ -178,6 +216,7 @@ enum mountmgr_funcs
 
 #define MOUNTMGR_CALL( func, params ) WINE_UNIX_CALL( unix_ ## func, params )
 
+extern NTSTATUS errno_to_status( int err );
 extern void queue_device_op( enum device_op op, const char *udi, const char *device,
                              const char *mount_point, enum device_type type, const GUID *guid,
                              const char *disk_serial, const char *label,
@@ -185,6 +224,10 @@ extern void queue_device_op( enum device_op op, const char *udi, const char *dev
 extern void run_dbus_loop(void);
 extern void run_diskarbitration_loop(void);
 
+extern NTSTATUS cdrom_open( void *args );
+extern NTSTATUS cdrom_close( void *args );
+extern NTSTATUS cdrom_read( void *args );
+extern NTSTATUS cdrom_ioctl( void *args );
 extern NTSTATUS dhcp_request( void *args );
 extern NTSTATUS query_symbol_file( void *args );
 extern NTSTATUS read_credential( void *args );

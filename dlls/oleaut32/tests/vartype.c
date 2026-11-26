@@ -411,7 +411,7 @@ static void init_test_dispatch(LONG ref, VARTYPE vt, DummyDispatch *dispatch)
  */
 
 #undef CONV_TYPE
-#define CONV_TYPE signed char
+#define CONV_TYPE CHAR
 #undef EXPECTRES
 #define EXPECTRES(res, x) _EXPECTRES(res, x, "%d")
 
@@ -638,7 +638,7 @@ static void test_VarI1Copy(void)
 static void test_VarI1ChangeTypeEx(void)
 {
   HRESULT hres;
-  signed char in;
+  CHAR in;
   VARIANTARG vSrc, vDst;
 
   in = 1;
@@ -655,7 +655,7 @@ static void test_VarI1ChangeTypeEx(void)
 
 static void test_VarUI1FromI1(void)
 {
-  CONVVARS(signed char);
+  CONVVARS(CHAR);
   int i;
 
   OVERFLOWRANGE(VarUI1FromI1, -128, 0);
@@ -951,7 +951,7 @@ static void test_VarUI1ChangeTypeEx(void)
 
 static void test_VarI2FromI1(void)
 {
-  CONVVARS(signed char);
+  CONVVARS(CHAR);
   int i;
 
   CONVERTRANGE(VarI2FromI1, -128, 128);
@@ -1189,7 +1189,7 @@ static void test_VarI2ChangeTypeEx(void)
 
 static void test_VarUI2FromI1(void)
 {
-  CONVVARS(signed char);
+  CONVVARS(CHAR);
   int i;
 
   OVERFLOWRANGE(VarUI2FromI1, -128, 0);
@@ -1424,7 +1424,7 @@ static void test_VarUI2ChangeTypeEx(void)
 
 static void test_VarI4FromI1(void)
 {
-  CONVVARS(signed char);
+  CONVVARS(CHAR);
   int i;
 
   CONVERTRANGE(VarI4FromI1, -128, 128);
@@ -1657,7 +1657,7 @@ static void test_VarI4ChangeTypeEx(void)
 
 static void test_VarUI4FromI1(void)
 {
-  CONVVARS(signed char);
+  CONVVARS(CHAR);
   int i;
 
   OVERFLOWRANGE(VarUI4FromI1, -127, 0);
@@ -1883,7 +1883,7 @@ static void test_VarUI4ChangeTypeEx(void)
 
 static void test_VarI8FromI1(void)
 {
-  CONVVARS(signed char);
+  CONVVARS(CHAR);
   int i;
 
   CONVERTRANGE(VarI8FromI1, -128, 128);
@@ -2095,7 +2095,7 @@ static void test_VarI8ChangeTypeEx(void)
 
 static void test_VarUI8FromI1(void)
 {
-  CONVVARS(signed char);
+  CONVVARS(CHAR);
   int i;
 
   OVERFLOWRANGE(VarUI8FromI1, -128, 0);
@@ -2313,7 +2313,7 @@ static void test_VarUI8ChangeTypeEx(void)
 
 static void test_VarR4FromI1(void)
 {
-  CONVVARS(signed char);
+  CONVVARS(CHAR);
   int i;
 
   CONVERTRANGE(VarR4FromI1, -128, 128);
@@ -2500,7 +2500,7 @@ static void test_VarR4ChangeTypeEx(void)
 
 static void test_VarR8FromI1(void)
 {
-  CONVVARS(signed char);
+  CONVVARS(CHAR);
   int i;
 
   CONVERTRANGE(VarR8FromI1, -128, 128);
@@ -2734,7 +2734,7 @@ static void test_VarR8Round(void)
 
 static void test_VarDateFromI1(void)
 {
-  CONVVARS(signed char);
+  CONVVARS(CHAR);
   int i;
 
   CONVERTRANGE(VarDateFromI1, -128, 128);
@@ -3160,7 +3160,7 @@ static void test_VarDateChangeTypeEx(void)
 
 static void test_VarCyFromI1(void)
 {
-  CONVVARS(signed char);
+  CONVVARS(CHAR);
   int i;
 
   for (i = -128; i < 128; i++)
@@ -3649,7 +3649,7 @@ static void test_VarCyInt(void)
 
 static void test_VarDecFromI1(void)
 {
-  CONVVARS(signed char);
+  CONVVARS(CHAR);
   int i;
 
   for (i = -128; i < 128; i++)
@@ -3762,6 +3762,10 @@ static void test_VarDecFromR4(void)
   CONVERT(VarDecFromR4,0.4f);  EXPECTDEC(1,0,0,4);
   CONVERT(VarDecFromR4,0.5f);  EXPECTDEC(1,0,0,5);
   CONVERT(VarDecFromR4,0.6f);  EXPECTDEC(1,0,0,6);
+  CONVERT(VarDecFromR4,0.001f);EXPECTDEC(3,0,0,1);
+  CONVERT(VarDecFromR4,0.006f);EXPECTDEC(3,0,0,6);
+  CONVERT(VarDecFromR4,0.008f);EXPECTDEC(3,0,0,8);
+  CONVERT(VarDecFromR4,0.005f);EXPECTDEC(3,0,0,5);
 }
 
 static void test_VarDecFromR8(void)
@@ -4208,6 +4212,40 @@ static void test_VarDecRound(void)
     CLEAR(out); SETDEC64(l, 0, DECIMAL_NEG, 0xffffffff, 0xffffffff, 0xffffffff); hres = VarDecRound(&l, 0, &out); EXPECTDEC64(0, DECIMAL_NEG, 0xffffffff, 0xffffffff, 0xffffffff);
     CLEAR(out); SETDEC64(l, 28, DECIMAL_NEG, 0xffffffff, 0xffffffff, 0xffffffff); hres = VarDecRound(&l, 0, &out); EXPECTDEC64(0, DECIMAL_NEG, 0, 0, 8);
 
+    /* the discarded digits are compared to half of the divisor, not to 5 */
+    CLEAR(out); SETDEC(l, 4, 0, 0, 50005); hres = VarDecRound(&l, 0, &out); EXPECTDEC(0, 0, 0, 5);
+    CLEAR(out); SETDEC(l, 4, DECIMAL_NEG, 0, 50005); hres = VarDecRound(&l, 0, &out); EXPECTDEC(0, DECIMAL_NEG, 0, 5);
+    CLEAR(out); SETDEC(l, 4, 0, 0, 50049); hres = VarDecRound(&l, 0, &out); EXPECTDEC(0, 0, 0, 5);
+    CLEAR(out); SETDEC(l, 4, 0, 0, 50050); hres = VarDecRound(&l, 0, &out); EXPECTDEC(0, 0, 0, 5);
+    CLEAR(out); SETDEC(l, 4, 0, 0, 50060); hres = VarDecRound(&l, 0, &out); EXPECTDEC(0, 0, 0, 5);
+    CLEAR(out); SETDEC(l, 4, 0, 0, 55000); hres = VarDecRound(&l, 0, &out); EXPECTDEC(0, 0, 0, 6);
+    CLEAR(out); SETDEC(l, 4, 0, 0, 54999); hres = VarDecRound(&l, 0, &out); EXPECTDEC(0, 0, 0, 5);
+    CLEAR(out); SETDEC(l, 3, 0, 0, 1235); hres = VarDecRound(&l, 1, &out); EXPECTDEC(1, 0, 0, 12);
+    CLEAR(out); SETDEC(l, 3, DECIMAL_NEG, 0, 1235); hres = VarDecRound(&l, 1, &out); EXPECTDEC(1, DECIMAL_NEG, 0, 12);
+    CLEAR(out); SETDEC(l, 5, 0, 0, 500050); hres = VarDecRound(&l, 1, &out); EXPECTDEC(1, 0, 0, 50);
+    CLEAR(out); SETDEC64(l, 20, 0, 0, 0xffffffff, 0xffffffff); hres = VarDecRound(&l, 0, &out); EXPECTDEC(0, 0, 0, 0);
+
+    /* a single discarded digit makes the remainder half of the divisor, which
+       is a tie, so 5.0005 rounds to 5.000 and 5.0015 to 5.002 */
+    CLEAR(out); SETDEC(l, 4, 0, 0, 50005); hres = VarDecRound(&l, 3, &out); EXPECTDEC(3, 0, 0, 5000);
+    CLEAR(out); SETDEC(l, 4, 0, 0, 50015); hres = VarDecRound(&l, 3, &out); EXPECTDEC(3, 0, 0, 5002);
+
+    /* an exact half is rounded to the even neighbour */
+    CLEAR(out); SETDEC(l, 1, 0, 0, 15); hres = VarDecRound(&l, 0, &out); EXPECTDEC(0, 0, 0, 2);
+    CLEAR(out); SETDEC(l, 1, 0, 0, 25); hres = VarDecRound(&l, 0, &out); EXPECTDEC(0, 0, 0, 2);
+    CLEAR(out); SETDEC(l, 1, 0, 0, 35); hres = VarDecRound(&l, 0, &out); EXPECTDEC(0, 0, 0, 4);
+    CLEAR(out); SETDEC(l, 1, DECIMAL_NEG, 0, 25); hres = VarDecRound(&l, 0, &out); EXPECTDEC(0, DECIMAL_NEG, 0, 2);
+    CLEAR(out); SETDEC(l, 2, 0, 0, 5); hres = VarDecRound(&l, 1, &out); EXPECTDEC(1, 0, 0, 0);
+    CLEAR(out); SETDEC(l, 2, 0, 0, 15); hres = VarDecRound(&l, 1, &out); EXPECTDEC(1, 0, 0, 2);
+    CLEAR(out); SETDEC(l, 2, 0, 0, 25); hres = VarDecRound(&l, 1, &out); EXPECTDEC(1, 0, 0, 2);
+    CLEAR(out); SETDEC(l, 2, 0, 0, 35); hres = VarDecRound(&l, 1, &out); EXPECTDEC(1, 0, 0, 4);
+    CLEAR(out); SETDEC(l, 3, 0, 0, 125); hres = VarDecRound(&l, 2, &out); EXPECTDEC(2, 0, 0, 12);
+    CLEAR(out); SETDEC(l, 3, 0, 0, 135); hres = VarDecRound(&l, 2, &out); EXPECTDEC(2, 0, 0, 14);
+
+    /* rounding up may carry into the next dword */
+    CLEAR(out); SETDEC64(l, 2, 0, 0, 99, 0xfffffffa); hres = VarDecRound(&l, 0, &out); EXPECTDEC64(0, 0, 0, 1, 0);
+    CLEAR(out); SETDEC64(l, 2, DECIMAL_NEG, 0, 99, 0xfffffffa); hres = VarDecRound(&l, 0, &out); EXPECTDEC64(0, DECIMAL_NEG, 0, 1, 0);
+
     CLEAR(out); SETDEC(l, 2, 0, 0, 0); hres = VarDecRound(&l, 1, &out); EXPECTDEC(1, 0, 0, 0);
 }
 
@@ -4225,7 +4263,7 @@ static void test_VarDecRound(void)
 
 static void test_VarBoolFromI1(void)
 {
-  CONVVARS(signed char);
+  CONVVARS(CHAR);
   int i;
 
   CONVERTRANGE(VarBoolFromI1, -128, 128);

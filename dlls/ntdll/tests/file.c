@@ -6063,6 +6063,26 @@ static void test_file_readonly_access(void)
     status = pNtOpenFile(&handle, GENERIC_WRITE, &attr, &io, default_sharing, FILE_NON_DIRECTORY_FILE);
     ok(status == STATUS_ACCESS_DENIED, "expected STATUS_ACCESS_DENIED, got %#lx.\n", status);
 
+    /* NtOpenFile FILE_READ_ATTRIBUTES with FILE_WRITE_DATA */
+    status = pNtOpenFile(&handle, FILE_READ_ATTRIBUTES | FILE_WRITE_DATA, &attr, &io, default_sharing, FILE_NON_DIRECTORY_FILE);
+    ok(status == STATUS_ACCESS_DENIED, "expected STATUS_ACCESS_DENIED, got %#lx.\n", status);
+    CloseHandle(handle);
+
+    /* NtOpenFile FILE_READ_ATTRIBUTES with FILE_APPEND_DATA */
+    status = pNtOpenFile(&handle, FILE_READ_ATTRIBUTES | FILE_APPEND_DATA, &attr, &io, default_sharing, FILE_NON_DIRECTORY_FILE);
+    ok(status == STATUS_ACCESS_DENIED, "expected STATUS_ACCESS_DENIED, got %#lx.\n", status);
+    CloseHandle(handle);
+
+    /* NtOpenFile FILE_{READ,WRITE}_ATTRIBUTES */
+    status = pNtOpenFile(&handle, FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES, &attr, &io, default_sharing, FILE_NON_DIRECTORY_FILE);
+    ok(status == STATUS_SUCCESS, "expected STATUS_SUCCESS, got %#lx.\n", status);
+    CloseHandle(handle);
+
+    /* NtOpenFile FILE_{READ,WRITE}_EA */
+    status = pNtOpenFile(&handle, FILE_READ_EA | FILE_WRITE_EA, &attr, &io, default_sharing, FILE_NON_DIRECTORY_FILE);
+    ok(status == STATUS_SUCCESS, "expected STATUS_SUCCESS, got %#lx.\n", status);
+    CloseHandle(handle);
+
     /* NtOpenFile DELETE without FILE_DELETE_ON_CLOSE */
     status = pNtOpenFile(&handle, DELETE, &attr, &io, default_sharing, FILE_NON_DIRECTORY_FILE);
     ok(status == STATUS_SUCCESS, "expected STATUS_SUCCESS, got %#lx.\n", status);
@@ -6813,7 +6833,7 @@ static void test_reparse_points(void)
     ret = OpenProcessToken( GetCurrentProcess(), TOKEN_ALL_ACCESS, &token );
     ok( ret == TRUE, "got error %lu\n", GetLastError() );
     ret = LookupPrivilegeValueA( NULL, "SeCreateSymbolicLinkPrivilege", &luid );
-    todo_wine ok( ret == TRUE, "got error %lu\n", GetLastError() );
+    ok( ret == TRUE, "got error %lu\n", GetLastError() );
 
     if (ret)
     {
@@ -6824,6 +6844,7 @@ static void test_reparse_points(void)
         ok( ret == TRUE, "got error %lu\n", GetLastError() );
         if (GetLastError() == ERROR_NOT_ALL_ASSIGNED)
         {
+            todo_wine
             win_skip("Insufficient permissions to perform symlink tests.\n");
             CloseHandle( token );
             goto out;

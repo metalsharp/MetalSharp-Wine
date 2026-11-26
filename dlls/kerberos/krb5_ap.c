@@ -147,12 +147,6 @@ static NTSTATUS NTAPI kerberos_LsaApInitializePackage(ULONG package_id, PLSA_DIS
 {
     char *kerberos_name;
 
-    if (!__wine_unixlib_handle)
-    {
-        if (__wine_init_unix_call() || KRB5_CALL( process_attach, NULL ))
-            ERR( "no Kerberos support, expect problems\n" );
-    }
-
     kerberos_name = dispatch->AllocateLsaHeap(sizeof(MICROSOFT_KERBEROS_NAME_A));
     if (!kerberos_name) return STATUS_NO_MEMORY;
 
@@ -639,7 +633,11 @@ static NTSTATUS map_auth_data( void *auth_data, SEC_WINNT_AUTH_IDENTITY_W **ret 
     }
     memcpy( *ret, &id, sizeof(id) );
 
-    if (status) free( *ret );
+    if (status)
+    {
+        free( *ret );
+        *ret = NULL;
+    }
     return status;
 }
 
@@ -1083,13 +1081,6 @@ static NTSTATUS NTAPI kerberos_SpInitialize(ULONG_PTR package_id, SECPKG_PARAMET
     TRACE("%Iu, %p, %p\n", package_id, params, lsa_function_table);
 
     lsa_funcs = lsa_function_table;
-
-    if (!__wine_unixlib_handle)
-    {
-        if (__wine_init_unix_call() || KRB5_CALL( process_attach, NULL ))
-            WARN( "no Kerberos support\n" );
-        return STATUS_UNSUCCESSFUL;
-    }
     return STATUS_SUCCESS;
 }
 
@@ -1186,7 +1177,6 @@ static NTSTATUS NTAPI kerberos_SpInitUserModeContext( LSA_SEC_HANDLE handle, Sec
     params.size = buf->cbBuffer;
     params.context = &context;
     status = KRB5_CALL( import_context, &params );
-    FIXME("importing context: %lx\n", status);
     if (status) return status;
 
     EnterCriticalSection( &user_ctx_cs );
@@ -1372,4 +1362,25 @@ NTSTATUS NTAPI SpUserModeInitialize(ULONG lsa_version, PULONG package_version,
     *table = &kerberos_user_table;
     *table_count = 1;
     return STATUS_SUCCESS;
+}
+
+BOOL WINAPI DllMain( HINSTANCE hinst, DWORD reason, void *reserved )
+{
+    TRACE( "%p, %lu, %p\n", hinst, reason, reserved );
+
+    switch (reason)
+    {
+    case DLL_PROCESS_ATTACH:
+        DisableThreadLibraryCalls( hinst );
+        if (__wine_init_unix_call())
+        {
+            ERR( "no Kerberos support\n" );
+            return FALSE;
+        }
+        break;
+
+    case DLL_PROCESS_DETACH:
+        break;
+    }
+    return TRUE;
 }

@@ -771,7 +771,7 @@ int WINAPI SQLGetPrivateProfileStringW(LPCWSTR section, LPCWSTR entry,
 
     clear_errors();
 
-    if (buff_len <= 0 || !section)
+    if (buff_len <= 0 || !section || !*section)
         return 0;
 
     if(buff)
@@ -860,7 +860,7 @@ int WINAPI SQLGetPrivateProfileString(LPCSTR section, LPCSTR entry,
     if (buff)
         buff[0] = 0;
 
-    if (!section || !defvalue || !buff)
+    if (!section || !*section || !defvalue || !buff)
         return 0;
 
     if (!(sectionW = strdupAtoW(section))) return 0;
@@ -1051,6 +1051,7 @@ static void write_registry_values(const WCHAR *regkey, const WCHAR *driver, cons
                             if(!value)
                             {
                                 RegCloseKey(hkeydriver);
+                                RegCloseKey(hkey);
                                 ERR("Out of memory\n");
                                 return;
                             }
@@ -1065,6 +1066,7 @@ static void write_registry_values(const WCHAR *regkey, const WCHAR *driver, cons
                             if(!value)
                             {
                                 RegCloseKey(hkeydriver);
+                                RegCloseKey(hkey);
                                 ERR("Out of memory\n");
                                 return;
                             }
@@ -1074,7 +1076,12 @@ static void write_registry_values(const WCHAR *regkey, const WCHAR *driver, cons
                     else
                     {
                         len = lstrlenW(divider) + 1;
-                        value = malloc(len * sizeof(WCHAR));
+                        if (!(value = malloc(len * sizeof(WCHAR))))
+                        {
+                            RegCloseKey(hkeydriver);
+                            RegCloseKey(hkey);
+                            return;
+                        }
                         lstrcpyW(value, divider);
                     }
 
@@ -1844,7 +1851,7 @@ BOOL WINAPI SQLWriteDSNToIniW(LPCWSTR lpszDSN, LPCWSTR lpszDriver)
             RegDeleteTreeW(hkey, lpszDSN);
             if ((ret = RegCreateKeyW(hkey, lpszDSN, &hkeydriver)) == ERROR_SUCCESS)
             {
-                RegSetValueExW(sources, L"driver", 0, REG_SZ, (BYTE*)filename, (lstrlenW(filename)+1)*sizeof(WCHAR));
+                RegSetValueExW(hkeydriver, L"driver", 0, REG_SZ, (BYTE *)filename, (lstrlenW(filename) + 1) * sizeof(WCHAR));
                 RegCloseKey(hkeydriver);
             }
         }
@@ -1908,7 +1915,7 @@ BOOL WINAPI SQLWritePrivateProfileStringW(LPCWSTR lpszSection, LPCWSTR lpszEntry
     TRACE("%s %s %s %s\n", debugstr_w(lpszSection), debugstr_w(lpszEntry),
                 debugstr_w(lpszString), debugstr_w(lpszFilename));
 
-    if(!lpszFilename || !*lpszFilename)
+    if(!lpszFilename || !*lpszFilename || !lpszSection || !*lpszSection)
     {
         push_error(ODBC_ERROR_INVALID_STR, L"Invalid parameter string");
         return FALSE;

@@ -1055,6 +1055,8 @@ static DWORD APPINFO_QueryOption(object_header_t *hdr, DWORD option, void *buffe
 
         TRACE("INTERNET_OPTION_USER_AGENT\n");
 
+        if(!size) return ERROR_INVALID_PARAMETER;
+
         bufsize = *size;
 
         if (unicode) {
@@ -4683,10 +4685,10 @@ void req_file_release(req_file_t *req_file)
     if(InterlockedDecrement(&req_file->ref))
         return;
 
-    if(!req_file->is_committed)
-        DeleteFileW(req_file->file_name);
     if(req_file->file_handle && req_file->file_handle != INVALID_HANDLE_VALUE)
         CloseHandle(req_file->file_handle);
+    if(!req_file->is_committed)
+        DeleteFileW(req_file->file_name);
     free(req_file->file_name);
     free(req_file->url);
     free(req_file);

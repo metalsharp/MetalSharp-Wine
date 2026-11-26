@@ -2126,10 +2126,8 @@ static void test_simple_joystick( DWORD version )
     ok( hr == DI_OK, "GetProperty DIPROP_GUIDANDPATH returned %#lx\n", hr );
     ok( IsEqualGUID( &prop_guid_path.guidClass, &GUID_DEVCLASS_HIDCLASS ), "got guid %s\n",
         debugstr_guid( &prop_guid_path.guidClass ) );
-    todo_wine
     ok( !wcsncmp( prop_guid_path.wszPath, expect_path, wcslen( expect_path ) ), "got path %s\n",
         debugstr_w(prop_guid_path.wszPath) );
-    todo_wine
     ok( !wcscmp( wcsrchr( prop_guid_path.wszPath, '&' ), expect_path_end ), "got path %s\n",
         debugstr_w(prop_guid_path.wszPath) );
 
@@ -4676,6 +4674,12 @@ static void test_winmm_joystick(void)
         .caps = { .InputReportByteLength = 18 },
         .attributes = default_attributes,
     };
+    struct hid_device_desc desc2 =
+    {
+        .use_report_id = TRUE,
+        .caps = { .InputReportByteLength = 18 },
+        .attributes = { sizeof(HID_DEVICE_ATTRIBUTES), LOWORD(EXPECT_VIDPID), 2, 0x0100, },
+    };
     static const JOYCAPS2W expect_regcaps =
     {
         .szRegKey = L"DINPUT.DLL",
@@ -4699,6 +4703,11 @@ static void test_winmm_joystick(void)
         .wNumAxes = 5,
         .wMaxButtons = 32,
         .szRegKey = L"DINPUT.DLL",
+    };
+    static const JOYCAPS2W expect_caps2 =
+    {
+        .wMid = 0x1209,
+        .wPid = 0x0002,
     };
     struct hid_expect injected_input[] =
     {
@@ -4755,6 +4764,7 @@ static void test_winmm_joystick(void)
     JOYINFO info = {0};
     HANDLE event, file;
     HRESULT hr;
+    DWORD tick;
     UINT ret;
 
     cleanup_registry_keys();
@@ -4798,6 +4808,8 @@ static void test_winmm_joystick(void)
 
     desc.report_descriptor_len = sizeof(report_desc);
     memcpy( desc.report_descriptor_buf, report_desc, sizeof(report_desc) );
+    desc2.report_descriptor_len = sizeof(report_desc);
+    memcpy( desc2.report_descriptor_buf, report_desc, sizeof(report_desc) );
 
     if (!hid_device_start( &desc, 1 )) goto done;
 
@@ -4970,7 +4982,76 @@ static void test_winmm_joystick(void)
     CloseHandle( event );
     CloseHandle( file );
 
+    hid_device_stop( &desc, 1 );
+    ret = joyGetPosEx( 0, &infoex );
+    ok( ret == JOYERR_UNPLUGGED, "joyGetPosEx returned %u\n", ret );
+    ret = joyGetPosEx( 1, &infoex );
+    ok( ret == JOYERR_PARMS, "joyGetPosEx returned %u\n", ret );
+    ret = joyGetDevCapsW( 0, (JOYCAPSW *)&caps, sizeof(caps) );
+    ok( ret == 0, "joyGetDevCapsW returned %u\n", ret );
+    check_member( caps, expect_caps, "%#x", wPid );
+
+    if (!hid_device_start( &desc2, 1 )) goto done;
+    if (!hid_device_start( &desc, 1 )) goto done;
+
+    /* The new joystick does not appear at once neither on Windows nor on Wine */
+    tick = GetTickCount();
+    do
+    {
+        ret = joyGetDevCapsW( 1, (JOYCAPSW *)&caps, sizeof(caps) );
+    } while (ret == JOYERR_PARMS && GetTickCount() - tick < 3000);
+
+    memset( &caps, 0xcd, sizeof(caps) );
+    ret = joyGetDevCapsW( 0, (JOYCAPSW *)&caps, sizeof(caps) );
+    ok( ret == 0, "joyGetDevCapsW returned %u\n", ret );
+    check_member( caps, expect_caps, "%#x", wPid );
+    memset( &caps, 0xcd, sizeof(caps) );
+    ret = joyGetDevCapsW( 1, (JOYCAPSW *)&caps, sizeof(caps) );
+    ok( ret == 0, "joyGetDevCapsW returned %u\n", ret );
+    check_member( caps, expect_caps2, "%#x", wPid );
+
+    infoex.dwSize = sizeof(JOYINFOEX);
+    infoex.dwFlags = JOY_RETURNALL;
+
+    ret = joyGetPosEx( 0, &infoex );
+    ok( !ret, "joyGetPosEx returned %u\n", ret );
+    ret = joyGetPosEx( 1, &infoex );
+    ok( !ret, "joyGetPosEx returned %u\n", ret );
+
+    hid_device_stop( &desc, 1 );
+
+    memset( &caps, 0xcd, sizeof(caps) );
+    ret = joyGetDevCapsW( 0, (JOYCAPSW *)&caps, sizeof(caps) );
+    ok( ret == 0, "joyGetDevCapsW returned %u\n", ret );
+    check_member( caps, expect_caps, "%#x", wPid );
+    memset( &caps, 0xcd, sizeof(caps) );
+    ret = joyGetDevCapsW( 1, (JOYCAPSW *)&caps, sizeof(caps) );
+    ok( ret == 0, "joyGetDevCapsW returned %u\n", ret );
+    check_member( caps, expect_caps2, "%#x", wPid );
+
+    ret = joyGetPosEx( 0, &infoex );
+    ok( ret == JOYERR_UNPLUGGED, "joyGetPosEx returned %u\n", ret );
+    ret = joyGetPosEx( 1, &infoex );
+    ok( !ret, "joyGetPosEx returned %u\n", ret );
+
+    if (!hid_device_start( &desc, 1 )) goto done;
+
+    memset( &caps, 0xcd, sizeof(caps) );
+    ret = joyGetDevCapsW( 0, (JOYCAPSW *)&caps, sizeof(caps) );
+    ok( ret == 0, "joyGetDevCapsW returned %u\n", ret );
+    check_member( caps, expect_caps, "%#x", wPid );
+    memset( &caps, 0xcd, sizeof(caps) );
+    ret = joyGetDevCapsW( 1, (JOYCAPSW *)&caps, sizeof(caps) );
+    ok( ret == 0, "joyGetDevCapsW returned %u\n", ret );
+    check_member( caps, expect_caps2, "%#x", wPid );
+
+    ret = joyGetPosEx( 0, &infoex );
+    ok( !ret, "joyGetPosEx returned %u\n", ret );
+    ret = joyGetPosEx( 1, &infoex );
+    ok( !ret, "joyGetPosEx returned %u\n", ret );
+
 done:
+    hid_device_stop( &desc2, 1 );
     hid_device_stop( &desc, 1 );
     cleanup_registry_keys();
 }
@@ -6957,13 +7038,26 @@ START_TEST( joystick8 )
         test_simple_joystick( 0x700 );
         test_simple_joystick( 0x800 );
 
-        test_joystick_instance_guid( 0x500 );
-        test_joystick_instance_guid( 0x700 );
-        test_joystick_instance_guid( 0x800 );
+        /*
+         * These tests are currently broken on wine because they rely upon
+         * the enumeration order of SetupDiGetClassDevs()/CM_Get_Device_Interface_List()
+         * returning HID interfaces in the order of creation, which is what
+         * native does. Wine currently returns interfaces in alphabetical order,
+         * which only worked before because our device instance ID values were implemented
+         * incorrectly.
+         */
+        if (!winetest_platform_is_wine)
+        {
+            test_joystick_instance_guid( 0x500 );
+            test_joystick_instance_guid( 0x700 );
+            test_joystick_instance_guid( 0x800 );
 
-        test_joystick_id( 0x500 );
-        test_joystick_id( 0x700 );
-        test_joystick_id( 0x800 );
+            test_joystick_id( 0x500 );
+            test_joystick_id( 0x700 );
+            test_joystick_id( 0x800 );
+        }
+        else
+            skip("Skipping tests that rely upon enumeration order on wine.\n");
 
         test_many_axes_joystick();
         test_driving_wheel_axes();

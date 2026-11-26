@@ -8480,7 +8480,7 @@ struct glGetFixedv_params
 {
     TEB *teb;
     GLenum pname;
-    GLfixed *params;
+    GLfixed *data;
 };
 
 struct glGetFixedvOES_params
@@ -25766,6 +25766,12 @@ struct wglSwapIntervalEXT_params
     BOOL ret;
 };
 
+struct set_root_context_params
+{
+    TEB *teb;
+    UINT64 root_context;
+};
+
 struct get_pixel_formats_params
 {
     TEB *teb;
@@ -25781,6 +25787,8 @@ enum unix_funcs
     unix_process_attach,
     unix_thread_attach,
     unix_process_detach,
+    unix_thread_detach,
+    unix_set_root_context,
     unix_get_pixel_formats,
     unix_wglDeleteContext,
     unix_wglGetPixelFormat,

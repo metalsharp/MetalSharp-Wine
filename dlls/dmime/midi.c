@@ -62,6 +62,7 @@ struct midi_parser
     struct list seqtrack_items;
     /* Track the initial note on event generated for a note that is currently on. NULL if the note is off. */
     struct midi_seqtrack_item *note_states[128 * 16];
+    BOOL has_program_change[16];
 
     IDirectMusicTrack *chordtrack;
     IDirectMusicTrack *bandtrack;
@@ -251,16 +252,15 @@ static HRESULT midi_parser_handle_set_tempo(struct midi_parser *parser, struct m
     return IDirectMusicTrack_SetParam(parser->tempotrack, &GUID_TempoParam, dmusic_time, &tempo);
 }
 
-static HRESULT midi_parser_handle_program_change(struct midi_parser *parser, struct midi_event *event)
+static HRESULT midi_parser_handle_program_change(struct midi_parser *parser, struct midi_event *event, BOOL std_midi)
 {
     HRESULT hr;
     DMUS_IO_INSTRUMENT instrument;
     IDirectMusicBand *band;
-    DMUS_BAND_PARAM band_param;
     MUSIC_TIME dmusic_time = (ULONGLONG)parser->time * DMUS_PPQ / parser->division;
     instrument.dwPChannel = event->status & 0xf;
     instrument.dwFlags = DMUS_IO_INST_PATCH;
-    instrument.dwPatch = event->data[0];
+    instrument.dwPatch = event->data[0] | (instrument.dwPChannel == 9 ? F_INSTRUMENT_DRUMS : 0);
     if (FAILED(hr = CoCreateInstance(&CLSID_DirectMusicBand, NULL, CLSCTX_INPROC_SERVER,
                        &IID_IDirectMusicBand, (void **)&band)))
         return hr;
@@ -269,20 +269,21 @@ static HRESULT midi_parser_handle_program_change(struct midi_parser *parser, str
     if (SUCCEEDED(hr))
     {
         TRACE("Adding band at time %lu\n", dmusic_time);
-        band_param.pBand = band;
-        band_param.mtTimePhysical = dmusic_time;
-        hr = IDirectMusicTrack_SetParam(parser->bandtrack, &GUID_BandParam, dmusic_time, &band_param);
+        hr = band_track_add_band(parser->bandtrack, dmusic_time, dmusic_time, band, std_midi);
     }
     else WARN("Failed to add instrument to band\n");
 
     IDirectMusicBand_Release(band);
+
+    parser->has_program_change[instrument.dwPChannel] = TRUE;
+
     return hr;
 }
 
 static HRESULT midi_parser_handle_note_on_off(struct midi_parser *parser, struct midi_event *event)
 {
     BYTE new_velocity = (event->status & 0xf0) == MIDI_NOTE_OFF ? 0 : event->data[1]; /* DirectMusic doesn't have noteoff velocity */
-    BYTE note = event->data[0], channel = event->status & 0xf;
+    BYTE note = event->data[0] & 0x7f, channel = event->status & 0xf;
     DWORD index = (DWORD)channel * 128 + note;
     MUSIC_TIME dmusic_time;
     struct midi_seqtrack_item *note_state = parser->note_states[index];
@@ -355,7 +356,9 @@ static HRESULT midi_parser_handle_control(struct midi_parser *parser, struct mid
 static int midi_seqtrack_item_compare(const void *a, const void *b)
 {
     const DMUS_IO_SEQ_ITEM *item_a = a, *item_b = b;
-    return item_a->mtTime - item_b->mtTime;
+    if (item_a->mtTime == item_b->mtTime)
+        return 0;
+    return item_a->mtTime > item_b->mtTime ? 1 : -1;
 }
 
 static HRESULT midi_parser_parse(struct midi_parser *parser, IDirectMusicSegment8 *segment)
@@ -372,7 +375,7 @@ static HRESULT midi_parser_parse(struct midi_parser *parser, IDirectMusicSegment
         .guidClass = CLSID_DirectMusicCollection,
         .guidObject = GUID_DefaultGMCollection,
     };
-    IDirectMusicObject *collection = NULL;
+    IDirectMusicCollection *collection = NULL;
 
     TRACE("(%p, %p): semi-stub\n", parser, segment);
     if (FAILED(hr = stream_get_object(parser->stream, &default_desc, &IID_IDirectMusicCollection,
@@ -434,7 +437,7 @@ static HRESULT midi_parser_parse(struct midi_parser *parser, IDirectMusicSegment
                     hr = midi_parser_handle_control(parser, &event);
                     break;
                 case MIDI_PROGRAM_CHANGE:
-                    hr = midi_parser_handle_program_change(parser, &event);
+                    hr = midi_parser_handle_program_change(parser, &event, FALSE);
                     break;
                 default:
                     FIXME("Unhandled MIDI event type %#02x at time +%lu\n", event.status, parser->time);
@@ -451,12 +454,37 @@ static HRESULT midi_parser_parse(struct midi_parser *parser, IDirectMusicSegment
         parser->time = 0;
         memset(parser->note_states, 0, sizeof(parser->note_states));
     }
-    if (FAILED(hr)) return hr;
+    if (FAILED(hr))
+    {
+        if (collection)
+            IDirectMusicCollection_Release(collection);
+        return hr;
+    }
 
     TRACE("End of file\n");
 
+    parser->time = 0;
+    for (i = 0; i < 16; ++i)
+    {
+        struct midi_event event = { .status = MIDI_PROGRAM_CHANGE | i };
+
+        if (parser->has_program_change[i])
+            continue;
+
+        if (FAILED(hr = midi_parser_handle_program_change(parser, &event, TRUE)))
+        {
+            if (collection)
+                IDirectMusicCollection_Release(collection);
+            return hr;
+        }
+    }
+
     if ((seq_items = calloc(parser->seqtrack_items_count, sizeof(DMUS_IO_SEQ_ITEM))) == NULL)
+    {
+        if (collection)
+            IDirectMusicCollection_Release(collection);
         return E_OUTOFMEMORY;
+    }
 
     i = 0;
     LIST_FOR_EACH_ENTRY(item, &parser->seqtrack_items, struct midi_seqtrack_item, entry)
@@ -465,7 +493,11 @@ static HRESULT midi_parser_parse(struct midi_parser *parser, IDirectMusicSegment
     qsort(seq_items, parser->seqtrack_items_count, sizeof(DMUS_IO_SEQ_ITEM), midi_seqtrack_item_compare);
 
     music_length = (ULONGLONG)music_length * DMUS_PPQ / parser->division + 1;
-    if (collection) IDirectMusicTrack_SetParam(parser->bandtrack, &GUID_ConnectToDLSCollection, 0, collection);
+    if (collection)
+    {
+        IDirectMusicTrack_SetParam(parser->bandtrack, &GUID_ConnectToDLSCollection, 0, collection);
+        IDirectMusicCollection_Release(collection);
+    }
     if (SUCCEEDED(hr)) hr = IDirectMusicSegment8_SetLength(segment, music_length);
     if (SUCCEEDED(hr)) hr = IDirectMusicSegment8_InsertTrack(segment, parser->bandtrack, 0xffff);
     if (SUCCEEDED(hr)) hr = IDirectMusicSegment8_InsertTrack(segment, parser->chordtrack, 0xffff);
@@ -484,7 +516,7 @@ static void midi_parser_destroy(struct midi_parser *parser)
     if (parser->bandtrack) IDirectMusicTrack_Release(parser->bandtrack);
     if (parser->chordtrack) IDirectMusicTrack_Release(parser->chordtrack);
     if (parser->tempotrack) IDirectMusicTrack_Release(parser->tempotrack);
-    if (parser->seqtrack) IDirectMusicTrack_Release(parser->seqtrack);
+    if (parser->seqtrack) IDirectMusicTrack8_Release(parser->seqtrack);
     LIST_FOR_EACH_ENTRY_SAFE(item, next_item, &parser->seqtrack_items, struct midi_seqtrack_item, entry)
     {
         list_remove(&item->entry);

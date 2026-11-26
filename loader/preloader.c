@@ -110,12 +110,10 @@ static struct wine_preload_info preload_info[] =
     { (void *)0x00000000, 0x00010000 },  /* low 64k */
     { (void *)0x00010000, 0x00100000 },  /* DOS area */
     { (void *)0x00110000, 0x67ef0000 },  /* low memory area */
-    { (void *)0x7f000000, 0x03000000 },  /* top-down allocations + shared user data + virtual heap */
+    { (void *)0x7f000000, 0x00ff0000 },  /* top-down allocations + shared user data */
 #else
-    { (void *)0x000000010000, 0x00100000 },  /* DOS area */
-    { (void *)0x000000110000, 0x67ef0000 },  /* low memory area */
-    { (void *)0x00007f000000, 0x00ff0000 },  /* 32-bit top-down allocations + shared user data */
-    { (void *)0x7ffffe000000, 0x01ff0000 },  /* top-down allocations + virtual heap */
+    { (void *)0x00010000, 0x00100000 },  /* DOS area */
+    { (void *)0x00110000, 0x1ffef0000 }, /* low 8G */
 #endif
     { 0, 0 },                            /* PE exe range set with WINEPRELOADRESERVE */
     { 0, 0 }                             /* end of list */
@@ -144,6 +142,7 @@ static struct wine_preload_info preload_info[] =
 #endif
 
 static size_t page_size, page_mask;
+static const size_t granularity_mask = 0xffff;
 static char *preloader_start, *preloader_end;
 
 struct wld_link_map {
@@ -1288,13 +1287,13 @@ static void preload_reserve( const char *str )
         else if (*p == '-')
         {
             if (!first) goto error;
-            start = (void *)(result & ~page_mask);
+            start = (void *)(result & ~granularity_mask);
             result = 0;
             first = 0;
         }
         else goto error;
     }
-    if (!first) end = (void *)((result + page_mask) & ~page_mask);
+    if (!first) end = (void *)((result + granularity_mask) & ~granularity_mask);
     else if (result) goto error;  /* single value '0' is allowed */
 
     /* sanity checks */
@@ -1448,11 +1447,7 @@ void* wld_start( void **stack )
                            MAP_FIXED | MAP_PRIVATE | MAP_ANON | MAP_NORESERVE, -1, 0 ) == (void *)-1)
         {
             /* don't warn for low 64k */
-            if (preload_info[i].addr >= (void *)0x10000
-#ifdef __aarch64__
-                && preload_info[i].addr < (void *)0x7fffffffff /* ARM64 address space might end here*/
-#endif
-            )
+            if (preload_info[i].addr >= (void *)0x10000)
                 wld_printf( "preloader: Warning: failed to reserve range %p-%p\n",
                             preload_info[i].addr, (char *)preload_info[i].addr + preload_info[i].size );
             remove_preload_range( i );

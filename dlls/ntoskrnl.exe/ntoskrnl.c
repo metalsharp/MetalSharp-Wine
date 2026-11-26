@@ -646,6 +646,8 @@ static NTSTATUS dispatch_read( struct dispatch_context *context )
     if (!(out_buff = HeapAlloc( GetProcessHeap(), 0, out_size ))) return STATUS_NO_MEMORY;
 
     offset.QuadPart = context->params.read.pos;
+    if (offset.QuadPart == (LONGLONG)-2) /* FILE_USE_FILE_POINTER_POSITION */
+        offset = file->CurrentByteOffset;
 
     if (!(irp = IoBuildSynchronousFsdRequest( IRP_MJ_READ, device, out_buff, out_size,
                                               &offset, NULL, NULL )))
@@ -682,6 +684,8 @@ static NTSTATUS dispatch_write( struct dispatch_context *context )
     TRACE( "device %p file %p size %lu\n", device, file, context->in_size );
 
     offset.QuadPart = context->params.write.pos;
+    if (offset.QuadPart == (LONGLONG)-2) /* FILE_USE_FILE_POINTER_POSITION */
+        offset = file->CurrentByteOffset;
 
     if (!(irp = IoBuildSynchronousFsdRequest( IRP_MJ_WRITE, device, context->in_buff, context->in_size,
                                               &offset, NULL, NULL )))
@@ -696,6 +700,51 @@ static NTSTATUS dispatch_write( struct dispatch_context *context )
     irpsp->Parameters.Write.Key = context->params.write.key;
 
     irp->Flags |= IRP_WRITE_OPERATION;
+    irp->Flags |= IRP_DEALLOCATE_BUFFER;  /* deallocate in_buff */
+    return dispatch_irp( device, irp, context );
+}
+
+/* process a set file information request for a given device */
+static NTSTATUS dispatch_set_info( struct dispatch_context *context )
+{
+    IRP *irp;
+    IO_STACK_LOCATION *irpsp;
+    DEVICE_OBJECT *device;
+    FILE_OBJECT *file = wine_server_get_ptr( context->params.set_info.file );
+
+    if (!file) return STATUS_INVALID_HANDLE;
+
+    device = IoGetAttachedDevice( file->DeviceObject );
+
+    TRACE( "device %p file %p class %#x size %lu\n",
+           device, file, context->params.set_info.class, context->in_size );
+
+    if (context->params.set_info.class == FilePositionInformation)
+    {
+        /* Handled by ntoskrnl; never passed to the driver. */
+        FILE_POSITION_INFORMATION *info = context->in_buff;
+
+        if (context->in_size < sizeof(FILE_POSITION_INFORMATION))
+            return STATUS_INFO_LENGTH_MISMATCH;
+
+        file->CurrentByteOffset = info->CurrentByteOffset;
+        return STATUS_SUCCESS;
+    }
+
+    if (!(irp = IoAllocateIrp( device->StackSize, FALSE )))
+        return STATUS_NO_MEMORY;
+
+    irpsp = IoGetNextIrpStackLocation( irp );
+    irpsp->MajorFunction = IRP_MJ_SET_INFORMATION;
+    irpsp->Parameters.SetFile.FileInformationClass = context->params.set_info.class;
+    irpsp->Parameters.SetFile.Length = context->in_size;
+    irpsp->FileObject = file;
+    irp->AssociatedIrp.SystemBuffer = context->in_buff;
+    irp->RequestorMode = UserMode;
+    irp->Tail.Overlay.Thread = (PETHREAD)KeGetCurrentThread();
+    irp->Tail.Overlay.OriginalFileObject = file;
+
+    context->in_buff = NULL;
     irp->Flags |= IRP_DEALLOCATE_BUFFER;  /* deallocate in_buff */
     return dispatch_irp( device, irp, context );
 }
@@ -882,6 +931,7 @@ static const dispatch_func dispatch_funcs[] =
     dispatch_close,    /* IRP_CALL_CLOSE */
     dispatch_read,     /* IRP_CALL_READ */
     dispatch_write,    /* IRP_CALL_WRITE */
+    dispatch_set_info, /* IRP_CALL_SET_INFO */
     dispatch_flush,    /* IRP_CALL_FLUSH */
     dispatch_ioctl,    /* IRP_CALL_IOCTL */
     dispatch_volume,   /* IRP_CALL_VOLUME */
@@ -2510,6 +2560,33 @@ NTSTATUS WINAPI FsRtlRegisterUncProvider(PHANDLE MupHandle, PUNICODE_STRING Redi
     return STATUS_NOT_IMPLEMENTED;
 }
 
+static void get_process_image_file_name( HANDLE handle, PEPROCESS process )
+{
+    UNICODE_STRING *image;
+    WCHAR *p, *end;
+    ULONG len;
+
+    if (NtQueryInformationProcess( handle, ProcessImageFileName, NULL, 0, &len ) != STATUS_INFO_LENGTH_MISMATCH)
+        return;
+
+    len += sizeof(WCHAR) + sizeof(UNICODE_STRING);
+
+    if (!(image = malloc( len )))
+        return;
+
+    if (!NtQueryInformationProcess( handle, ProcessImageFileName, image, len, NULL ))
+    {
+        end = image->Buffer + image->Length / sizeof(WCHAR);
+        p = end;
+
+        while (p > image->Buffer && p[-1] != '\\')
+            p--;
+
+        RtlUnicodeToMultiByteN( process->image_name, sizeof(process->image_name) - 1, &len, p, (end - p) * sizeof(WCHAR) );
+        process->image_name[len] = 0;
+    }
+    free( image );
+}
 
 static void *create_process_object( HANDLE handle )
 {
@@ -2522,6 +2599,7 @@ static void *create_process_object( HANDLE handle )
     NtQueryInformationProcess( handle, ProcessBasicInformation, &process->info, sizeof(process->info), NULL );
     NtQueryInformationProcess( handle, ProcessSessionInformation, &process->session_id, sizeof(process->session_id), NULL );
     NtQueryInformationProcess( handle, ProcessTimes, &process->times, sizeof(process->times), NULL );
+    get_process_image_file_name( handle, process );
     IsWow64Process( handle, &process->wow64 );
 
     return process;
@@ -2575,6 +2653,15 @@ HANDLE WINAPI PsGetProcessId(PEPROCESS process)
 }
 
 /*********************************************************************
+ *           PsGetProcessPeb    (NTOSKRNL.@)
+ */
+PEB *WINAPI PsGetProcessPeb(PEPROCESS process)
+{
+    TRACE( "%p -> %p\n", process, process->info.PebBaseAddress );
+    return process->info.PebBaseAddress;
+}
+
+/*********************************************************************
  *           PsGetProcessInheritedFromUniqueProcessId  (NTOSKRNL.@)
  */
 HANDLE WINAPI PsGetProcessInheritedFromUniqueProcessId( PEPROCESS process )
@@ -2600,6 +2687,15 @@ LONGLONG WINAPI PsGetProcessCreateTimeQuadPart( PEPROCESS process )
 {
     TRACE("%p -> %I64x\n", process, process->times.CreateTime.QuadPart);
     return process->times.CreateTime.QuadPart;
+}
+
+/*********************************************************************
+ *           PsGetProcessImageFileName    (NTOSKRNL.@)
+ */
+const char *WINAPI PsGetProcessImageFileName( PEPROCESS process )
+{
+    TRACE("%p -> %s\n", process, debugstr_a(process->image_name));
+    return process->image_name;
 }
 
 static void *create_thread_object( HANDLE handle )
@@ -2703,6 +2799,31 @@ HANDLE WINAPI PsGetThreadProcessId( PETHREAD thread )
 {
     TRACE( "%p -> %p\n", thread, thread->kthread.id.UniqueProcess );
     return thread->kthread.id.UniqueProcess;
+}
+
+/*********************************************************************
+ *           PsGetContextThread    (NTOSKRNL.@)
+ */
+NTSTATUS WINAPI PsGetContextThread(PETHREAD thread, CONTEXT *context, KPROCESSOR_MODE mode)
+{
+    NTSTATUS status;
+    HANDLE h;
+
+    TRACE("%p %p %u\n", thread, context, mode);
+
+    if (mode == KernelMode)
+        return STATUS_UNSUCCESSFUL;
+
+    if ((status = ObOpenObjectByPointer(thread, 0, NULL, THREAD_ALL_ACCESS, NULL, KernelMode, &h)))
+    {
+        WARN("Error opening thread object, status %#lx.\n", status);
+        return status;
+    }
+
+    status = NtGetContextThread(h, context);
+    NtClose(h);
+
+    return status;
 }
 
 /***********************************************************************
@@ -2838,6 +2959,7 @@ KAFFINITY WINAPI KeSetSystemAffinityThreadEx(KAFFINITY affinity)
     TRACE("affinity %#Ix.\n", affinity);
 
     affinity &= system_affinity;
+    if (!affinity) return 0;
 
     NtQueryInformationThread(GetCurrentThread(), ThreadGroupInformation,
             &old, sizeof(old), NULL);
@@ -3044,6 +3166,44 @@ PHYSICAL_ADDRESS WINAPI MmGetPhysicalAddress(void *virtual_address)
     FIXME("(%p): semi-stub\n", virtual_address);
     ret.QuadPart = (ULONG_PTR)virtual_address;
     return ret;
+}
+
+/***********************************************************************
+ *           MmGetPhysicalMemoryRanges   (NTOSKRNL.EXE.@)
+ */
+PHYSICAL_MEMORY_RANGE * WINAPI MmGetPhysicalMemoryRanges(void)
+{
+    SYSTEM_BASIC_INFORMATION info;
+    PHYSICAL_MEMORY_RANGE *ranges;
+    NTSTATUS status;
+
+    TRACE( "()\n" );
+
+    if ((status = NtQuerySystemInformation( SystemBasicInformation, &info, sizeof(info), NULL )))
+    {
+        WARN( "failed to query system information, status %#lx\n", status );
+        return NULL;
+    }
+
+    if (!(ranges = ExAllocatePool( NonPagedPool, 2 * sizeof(*ranges) )))
+        return NULL;
+
+    /* FIXME: Windows returns actual hardware ranges, we report the correct size but in one range */
+    ranges[0].BaseAddress.QuadPart = (ULONGLONG)info.MmLowestPhysicalPage * info.PageSize;
+    ranges[0].NumberOfBytes.QuadPart = (ULONGLONG)info.MmNumberOfPhysicalPages * info.PageSize;
+    memset( &ranges[1], 0, sizeof(ranges[1]) );
+
+    return ranges;
+}
+
+/***********************************************************************
+ *           MmGetVirtualForPhysical   (NTOSKRNL.EXE.@)
+ */
+void *WINAPI MmGetVirtualForPhysical(PHYSICAL_ADDRESS addr)
+{
+    ULONG_PTR ret = addr.QuadPart;
+    FIXME("(%s): semi-stub\n", wine_dbgstr_longlong(addr.QuadPart));
+    return (void *)ret;
 }
 
 /***********************************************************************
@@ -3474,6 +3634,47 @@ NTSTATUS WINAPI PsReferenceProcessFilePointer(PEPROCESS process, FILE_OBJECT **f
     return STATUS_NOT_IMPLEMENTED;
 }
 
+/*********************************************************************
+ *           PsDereferencePrimaryToken    (NTOSKRNL.@)
+ */
+void WINAPI PsDereferencePrimaryToken( PACCESS_TOKEN token )
+{
+    TRACE("%p\n", token);
+    ObDereferenceObject(token);
+}
+
+/*********************************************************************
+ *           PsReferencePrimaryToken    (NTOSKRNL.@)
+ */
+PACCESS_TOKEN WINAPI PsReferencePrimaryToken( PEPROCESS process )
+{
+    NTSTATUS status;
+    HANDLE h, token;
+    PACCESS_TOKEN ret = NULL;
+
+    TRACE("%p\n", process);
+
+    if ((status = ObOpenObjectByPointer(process, 0, NULL, PROCESS_ALL_ACCESS, NULL, KernelMode, &h)))
+    {
+        WARN("Error opening process object, status %#lx.\n", status);
+        return NULL;
+    }
+
+    if ((status = NtOpenProcessToken(h, TOKEN_ALL_ACCESS, &token)))
+    {
+        NtClose(h);
+        return NULL;
+    }
+
+    if ((status = ObReferenceObjectByHandle(token, TOKEN_ALL_ACCESS, SeTokenObjectType,
+                                            KernelMode, &ret, NULL)))
+        ret = NULL;
+
+    NtClose(token);
+    NtClose(h);
+
+    return ret;
+}
 
 /***********************************************************************
  *           PsTerminateSystemThread   (NTOSKRNL.EXE.@)
@@ -4480,9 +4681,46 @@ BOOLEAN WINAPI SePrivilegeCheck(PRIVILEGE_SET *privileges, SECURITY_SUBJECT_CONT
  */
 NTSTATUS WINAPI SeLocateProcessImageName(PEPROCESS process, UNICODE_STRING **image_name)
 {
-    FIXME("stub: %p %p\n", process, image_name);
-    if (image_name) *image_name = NULL;
-    return STATUS_NOT_IMPLEMENTED;
+    ULONG len;
+    NTSTATUS status;
+    HANDLE h;
+
+    TRACE("%p %p\n", process, image_name);
+
+    if (!image_name) return STATUS_INVALID_PARAMETER;
+
+    if ((status = ObOpenObjectByPointer(process, 0, NULL, PROCESS_ALL_ACCESS, NULL, KernelMode, &h)))
+    {
+        WARN("Error opening process object, status %#lx.\n", status);
+        return status;
+    }
+
+    status = NtQueryInformationProcess(h, ProcessImageFileName, NULL, 0, &len);
+    if (status != STATUS_INFO_LENGTH_MISMATCH)
+    {
+        NtClose(h);
+        return status;
+    }
+
+    len += sizeof(WCHAR) + sizeof(UNICODE_STRING);
+
+    if (!(*image_name = ExAllocatePool(PagedPool, len)))
+    {
+        NtClose(h);
+        return STATUS_NO_MEMORY;
+    }
+
+    if ((status = NtQueryInformationProcess(h, ProcessImageFileName,
+                                            *image_name, len - sizeof(WCHAR), &len)))
+    {
+        ExFreePool(*image_name);
+        *image_name = NULL;
+        NtClose(h);
+        return status;
+    }
+
+    NtClose(h);
+    return STATUS_SUCCESS;
 }
 
 /*********************************************************************
@@ -4828,6 +5066,13 @@ NTSTATUS WINAPI KdChangeOption(ULONG option, ULONG in_size, PVOID in_buffer,
     return STATUS_DEBUGGER_INACTIVE;
 }
 
+NTSTATUS WINAPI KeCapturePersistentThreadState(CONTEXT *context, PKTHREAD thread, ULONG code,
+                                               ULONG param1, ULONG param2, ULONG param3, ULONG param4, void *addr)
+{
+    FIXME("stub: %p %p %lu %lu %lu %lu %lu %p\n", context, thread, code, param1, param2, param3, param4, addr);
+    return STATUS_NOT_IMPLEMENTED;
+}
+
 NTSTATUS WINAPI KdDisableDebugger(void)
 {
     FIXME(": stub.\n");
@@ -4885,6 +5130,9 @@ NTSTATUS WINAPI EtwUnregister(REGHANDLE handle)
     return STATUS_SUCCESS;
 }
 
+/***********************************************************************
+ *           IoThreadToProcess / PsGetThreadProcess   (NTOSKRNL.EXE.@)
+ */
 PEPROCESS WINAPI IoThreadToProcess(PETHREAD thread)
 {
     TRACE("thread %p\n", thread);

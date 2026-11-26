@@ -94,7 +94,7 @@
 
 WINE_DEFAULT_DEBUG_CHANNEL(module);
 
-#if defined __i386__ || (defined __x86_64__ && !defined __APPLE__)
+#if (defined __i386__ || defined __x86_64__) && !defined __APPLE__
 #define SO_DLLS_SUPPORTED
 #endif
 
@@ -127,6 +127,7 @@ const char *wineloader = NULL;
 const char **dll_paths = NULL;
 const char **system_dll_paths = NULL;
 const char *user_name = NULL;
+void *main_module = NULL;
 SECTION_IMAGE_INFORMATION main_image_info = { NULL };
 
 /* die on a fatal error; use only during initialization */
@@ -356,6 +357,10 @@ static void set_metalsharp_runtime_defaults(void)
 }
 #endif
 
+/* WineForge-Internal: diagnostics/keep-dll-path-setup-free-of-early-tracing-v1.
+ * init_paths() runs before the thread-data key and shared user data exist.
+ * Debug headers may need both, so do not log during DLL path construction.
+ */
 static void set_dll_path(void)
 {
     char *p, *path = getenv( "WINEDLLPATH" );
@@ -421,10 +426,6 @@ static void set_dll_path(void)
     for (i = 0; i < count; i++) dll_path_maxlen = max( dll_path_maxlen, strlen(dll_paths[i]) );
     dll_paths[count] = NULL;
 
-#if defined(__APPLE__) && defined(__x86_64__)
-    if (d3dmetal_path)
-        TRACE( "D3DMetal backend prepended DLL path %s\n", debugstr_a(d3dmetal_path) );
-#endif
 }
 
 
@@ -641,22 +642,22 @@ static NTSTATUS loader_exec( char **argv, WORD machine, BOOL use_x87sidecar )
 NTSTATUS exec_wineloader( char **argv, int socketfd, const struct pe_image_info *pe_info )
 {
     WORD machine = pe_info->machine;
-    ULONGLONG res_start = pe_info->base;
-    ULONGLONG res_end = pe_info->base + pe_info->map_size;
     char preloader_reserve[64], socket_env[64];
 
-    if (pe_info->wine_fakedll) res_start = res_end = 0;
     if (pe_info->image_flags & IMAGE_FLAGS_ComPlusNativeReady)
         machine = is_machine_64bit( native_machine ) ? IMAGE_FILE_MACHINE_AMD64 : native_machine;
 
     signal( SIGPIPE, SIG_DFL );
 
     snprintf( socket_env, sizeof(socket_env), "WINESERVERSOCKET=%u", socketfd );
-    snprintf( preloader_reserve, sizeof(preloader_reserve), "WINEPRELOADRESERVE=%x%08x-%x%08x",
-             (UINT)(res_start >> 32), (UINT)res_start, (UINT)(res_end >> 32), (UINT)res_end );
-
-    putenv( preloader_reserve );
     putenv( socket_env );
+
+    if (!is_machine_64bit( pe_info->machine ) && pe_info->base && !pe_info->wine_fakedll)
+    {
+        snprintf( preloader_reserve, sizeof(preloader_reserve), "WINEPRELOADRESERVE=%x-%x",
+                  (UINT)pe_info->base, (UINT)(pe_info->base + pe_info->map_size) );
+        putenv( preloader_reserve );
+    }
 
     return loader_exec( argv, machine, TRUE );
 }
@@ -832,19 +833,8 @@ static NTSTATUS map_so_dll( const IMAGE_NT_HEADERS *nt_descr, HMODULE module )
 
     delta      = (const BYTE *)nt_descr - addr;
     data_start = delta & ~align_mask;
-#ifdef __APPLE__
-    {
-        Dl_info dli;
-        unsigned long data_size;
-        /* need the mach_header, not the PE header, to give to getsegmentdata(3) */
-        dladdr(addr, &dli);
-        code_end   = getsegmentdata(dli.dli_fbase, "__DATA", &data_size) - addr;
-        data_end   = (code_end + data_size + align_mask) & ~align_mask;
-    }
-#else
     code_end   = data_start;
     data_end   = (nt->OptionalHeader.SizeOfImage + delta + align_mask) & ~align_mask;
-#endif
 
     fixup_rva_ptrs( &nt->OptionalHeader.AddressOfEntryPoint, addr, 1 );
 
@@ -1044,18 +1034,6 @@ static NTSTATUS load_so_dll( void *args )
 /* only returns false for a valid library of the wrong arch */
 static int check_library_arch( int fd )
 {
-#ifdef __APPLE__
-    struct  /* Mach-O header */
-    {
-        unsigned int magic;
-        unsigned int cputype;
-    } header;
-
-    if (read( fd, &header, sizeof(header) ) != sizeof(header)) return 1;
-    if (header.magic != 0xfeedface) return 1;
-    if (sizeof(void *) == sizeof(int)) return !(header.cputype >> 24);
-    else return (header.cputype >> 24) == 1; /* CPU_ARCH_ABI64 */
-#else
     struct  /* ELF header */
     {
         unsigned char magic[4];
@@ -1074,7 +1052,6 @@ static int check_library_arch( int fd )
 #endif
     if (sizeof(void *) == sizeof(int)) return header.class == 1; /* ELFCLASS32 */
     else return header.class == 2; /* ELFCLASS64 */
-#endif
 }
 
 /***********************************************************************
@@ -1118,8 +1095,7 @@ static NTSTATUS open_builtin_so_file( char *name, OBJECT_ATTRIBUTES *attr, void 
 /***********************************************************************
  *           open_main_image_so_file
  */
-static NTSTATUS open_main_image_so_file( const char *name, UNICODE_STRING *nt_name, void **module,
-                                         SECTION_IMAGE_INFORMATION *image_info )
+static NTSTATUS open_main_image_so_file( const char *name, UNICODE_STRING *nt_name )
 {
     struct pe_image_info pe_info;
     NTSTATUS status;
@@ -1135,8 +1111,8 @@ static NTSTATUS open_main_image_so_file( const char *name, UNICODE_STRING *nt_na
             nt_name->Length -= 3 * sizeof(WCHAR);
         }
     }
-    status = dlopen_dll( name, nt_name, module, &pe_info, FALSE );
-    if (!status) virtual_fill_image_information( &pe_info, image_info );
+    status = dlopen_dll( name, nt_name, &main_module, &pe_info, FALSE );
+    if (!status) virtual_fill_image_information( &pe_info, &main_image_info );
     return status;
 }
 
@@ -1151,8 +1127,7 @@ static NTSTATUS open_builtin_so_file( char *name, OBJECT_ATTRIBUTES *attr, void 
     return STATUS_DLL_NOT_FOUND;
 }
 
-static NTSTATUS open_main_image_so_file( const char *name, UNICODE_STRING *nt_name, void **module,
-                                         SECTION_IMAGE_INFORMATION *image_info )
+static NTSTATUS open_main_image_so_file( const char *name, UNICODE_STRING *nt_name )
 {
     return STATUS_INVALID_IMAGE_FORMAT;
 }
@@ -1559,7 +1534,8 @@ static NTSTATUS find_builtin_dll( UNICODE_STRING *nt_name, ANSI_STRING *exp_name
     TRACE( "looking for %s for file %s\n", debugstr_a(file + pos + 1), debugstr_us(nt_name) );
 
 #if defined(__APPLE__) && defined(__x86_64__)
-    if ((d3dmetal_graphics_backend_enabled() || cef_software_policy_enabled()) &&
+    if ((d3dmetal_graphics_backend_enabled() || dxmt_graphics_backend_enabled() ||
+         cef_software_policy_enabled()) &&
         steam_cef_native_vulkan_loader( nt_name, file + pos + 1 ))
     {
         TRACE( "Steam frontend using native CEF Vulkan loader for %s\n", debugstr_us(nt_name) );
@@ -1857,8 +1833,13 @@ NTSTATUS load_builtin( struct pe_mapping_info *pe_mapping, USHORT machine,
         loadorder = LO_BUILTIN;  /* builtin with no fallback since mapping a fake dll is not useful */
     }
 
-    if (is_arm64ec() && pe_mapping->image.is_hybrid && search_machine == IMAGE_FILE_MACHINE_AMD64)
-        search_machine = current_machine;
+    if (current_machine == IMAGE_FILE_MACHINE_ARM64 && search_machine == IMAGE_FILE_MACHINE_AMD64)
+    {
+        /* force loading the x64 version of the builtin */
+        if (!pe_mapping->image.is_hybrid && !machine) machine = IMAGE_FILE_MACHINE_AMD64;
+        /* but make sure we load from the aarch64 builtin directory */
+        search_machine = IMAGE_FILE_MACHINE_ARM64;
+    }
 
     switch (loadorder)
     {
@@ -2001,56 +1982,42 @@ BOOL is_system_dir_path( const UNICODE_STRING *path, WORD *machine )
 
 
 /***********************************************************************
- *           open_main_image
+ *           load_main_exe
  */
-static NTSTATUS open_main_image( UNICODE_STRING *nt_name, void **module, SECTION_IMAGE_INFORMATION *info,
-                                 enum loadorder loadorder, USHORT machine )
+NTSTATUS load_main_exe( UNICODE_STRING *nt_name, USHORT load_machine )
 {
+    NTSTATUS status = STATUS_DLL_NOT_FOUND;
     OBJECT_ATTRIBUTES attr;
-    SIZE_T size = 0;
     char *unix_name;
-    NTSTATUS status;
     HANDLE mapping;
     UNICODE_STRING true_nt_name;
+    SIZE_T size = 0;
+    USHORT search_machine;
+    BOOL is_system_dir = is_system_dir_path( nt_name, &search_machine );
+    enum loadorder loadorder = get_load_order( nt_name, is_system_dir, NULL );
 
-    if (loadorder == LO_DISABLED) NtTerminateProcess( GetCurrentProcess(), STATUS_DLL_NOT_FOUND );
+    if (loadorder == LO_DISABLED) NtTerminateProcess( GetCurrentProcess(), status );
 
     InitializeObjectAttributes( &attr, nt_name, OBJ_CASE_INSENSITIVE, 0, NULL );
-    if (get_nt_and_unix_names( &attr, &true_nt_name, &unix_name, FILE_OPEN, FALSE )) return STATUS_DLL_NOT_FOUND;
+    if (!get_nt_and_unix_names( &attr, &true_nt_name, &unix_name, FILE_OPEN, FALSE ))
+        status = open_dll_file( unix_name, &attr, &mapping );
 
-    status = open_dll_file( unix_name, &attr, &mapping );
     if (!status)
     {
-        status = virtual_map_module( mapping, module, &size, info, 0, 0, machine );
-        if (status == STATUS_IMAGE_MACHINE_TYPE_MISMATCH && info->ComPlusNativeReady)
+        status = virtual_map_main_module( mapping, load_machine );
+        if (status == STATUS_IMAGE_MACHINE_TYPE_MISMATCH && main_image_info.ComPlusNativeReady)
         {
-            info->Machine = is_machine_64bit( native_machine ) ? IMAGE_FILE_MACHINE_AMD64 : native_machine;
+            main_image_info.Machine = is_machine_64bit( native_machine ) ? IMAGE_FILE_MACHINE_AMD64 : native_machine;
             status = STATUS_SUCCESS;
         }
         NtClose( mapping );
     }
     else if (status == STATUS_INVALID_IMAGE_NOT_MZ && loadorder != LO_NATIVE)
     {
-        status = open_main_image_so_file( unix_name, attr.ObjectName, module, info );
+        status = open_main_image_so_file( unix_name, attr.ObjectName );
     }
     free( unix_name );
     free( true_nt_name.Buffer );
-    return status;
-}
-
-
-/***********************************************************************
- *           load_main_exe
- */
-NTSTATUS load_main_exe( UNICODE_STRING *nt_name, USHORT load_machine, void **module )
-{
-    unsigned int status;
-    SIZE_T size;
-    USHORT search_machine;
-    BOOL is_system_dir = is_system_dir_path( nt_name, &search_machine );
-    enum loadorder loadorder = get_load_order( nt_name, is_system_dir, NULL );
-
-    status = open_main_image( nt_name, module, &main_image_info, loadorder, load_machine );
 
     switch (status)
     {
@@ -2059,7 +2026,7 @@ NTSTATUS load_main_exe( UNICODE_STRING *nt_name, USHORT load_machine, void **mod
     case STATUS_NOT_SUPPORTED:
         /* if path is in system dir, we can load the builtin even if the file itself doesn't exist */
         if (loadorder != LO_NATIVE && is_prefix_bootstrap && is_system_dir)
-            status = find_builtin_dll( nt_name, NULL, module, &size, &main_image_info, 0, 0,
+            status = find_builtin_dll( nt_name, NULL, &main_module, &size, &main_image_info, 0, 0,
                                        search_machine, load_machine, FALSE, 0 );
         break;
     }
@@ -2072,7 +2039,7 @@ NTSTATUS load_main_exe( UNICODE_STRING *nt_name, USHORT load_machine, void **mod
  *
  * Load start.exe as main image.
  */
-NTSTATUS load_start_exe( UNICODE_STRING *nt_name, void **module )
+NTSTATUS load_start_exe( UNICODE_STRING *nt_name )
 {
     static const WCHAR startW[] = {'s','t','a','r','t','.','e','x','e',0};
     unsigned int status;
@@ -2082,7 +2049,8 @@ NTSTATUS load_start_exe( UNICODE_STRING *nt_name, void **module )
     wcscpy( image, get_machine_wow64_dir( current_machine ));
     wcscat( image, startW );
     init_unicode_string( nt_name, image );
-    status = find_builtin_dll( nt_name, NULL, module, &size, &main_image_info, 0, 0, current_machine, 0, FALSE, 0 );
+    status = find_builtin_dll( nt_name, NULL, &main_module, &size,
+                               &main_image_info, 0, 0, current_machine, 0, FALSE, 0 );
     if (!NT_SUCCESS(status))
     {
         MESSAGE( "wine: failed to load start.exe: %x\n", status );
@@ -2118,7 +2086,7 @@ static ULONG_PTR find_named_export( HMODULE module, const IMAGE_EXPORT_DIRECTORY
     return 0;
 }
 
-static inline void *get_rva( void *module, ULONG_PTR addr )
+static inline void *get_rva( void *module, ULONG addr )
 {
     return (BYTE *)module + addr;
 }
@@ -2488,9 +2456,9 @@ static void init_d3dmetal_darwin_tls_hooks(void)
  */
 static void start_main_thread(void)
 {
-    TEB *teb = virtual_alloc_first_teb();
+    struct thread_data *data = virtual_alloc_first_thread_data();
 
-    startup_info_size = server_init_process();
+    server_init_process( data );
     virtual_map_user_shared_data();
     init_cpu_info();
     init_files();
@@ -2510,7 +2478,7 @@ static void start_main_thread(void)
      * without it. Mullion's keep it. */
     if (vkd3d_lane_enabled() && !is_machine_64bit( main_image_info.Machine )) unsetenv( "MTL_HUD_ENABLED" );
 #endif
-    init_thread_stack( teb, 0, 0, 0 );
+    init_thread_stack( data->teb, 0, 0, 0 );
     NtCreateKeyedEvent( &keyed_event, GENERIC_READ | GENERIC_WRITE, NULL, 0 );
     load_ntdll();
     load_wow64_ntdll( main_image_info.Machine );

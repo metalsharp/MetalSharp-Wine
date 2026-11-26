@@ -44,6 +44,7 @@ WINE_DEFAULT_DEBUG_CHANNEL(waylanddrv);
 static const struct egl_platform *egl;
 static const struct opengl_funcs *funcs;
 static const struct opengl_drawable_funcs wayland_drawable_funcs;
+static BOOL (*p_egl_describe_pixel_format)( int format, struct wgl_pixel_format *pf );
 
 struct wayland_gl_drawable
 {
@@ -71,23 +72,31 @@ static BOOL wayland_opengl_surface_create(struct client_surface *client, int for
 {
     struct wayland_client_surface *surface = impl_from_client_surface(client);
     EGLConfig config = egl_config_for_format(format);
-    EGLint attribs[4], *attrib = attribs;
+    EGLint attribs[5], *attrib = attribs;
     struct wayland_gl_drawable *gl;
+    struct wgl_pixel_format desc;
     HWND hwnd = client->hwnd;
     SIZE size;
 
     TRACE("client=%s format=%d\n", debugstr_client_surface(client), format);
 
-    if (!egl->has_EGL_EXT_present_opaque)
+    p_egl_describe_pixel_format( format, &desc );
+
+    if (!egl->extensions[EGL_EXT_present_opaque])
         WARN("Missing EGL_EXT_present_opaque extension\n");
     else
     {
         *attrib++ = EGL_PRESENT_OPAQUE_EXT;
         *attrib++ = EGL_TRUE;
     }
+    if (desc.framebuffer_srgb_capable)
+    {
+        *attrib++ = EGL_GL_COLORSPACE;
+        *attrib++ = EGL_GL_COLORSPACE_SRGB;
+    }
     *attrib++ = EGL_NONE;
 
-    if (!(gl = opengl_drawable_create(sizeof(*gl), &wayland_drawable_funcs, format, client))) return FALSE;
+    if (!(gl = opengl_drawable_create(&wayland_drawable_funcs, format, client, NULL))) return FALSE;
     size = client->raw ? gl->base.monitor_size : gl->base.virtual_size;
 
     opengl_drawable_map_buffer(&gl->base, GL_FRONT_LEFT, GL_BACK_LEFT);
@@ -167,26 +176,27 @@ static void wayland_pbuffer_destroy(struct opengl_drawable *base)
 
 static const struct opengl_drawable_funcs wayland_pbuffer_funcs =
 {
+    .size = sizeof(struct wayland_pbuffer),
     .destroy = wayland_pbuffer_destroy,
 };
 
-static BOOL wayland_pbuffer_create(HDC hdc, int format, BOOL largest, GLenum texture_format, GLenum texture_target,
-                                   GLint max_level, GLsizei *width, GLsizei *height, struct opengl_drawable **surface)
+static BOOL wayland_pbuffer_create(HDC hdc, int format, SIZE size, BOOL largest, GLenum texture_format, GLenum texture_target,
+                                   GLint max_level, struct opengl_drawable **drawable)
 {
     EGLConfig config = egl_config_for_format(format);
     struct wayland_pbuffer *gl;
 
-    TRACE("hdc %p, format %d, largest %u, texture_format %#x, texture_target %#x, max_level %#x, width %d, height %d, private %p\n",
-          hdc, format, largest, texture_format, texture_target, max_level, *width, *height, surface);
+    TRACE("hdc %p, format %d, size %s, largest %u, texture_format %#x, texture_target %#x, max_level %#x, drawable %p\n",
+          hdc, format, debugstr_size(&size), largest, texture_format, texture_target, max_level, drawable);
 
-    if (!(gl = opengl_drawable_create(sizeof(*gl), &wayland_pbuffer_funcs, format, NULL))) return FALSE;
+    if (!(gl = opengl_drawable_create(&wayland_pbuffer_funcs, format, NULL, &size))) return FALSE;
     /* Wayland EGL doesn't support pixmap or pbuffer, create a dummy window surface to act as the target render surface. */
     if (!(gl->surface = wl_compositor_create_surface(process_wayland.wl_compositor))) goto err;
-    if (!(gl->window = wl_egl_window_create(gl->surface, *width, *height))) goto err;
+    if (!(gl->window = wl_egl_window_create(gl->surface, size.cx, size.cy))) goto err;
     if (!(gl->base.surface = funcs->p_eglCreateWindowSurface(egl->display, config, gl->window, NULL))) goto err;
 
     TRACE("Created pbuffer %s with egl_surface %p\n", debugstr_opengl_drawable(&gl->base), gl->base.surface);
-    *surface = &gl->base;
+    *drawable = &gl->base;
     return TRUE;
 
 err:
@@ -194,27 +204,16 @@ err:
     return FALSE;
 }
 
-static BOOL wayland_pbuffer_updated(HDC hdc, struct opengl_drawable *base, GLenum cube_face, GLint mipmap_level)
-{
-    return GL_TRUE;
-}
-
-static UINT wayland_pbuffer_bind(HDC hdc, struct opengl_drawable *base, GLenum buffer)
-{
-    return -1; /* use default implementation */
-}
-
 static struct opengl_driver_funcs wayland_driver_funcs =
 {
     .p_init_egl_platform = wayland_init_egl_platform,
     .p_surface_create = wayland_opengl_surface_create,
     .p_pbuffer_create = wayland_pbuffer_create,
-    .p_pbuffer_updated = wayland_pbuffer_updated,
-    .p_pbuffer_bind = wayland_pbuffer_bind,
 };
 
 static const struct opengl_drawable_funcs wayland_drawable_funcs =
 {
+    .size = sizeof(struct wayland_gl_drawable),
     .destroy = wayland_drawable_destroy,
     .flush = wayland_drawable_flush,
     .swap = wayland_drawable_swap,
@@ -241,7 +240,8 @@ UINT WAYLAND_OpenGLInit(UINT version, const struct opengl_funcs *opengl_funcs, c
     wayland_driver_funcs.p_init_extensions = (*driver_funcs)->p_init_extensions;
     wayland_driver_funcs.p_context_create = (*driver_funcs)->p_context_create;
     wayland_driver_funcs.p_context_destroy = (*driver_funcs)->p_context_destroy;
-    wayland_driver_funcs.p_make_current = (*driver_funcs)->p_make_current;
+    wayland_driver_funcs.p_context_activate = (*driver_funcs)->p_context_activate;
+    p_egl_describe_pixel_format = (*driver_funcs)->p_describe_pixel_format;
 
     *driver_funcs = &wayland_driver_funcs;
     return STATUS_SUCCESS;

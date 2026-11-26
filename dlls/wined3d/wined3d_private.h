@@ -462,6 +462,7 @@ enum wined3d_decoder_backend
     WINED3D_DECODER_BACKEND_AUTO,
     WINED3D_DECODER_BACKEND_VULKAN,
     WINED3D_DECODER_BACKEND_VA,
+    WINED3D_DECODER_BACKEND_NONE,
 };
 
 #define WINED3D_CSMT_ENABLE    0x00000001
@@ -2329,6 +2330,7 @@ enum wined3d_pci_device
     CARD_NVIDIA_TESLA_T4            = 0x1eb8,
     CARD_NVIDIA_AMPERE_A10          = 0x2236,
     CARD_NVIDIA_AMPERE_A10G         = 0x2237,
+    CARD_NVIDIA_L4                  = 0x27b8,
     CARD_NVIDIA_GEFORCE_RTX4060     = 0x2882,
     CARD_NVIDIA_GEFORCE_RTX4060M    = 0x28a0,
     CARD_NVIDIA_GEFORCE_RTX4060TI8G = 0x2803,
@@ -2616,7 +2618,7 @@ struct wined3d_adapter
     void *formats;
     size_t format_size;
 
-    ssize_t mapped_size;
+    SSIZE_T mapped_size;
 
     const struct wined3d_vertex_pipe_ops *vertex_pipe;
     const struct wined3d_fragment_pipe_ops *fragment_pipe;
@@ -2638,7 +2640,7 @@ struct wined3d_adapter *wined3d_adapter_gl_create(unsigned int ordinal,
         unsigned int wined3d_creation_flags);
 
 BOOL wined3d_adapter_no3d_init_format_info(struct wined3d_adapter *adapter);
-ssize_t adapter_adjust_mapped_memory(struct wined3d_adapter *adapter, ssize_t size);
+SSIZE_T adapter_adjust_mapped_memory(struct wined3d_adapter *adapter, SSIZE_T size);
 UINT64 adapter_adjust_memory(struct wined3d_adapter *adapter, INT64 amount);
 
 #define ARG_UNUSED          0xff
@@ -3663,8 +3665,9 @@ C_ASSERT(!(WINED3D_CS_QUEUE_SIZE & (WINED3D_CS_QUEUE_SIZE - 1)));
 
 struct wined3d_cs_queue
 {
-    ULONG head, tail;
-    BYTE data[WINED3D_CS_QUEUE_SIZE];
+    DECLSPEC_ALIGN(64) ULONG head;
+    DECLSPEC_ALIGN(64) ULONG tail;
+    DECLSPEC_ALIGN(64) BYTE data[WINED3D_CS_QUEUE_SIZE];
 };
 
 struct wined3d_device_context_ops
@@ -3736,7 +3739,7 @@ void wined3d_cs_emit_decode(struct wined3d_decoder *decoder, struct wined3d_deco
 void wined3d_device_context_emit_clear_uav(struct wined3d_device_context *context,
         struct wined3d_unordered_access_view *view, const struct wined3d_uvec4 *clear_value, bool fp);
 void wined3d_cs_emit_preload_resource(struct wined3d_cs *cs, struct wined3d_resource *resource);
-void wined3d_cs_emit_present(struct wined3d_cs *cs, struct wined3d_swapchain *swapchain, const RECT *src_rect,
+HRESULT wined3d_cs_emit_present(struct wined3d_cs *cs, struct wined3d_swapchain *swapchain, const RECT *src_rect,
         const RECT *dst_rect, HWND dst_window_override, unsigned int swap_interval, uint32_t flags);
 void wined3d_cs_emit_set_color_key(struct wined3d_cs *cs, struct wined3d_texture *texture,
         WORD flags, const struct wined3d_color_key *color_key);
@@ -4449,7 +4452,7 @@ static inline void shader_get_position_fixup(const struct wined3d_context *conte
     /* See get_projection_matrix() in glsl_shader.c for a discussion of the position fixup.
      * This function here also applies to d3d10+ which does not need adjustment for
      * integer pixel centers, but it may need the filling convention offset. */
-    if (context->d3d_info->wined3d_creation_flags & WINED3D_PIXEL_CENTER_INTEGER)
+    if (context->d3d_info->wined3d_creation_flags & WINED3D_LEGACY)
         center_offset = 1.0f;
     else
         center_offset = 0.0f;

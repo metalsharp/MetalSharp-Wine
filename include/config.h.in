@@ -30,9 +30,6 @@
 /* Define to 1 if you have the <bluetooth/rfcomm.h> header file. */
 #undef HAVE_BLUETOOTH_RFCOMM_H
 
-/* Define to 1 if you have the <capi20.h> header file. */
-#undef HAVE_CAPI20_H
-
 /* Define to 1 if you have the 'clock_gettime' function. */
 #undef HAVE_CLOCK_GETTIME
 
@@ -102,12 +99,6 @@
 /* Define if we have the libgphoto2_port development environment */
 #undef HAVE_GPHOTO2_PORT
 
-/* Define to 1 if you have the <gssapi/gssapi_ext.h> header file. */
-#undef HAVE_GSSAPI_GSSAPI_EXT_H
-
-/* Define to 1 if you have the <gssapi/gssapi.h> header file. */
-#undef HAVE_GSSAPI_GSSAPI_H
-
 /* Define to 1 if you have the <ifaddrs.h> header file. */
 #undef HAVE_IFADDRS_H
 
@@ -116,9 +107,6 @@
 
 /* Define to 1 if you have the 'kqueue' function. */
 #undef HAVE_KQUEUE
-
-/* Define to 1 if you have the <krb5/krb5.h> header file. */
-#undef HAVE_KRB5_KRB5_H
 
 /* Define to 1 if you have the <libavcodec/avcodec.h> header file. */
 #undef HAVE_LIBAVCODEC_AVCODEC_H
@@ -158,9 +146,6 @@
 
 /* Define to 1 if you have the <link.h> header file. */
 #undef HAVE_LINK_H
-
-/* Define to 1 if you have the <linux/capi.h> header file. */
-#undef HAVE_LINUX_CAPI_H
 
 /* Define to 1 if you have the <linux/cdrom.h> header file. */
 #undef HAVE_LINUX_CDROM_H
@@ -317,12 +302,6 @@
 
 /* Define to 1 if you have the <OpenCL/opencl.h> header file. */
 #undef HAVE_OPENCL_OPENCL_H
-
-/* Define to 1 if 'numaudioengines' is a member of 'oss_sysinfo'. */
-#undef HAVE_OSS_SYSINFO_NUMAUDIOENGINES
-
-/* Define to 1 if you have the <pcap/pcap.h> header file. */
-#undef HAVE_PCAP_PCAP_H
 
 /* Define to 1 if you have the 'pipe2' function. */
 #undef HAVE_PIPE2
@@ -666,9 +645,6 @@
 /* Define to 1 if you have the <valgrind/valgrind.h> header file. */
 #undef HAVE_VALGRIND_VALGRIND_H
 
-/* Define to 1 if you have the <va/va_drm.h> header file. */
-#undef HAVE_VA_VA_DRM_H
-
 /* Define to 1 if the Wine preloader is being used. */
 #undef HAVE_WINE_PRELOADER
 
@@ -773,12 +749,6 @@
 
 /* Define to the soname of the libgnutls library. */
 #undef SONAME_LIBGNUTLS
-
-/* Define to the soname of the libgssapi_krb5 library. */
-#undef SONAME_LIBGSSAPI_KRB5
-
-/* Define to the soname of the libkrb5 library. */
-#undef SONAME_LIBKRB5
 
 /* Define to the soname of the libMoltenVK library. */
 #undef SONAME_LIBMOLTENVK

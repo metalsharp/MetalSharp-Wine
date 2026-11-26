@@ -105,6 +105,7 @@ static const struct fd_ops file_fd_ops =
 {
     .get_fd_type   = file_get_fd_type,
     .get_file_info = default_fd_get_file_info,
+    .set_file_info = default_fd_set_file_info,
     .ioctl         = default_fd_ioctl,
     .queue_async   = default_fd_queue_async,
 };
@@ -191,14 +192,13 @@ int is_file_executable( const char *name )
 }
 
 static struct object *create_file( struct fd *root, const char *nameptr, data_size_t len,
-                                   struct unicode_str nt_name,
-                                   unsigned int access, unsigned int sharing, int create,
+                                   struct unicode_str nt_name, unsigned int access,
+                                   unsigned int sharing, unsigned int disposition,
                                    unsigned int options, unsigned int attrs,
                                    const struct security_descriptor *sd )
 {
     struct object *obj = NULL;
     struct fd *fd;
-    int flags;
     char *name;
     mode_t mode;
 
@@ -210,19 +210,6 @@ static struct object *create_file( struct fd *root, const char *nameptr, data_si
     if (!(name = mem_alloc( len + 1 ))) return NULL;
     memcpy( name, nameptr, len );
     name[len] = 0;
-
-    switch(create)
-    {
-    case FILE_CREATE:       flags = O_CREAT | O_EXCL; break;
-    case FILE_OVERWRITE_IF: /* FIXME: the difference is whether we trash existing attr or not */
-                            access |= FILE_WRITE_ATTRIBUTES;
-    case FILE_SUPERSEDE:    flags = O_CREAT | O_TRUNC; break;
-    case FILE_OPEN:         flags = 0; break;
-    case FILE_OPEN_IF:      flags = O_CREAT; break;
-    case FILE_OVERWRITE:    flags = O_TRUNC;
-                            access |= FILE_WRITE_ATTRIBUTES; break;
-    default:                set_error( STATUS_INVALID_PARAMETER ); goto done;
-    }
 
     if (sd)
     {
@@ -248,8 +235,7 @@ static struct object *create_file( struct fd *root, const char *nameptr, data_si
 
     access = map_access( access, &file_type.mapping );
 
-    /* FIXME: should set error to STATUS_OBJECT_NAME_COLLISION if file existed before */
-    fd = open_fd( root, name, nt_name, flags | O_NONBLOCK, &mode, access, sharing, options );
+    fd = open_fd( root, name, nt_name, &mode, access, sharing, disposition, options );
     if (!fd) goto done;
 
     if (S_ISDIR(mode))
@@ -364,7 +350,7 @@ struct security_descriptor *mode_to_sd( mode_t mode, const struct sid *user, con
         ace = set_ace( ace_next( ace ), user, ACCESS_DENIED_ACE_TYPE, flags, 0 );
         if (!(mode & S_IRUSR) && (mode & (S_IRGRP|S_IROTH)))
             ace->mask |= FILE_GENERIC_READ | FILE_GENERIC_EXECUTE;
-        if (!(mode & S_IWUSR) && (mode & (S_IWGRP|S_IROTH)))
+        if (!(mode & S_IWUSR) && (mode & (S_IWGRP|S_IWOTH)))
             ace->mask |= FILE_GENERIC_WRITE | DELETE | FILE_DELETE_CHILD;
         ace->mask &= ~STANDARD_RIGHTS_ALL; /* never deny standard rights */
     }
@@ -661,6 +647,12 @@ DECL_HANDLER(create_file)
 
     if (!get_req_object_attributes( &params )) return;
     if (params.root) release_object( params.root );
+
+    if (req->create < 0 || req->create > FILE_MAXIMUM_DISPOSITION)
+    {
+        set_error( STATUS_INVALID_PARAMETER );
+        return;
+    }
 
     if (params.objattr->rootdir)
     {

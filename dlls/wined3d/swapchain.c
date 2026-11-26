@@ -128,6 +128,12 @@ static void wined3d_swapchain_vk_destroy_vulkan_swapchain(struct wined3d_swapcha
     free(swapchain_vk->vk_semaphores);
     VK_CALL(vkDestroySwapchainKHR(device_vk->vk_device, swapchain_vk->vk_swapchain, NULL));
     VK_CALL(vkDestroySurfaceKHR(vk_info->instance, swapchain_vk->vk_surface, NULL));
+
+    swapchain_vk->vk_images = NULL;
+    swapchain_vk->vk_semaphores = NULL;
+    swapchain_vk->image_count = 0;
+    swapchain_vk->vk_swapchain = VK_NULL_HANDLE;
+    swapchain_vk->vk_surface = VK_NULL_HANDLE;
 }
 
 static void wined3d_swapchain_vk_destroy_object(void *object)
@@ -218,6 +224,7 @@ HRESULT CDECL wined3d_swapchain_present(struct wined3d_swapchain *swapchain,
         unsigned int swap_interval, uint32_t flags)
 {
     const struct wined3d_swapchain_desc *desc = &swapchain->state.desc;
+    HRESULT hr;
     RECT s, d;
 
     TRACE("swapchain %p, src_rect %s, dst_rect %s, dst_window_override %p, swap_interval %u, flags %#x.\n",
@@ -259,12 +266,12 @@ HRESULT CDECL wined3d_swapchain_present(struct wined3d_swapchain *swapchain,
         dst_rect = &d;
     }
 
-    wined3d_cs_emit_present(swapchain->device->cs, swapchain, src_rect,
+    hr = wined3d_cs_emit_present(swapchain->device->cs, swapchain, src_rect,
             dst_rect, dst_window_override, swap_interval, flags);
 
     wined3d_mutex_unlock();
 
-    return WINED3D_OK;
+    return hr;
 }
 
 HRESULT CDECL wined3d_swapchain_get_front_buffer_data(const struct wined3d_swapchain *swapchain,
@@ -900,6 +907,8 @@ fail:
     }
     free(swapchain_vk->vk_semaphores);
     free(swapchain_vk->vk_images);
+    swapchain_vk->vk_semaphores = NULL;
+    swapchain_vk->vk_images = NULL;
     return false;
 }
 
@@ -1038,13 +1047,14 @@ static HRESULT wined3d_swapchain_vk_create_vulkan_swapchain(struct wined3d_swapc
         ERR("Failed to create Vulkan swapchain, vr %s.\n", wined3d_debug_vkresult(vr));
         goto fail;
     }
-    swapchain_vk->vk_swapchain = vk_swapchain;
 
     if (!wined3d_swapchain_vk_create_vulkan_swapchain_images(swapchain_vk, vk_swapchain))
     {
         VK_CALL(vkDestroySwapchainKHR(device_vk->vk_device, vk_swapchain, NULL));
         goto fail;
     }
+
+    swapchain_vk->vk_swapchain = vk_swapchain;
 
     swapchain_vk->width = width;
     swapchain_vk->height = height;
@@ -1107,6 +1117,8 @@ static VkResult wined3d_swapchain_vk_blit(struct wined3d_swapchain_vk *swapchain
             swapchain_vk, context_vk, wine_dbgstr_rect(src_rect), wine_dbgstr_rect(dst_rect), swap_interval);
 
     wined3d_swapchain_vk_set_swap_interval(swapchain_vk, swap_interval);
+    if (!swapchain_vk->vk_swapchain)
+        return VK_ERROR_SURFACE_LOST_KHR;
 
     present_idx = swapchain_vk->current++ % swapchain_vk->image_count;
     wined3d_context_vk_wait_command_buffer(context_vk, swapchain_vk->vk_semaphores[present_idx].command_buffer_id);
@@ -1619,8 +1631,6 @@ static HRESULT wined3d_swapchain_init(struct wined3d_swapchain *swapchain, struc
     unsigned int i;
     HWND window;
 
-    wined3d_mutex_lock();
-
     if (desc->swap_effect != WINED3D_SWAP_EFFECT_DISCARD
             && desc->swap_effect != WINED3D_SWAP_EFFECT_SEQUENTIAL
             && desc->swap_effect != WINED3D_SWAP_EFFECT_COPY)
@@ -1628,6 +1638,8 @@ static HRESULT wined3d_swapchain_init(struct wined3d_swapchain *swapchain, struc
 
     if (FAILED(hr = wined3d_swapchain_desc_validate_flags(desc)))
         return hr;
+
+    wined3d_mutex_lock();
 
     window = desc->device_window ? desc->device_window : device->create_parms.focus_window;
     TRACE("Using target window %p.\n", window);
@@ -1654,7 +1666,8 @@ static HRESULT wined3d_swapchain_init(struct wined3d_swapchain *swapchain, struc
     if (!(swapchain->frame_latency_semaphore = CreateSemaphoreW(NULL, swapchain->max_frame_latency, LONG_MAX, NULL)))
     {
         ERR("Failed to create frame latency semaphore, error %lu.\n", GetLastError());
-        return HRESULT_FROM_WIN32(GetLastError());
+        hr = HRESULT_FROM_WIN32(GetLastError());
+        goto err;
     }
 
     if (!(swapchain->dc = GetDCEx(swapchain->win_handle, 0, DCX_USESTYLE | DCX_CACHE)))

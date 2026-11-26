@@ -34,40 +34,7 @@ WINE_DEFAULT_DEBUG_CHANNEL(d3d);
 
 #define WINED3D_FORMAT_FOURCC_BASE (WINED3DFMT_BC7_UNORM_SRGB + 1)
 
-static const struct
-{
-    enum wined3d_format_id id;
-    unsigned int idx;
-}
-format_index_remap[] =
-{
-    {WINED3DFMT_UYVY,         WINED3D_FORMAT_FOURCC_BASE},
-    {WINED3DFMT_YUY2,         WINED3D_FORMAT_FOURCC_BASE + 1},
-    {WINED3DFMT_YV12,         WINED3D_FORMAT_FOURCC_BASE + 2},
-    {WINED3DFMT_DXT1,         WINED3D_FORMAT_FOURCC_BASE + 3},
-    {WINED3DFMT_DXT2,         WINED3D_FORMAT_FOURCC_BASE + 4},
-    {WINED3DFMT_DXT3,         WINED3D_FORMAT_FOURCC_BASE + 5},
-    {WINED3DFMT_DXT4,         WINED3D_FORMAT_FOURCC_BASE + 6},
-    {WINED3DFMT_DXT5,         WINED3D_FORMAT_FOURCC_BASE + 7},
-    {WINED3DFMT_MULTI2_ARGB8, WINED3D_FORMAT_FOURCC_BASE + 8},
-    {WINED3DFMT_G8R8_G8B8,    WINED3D_FORMAT_FOURCC_BASE + 9},
-    {WINED3DFMT_R8G8_B8G8,    WINED3D_FORMAT_FOURCC_BASE + 10},
-    {WINED3DFMT_ATI1N,        WINED3D_FORMAT_FOURCC_BASE + 11},
-    {WINED3DFMT_ATI2N,        WINED3D_FORMAT_FOURCC_BASE + 12},
-    {WINED3DFMT_INST,         WINED3D_FORMAT_FOURCC_BASE + 13},
-    {WINED3DFMT_NVDB,         WINED3D_FORMAT_FOURCC_BASE + 14},
-    {WINED3DFMT_NVHU,         WINED3D_FORMAT_FOURCC_BASE + 15},
-    {WINED3DFMT_NVHS,         WINED3D_FORMAT_FOURCC_BASE + 16},
-    {WINED3DFMT_INTZ,         WINED3D_FORMAT_FOURCC_BASE + 17},
-    {WINED3DFMT_RESZ,         WINED3D_FORMAT_FOURCC_BASE + 18},
-    {WINED3DFMT_NULL,         WINED3D_FORMAT_FOURCC_BASE + 19},
-    {WINED3DFMT_R16,          WINED3D_FORMAT_FOURCC_BASE + 20},
-    {WINED3DFMT_AL16,         WINED3D_FORMAT_FOURCC_BASE + 21},
-    {WINED3DFMT_NV12,         WINED3D_FORMAT_FOURCC_BASE + 22},
-    {WINED3DFMT_ATOC,         WINED3D_FORMAT_FOURCC_BASE + 23},
-};
-
-#define WINED3D_FORMAT_COUNT (WINED3D_FORMAT_FOURCC_BASE + ARRAY_SIZE(format_index_remap))
+#define WINED3D_FORMAT_COUNT (WINED3D_FORMAT_FOURCC_BASE + 24)
 
 struct wined3d_format_channels
 {
@@ -1805,18 +1772,37 @@ static const struct wined3d_format_srgb_info format_srgb_info[] =
 
 static inline int get_format_idx(enum wined3d_format_id format_id)
 {
-    unsigned int i;
-
     if ((unsigned int)format_id < WINED3D_FORMAT_FOURCC_BASE)
         return format_id;
 
-    for (i = 0; i < ARRAY_SIZE(format_index_remap); ++i)
+    switch (format_id)
     {
-        if (format_index_remap[i].id == format_id)
-            return format_index_remap[i].idx;
+        case WINED3DFMT_UYVY:         return WINED3D_FORMAT_FOURCC_BASE;
+        case WINED3DFMT_YUY2:         return WINED3D_FORMAT_FOURCC_BASE + 1;
+        case WINED3DFMT_YV12:         return WINED3D_FORMAT_FOURCC_BASE + 2;
+        case WINED3DFMT_DXT1:         return WINED3D_FORMAT_FOURCC_BASE + 3;
+        case WINED3DFMT_DXT2:         return WINED3D_FORMAT_FOURCC_BASE + 4;
+        case WINED3DFMT_DXT3:         return WINED3D_FORMAT_FOURCC_BASE + 5;
+        case WINED3DFMT_DXT4:         return WINED3D_FORMAT_FOURCC_BASE + 6;
+        case WINED3DFMT_DXT5:         return WINED3D_FORMAT_FOURCC_BASE + 7;
+        case WINED3DFMT_MULTI2_ARGB8: return WINED3D_FORMAT_FOURCC_BASE + 8;
+        case WINED3DFMT_G8R8_G8B8:    return WINED3D_FORMAT_FOURCC_BASE + 9;
+        case WINED3DFMT_R8G8_B8G8:    return WINED3D_FORMAT_FOURCC_BASE + 10;
+        case WINED3DFMT_ATI1N:        return WINED3D_FORMAT_FOURCC_BASE + 11;
+        case WINED3DFMT_ATI2N:        return WINED3D_FORMAT_FOURCC_BASE + 12;
+        case WINED3DFMT_INST:         return WINED3D_FORMAT_FOURCC_BASE + 13;
+        case WINED3DFMT_NVDB:         return WINED3D_FORMAT_FOURCC_BASE + 14;
+        case WINED3DFMT_NVHU:         return WINED3D_FORMAT_FOURCC_BASE + 15;
+        case WINED3DFMT_NVHS:         return WINED3D_FORMAT_FOURCC_BASE + 16;
+        case WINED3DFMT_INTZ:         return WINED3D_FORMAT_FOURCC_BASE + 17;
+        case WINED3DFMT_RESZ:         return WINED3D_FORMAT_FOURCC_BASE + 18;
+        case WINED3DFMT_NULL:         return WINED3D_FORMAT_FOURCC_BASE + 19;
+        case WINED3DFMT_R16:          return WINED3D_FORMAT_FOURCC_BASE + 20;
+        case WINED3DFMT_AL16:         return WINED3D_FORMAT_FOURCC_BASE + 21;
+        case WINED3DFMT_NV12:         return WINED3D_FORMAT_FOURCC_BASE + 22;
+        case WINED3DFMT_ATOC:         return WINED3D_FORMAT_FOURCC_BASE + 23;
+        default:                      return -1;
     }
-
-    return -1;
 }
 
 static struct wined3d_format_gl *wined3d_format_gl_mutable(struct wined3d_format *format)
@@ -1920,7 +1906,7 @@ static void parse_channel_desc(struct wined3d_format *format, const char *channe
     unsigned int attrs = 0;
     unsigned int j;
 
-    for (j = 0; j < strlen(channel_desc); ++j)
+    for (j = 0; channel_desc[j]; ++j)
     {
         enum wined3d_channel_type channel_type = map_channel_type(channel_desc[j]);
 
@@ -3459,7 +3445,7 @@ static void apply_format_fixups(struct wined3d_adapter *adapter, struct wined3d_
         {WINED3DFMT_L8_UNORM,              "XXX1", FALSE, ARB_TEXTURE_RG},
     };
 
-    use_legacy_fixups = d3d_info->wined3d_creation_flags & WINED3D_LEGACY_UNBOUND_RESOURCE_COLOR;
+    use_legacy_fixups = (d3d_info->wined3d_creation_flags & WINED3D_LEGACY);
     for (i = 0; i < ARRAY_SIZE(fixups); ++i)
     {
         if (fixups[i].legacy && !use_legacy_fixups)
@@ -4114,6 +4100,7 @@ static void init_vulkan_format_info(struct wined3d_adapter *adapter, struct wine
         VkFormat vk_format;
         const char *fixup;
         bool legacy_fixup;
+        VkFormat vk_scaled_format;
     }
     vulkan_formats[] =
     {
@@ -4127,7 +4114,7 @@ static void init_vulkan_format_info(struct wined3d_adapter *adapter, struct wine
         {WINED3DFMT_R16G16B16A16_UNORM,         VK_FORMAT_R16G16B16A16_UNORM,      },
         {WINED3DFMT_R16G16B16A16_UINT,          VK_FORMAT_R16G16B16A16_UINT,       },
         {WINED3DFMT_R16G16B16A16_SNORM,         VK_FORMAT_R16G16B16A16_SNORM,      },
-        {WINED3DFMT_R16G16B16A16_SINT,          VK_FORMAT_R16G16B16A16_SINT,       },
+        {WINED3DFMT_R16G16B16A16_SINT,          VK_FORMAT_R16G16B16A16_SINT,       .vk_scaled_format = VK_FORMAT_R16G16B16A16_SSCALED},
         {WINED3DFMT_R32G32_FLOAT,               VK_FORMAT_R32G32_SFLOAT,           },
         {WINED3DFMT_R32G32_UINT,                VK_FORMAT_R32G32_UINT,             },
         {WINED3DFMT_R32G32_SINT,                VK_FORMAT_R32G32_SINT,             },
@@ -4139,14 +4126,14 @@ static void init_vulkan_format_info(struct wined3d_adapter *adapter, struct wine
         {WINED3DFMT_R8G8_SINT,                  VK_FORMAT_R8G8_SINT,               },
         {WINED3DFMT_R8G8B8A8_UNORM,             VK_FORMAT_R8G8B8A8_UNORM,          },
         {WINED3DFMT_R8G8B8A8_UNORM_SRGB,        VK_FORMAT_R8G8B8A8_SRGB,           },
-        {WINED3DFMT_R8G8B8A8_UINT,              VK_FORMAT_R8G8B8A8_UINT,           },
+        {WINED3DFMT_R8G8B8A8_UINT,              VK_FORMAT_R8G8B8A8_UINT,           .vk_scaled_format = VK_FORMAT_R8G8B8A8_USCALED},
         {WINED3DFMT_R8G8B8A8_SNORM,             VK_FORMAT_R8G8B8A8_SNORM,          },
         {WINED3DFMT_R8G8B8A8_SINT,              VK_FORMAT_R8G8B8A8_SINT,           },
         {WINED3DFMT_R16G16_FLOAT,               VK_FORMAT_R16G16_SFLOAT,           },
         {WINED3DFMT_R16G16_UNORM,               VK_FORMAT_R16G16_UNORM,            },
         {WINED3DFMT_R16G16_UINT,                VK_FORMAT_R16G16_UINT,             },
         {WINED3DFMT_R16G16_SNORM,               VK_FORMAT_R16G16_SNORM,            "XY11", true},
-        {WINED3DFMT_R16G16_SINT,                VK_FORMAT_R16G16_SINT,             },
+        {WINED3DFMT_R16G16_SINT,                VK_FORMAT_R16G16_SINT,             .vk_scaled_format = VK_FORMAT_R16G16_SSCALED},
         {WINED3DFMT_D32_FLOAT,                  VK_FORMAT_D32_SFLOAT,              },
         {WINED3DFMT_R32_FLOAT,                  VK_FORMAT_R32_SFLOAT,              },
         {WINED3DFMT_R32_UINT,                   VK_FORMAT_R32_UINT,                },
@@ -4162,6 +4149,9 @@ static void init_vulkan_format_info(struct wined3d_adapter *adapter, struct wine
         {WINED3DFMT_R8_SNORM,                   VK_FORMAT_R8_SNORM,                },
         {WINED3DFMT_R8_SINT,                    VK_FORMAT_R8_SINT,                 },
         {WINED3DFMT_A8_UNORM,                   VK_FORMAT_R8_UNORM,                "000X"},
+        {WINED3DFMT_L8_UNORM,                   VK_FORMAT_R8_UNORM,                "XXX1"},
+        {WINED3DFMT_L8A8_UNORM,                 VK_FORMAT_R8G8_UNORM,              "XXXY"},
+        {WINED3DFMT_L16_UNORM,                  VK_FORMAT_R16_UNORM,               "XXX1"},
         {WINED3DFMT_B8G8R8A8_UNORM,             VK_FORMAT_B8G8R8A8_UNORM,          },
         {WINED3DFMT_B8G8R8A8_UNORM_SRGB,        VK_FORMAT_B8G8R8A8_SRGB,           },
         {WINED3DFMT_B8G8R8X8_UNORM,             VK_FORMAT_B8G8R8A8_UNORM,          "XYZ1"},
@@ -4193,6 +4183,7 @@ static void init_vulkan_format_info(struct wined3d_adapter *adapter, struct wine
         {WINED3DFMT_R32_FLOAT_X8X24_TYPELESS,   VK_FORMAT_D32_SFLOAT_S8_UINT,      },
         {WINED3DFMT_X32_TYPELESS_G8X24_UINT,    VK_FORMAT_D32_SFLOAT_S8_UINT,      },
         {WINED3DFMT_D24_UNORM_S8_UINT,          VK_FORMAT_D24_UNORM_S8_UINT,       },
+        {WINED3DFMT_X8D24_UNORM,                VK_FORMAT_X8_D24_UNORM_PACK32,     },
         {WINED3DFMT_NV12_PLANAR,                VK_FORMAT_G8_B8R8_2PLANE_420_UNORM,},
     };
     const struct wined3d_d3d_info *d3d_info = &adapter->d3d_info;
@@ -4212,8 +4203,9 @@ static void init_vulkan_format_info(struct wined3d_adapter *adapter, struct wine
         if (vulkan_formats[i].id == format->f.id)
         {
             vk_format = vulkan_formats[i].vk_format;
-            if (!vulkan_formats[i].legacy_fixup
-                    || (d3d_info->wined3d_creation_flags & WINED3D_LEGACY_UNBOUND_RESOURCE_COLOR))
+            if (vulkan_formats[i].vk_scaled_format && (d3d_info->wined3d_creation_flags & WINED3D_LEGACY))
+                vk_format = vulkan_formats[i].vk_scaled_format;
+            if (!vulkan_formats[i].legacy_fixup || (d3d_info->wined3d_creation_flags & WINED3D_LEGACY))
                 fixup = vulkan_formats[i].fixup;
             break;
         }
@@ -4235,14 +4227,22 @@ static void init_vulkan_format_info(struct wined3d_adapter *adapter, struct wine
         format->f.color_fixup = COLOR_FIXUP_IDENTITY;
 
     VK_CALL(vkGetPhysicalDeviceFormatProperties(vk_physical_device, vk_format, &properties));
-    if (vk_format == VK_FORMAT_D24_UNORM_S8_UINT)
+    if (~properties.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)
     {
-        if (~properties.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)
+        if (vk_format == VK_FORMAT_D24_UNORM_S8_UINT)
         {
             /* AMD doesn't support VK_FORMAT_D24_UNORM_S8_UINT. */
             WARN("Mapping VK_FORMAT_D24_UNORM_S8_UINT to VK_FORMAT_D32_SFLOAT_S8_UINT.\n");
 
             format->vk_format = vk_format = VK_FORMAT_D32_SFLOAT_S8_UINT;
+            VK_CALL(vkGetPhysicalDeviceFormatProperties(vk_physical_device, vk_format, &properties));
+        }
+        else if (vk_format == VK_FORMAT_X8_D24_UNORM_PACK32)
+        {
+            /* AMD doesn't support VK_FORMAT_X8_D24_UNORM_PACK32 either. */
+            WARN("Mapping VK_FORMAT_X8_D24_UNORM_PACK32 to VK_FORMAT_D32_SFLOAT.\n");
+
+            format->vk_format = vk_format = VK_FORMAT_D32_SFLOAT;
             VK_CALL(vkGetPhysicalDeviceFormatProperties(vk_physical_device, vk_format, &properties));
         }
     }

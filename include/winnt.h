@@ -462,6 +462,12 @@ extern "C++" { \
 #define STDMETHODIMPV           HRESULT STDMETHODVCALLTYPE
 #define STDMETHODIMPV_(type)    type STDMETHODVCALLTYPE
 
+#define STDOVERRIDEMETHODIMP        STDMETHODIMP
+#define STDOVERRIDEMETHODIMP_(type) STDMETHODIMP_(type)
+
+#define IFACEMETHODIMP          STDMETHODIMP
+#define IFACEMETHODIMP_(type)   STDMETHODIMP_(type)
+
 /* Define the basic types */
 #ifndef VOID
 #define VOID void
@@ -542,6 +548,7 @@ typedef PCWSTR         *PZPCWSTR;
 # ifdef UNICODE
 # ifndef _TCHAR_DEFINED
 typedef WCHAR           TCHAR,      *PTCHAR;
+typedef WCHAR           TBYTE,      *PTBYTE;
 # define _TCHAR_DEFINED
 #endif
 typedef LPWCH           PTCH,        LPTCH;
@@ -561,6 +568,7 @@ typedef PCUZZWSTR       PCUZZTSTR;
 # else  /* UNICODE */
 # ifndef _TCHAR_DEFINED
 typedef CHAR            TCHAR,      *PTCHAR;
+typedef unsigned char   TBYTE,      *PTBYTE;
 # define _TCHAR_DEFINED
 # endif
 typedef LPCH            PTCH,        LPTCH;
@@ -750,6 +758,30 @@ typedef struct _MEMORY_BASIC_INFORMATION
     DWORD    Protect;
     DWORD    Type;
 } MEMORY_BASIC_INFORMATION, *PMEMORY_BASIC_INFORMATION;
+
+typedef struct _MEMORY_BASIC_INFORMATION32
+{
+    ULONG     BaseAddress;
+    ULONG     AllocationBase;
+    DWORD     AllocationProtect;
+    ULONG     RegionSize;
+    DWORD     State;
+    DWORD     Protect;
+    DWORD     Type;
+} MEMORY_BASIC_INFORMATION32, *PMEMORY_BASIC_INFORMATION32;
+
+typedef struct DECLSPEC_ALIGN(16) _MEMORY_BASIC_INFORMATION64
+{
+    ULONGLONG BaseAddress;
+    ULONGLONG AllocationBase;
+    DWORD     AllocationProtect;
+    DWORD     __alignment1;
+    ULONGLONG RegionSize;
+    DWORD     State;
+    DWORD     Protect;
+    DWORD     Type;
+    DWORD     __alignment2;
+} MEMORY_BASIC_INFORMATION64, *PMEMORY_BASIC_INFORMATION64;
 
 typedef struct _MEM_ADDRESS_REQUIREMENTS
 {
@@ -1049,7 +1081,11 @@ NTSYSAPI WORD         WINAPI RtlQueryDepthSList(PSLIST_HEADER);
 #define HEAP_SHARED                     0x04000000
 
 typedef enum _HEAP_INFORMATION_CLASS {
-    HeapCompatibilityInformation,
+    HeapCompatibilityInformation = 0,
+    HeapEnableTerminationOnCorruption = 1,
+    HeapOptimizeResources = 3,
+    HeapTag = 7,
+    HeapMemoryUsageInformation = 8,
 } HEAP_INFORMATION_CLASS;
 
 /* Processor feature flags.  */
@@ -1277,7 +1313,7 @@ typedef struct DECLSPEC_ALIGN(16) _M128A {
     LONGLONG High;
 } M128A, *PM128A;
 
-typedef struct _XSAVE_FORMAT {
+typedef struct DECLSPEC_ALIGN(16) _XSAVE_FORMAT {
     WORD ControlWord;        /* 000 */
     WORD StatusWord;         /* 002 */
     BYTE TagWord;            /* 004 */
@@ -1518,6 +1554,34 @@ typedef struct _KNONVOLATILE_CONTEXT_POINTERS
 #define XSTATE_MASK_AMX_TILE_DATA           (1 << XSTATE_AMX_TILE_DATA)
 #define XSTATE_MASK_LWP                     ((UINT64)1 << XSTATE_LWP)
 
+#define XSTATE_ARM64_SVE                    (2)
+#define XSTATE_MASK_ARM64_SVE               ((UINT64)1 << XSTATE_ARM64_SVE)
+
+#define XSTATE_ARM64_SME_ZA                 (3)
+#define XSTATE_MASK_ARM64_SME_ZA            ((UINT64)1 << XSTATE_ARM64_SME_ZA)
+
+#define XSTATE_ARM64_SME_TPIDR2             (4)
+#define XSTATE_MASK_ARM64_SME_TPIDR2        ((UINT64)1 << XSTATE_ARM64_SME_TPIDR2)
+
+#define XSTATE_ARM64_SME_ZT                 (5)
+#define XSTATE_MASK_ARM64_SME_ZT            ((UINT64)1 << XSTATE_ARM64_SME_ZT)
+
+#define XSTATE_COMPACTION_ENABLE            (63)
+#define XSTATE_COMPACTION_ENABLE_MASK       ((UINT64)1 << XSTATE_COMPACTION_ENABLE)
+
+#define XSTATE_ALIGN_BIT                    (1)
+#define XSTATE_ALIGN_MASK                   ((UINT64)1 << XSTATE_ALIGN_BIT)
+
+#define XSTATE_XFD_BIT                      (2)
+#define XSTATE_XFD_MASK                     ((UINT64)1 << XSTATE_XFD_BIT)
+
+#define XSTATE_CONTROLFLAG_XSAVEOPT_MASK    (1)
+#define XSTATE_CONTROLFLAG_XSAVEC_MASK      (2)
+#define XSTATE_CONTROLFLAG_XFD_MASK         (4)
+#define XSTATE_CONTROLFLAG_VALID_MASK       (XSTATE_CONTROLFLAG_XSAVEOPT_MASK | \
+                                             XSTATE_CONTROLFLAG_XSAVEC_MASK | \
+                                             XSTATE_CONTROLFLAG_XFD_MASK)
+
 typedef struct _XSTATE_FEATURE
 {
     ULONG Offset;
@@ -1550,13 +1614,19 @@ typedef struct _XSTATE_CONFIGURATION
     ULONG Spare;
 } XSTATE_CONFIGURATION, *PXSTATE_CONFIGURATION;
 
-typedef struct _XSAVE_AREA_HEADER
+typedef struct DECLSPEC_ALIGN(8) _XSAVE_AREA_HEADER
 {
     DWORD64 Mask;
     DWORD64 CompactionMask;
     DWORD64 Reserved2[6];
 }
 XSAVE_AREA_HEADER, *PXSAVE_AREA_HEADER;
+
+typedef struct DECLSPEC_ALIGN(16) _XSAVE_AREA
+{
+    XSAVE_FORMAT LegacyState;
+    XSAVE_AREA_HEADER Header;
+} XSAVE_AREA, *PXSAVE_AREA;
 
 typedef struct _YMMCONTEXT
 {
@@ -1733,13 +1803,17 @@ typedef struct _KNONVOLATILE_CONTEXT_POINTERS
 #endif /* __arm__ */
 
 #define CONTEXT_ARM64           0x400000
-#define CONTEXT_ARM64_CONTROL         (CONTEXT_ARM64 | 0x00000001)
-#define CONTEXT_ARM64_INTEGER         (CONTEXT_ARM64 | 0x00000002)
-#define CONTEXT_ARM64_FLOATING_POINT  (CONTEXT_ARM64 | 0x00000004)
-#define CONTEXT_ARM64_DEBUG_REGISTERS (CONTEXT_ARM64 | 0x00000008)
-#define CONTEXT_ARM64_X18       (CONTEXT_ARM64 | 0x00000010)
+#define CONTEXT_ARM64_CONTROL             (CONTEXT_ARM64 | 0x00000001)
+#define CONTEXT_ARM64_INTEGER             (CONTEXT_ARM64 | 0x00000002)
+#define CONTEXT_ARM64_FLOATING_POINT      (CONTEXT_ARM64 | 0x00000004)
+#define CONTEXT_ARM64_DEBUG_REGISTERS     (CONTEXT_ARM64 | 0x00000008)
+#define CONTEXT_ARM64_X18                 (CONTEXT_ARM64 | 0x00000010)
+#define CONTEXT_ARM64_XSTATE              (CONTEXT_ARM64 | 0x00000020)
+#define CONTEXT_ARM64_FLOATING_POINT_LOW  (CONTEXT_ARM64 | 0x00000040)
+#define CONTEXT_ARM64_FLOATING_POINT_HIGH (CONTEXT_ARM64 | 0x00000080)
 #define CONTEXT_ARM64_FULL (CONTEXT_ARM64_CONTROL | CONTEXT_ARM64_INTEGER | CONTEXT_ARM64_FLOATING_POINT)
-#define CONTEXT_ARM64_ALL  (CONTEXT_ARM64_FULL | CONTEXT_ARM64_DEBUG_REGISTERS | CONTEXT_ARM64_X18)
+#define CONTEXT_ARM64_ALL  (CONTEXT_ARM64_FULL | CONTEXT_ARM64_DEBUG_REGISTERS | CONTEXT_ARM64_X18 | \
+                            CONTEXT_ARM64_FLOATING_POINT_LOW | CONTEXT_ARM64_FLOATING_POINT_HIGH)
 
 #define CONTEXT_ARM64_UNWOUND_TO_CALL 0x20000000
 #define CONTEXT_ARM64_RET_TO_GUEST    0x04000000
@@ -2017,6 +2091,7 @@ typedef struct DECLSPEC_ALIGN(16) _ARM64EC_NT_CONTEXT
 #define CONTEXT_INTEGER CONTEXT_ARM64_INTEGER
 #define CONTEXT_FLOATING_POINT CONTEXT_ARM64_FLOATING_POINT
 #define CONTEXT_DEBUG_REGISTERS CONTEXT_ARM64_DEBUG_REGISTERS
+#define CONTEXT_XSTATE CONTEXT_ARM64_XSTATE
 #define CONTEXT_FULL CONTEXT_ARM64_FULL
 #define CONTEXT_ALL CONTEXT_ARM64_ALL
 #define CONTEXT_RET_TO_GUEST CONTEXT_ARM64_RET_TO_GUEST
@@ -2316,8 +2391,63 @@ typedef void (CALLBACK *PTERMINATION_HANDLER)(BOOLEAN,DWORD64);
 #define PRODUCT_PROFESSIONAL_S_N                        0x00000080
 #define PRODUCT_ENTERPRISE_S_EVALUATION                 0x00000081
 #define PRODUCT_ENTERPRISE_S_N_EVALUATION               0x00000082
+#define PRODUCT_HOLOGRAPHIC                             0x00000087
+#define PRODUCT_HOLOGRAPHIC_BUSINESS                    0x00000088
+#define PRODUCT_PRO_SINGLE_LANGUAGE                     0x0000008A
+#define PRODUCT_PRO_CHINA                               0x0000008B
+#define PRODUCT_ENTERPRISE_SUBSCRIPTION                 0x0000008C
+#define PRODUCT_ENTERPRISE_SUBSCRIPTION_N               0x0000008D
+#define PRODUCT_DATACENTER_NANO_SERVER                  0x0000008F
+#define PRODUCT_STANDARD_NANO_SERVER                    0x00000090
+#define PRODUCT_DATACENTER_A_SERVER_CORE                0x00000091
+#define PRODUCT_STANDARD_A_SERVER_CORE                  0x00000092
+#define PRODUCT_DATACENTER_WS_SERVER_CORE               0x00000093
+#define PRODUCT_STANDARD_WS_SERVER_CORE                 0x00000094
+#define PRODUCT_UTILITY_VM                              0x00000095
+#define PRODUCT_DATACENTER_EVALUATION_SERVER_CORE       0x0000009F
+#define PRODUCT_STANDARD_EVALUATION_SERVER_CORE         0x000000A0
+#define PRODUCT_PRO_WORKSTATION                         0x000000A1
+#define PRODUCT_PRO_WORKSTATION_N                       0x000000A2
+#define PRODUCT_PRO_FOR_EDUCATION                       0x000000A4
+#define PRODUCT_PRO_FOR_EDUCATION_N                     0x000000A5
+#define PRODUCT_AZURE_SERVER_CORE                       0x000000A8
+#define PRODUCT_AZURE_NANO_SERVER                       0x000000A9
+#define PRODUCT_ENTERPRISEG                             0x000000AB
+#define PRODUCT_ENTERPRISEGN                            0x000000AC
+#define PRODUCT_SERVERRDSH                              0x000000AF
+#define PRODUCT_CLOUD                                   0x000000B2
+#define PRODUCT_CLOUDN                                  0x000000B3
+#define PRODUCT_HUBOS                                   0x000000B4
+#define PRODUCT_ONECOREUPDATEOS                         0x000000B6
+#define PRODUCT_CLOUDE                                  0x000000B7
+#define PRODUCT_IOTOS                                   0x000000B9
+#define PRODUCT_CLOUDEN                                 0x000000BA
+#define PRODUCT_IOTEDGEOS                               0x000000BB
+#define PRODUCT_IOTENTERPRISE                           0x000000BC
+#define PRODUCT_LITE                                    0x000000BD
+#define PRODUCT_IOTENTERPRISES                          0x000000BF
+#define PRODUCT_XBOX_SYSTEMOS                           0x000000C0
+#define PRODUCT_XBOX_GAMEOS                             0x000000C2
+#define PRODUCT_XBOX_ERAOS                              0x000000C3
+#define PRODUCT_XBOX_DURANGOHOSTOS                      0x000000C4
+#define PRODUCT_XBOX_SCARLETTHOSTOS                     0x000000C5
+#define PRODUCT_XBOX_KEYSTONE                           0x000000C6
+#define PRODUCT_AZURE_SERVER_CLOUDHOST                  0x000000C7
+#define PRODUCT_AZURE_SERVER_CLOUDMOS                   0x000000C8
+#define PRODUCT_CLOUDEDITIONN                           0x000000CA
+#define PRODUCT_CLOUDEDITION                            0x000000CB
+#define PRODUCT_VALIDATION                              0x000000CC
+#define PRODUCT_IOTENTERPRISESK                         0x000000CD
+#define PRODUCT_IOTENTERPRISEK                          0x000000CE
+#define PRODUCT_IOTENTERPRISESEVAL                      0x000000CF
+#define PRODUCT_AZURE_SERVER_AGENTBRIDGE                0x000000D0
+#define PRODUCT_AZURE_SERVER_NANOHOST                   0x000000D1
+#define PRODUCT_WNC                                     0x000000D2
+#define PRODUCT_AZURESTACKHCI_SERVER_CORE               0x00000196
+#define PRODUCT_DATACENTER_SERVER_AZURE_EDITION         0x00000197
+#define PRODUCT_DATACENTER_SERVER_CORE_AZURE_EDITION    0x00000198
+#define PRODUCT_DATACENTER_WS_SERVER_CORE_AZURE_EDITION 0x00000199
 #define PRODUCT_UNLICENSED                              0xABCDABCD
-
 
 /*
  * Language IDs
@@ -2732,7 +2862,7 @@ typedef struct _IMAGE_DOS_HEADER {
     WORD  e_oemid;      /* 24: OEM identifier (for e_oeminfo) */
     WORD  e_oeminfo;    /* 26: OEM information; e_oemid specific */
     WORD  e_res2[10];   /* 28: Reserved words */
-    DWORD e_lfanew;     /* 3c: Offset to extended header */
+    LONG  e_lfanew;     /* 3c: Offset to extended header */
 } IMAGE_DOS_HEADER, *PIMAGE_DOS_HEADER;
 #pragma pack(pop)
 
@@ -4714,7 +4844,7 @@ typedef struct _SID_AND_ATTRIBUTES_HASH {
 
 /* S-1-2 */
 #define SECURITY_LOCAL_SID_AUTHORITY		{0,0,0,0,0,2}
-#define SECURITY_LOCAL_LOGON_RID                __MSABI_LONG(0X00000000)
+#define SECURITY_LOCAL_LOGON_RID                __MSABI_LONG(0X00000001)
 
 /* S-1-3 */
 #define SECURITY_CREATOR_SID_AUTHORITY		{0,0,0,0,0,3}
@@ -4807,7 +4937,24 @@ typedef struct _SID_AND_ATTRIBUTES_HASH {
 #define SECURITY_CAPABILITY_RID_COUNT           __MSABI_LONG(0x000000005)
 #define SECURITY_PARENT_PACKAGE_RID_COUNT       SECURITY_APP_PACKAGE_RID_COUNT
 #define SECURITY_CHILD_PACKAGE_RID_COUNT        __MSABI_LONG(0x00000000c)
+
 #define SECURITY_BUILTIN_PACKAGE_ANY_PACKAGE    __MSABI_LONG(0x000000001)
+#define SECURITY_BUILTIN_PACKAGE_ANY_RESTRICTED_PACKAGE __MSABI_LONG(0x00000002)
+
+#define SECURITY_CAPABILITY_INTERNET_CLIENT     __MSABI_LONG(0x00000001)
+#define SECURITY_CAPABILITY_INTERNET_CLIENT_SERVER __MSABI_LONG(0x00000002)
+#define SECURITY_CAPABILITY_PRIVATE_NETWORK_CLIENT_SERVER __MSABI_LONG(0x00000003)
+#define SECURITY_CAPABILITY_PICTURES_LIBRARY    __MSABI_LONG(0x00000004)
+#define SECURITY_CAPABILITY_VIDEOS_LIBRARY      __MSABI_LONG(0x00000005)
+#define SECURITY_CAPABILITY_MUSIC_LIBRARY       __MSABI_LONG(0x00000006)
+#define SECURITY_CAPABILITY_DOCUMENTS_LIBRARY   __MSABI_LONG(0x00000007)
+#define SECURITY_CAPABILITY_ENTERPRISE_AUTHENTICATION  __MSABI_LONG(0x00000008)
+#define SECURITY_CAPABILITY_SHARED_USER_CERTIFICATES __MSABI_LONG(0x00000009)
+#define SECURITY_CAPABILITY_REMOVABLE_STORAGE   __MSABI_LONG(0x0000000A)
+#define SECURITY_CAPABILITY_APPOINTMENTS        __MSABI_LONG(0x0000000B)
+#define SECURITY_CAPABILITY_CONTACTS            __MSABI_LONG(0x0000000C)
+
+#define SECURITY_CAPABILITY_INTERNET_EXPLORER   __MSABI_LONG(0x00001000)
 
 #define SECURITY_MANDATORY_LABEL_AUTHORITY {0,0,0,0,0,16}
 #define SECURITY_MANDATORY_UNTRUSTED_RID        __MSABI_LONG(0x00000000)
@@ -5347,7 +5494,7 @@ typedef struct _SYSTEM_ALARM_OBJECT_ACE {
     GUID        ObjectType;
     GUID        InheritedObjectType;
     DWORD       SidStart;
-} SYSTEM_ALARM_OBJECT_ACE, *PSYSTEM_ALARM_OBJECT_aCE;
+} SYSTEM_ALARM_OBJECT_ACE, *PSYSTEM_ALARM_OBJECT_ACE;
 
 typedef struct _ACCESS_ALLOWED_CALLBACK_ACE {
     ACE_HEADER  Header;
@@ -5815,6 +5962,7 @@ typedef struct {
 } POWER_ACTION_POLICY,
 *PPOWER_ACTION_POLICY;
 
+#ifdef __WINESRC__
 typedef struct _PROCESSOR_POWER_INFORMATION {
 	ULONG Number;
 	ULONG MaxMhz;
@@ -5824,6 +5972,7 @@ typedef struct _PROCESSOR_POWER_INFORMATION {
 	ULONG CurrentIdleState;
 } PROCESSOR_POWER_INFORMATION,
 *PPROCESSOR_POWER_INFORMATION;
+#endif
 
 typedef struct _PROCESSOR_POWER_POLICY_INFO {
 	ULONG TimeCheck;
@@ -6404,7 +6553,7 @@ typedef struct _IO_COUNTERS {
 } IO_COUNTERS, *PIO_COUNTERS;
 #pragma pack(pop)
 
-typedef struct {
+typedef struct _OSVERSIONINFOA {
 	DWORD dwOSVersionInfoSize;
 	DWORD dwMajorVersion;
 	DWORD dwMinorVersion;
@@ -6413,7 +6562,7 @@ typedef struct {
 	CHAR szCSDVersion[128];
 } OSVERSIONINFOA, *POSVERSIONINFOA, *LPOSVERSIONINFOA;
 
-typedef struct {
+typedef struct _OSVERSIONINFOW {
 	DWORD dwOSVersionInfoSize;
 	DWORD dwMajorVersion;
 	DWORD dwMinorVersion;
@@ -6426,7 +6575,7 @@ DECL_WINELIB_TYPE_AW(OSVERSIONINFO)
 DECL_WINELIB_TYPE_AW(POSVERSIONINFO)
 DECL_WINELIB_TYPE_AW(LPOSVERSIONINFO)
 
-typedef struct {
+typedef struct _OSVERSIONINFOEXA {
 	DWORD dwOSVersionInfoSize;
 	DWORD dwMajorVersion;
 	DWORD dwMinorVersion;
@@ -6440,7 +6589,7 @@ typedef struct {
 	BYTE wReserved;
 } OSVERSIONINFOEXA, *POSVERSIONINFOEXA, *LPOSVERSIONINFOEXA;
 
-typedef struct {
+typedef struct _OSVERSIONINFOEXW {
 	DWORD dwOSVersionInfoSize;
 	DWORD dwMajorVersion;
 	DWORD dwMinorVersion;
@@ -7108,8 +7257,299 @@ typedef enum _PROCESS_MITIGATION_POLICY
     ProcessPayloadRestrictionPolicy,
     ProcessChildProcessPolicy,
     ProcessSideChannelIsolationPolicy,
+    ProcessUserShadowStackPolicy,
+    ProcessRedirectionTrustPolicy,
+    ProcessUserPointerAuthPolicy,
+    ProcessSEHOPPolicy,
+    ProcessActivationContextTrustPolicy,
     MaxProcessMitigationPolicy
 } PROCESS_MITIGATION_POLICY, *PPROCESS_MITIGATION_POLICY;
+
+typedef struct _PROCESS_MITIGATION_DEP_POLICY
+{
+    union
+    {
+        DWORD Flags;
+        struct
+        {
+            DWORD Enable : 1;
+            DWORD DisableAtlThunkEmulation : 1;
+            DWORD ReservedFlags : 30;
+        } DUMMYSTRUCTNAME;
+    } DUMMYUNIONNAME;
+    BOOLEAN Permanent;
+} PROCESS_MITIGATION_DEP_POLICY, *PPROCESS_MITIGATION_DEP_POLICY;
+
+typedef struct _PROCESS_MITIGATION_ASLR_POLICY
+{
+    union
+    {
+        DWORD Flags;
+        struct
+        {
+            DWORD EnableBottomUpRandomization : 1;
+            DWORD EnableForceRelocateImages : 1;
+            DWORD EnableHighEntropy : 1;
+            DWORD DisallowStrippedImages : 1;
+            DWORD ReservedFlags : 28;
+        } DUMMYSTRUCTNAME;
+    } DUMMYUNIONNAME;
+} PROCESS_MITIGATION_ASLR_POLICY, *PPROCESS_MITIGATION_ASLR_POLICY;
+
+typedef struct _PROCESS_MITIGATION_DYNAMIC_CODE_POLICY
+{
+    union
+    {
+        DWORD Flags;
+        struct
+        {
+            DWORD ProhibitDynamicCode : 1;
+            DWORD AllowThreadOptOut : 1;
+            DWORD AllowRemoteDowngrade : 1;
+            DWORD AuditProhibitDynamicCode : 1;
+            DWORD ReservedFlags : 28;
+        } DUMMYSTRUCTNAME;
+    } DUMMYUNIONNAME;
+} PROCESS_MITIGATION_DYNAMIC_CODE_POLICY, *PPROCESS_MITIGATION_DYNAMIC_CODE_POLICY;
+
+typedef struct _PROCESS_MITIGATION_STRICT_HANDLE_CHECK_POLICY
+{
+    union
+    {
+        DWORD Flags;
+        struct
+        {
+            DWORD RaiseExceptionOnInvalidHandleReference : 1;
+            DWORD HandleExceptionsPermanentlyEnabled : 1;
+            DWORD ReservedFlags : 30;
+        } DUMMYSTRUCTNAME;
+    } DUMMYUNIONNAME;
+} PROCESS_MITIGATION_STRICT_HANDLE_CHECK_POLICY, *PPROCESS_MITIGATION_STRICT_HANDLE_CHECK_POLICY;
+
+typedef struct _PROCESS_MITIGATION_SYSTEM_CALL_DISABLE_POLICY
+{
+    union
+    {
+        DWORD Flags;
+        struct
+        {
+            DWORD DisallowWin32kSystemCalls : 1;
+            DWORD AuditDisallowWin32kSystemCalls : 1;
+            DWORD DisallowFsctlSystemCalls : 1;
+            DWORD AuditDisallowFsctlSystemCalls : 1;
+            DWORD ReservedFlags : 28;
+        } DUMMYSTRUCTNAME;
+    } DUMMYUNIONNAME;
+} PROCESS_MITIGATION_SYSTEM_CALL_DISABLE_POLICY, *PPROCESS_MITIGATION_SYSTEM_CALL_DISABLE_POLICY;
+
+typedef struct _PROCESS_MITIGATION_EXTENSION_POINT_DISABLE_POLICY
+{
+    union
+    {
+        DWORD Flags;
+        struct
+        {
+            DWORD DisableExtensionPoints : 1;
+            DWORD ReservedFlags : 31;
+        } DUMMYSTRUCTNAME;
+    } DUMMYUNIONNAME;
+} PROCESS_MITIGATION_EXTENSION_POINT_DISABLE_POLICY, *PPROCESS_MITIGATION_EXTENSION_POINT_DISABLE_POLICY;
+
+typedef struct _PROCESS_MITIGATION_CONTROL_FLOW_GUARD_POLICY
+{
+    union
+    {
+        DWORD Flags;
+        struct
+        {
+            DWORD EnableControlFlowGuard : 1;
+            DWORD EnableExportSuppression : 1;
+            DWORD StrictMode : 1;
+            DWORD EnableXfg : 1;
+            DWORD EnableXfgAuditMode : 1;
+            DWORD ReservedFlags : 27;
+        } DUMMYSTRUCTNAME;
+    } DUMMYUNIONNAME;
+} PROCESS_MITIGATION_CONTROL_FLOW_GUARD_POLICY, *PPROCESS_MITIGATION_CONTROL_FLOW_GUARD_POLICY;
+
+typedef struct _PROCESS_MITIGATION_BINARY_SIGNATURE_POLICY
+{
+    union
+    {
+        DWORD Flags;
+        struct
+        {
+            DWORD MicrosoftSignedOnly : 1;
+            DWORD StoreSignedOnly : 1;
+            DWORD MitigationOptIn : 1;
+            DWORD AuditMicrosoftSignedOnly : 1;
+            DWORD AuditStoreSignedOnly : 1;
+            DWORD ReservedFlags : 27;
+        } DUMMYSTRUCTNAME;
+    } DUMMYUNIONNAME;
+} PROCESS_MITIGATION_BINARY_SIGNATURE_POLICY, *PPROCESS_MITIGATION_BINARY_SIGNATURE_POLICY;
+
+typedef struct _PROCESS_MITIGATION_FONT_DISABLE_POLICY
+{
+    union
+    {
+        DWORD Flags;
+        struct
+        {
+            DWORD DisableNonSystemFonts     : 1;
+            DWORD AuditNonSystemFontLoading : 1;
+            DWORD ReservedFlags             : 30;
+        } DUMMYSTRUCTNAME;
+    } DUMMYUNIONNAME;
+} PROCESS_MITIGATION_FONT_DISABLE_POLICY, *PPROCESS_MITIGATION_FONT_DISABLE_POLICY;
+
+typedef struct _PROCESS_MITIGATION_IMAGE_LOAD_POLICY
+{
+    union
+    {
+        DWORD Flags;
+        struct
+        {
+            DWORD NoRemoteImages : 1;
+            DWORD NoLowMandatoryLabelImages : 1;
+            DWORD PreferSystem32Images : 1;
+            DWORD AuditNoRemoteImages : 1;
+            DWORD AuditNoLowMandatoryLabelImages : 1;
+            DWORD ReservedFlags : 27;
+        } DUMMYSTRUCTNAME;
+    } DUMMYUNIONNAME;
+} PROCESS_MITIGATION_IMAGE_LOAD_POLICY, *PPROCESS_MITIGATION_IMAGE_LOAD_POLICY;
+
+typedef struct _PROCESS_MITIGATION_SYSTEM_CALL_FILTER_POLICY
+{
+    union
+    {
+        DWORD Flags;
+        struct
+        {
+            DWORD FilterId: 4;
+            DWORD ReservedFlags : 28;
+        } DUMMYSTRUCTNAME;
+    } DUMMYUNIONNAME;
+} PROCESS_MITIGATION_SYSTEM_CALL_FILTER_POLICY, *PPROCESS_MITIGATION_SYSTEM_CALL_FILTER_POLICY;
+
+typedef struct _PROCESS_MITIGATION_PAYLOAD_RESTRICTION_POLICY
+{
+    union
+    {
+        DWORD Flags;
+        struct
+        {
+            DWORD EnableExportAddressFilter     : 1;
+            DWORD AuditExportAddressFilter      : 1;
+            DWORD EnableExportAddressFilterPlus : 1;
+            DWORD AuditExportAddressFilterPlus  : 1;
+            DWORD EnableImportAddressFilter     : 1;
+            DWORD AuditImportAddressFilter      : 1;
+            DWORD EnableRopStackPivot           : 1;
+            DWORD AuditRopStackPivot            : 1;
+            DWORD EnableRopCallerCheck          : 1;
+            DWORD AuditRopCallerCheck           : 1;
+            DWORD EnableRopSimExec              : 1;
+            DWORD AuditRopSimExec               : 1;
+            DWORD ReservedFlags                 : 20;
+        } DUMMYSTRUCTNAME;
+    } DUMMYUNIONNAME;
+} PROCESS_MITIGATION_PAYLOAD_RESTRICTION_POLICY, *PPROCESS_MITIGATION_PAYLOAD_RESTRICTION_POLICY;
+
+typedef struct _PROCESS_MITIGATION_CHILD_PROCESS_POLICY
+{
+    union
+    {
+        DWORD Flags;
+        struct
+        {
+            DWORD NoChildProcessCreation : 1;
+            DWORD AuditNoChildProcessCreation : 1;
+            DWORD AllowSecureProcessCreation : 1;
+            DWORD ReservedFlags : 29;
+        } DUMMYSTRUCTNAME;
+    } DUMMYUNIONNAME;
+} PROCESS_MITIGATION_CHILD_PROCESS_POLICY, *PPROCESS_MITIGATION_CHILD_PROCESS_POLICY;
+
+typedef struct _PROCESS_MITIGATION_SIDE_CHANNEL_ISOLATION_POLICY
+{
+    union
+    {
+        DWORD Flags;
+        struct
+        {
+            DWORD SmtBranchTargetIsolation : 1;
+            DWORD IsolateSecurityDomain : 1;
+            DWORD DisablePageCombine : 1;
+            DWORD SpeculativeStoreBypassDisable : 1;
+            DWORD RestrictCoreSharing : 1;
+            DWORD ReservedFlags : 27;
+        } DUMMYSTRUCTNAME;
+    } DUMMYUNIONNAME;
+} PROCESS_MITIGATION_SIDE_CHANNEL_ISOLATION_POLICY, *PPROCESS_MITIGATION_SIDE_CHANNEL_ISOLATION_POLICY;
+
+typedef struct _PROCESS_MITIGATION_USER_SHADOW_STACK_POLICY
+{
+    union
+    {
+        DWORD Flags;
+        struct
+        {
+            DWORD EnableUserShadowStack : 1;
+            DWORD AuditUserShadowStack : 1;
+            DWORD SetContextIpValidation : 1;
+            DWORD AuditSetContextIpValidation : 1;
+            DWORD EnableUserShadowStackStrictMode : 1;
+            DWORD BlockNonCetBinaries : 1;
+            DWORD BlockNonCetBinariesNonEhcont : 1;
+            DWORD AuditBlockNonCetBinaries : 1;
+            DWORD CetDynamicApisOutOfProcOnly : 1;
+            DWORD SetContextIpValidationRelaxedMode : 1;
+            DWORD ReservedFlags : 22;
+        } DUMMYSTRUCTNAME;
+    } DUMMYUNIONNAME;
+} PROCESS_MITIGATION_USER_SHADOW_STACK_POLICY, *PPROCESS_MITIGATION_USER_SHADOW_STACK_POLICY;
+
+typedef struct _PROCESS_MITIGATION_REDIRECTION_TRUST_POLICY
+{
+    union
+    {
+        DWORD Flags;
+        struct
+        {
+            DWORD EnforceRedirectionTrust : 1;
+            DWORD AuditRedirectionTrust : 1;
+            DWORD ReservedFlags : 30;
+        } DUMMYSTRUCTNAME;
+    } DUMMYUNIONNAME;
+} PROCESS_MITIGATION_REDIRECTION_TRUST_POLICY, *PPROCESS_MITIGATION_REDIRECTION_TRUST_POLICY;
+
+typedef struct _PROCESS_MITIGATION_USER_POINTER_AUTH_POLICY
+{
+    union
+    {
+        DWORD Flags;
+        struct
+        {
+            DWORD EnablePointerAuthUserIp : 1;
+            DWORD ReservedFlags : 31;
+        } DUMMYSTRUCTNAME;
+    } DUMMYUNIONNAME;
+} PROCESS_MITIGATION_USER_POINTER_AUTH_POLICY, *PPROCESS_MITIGATION_USER_POINTER_AUTH_POLICY;
+
+typedef struct _PROCESS_MITIGATION_SEHOP_POLICY
+{
+    union
+    {
+        DWORD Flags;
+        struct
+        {
+            DWORD EnableSehop : 1;
+            DWORD ReservedFlags : 31;
+        } DUMMYSTRUCTNAME;
+    } DUMMYUNIONNAME;
+} PROCESS_MITIGATION_SEHOP_POLICY, *PPROCESS_MITIGATION_SEHOP_POLICY;
 
 typedef enum _FIRMWARE_TYPE
 {
@@ -7118,6 +7558,13 @@ typedef enum _FIRMWARE_TYPE
     FirmwareTypeUefi,
     FirmwareTypeMax
 } FIRMWARE_TYPE, *PFIRMWARE_TYPE;
+
+#define MEMORY_PRIORITY_LOWEST       0
+#define MEMORY_PRIORITY_VERY_LOW     1
+#define MEMORY_PRIORITY_LOW          2
+#define MEMORY_PRIORITY_MEDIUM       3
+#define MEMORY_PRIORITY_BELOW_NORMAL 4
+#define MEMORY_PRIORITY_NORMAL       5
 
 #ifndef __has_builtin
 # define __has_builtin(x) 0
@@ -7501,6 +7948,17 @@ static FORCEINLINE void MemoryBarrier(void)
 
 #elif defined(__aarch64__) || defined(__arm64ec__)
 
+#ifndef __clang__
+#pragma intrinsic(__ldar8)
+#pragma intrinsic(__ldar16)
+#pragma intrinsic(__ldar32)
+#pragma intrinsic(__ldar64)
+#pragma intrinsic(__stlr8)
+#pragma intrinsic(__stlr16)
+#pragma intrinsic(__stlr32)
+#pragma intrinsic(__stlr64)
+#endif
+
 static FORCEINLINE void MemoryBarrier(void)
 {
     __dmb(_ARM64_BARRIER_SY);
@@ -7525,115 +7983,151 @@ static FORCEINLINE void MemoryBarrier(void)
 
 #endif /* __i386__ */
 
-/* Since Visual Studio 2012, volatile accesses do not always imply acquire and
- * release semantics.  We explicitly use ISO volatile semantics, manually
- * placing barriers as appropriate.
- */
-#if _MSC_VER >= 1700
+#pragma intrinsic(__iso_volatile_load8)
+#pragma intrinsic(__iso_volatile_load16)
 #pragma intrinsic(__iso_volatile_load32)
 #pragma intrinsic(__iso_volatile_load64)
+#pragma intrinsic(__iso_volatile_store8)
+#pragma intrinsic(__iso_volatile_store16)
 #pragma intrinsic(__iso_volatile_store32)
 #pragma intrinsic(__iso_volatile_store64)
-#define __WINE_LOAD32_NO_FENCE(src) (__iso_volatile_load32(src))
-#define __WINE_LOAD64_NO_FENCE(src) (__iso_volatile_load64(src))
-#define __WINE_STORE32_NO_FENCE(dest, value) (__iso_volatile_store32(dest, value))
-#define __WINE_STORE64_NO_FENCE(dest, value) (__iso_volatile_store64(dest, value))
-#else  /* _MSC_VER >= 1700 */
-#define __WINE_LOAD32_NO_FENCE(src) (*(src))
-#define __WINE_LOAD64_NO_FENCE(src) (*(src))
-#define __WINE_STORE32_NO_FENCE(dest, value) ((void)(*(dest) = (value)))
-#define __WINE_STORE64_NO_FENCE(dest, value) ((void)(*(dest) = (value)))
-#endif  /* _MSC_VER >= 1700 */
+
+static FORCEINLINE CHAR   ReadNoFence8( CHAR const volatile *src )    { return __iso_volatile_load8( (__int8 const volatile *)src ); }
+static FORCEINLINE SHORT  ReadNoFence16( SHORT const volatile *src )  { return __iso_volatile_load16( (__int16 const volatile *)src ); }
+static FORCEINLINE LONG   ReadNoFence( LONG const volatile *src )     { return __iso_volatile_load32( (__int32 const volatile *)src ); }
+static FORCEINLINE LONG64 ReadNoFence64( LONG64 const volatile *src ) { return __iso_volatile_load64( (__int64 const volatile *)src ); }
+
+static FORCEINLINE void WriteNoFence8( CHAR volatile *dest, CHAR value )      { __iso_volatile_store8( (__int8 volatile *)dest, value ); }
+static FORCEINLINE void WriteNoFence16( SHORT volatile *dest, SHORT value )   { __iso_volatile_store16( (__int16 volatile *)dest, value ); }
+static FORCEINLINE void WriteNoFence( LONG volatile *dest, LONG value )       { __iso_volatile_store32( (__int32 volatile *)dest, value ); }
+static FORCEINLINE void WriteNoFence64( LONG64 volatile *dest, LONG64 value ) { __iso_volatile_store64( (__int64 volatile *)dest, value ); }
 
 #if defined(__i386__) || defined(__x86_64__)
 void _ReadWriteBarrier(void);
 #pragma intrinsic(_ReadWriteBarrier)
 #endif  /* defined(__i386__) || defined(__x86_64__) */
 
-static void __wine_memory_barrier_acq_rel(void)
+#if defined(__i386__) || (defined(__x86_64__) && !defined(__arm64ec__))
+#pragma warning(suppress:4996)
+static void __wine_memory_barrier_acq_rel(void) { _ReadWriteBarrier(); }
+#elif defined(__arm__)
+static void __wine_memory_barrier_acq_rel(void) { __dmb(_ARM_BARRIER_ISH); }
+#endif
+
+static FORCEINLINE CHAR ReadAcquire8( CHAR const volatile *src )
 {
 #if defined(__aarch64__) || defined(__arm64ec__)
-    __dmb(_ARM64_BARRIER_ISH);
-#elif defined(__i386__) || defined(__x86_64__)
-#pragma warning(suppress:4996)
-    _ReadWriteBarrier();
-#elif defined(__arm__)
-    __dmb(_ARM_BARRIER_ISH);
+#ifdef __clang__
+    return __atomic_load_n( src, __ATOMIC_ACQUIRE );
+#else
+    return (CHAR)__ldar8( (unsigned __int8 volatile *)src );
+#endif
+#else
+    CHAR value = ReadNoFence8( src );
+    __wine_memory_barrier_acq_rel();
+    return value;
+#endif
+}
+
+static FORCEINLINE SHORT ReadAcquire16( SHORT const volatile *src )
+{
+#if defined(__aarch64__) || defined(__arm64ec__)
+#ifdef __clang__
+    return __atomic_load_n( src, __ATOMIC_ACQUIRE );
+#else
+    return (SHORT)__ldar16( (unsigned __int16 volatile *)src );
+#endif
+#else
+    SHORT value = ReadNoFence16( src );
+    __wine_memory_barrier_acq_rel();
+    return value;
 #endif
 }
 
 static FORCEINLINE LONG ReadAcquire( LONG const volatile *src )
 {
-    LONG value = __WINE_LOAD32_NO_FENCE( (int const volatile *)src );
+#if defined(__aarch64__) || defined(__arm64ec__)
+#ifdef __clang__
+    return __atomic_load_n( src, __ATOMIC_ACQUIRE );
+#else
+    return (LONG)__ldar32( (unsigned __int32 volatile *)src );
+#endif
+#else
+    LONG value = ReadNoFence( src );
     __wine_memory_barrier_acq_rel();
     return value;
+#endif
 }
 
 static FORCEINLINE LONG64 ReadAcquire64( LONG64 const volatile *src )
 {
-    LONG64 value;
-#if defined(__i386__) && _MSC_VER < 1700
-    __asm {
-        mov   eax, src
-        fild  qword ptr [eax]
-        fistp value
-    }
+#if defined(__aarch64__) || defined(__arm64ec__)
+#ifdef __clang__
+    return __atomic_load_n( src, __ATOMIC_ACQUIRE );
 #else
-    value = __WINE_LOAD64_NO_FENCE( (__int64 const volatile *)src );
+    return (LONG64)__ldar64( (unsigned __int64 volatile *)src );
+#endif
+#else
+    LONG64 value = ReadNoFence64( src );
     __wine_memory_barrier_acq_rel();
+    return value;
 #endif
-    return value;
 }
 
-static FORCEINLINE LONG ReadNoFence( LONG const volatile *src )
+static FORCEINLINE void WriteRelease8( CHAR volatile *dest, CHAR value )
 {
-    LONG value = __WINE_LOAD32_NO_FENCE( (int const volatile *)src );
-    return value;
-}
-
-static FORCEINLINE LONG64 ReadNoFence64( LONG64 const volatile *src )
-{
-    LONG64 value;
-#if defined(__i386__) && _MSC_VER < 1700
-    __asm {
-        mov   eax, src
-        fild  qword ptr [eax]
-        fistp value
-    }
+#if defined(__aarch64__) || defined(__arm64ec__)
+#ifdef __clang__
+    __atomic_store_n( dest, value, __ATOMIC_RELEASE );
 #else
-    value = __WINE_LOAD64_NO_FENCE( (__int64 const volatile *)src );
+    __stlr8( (unsigned __int8 volatile *)dest, (unsigned __int8)value );
 #endif
-    return value;
+#else
+    __wine_memory_barrier_acq_rel();
+    WriteNoFence8( dest, value );
+#endif
+}
+
+static FORCEINLINE void WriteRelease16( SHORT volatile *dest, SHORT value )
+{
+#if defined(__aarch64__) || defined(__arm64ec__)
+#ifdef __clang__
+    __atomic_store_n( dest, value, __ATOMIC_RELEASE );
+#else
+    __stlr16( (unsigned __int16 volatile *)dest, (unsigned __int16)value );
+#endif
+#else
+    __wine_memory_barrier_acq_rel();
+    WriteNoFence16( dest, value );
+#endif
 }
 
 static FORCEINLINE void WriteRelease( LONG volatile *dest, LONG value )
 {
+#if defined(__aarch64__) || defined(__arm64ec__)
+#ifdef __clang__
+    __atomic_store_n( dest, value, __ATOMIC_RELEASE );
+#else
+    __stlr32( (unsigned __int32 volatile *)dest, (unsigned __int32)value );
+#endif
+#else
     __wine_memory_barrier_acq_rel();
-    __WINE_STORE32_NO_FENCE( (int volatile *)dest, value );
+    WriteNoFence( dest, value );
+#endif
 }
 
 static FORCEINLINE void WriteRelease64( LONG64 volatile *dest, LONG64 value )
 {
-#if defined(__i386__) && _MSC_VER < 1700
-    __asm {
-        mov   eax, dest
-        fild  value
-        fistp qword ptr [eax]
-    }
+#if defined(__aarch64__) || defined(__arm64ec__)
+#ifdef __clang__
+    __atomic_store_n( dest, value, __ATOMIC_RELEASE );
+#else
+    __stlr64( (unsigned __int64 volatile *)dest, (unsigned __int64)value );
+#endif
 #else
     __wine_memory_barrier_acq_rel();
-    __WINE_STORE64_NO_FENCE( (__int64 volatile *)dest, value );
+    WriteNoFence64( dest, value );
 #endif
-}
-
-static FORCEINLINE void WriteNoFence( LONG volatile *dest, LONG value )
-{
-    __WINE_STORE32_NO_FENCE( (int volatile *)dest, value );
-}
-
-static FORCEINLINE void WriteNoFence64( LONG64 volatile *dest, LONG64 value )
-{
-    __WINE_STORE64_NO_FENCE( (__int64 volatile *)dest, value );
 }
 
 #elif defined(__GNUC__)
@@ -7983,6 +8477,20 @@ static FORCEINLINE LONGLONG WINAPI InterlockedXorRelease64( LONGLONG volatile *d
 #define __WINE_ATOMIC_STORE_RELAXED(ptr, val) __atomic_store(ptr, val, __ATOMIC_RELAXED)
 #endif  /* defined(__x86_64__) || defined(__i386__) */
 
+static FORCEINLINE CHAR ReadAcquire8( CHAR const volatile *src )
+{
+    CHAR value;
+    __WINE_ATOMIC_LOAD_ACQUIRE( src, &value );
+    return value;
+}
+
+static FORCEINLINE SHORT ReadAcquire16( SHORT const volatile *src )
+{
+    SHORT value;
+    __WINE_ATOMIC_LOAD_ACQUIRE( src, &value );
+    return value;
+}
+
 static FORCEINLINE LONG ReadAcquire( LONG const volatile *src )
 {
     LONG value;
@@ -7998,6 +8506,20 @@ static FORCEINLINE LONG64 ReadAcquire64( LONG64 const volatile *src )
 #else
     __WINE_ATOMIC_LOAD_ACQUIRE( src, &value );
 #endif
+    return value;
+}
+
+static FORCEINLINE CHAR ReadNoFence8( CHAR const volatile *src )
+{
+    CHAR value;
+    __WINE_ATOMIC_LOAD_RELAXED( src, &value );
+    return value;
+}
+
+static FORCEINLINE SHORT ReadNoFence16( SHORT const volatile *src )
+{
+    SHORT value;
+    __WINE_ATOMIC_LOAD_RELAXED( src, &value );
     return value;
 }
 
@@ -8019,6 +8541,16 @@ static FORCEINLINE LONG64 ReadNoFence64( LONG64 const volatile *src )
     return value;
 }
 
+static FORCEINLINE void WriteRelease8( CHAR volatile *dest, CHAR value )
+{
+    __WINE_ATOMIC_STORE_RELEASE( dest, &value );
+}
+
+static FORCEINLINE void WriteRelease16( SHORT volatile *dest, SHORT value )
+{
+    __WINE_ATOMIC_STORE_RELEASE( dest, &value );
+}
+
 static FORCEINLINE void WriteRelease( LONG volatile *dest, LONG value )
 {
     __WINE_ATOMIC_STORE_RELEASE( dest, &value );
@@ -8031,6 +8563,16 @@ static FORCEINLINE void WriteRelease64( LONG64 volatile *dest, LONG64 value )
 #else
     __WINE_ATOMIC_STORE_RELEASE( dest, &value );
 #endif
+}
+
+static FORCEINLINE void WriteNoFence8( CHAR volatile *dest, CHAR value )
+{
+    __WINE_ATOMIC_STORE_RELAXED( dest, &value );
+}
+
+static FORCEINLINE void WriteNoFence16( SHORT volatile *dest, SHORT value )
+{
+    __WINE_ATOMIC_STORE_RELAXED( dest, &value );
 }
 
 static FORCEINLINE void WriteNoFence( LONG volatile *dest, LONG value )

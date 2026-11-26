@@ -41,12 +41,12 @@ struct macdrv_functions_t
     void (*macdrv_init_display_devices)(BOOL);
     struct d3dmetal_macdrv_win_data* (*get_win_data)(HWND hwnd);
     void (*release_win_data)(struct d3dmetal_macdrv_win_data *data);
-    macdrv_window(*macdrv_get_cocoa_window)(HWND hwnd, BOOL require_on_screen);
-    macdrv_metal_device (*macdrv_create_metal_device)(void);
-    void (*macdrv_release_metal_device)(macdrv_metal_device d);
-    macdrv_metal_view (*macdrv_view_create_metal_view)(macdrv_view v, macdrv_metal_device d);
-    macdrv_metal_layer (*macdrv_view_get_metal_layer)(macdrv_metal_view v);
-    void (*macdrv_view_release_metal_view)(macdrv_metal_view v);
+    WineWindow *(*macdrv_get_cocoa_window)(HWND hwnd, BOOL require_on_screen);
+    MTLDevice_id (*macdrv_create_metal_device)(void);
+    void (*macdrv_release_metal_device)(MTLDevice_id device);
+    WineMetalView *(*macdrv_view_create_metal_view)(WineContentView *view, MTLDevice_id device);
+    CAMetalLayer *(*macdrv_view_get_metal_layer)(WineMetalView *view);
+    void (*macdrv_view_release_metal_view)(WineMetalView *view);
     void (*on_main_thread)(dispatch_block_t b);
     LSTATUS(WINAPI*RegQueryValueExA)(HKEY, LPCSTR, LPDWORD, LPDWORD, BYTE*, LPDWORD);
     LSTATUS(WINAPI*RegSetValueExA)(HKEY, LPCSTR, DWORD, DWORD, const BYTE*, DWORD);
@@ -69,9 +69,9 @@ C_ASSERT(sizeof(struct macdrv_functions_t) == 192);
 struct d3dmetal_macdrv_win_data
 {
     HWND                hwnd;                   /* hwnd that this private data belongs to */
-    macdrv_window       cocoa_window;
-    macdrv_view         cocoa_view;
-    macdrv_view         client_cocoa_view;
+    WineWindow         *cocoa_window;
+    WineContentView    *cocoa_view;
+    WineContentView    *client_cocoa_view;
     RECT                window_rect;            /* USER window rectangle relative to parent */
     RECT                whole_rect;             /* Mac window rectangle for the whole window relative to parent */
     RECT                client_rect;            /* client area relative to parent */
@@ -138,7 +138,10 @@ static struct d3dmetal_macdrv_win_data *my_get_win_data(HWND hwnd)
     d3dm_data->window_rect = data->rects.window;
     d3dm_data->whole_rect = data->rects.visible;
     d3dm_data->client_rect = data->rects.client;
-    d3dm_data->pixel_format = data->pixel_format;
+    /* WineForge-Internal: d3dmetal/client-surface-pixel-format-v1.
+     * Wine 11.20 removed the driver window's format. Keep the legacy ABI slot
+     * and copy the format owned by this Metal client surface. */
+    d3dm_data->pixel_format = client_surface->client.format;
     /* color_key is no longer present in macdrv_win_data. Assume D3DMetal doesn't use it. */
     d3dm_data->drag_event = data->drag_event;
     d3dm_data->on_screen = data->on_screen;
@@ -165,40 +168,40 @@ static void my_release_win_data(struct d3dmetal_macdrv_win_data *data)
     free(data);
 }
 
-static macdrv_window my_macdrv_get_cocoa_window(HWND hwnd, BOOL require_on_screen)
+static WineWindow *my_macdrv_get_cocoa_window(HWND hwnd, BOOL require_on_screen)
 {
     TRACE("macdrv_get_cocoa_window %p %d\n", hwnd, require_on_screen);
     return macdrv_get_cocoa_window(hwnd, require_on_screen);
 }
 
-static macdrv_metal_device my_macdrv_create_metal_device(void)
+static MTLDevice_id my_macdrv_create_metal_device(void)
 {
     TRACE("macdrv_create_metal_device\n");
     return macdrv_create_metal_device();
 }
 
-static void my_macdrv_release_metal_device(macdrv_metal_device d)
+static void my_macdrv_release_metal_device(MTLDevice_id device)
 {
-    TRACE("macdrv_release_metal_device %p\n", d);
-    macdrv_release_metal_device(d);
+    TRACE("macdrv_release_metal_device %p\n", device);
+    macdrv_release_metal_device(device);
 }
 
-static macdrv_metal_view my_macdrv_view_create_metal_view(macdrv_view v, macdrv_metal_device d)
+static WineMetalView *my_macdrv_view_create_metal_view(WineContentView *view, MTLDevice_id device)
 {
-    TRACE("macdrv_view_create_metal_view %p %p\n", v, d);
-    return macdrv_view_create_metal_view(v, d);
+    TRACE("macdrv_view_create_metal_view %p %p\n", view, device);
+    return macdrv_view_create_metal_view(view, device);
 }
 
-static macdrv_metal_layer my_macdrv_view_get_metal_layer(macdrv_metal_view v)
+static CAMetalLayer *my_macdrv_view_get_metal_layer(WineMetalView *view)
 {
-    TRACE("macdrv_view_get_metal_layer %p\n", v);
-    return macdrv_view_get_metal_layer(v);
+    TRACE("macdrv_view_get_metal_layer %p\n", view);
+    return macdrv_view_get_metal_layer(view);
 }
 
-static void my_macdrv_view_release_metal_view(macdrv_metal_view v)
+static void my_macdrv_view_release_metal_view(WineMetalView *view)
 {
-    TRACE("macdrv_view_release_metal_view %p\n", v);
-    return macdrv_view_release_metal_view(v);
+    TRACE("macdrv_view_release_metal_view %p\n", view);
+    macdrv_view_release_metal_view(view);
 }
 
 static void my_OnMainThread(dispatch_block_t b)
@@ -308,7 +311,8 @@ static LSTATUS WINAPI my_RegCreateKeyExA(HKEY p1, LPCSTR p2, DWORD p3, LPSTR p4,
     return result;
 }
 
-static LSTATUS WINAPI DECLSPEC_HOTPATCH RegCloseKey( HKEY hkey )
+/* WineForge-Internal: d3dmetal-local-registry-close-v1. */
+static LSTATUS WINAPI DECLSPEC_HOTPATCH d3dmetal_reg_close_key( HKEY hkey )
 {
     if (!hkey) return ERROR_INVALID_HANDLE;
     if (hkey >= (HKEY)0x80000000) return ERROR_SUCCESS;
@@ -318,7 +322,7 @@ static LSTATUS WINAPI DECLSPEC_HOTPATCH RegCloseKey( HKEY hkey )
 static LSTATUS WINAPI my_RegCloseKey(HKEY hkey)
 {
     TRACE("RegCloseKey %p\n", hkey);
-    return RegCloseKey(hkey);
+    return d3dmetal_reg_close_key(hkey);
 }
 
 static BOOL WINAPI my_EnumDisplayMonitors(HDC h, LPRECT p2, MONITORENUMPROC p3, LPARAM p4)

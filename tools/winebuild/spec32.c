@@ -98,8 +98,6 @@ static int has_relays( struct exports *exports )
 {
     int i;
 
-    if (target.cpu == CPU_ARM64EC) return 0;
-
     for (i = exports->base; i <= exports->limit; i++)
     {
         ORDDEF *odp = exports->ordinals[i];
@@ -220,6 +218,20 @@ static char *build_args_string( struct exports *exports )
 static void output_relay_debug( struct exports *exports )
 {
     int i;
+
+    if (is_pe())
+    {
+        output( "\t.data\n" );
+        output( "\t.balign %u\n", get_ptr_size() );
+    }
+
+    output( ".L__wine_spec_relay_descr:\n" );
+    output( "\t%s 0xdeb90002\n", get_asm_ptr_keyword() );  /* magic */
+    output( "\t%s 0\n", get_asm_ptr_keyword() );           /* relay func */
+    output( "\t%s 0\n", get_asm_ptr_keyword() );           /* private data */
+    output( "\t%s __wine_spec_relay_entry_points\n", get_asm_ptr_keyword() );
+    output( "\t%s .L__wine_spec_relay_entry_point_offsets\n", get_asm_ptr_keyword() );
+    output( "\t%s .L__wine_spec_relay_args_string\n", get_asm_ptr_keyword() );
 
     /* first the table of entry point offsets */
 
@@ -364,6 +376,7 @@ static void output_relay_debug( struct exports *exports )
         }
 
         case CPU_x86_64:
+        case CPU_ARM64EC:
             output( "\t.balign 4\n" );
             output( "\t.long 0x90909090,0x90909090\n" );
             output( "__wine_spec_relay_entry_point_%d:\n", i );
@@ -436,6 +449,7 @@ void output_exports( DLLSPEC *spec )
                     odp->name ? "" : ",NONAME",
                     odp->type == TYPE_EXTERN ? ",DATA" : "" );
         }
+        if (needs_relay) output_relay_debug( exports );
         return;
     }
 
@@ -550,35 +564,13 @@ void output_exports( DLLSPEC *spec )
 
     /* output relays */
 
-    if (needs_relay)
+    if (!is_pe())
     {
-        if (is_pe())
-        {
-            output( "\t.data\n" );
-            output( "\t.balign %u\n", get_ptr_size() );
-        }
-        else
-        {
-            output( "\t.balign %u\n", get_ptr_size() );
-            output( ".L__wine_spec_exports_end:\n" );
-        }
-
-        output( ".L__wine_spec_relay_descr:\n" );
-        output( "\t%s 0xdeb90002\n", get_asm_ptr_keyword() );  /* magic */
-        output( "\t%s 0\n", get_asm_ptr_keyword() );           /* relay func */
-        output( "\t%s 0\n", get_asm_ptr_keyword() );           /* private data */
-        output( "\t%s __wine_spec_relay_entry_points\n", get_asm_ptr_keyword() );
-        output( "\t%s .L__wine_spec_relay_entry_point_offsets\n", get_asm_ptr_keyword() );
-        output( "\t%s .L__wine_spec_relay_args_string\n", get_asm_ptr_keyword() );
-
-        output_relay_debug( exports );
+        output( "\t.balign %u\n", get_ptr_size() );
+        output( ".L__wine_spec_exports_end:\n" );
+        if (!needs_relay) output( "\t%s 0\n", get_asm_ptr_keyword() );
     }
-    else if (!is_pe())
-    {
-            output( "\t.balign %u\n", get_ptr_size() );
-            output( ".L__wine_spec_exports_end:\n" );
-            output( "\t%s 0\n", get_asm_ptr_keyword() );
-    }
+    if (needs_relay) output_relay_debug( exports );
 
     /* output import thunks */
 
@@ -625,15 +617,19 @@ void output_exports( DLLSPEC *spec )
  *
  * Output the load configuration structure.
  */
-static void output_load_config(void)
+static void output_load_config( DLLSPEC *spec )
 {
     if (!is_pe()) return;
 
     output( "\n/* load_config */\n\n" );
     output( "\t%s\n", get_asm_rodata_section() );
-    output( "\t.globl %s\n", asm_name( "_load_config_used" ));
     output( "\t.balign %u\n", get_ptr_size() );
-    output( "%s:\n", asm_name( "_load_config_used" ));
+    if (has_relays( &spec->exports ))
+    {
+        output( "\t.long 0xdeb90002\n" );             /* magic */
+        output_rva( ".L__wine_spec_relay_descr" );
+    }
+    output( "%s\n", asm_globl( "_load_config_used" ));
     output( "\t.long %u\n", get_ptr_size() == 8 ? 0x140 : 0xc0 ); /* Size */
     output( "\t.long 0\n" );                          /* TimeDateStamp */
     output( "\t.short 0\n" );                         /* MajorVersion */
@@ -700,6 +696,62 @@ static void output_load_config(void)
     output( "\t%s 0\n", get_asm_ptr_keyword() );      /* GuardXFGTableDispatchFunctionPointer */
     output( "\t%s 0\n", get_asm_ptr_keyword() );      /* CastGuardOsDeterminedFailureMode */
     output( "\t%s 0\n", get_asm_ptr_keyword() );      /* GuardMemcpyFunctionPointer */
+
+    if (target.cpu != CPU_ARM64EC) return;
+
+    output( "%s\n", asm_globl( "__chpe_metadata" ));
+    output( "\t.long 2\n" );                                       /* Version */
+    output( "\t.rva __hybrid_code_map\n" );                        /* CodeMap */
+    output( "\t.long __hybrid_code_map_count\n" );                 /* CodeMapCount */
+    output( "\t.rva __x64_code_ranges_to_entry_points\n" );        /* CodeRangesToEntryPoints */
+    output( "\t.rva __arm64x_redirection_metadata\n" );            /* RedirectionMetadata */
+    output( "\t.rva __os_arm64x_dispatch_call_no_redirect\n" );    /* __os_arm64x_dispatch_call_no_redirect */
+    output( "\t.rva __os_arm64x_dispatch_ret\n" );                 /* __os_arm64x_dispatch_ret */
+    output( "\t.rva __os_arm64x_check_call\n" );                   /* __os_arm64x_dispatch_call */
+    output( "\t.rva __os_arm64x_check_icall\n" );                  /* __os_arm64x_dispatch_icall */
+    output( "\t.rva __os_arm64x_check_icall_cfg\n" );              /* __os_arm64x_dispatch_icall_cfg */
+    output( "\t.rva __arm64x_native_entrypoint\n" );               /* AlternateEntryPoint */
+    output( "\t.rva __hybrid_auxiliary_iat\n" );                   /* AuxiliaryIAT */
+    output( "\t.long __x64_code_ranges_to_entry_points_count\n" ); /* CodeRangesToEntryPointsCount */
+    output( "\t.long __arm64x_redirection_metadata_count\n" );     /* RedirectionMetadataCount */
+    output( "\t.rva __os_arm64x_get_x64_information\n" );          /* GetX64InformationFunctionPointer */
+    output( "\t.rva __os_arm64x_set_x64_information\n" );          /* SetX64InformationFunctionPointer */
+    output( "\t.rva __arm64x_extra_rfe_table\n" );                 /* ExtraRFETable */
+    output( "\t.long __arm64x_extra_rfe_table_size\n" );           /* ExtraRFETableSize */
+    output( "\t.rva __os_arm64x_dispatch_fptr\n" );                /* __os_arm64x_dispatch_fptr */
+    output( "\t.rva __hybrid_auxiliary_iat_copy\n" );              /* AuxiliaryIATCopy */
+    output( "\t.rva __hybrid_auxiliary_delayload_iat\n" );         /* __os_arm64x_helper0 */
+    output( "\t.rva __hybrid_auxiliary_delayload_iat_copy\n" );    /* __os_arm64x_helper1 */
+    output( "\t.long __hybrid_image_info_bitfield\n" );            /* __os_arm64x_helper2 */
+    output( "\t.rva __os_arm64x_helper3\n" );                      /* __os_arm64x_helper3 */
+    output( "\t.rva __os_arm64x_helper4\n" );                      /* __os_arm64x_helper4 */
+    output( "\t.rva __os_arm64x_helper5\n" );                      /* __os_arm64x_helper5 */
+    output( "\t.rva __os_arm64x_helper6\n" );                      /* __os_arm64x_helper6 */
+    output( "\t.rva __os_arm64x_helper7\n" );                      /* __os_arm64x_helper7 */
+    output( "\t.rva __os_arm64x_helper8\n" );                      /* __os_arm64x_helper8 */
+
+    output( "\t.section .data\n" );
+    output( "\t.balign %u\n", get_ptr_size() );
+    output( "%s\n\t.quad 0\n", asm_globl( "__os_arm64x_check_icall_cfg" ));
+    output( "%s\n\t.quad 0\n", asm_globl( "__os_arm64x_dispatch_call_no_redirect" ));
+    output( "%s\n\t.quad 0\n", asm_globl( "__os_arm64x_dispatch_fptr" ));
+    output( "%s\n\t.quad 0\n", asm_globl( "__os_arm64x_dispatch_ret" ));
+    output( "%s\n\t.quad 0\n", asm_globl( "__os_arm64x_get_x64_information" ));
+    output( "%s\n\t.quad 0\n", asm_globl( "__os_arm64x_set_x64_information" ));
+    output( "%s\n\t.quad 0\n", asm_globl( "__os_arm64x_helper3" ));
+    output( "%s\n\t.quad 0\n", asm_globl( "__os_arm64x_helper4" ));
+    output( "%s\n\t.quad 0\n", asm_globl( "__os_arm64x_helper5" ));
+    output( "%s\n\t.quad 0\n", asm_globl( "__os_arm64x_helper6" ));
+    output( "%s\n\t.quad 0\n", asm_globl( "__os_arm64x_helper7" ));
+    output( "%s\n\t.quad 0\n", asm_globl( "__os_arm64x_helper8" ));
+    output( "%s\n\t.quad 0\n", asm_globl( "__guard_check_icall_fptr" ));
+    output( "%s\n\t.quad 0\n", asm_globl( "__guard_dispatch_icall_fptr" ));
+    output( "%s\n", asm_globl( "__os_arm64x_dispatch_icall" ));
+    output( "%s\n", asm_globl( "__os_arm64x_check_icall" ));
+    output( "\t.quad 0\n" );
+    output( "%s\n", asm_globl( "__os_arm64x_dispatch_call" ));
+    output( "%s\n", asm_globl( "__os_arm64x_check_call" ));
+    output( "\t.quad 0\n" );
 }
 
 
@@ -872,7 +924,7 @@ void output_spec32_file( DLLSPEC *spec )
     output_exports( spec );
     output_imports( spec );
     if (needs_get_pc_thunk) output_get_pc_thunk();
-    output_load_config();
+    output_load_config( spec );
     output_crt_sections();
     output_resources( spec );
     output_gnu_stack_note();
