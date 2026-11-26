@@ -577,13 +577,13 @@ static void destroy_cocoa_window(struct macdrv_win_data *data)
  * its host's). It has no Cocoa window: it draws into a remote layer, which the top-level window's process hosts
  * where the child is.
  */
-BOOL macdrv_is_remote_child(HWND hwnd)
+bool macdrv_is_remote_child(HWND hwnd)
 {
     HWND parent = NtUserGetAncestor(hwnd, GA_PARENT);
     DWORD pid = 0;
 
-    if (!parent || parent == NtUserGetDesktopWindow()) return FALSE;
-    if (!NtUserGetWindowThread(parent, &pid)) return FALSE;
+    if (!parent || parent == NtUserGetDesktopWindow()) return false;
+    if (!NtUserGetWindowThread(parent, &pid)) return false;
     return pid && pid != GetCurrentProcessId();
 }
 

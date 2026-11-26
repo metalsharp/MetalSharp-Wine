@@ -272,7 +272,7 @@ extern struct macdrv_client_surface *impl_from_client_surface(struct client_surf
 extern bool macdrv_client_surface_acquire_metal_swapchain(struct macdrv_client_surface *surface);
 
 extern struct macdrv_win_data *get_win_data(HWND hwnd);
-extern BOOL macdrv_is_remote_child(HWND hwnd);
+extern bool macdrv_is_remote_child(HWND hwnd);
 extern void macdrv_ensure_remote_child(struct macdrv_win_data *data);
 extern void macdrv_set_remote_cursor_index(WPARAM index);
 extern void release_win_data(struct macdrv_win_data *data);
