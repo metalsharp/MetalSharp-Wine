@@ -1,5 +1,6 @@
 /*
  * Process synchronisation
+ * WineForge-Internal: msync-v6.
  *
  * Copyright 1996, 1997, 1998 Marcus Meissner
  * Copyright 1997, 1999 Alexandre Julliard
@@ -969,14 +970,24 @@ static NTSTATUS inproc_wait( DWORD count, const HANDLE *handles, WAIT_TYPE type,
             if (ret) return ret;
             release_inproc_sync( syncs[0] );
         }
-        else if (do_msync() && count > 1 && type == WaitAny)
+
+        else if (do_msync() && count > 1 && count <= ARRAY_SIZE(syncs) &&
+                 (type == WaitAny || type == WaitAll) && !alertable &&
+                 (!timeout || timeout->QuadPart <= 0))
         {
+            enum inproc_sync_type desired[ARRAY_SIZE(syncs)];
             int i;
 
             for (i = 0; i < count; i++)
             {
-                if (!msync_handle_is_local_event( handles[i] )) return STATUS_NOT_IMPLEMENTED;
-                ret = get_inproc_sync( handles[i], INPROC_SYNC_EVENT, SYNCHRONIZE, &stack[i], &syncs[i] );
+                if (msync_handle_is_local_event( handles[i] )) desired[i] = INPROC_SYNC_EVENT;
+                else if (msync_handle_is_local_semaphore( handles[i] )) desired[i] = INPROC_SYNC_SEMAPHORE;
+                else if (msync_handle_is_local_mutex( handles[i] )) desired[i] = INPROC_SYNC_MUTEX;
+                else return STATUS_NOT_IMPLEMENTED;
+            }
+            for (i = 0; i < count; i++)
+            {
+                ret = get_inproc_sync( handles[i], desired[i], SYNCHRONIZE, &stack[i], &syncs[i] );
                 if (ret)
                 {
                     while (i--) release_inproc_sync( syncs[i] );

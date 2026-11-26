@@ -1,5 +1,6 @@
 /*
  * Server-side mutex management
+ * WineForge-Internal: msync-v6.
  *
  * Copyright (C) 1998 Alexandre Julliard
  *
@@ -57,7 +58,7 @@ struct mutex_sync
     unsigned int        count;              /* recursion count */
     int                 abandoned;          /* has it been abandoned? */
     struct list         entry;              /* entry in owner thread mutex list */
-    struct list         msync_entry;      /* entry in WFUSync mutex list */
+    struct list         msync_entry;      /* entry in msync mutex list */
     struct msync     *msync;            /* optional shared fast-path state */
 };
 
@@ -321,7 +322,11 @@ static int mutex_signal( struct object *obj, unsigned int access, int signal )
 
         if (!msync_release_mutex( ((struct mutex_sync *)mutex->sync)->msync, current->id, &prev ))
             return 0;
-        if (prev == 1) wake_up( mutex->sync, 0 );
+        if (prev == 1)
+        {
+            wake_up( mutex->sync, 0 );
+            msync_wake_waiters( msync_get_index( ((struct mutex_sync *)mutex->sync)->msync ) );
+        }
         return 1;
     }
     return do_release( (struct mutex_sync *)mutex->sync, current, 1 );
@@ -344,7 +349,7 @@ int get_mutex_msync_idx( struct object *obj, int *type )
     if (!mutex->sync || mutex->sync->ops != &mutex_sync_ops) return -1;
     sync = (struct mutex_sync *)mutex->sync;
     if (!sync->msync) return -1;
-    msync_grab_object( sync->msync );
+
     *type = INPROC_SYNC_MUTEX;
     return msync_get_index( sync->msync );
 }

@@ -1,5 +1,6 @@
 /*
  * Server-side thread management
+ * WineForge-Internal: msync-v6.
  *
  * Copyright (C) 1998 Alexandre Julliard
  *
@@ -349,13 +350,15 @@ static inline void init_thread_structure( struct thread *thread )
 
     thread->sync            = NULL;
     thread->alert_sync      = NULL;
+#ifdef __APPLE__
+    thread->msync_wait_slot = 0;
+#endif
     thread->unix_pid        = -1;  /* not known yet */
     thread->unix_tid        = -1;  /* not known yet */
     thread->context         = NULL;
     thread->teb             = 0;
     thread->entry_point     = 0;
     thread->system_regs     = 0;
-    thread->msync_wait_slot = 0;
     thread->queue           = NULL;
     thread->wait            = NULL;
     thread->error           = 0;
@@ -562,11 +565,10 @@ static void cleanup_thread( struct thread *thread )
 {
     int i;
 
-    cleanup_thread_completion( thread );
 #ifdef __APPLE__
-    msync_free_wait_slot( thread->msync_wait_slot );
-    thread->msync_wait_slot = 0;
+    msync_cleanup_thread( thread );
 #endif
+    cleanup_thread_completion( thread );
     if (thread->context)
     {
         thread->context->status = STATUS_ACCESS_DENIED;
@@ -1603,6 +1605,9 @@ void kill_thread( struct thread *thread, int violent_death )
         /* if it is waiting on the socket, we don't need to send a SIGQUIT */
         violent_death = 0;
     }
+#ifdef __APPLE__
+    msync_cleanup_thread( thread );
+#endif
     kill_console_processes( thread, 0 );
     abandon_mutexes( thread );
     signal_sync( thread->sync );

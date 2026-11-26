@@ -1,5 +1,6 @@
 /*
  * In-process synchronization primitives
+ * WineForge-Internal: msync-v6.
  *
  * Copyright (C) 2021-2022 Elizabeth Figura for CodeWeavers
  *
@@ -315,7 +316,7 @@ static void inproc_sync_dump( struct object *obj, int verbose )
 {
     struct inproc_sync *sync = (struct inproc_sync *)obj;
     assert( obj->ops == &inproc_sync_ops );
-    fprintf( stderr, "WFUSync inproc type=%d, shm_idx=%u\n",
+    fprintf( stderr, "msync inproc type=%d, shm_idx=%u\n",
              sync->type, msync_get_index( sync->msync ) );
 }
 
@@ -395,7 +396,7 @@ static int get_obj_inproc_sync( struct object *obj, int *type )
     if (sync->ops == &inproc_sync_ops)
     {
         struct inproc_sync *inproc = (struct inproc_sync *)sync;
-        msync_grab_object( inproc->msync );
+
         *type = inproc->type;
         shm_idx = msync_get_index( inproc->msync );
     }
