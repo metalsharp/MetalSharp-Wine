@@ -30,9 +30,22 @@ for x86_64 and i386 Windows programs; the [README](README.md) describes what it 
 | WineMetalGL's arm64 Wine module | branch `source/winemetalgl`, and upstream as a pull request to WineMetalGL |
 | Build, packaging, signing, tests | `scripts/`, `tests/src/` on `main` |
 
-A change to a `source/*` branch also moves its submodule pin on `main` (`git -C src/wine
-checkout <commit>`, then commit `src/wine`), so `main` always names the commits a release is
-built from.
+`main` pins every submodule in `src/` to the tip of the branch `.gitmodules` names for it, so
+`main` always names the commits a release is built from. Merge a change into its `source/*`
+branch first, then move the pin:
+
+```sh
+git config core.hooksPath .githooks   # once: the pre-commit hook moves pins as you commit
+python3 scripts/pins.py update        # or by hand: moves stale pins, writes the missing patches
+```
+
+`scripts/pins.py update` moves each pin that is behind to its branch's tip and writes the patches
+of the commits that brings in to `patches/wine`, `patches/wine-x86_64` or `patches/fex`, staged
+for the commit. It leaves the checkouts alone (`git submodule update src/wine` moves one). A move
+of more than 60 commits, such as a rebase onto a new Wine release, needs its series re-exported
+by hand. CI's Script syntax check, which `main` requires, fails a pull request whose pins are
+behind or lack patches; the Pins workflow checks `main` every hour; and `build-all.sh` won't
+build from stale pins or from submodule checkouts that aren't at them.
 
 ## Building and testing
 
