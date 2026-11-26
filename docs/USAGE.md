@@ -1,6 +1,6 @@
 # Using MetalSharp Wine
 
-The [README](../README.md) has the commands to install the app, make a prefix and run Steam. This page has the rest.
+The [README](../README.md) has the commands to install the app, make a prefix and run a program on a graphics lane. This page has the rest.
 
 ## Running a program
 
