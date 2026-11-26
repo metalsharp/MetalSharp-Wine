@@ -1420,7 +1420,7 @@
 @ cdecl _strdate_s(ptr long) msvcr120._strdate_s
 @ cdecl _strdup(str) msvcr120._strdup
 @ cdecl _strerror(long) msvcr120._strerror
-@ stub _strerror_s
+@ cdecl _strerror_s(ptr long str) msvcr120._strerror_s
 @ cdecl _strftime_l(ptr long str ptr ptr) msvcr120._strftime_l
 @ cdecl _stricmp(str str) msvcr120._stricmp
 @ cdecl _stricmp_l(str str ptr) msvcr120._stricmp_l

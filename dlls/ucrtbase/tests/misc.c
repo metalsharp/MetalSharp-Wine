@@ -19,6 +19,7 @@
 #include <errno.h>
 #include <stdarg.h>
 #include <stdlib.h>
+#include <string.h>
 #include <wchar.h>
 #include <stdio.h>
 #include <math.h>
@@ -2211,6 +2212,34 @@ static void test_rint(void)
     fesetround(rounding_mode);
 }
 
+static void test__strerror_s(void)
+{
+    char buf[256];
+    int ret;
+
+    errno = ENOENT;
+    ret = _strerror_s(buf, sizeof(buf), NULL);
+    ok(!ret, "ret = %d\n", ret);
+    ok(!strcmp(buf, "No such file or directory"), "buf = %s\n", buf);
+
+    errno = ENOENT;
+    ret = _strerror_s(buf, sizeof(buf), "");
+    ok(!ret, "ret = %d\n", ret);
+    ok(!strcmp(buf, "No such file or directory"), "buf = %s\n", buf);
+
+    errno = ENOENT;
+    ret = _strerror_s(buf, sizeof(buf), "open");
+    ok(!ret, "ret = %d\n", ret);
+    ok(!strcmp(buf, "open: No such file or directory"), "buf = %s\n", buf);
+    ok(errno == ENOENT, "errno = %d\n", errno);
+
+    errno = ENOENT;
+    memset(buf, 'x', sizeof(buf));
+    ret = _strerror_s(buf, 8, "open");
+    ok(!ret, "ret = %d\n", ret);
+    ok(!strcmp(buf, "open: N"), "buf = %s\n", buf);
+}
+
 START_TEST(misc)
 {
     int arg_c;
@@ -2265,4 +2294,5 @@ START_TEST(misc)
     test_carg();
     test_cargf();
     test_rint();
+    test__strerror_s();
 }
