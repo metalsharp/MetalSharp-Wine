@@ -35,7 +35,7 @@ Some WineForge notices were rebranded on the way into MetalSharp. In particular,
 
 ## WineForge's Wine 11.22 (the x86_64 build)
 
-MetalSharp Wine's x86_64 build ([X86_64.md](X86_64.md)) is built on Radim Vesely's own port of WineForge: [WineForge](https://github.com/Alien4042x/WineForge)'s `main` up to `a05564cf` (Wine 11.17), and since then its `main` up to `ce7ab1bc` (Wine 11.22, WineForge 0.6.0.9) merged in, LGPL 2.1 or later. Branch `source/wine-x86_64` carries that history unchanged, with his authorship. MetalSharp's commits sit on top of it (`patches/wine-x86_64/`: 0001 to 0080 against `a05564cf`, 0081 on after the merge). Its msync is WineForge's USync 6, renamed.
+MetalSharp Wine's x86_64 build ([X86_64.md](X86_64.md)) is built on Radim Vesely's own port of WineForge: [WineForge](https://github.com/Alien4042x/WineForge)'s `main` up to `a05564cf` (Wine 11.17), and since then its `main` up to `ce7ab1bc` (Wine 11.22, WineForge 0.6.0.9) merged in, LGPL 2.1 or later. Branch `source/wine-x86_64` carries that history unchanged, with his authorship. MetalSharp's commits sit on top of it (`patches/wine-x86_64/`: 0001 to 0081 against `a05564cf`, 0082 on after the merge). Its msync is WineForge's USync 6, renamed.
 
 - **0001, "MetalSharp runtime as shipped":** the source of the Wine in MetalSharp's `bundles` release.
 - **0002 to 0050, and 0052:** MetalSharp Wine's fixes, carried over from the arm64 build's patches. Two of them are by their original authors: 0043 (GCMouse raw input, Elvin Hayatov) and 0044 (native fullscreen, Radim Vesely).
