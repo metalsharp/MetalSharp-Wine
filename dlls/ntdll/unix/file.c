@@ -2685,6 +2685,14 @@ static NTSTATUS find_file_in_dir( int root_fd, char *unix_name, int pos, const W
     {
         unix_name[pos + ret] = 0;
         if (!fstatat( root_fd, unix_name, &st, 0 )) return STATUS_SUCCESS;
+        /* The "directory" is a file. On a case-sensitive file system the search below opens it and fails the
+         * same way; on a case-insensitive one (macOS) nothing is searched, and the name was reported as not
+         * found where Windows reports the path. */
+        if (errno == ENOTDIR)
+        {
+            unix_name[pos - 1] = 0;
+            return STATUS_OBJECT_PATH_NOT_FOUND;
+        }
     }
     if (check_case) goto not_found;  /* we want an exact match */
 
@@ -4979,6 +4987,28 @@ NTSTATUS WINAPI NtSetInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
 
             if (lseek( fd, info->CurrentByteOffset.QuadPart, SEEK_SET ) == (off_t)-1)
                 status = errno_to_status( errno );
+        }
+        else status = STATUS_INVALID_PARAMETER_3;
+        break;
+
+    case FileAllocationInformation:
+        /* MetalSharp: an allocation below the end of file truncates the file to it; one at or past it only
+         * reserves space, which the host file system does as the file grows. */
+        if (len >= sizeof(FILE_ALLOCATION_INFORMATION))
+        {
+            const FILE_ALLOCATION_INFORMATION *info = ptr;
+            struct stat st;
+
+            if (fstat( fd, &st ) == -1) status = errno_to_status( errno );
+            else if (info->AllocationSize.QuadPart < 0) status = STATUS_INVALID_PARAMETER;
+            else if (info->AllocationSize.QuadPart < st.st_size)
+            {
+                FILE_END_OF_FILE_INFORMATION eof;
+
+                eof.EndOfFile.QuadPart = info->AllocationSize.QuadPart;
+                if (needs_close) close( fd );
+                return server_set_file_info( handle, io, &eof, sizeof(eof), FileEndOfFileInformation );
+            }
         }
         else status = STATUS_INVALID_PARAMETER_3;
         break;
