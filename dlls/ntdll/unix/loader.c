@@ -336,6 +336,9 @@ static void set_metalsharp_runtime_defaults(void)
     char *dir;
 
     if (!dll_dir) return;
+    /* MoltenVK logs its whole feature list at info level on every instance; keep errors only */
+    setenv( "MVK_CONFIG_LOG_LEVEL", "1", 0 );
+
     if ((!getenv( "WFDXCOMPAT_RUNTIME_DIR" ) || !getenv( "WFDXCOMPAT_RUNTIME_DIR" )[0]) &&
         (dir = metalsharp_runtime_dir( wfdxcompat, "x86_64-windows/wfdx-launchers-v1.dll" )))
     {
