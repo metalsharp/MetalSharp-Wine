@@ -131,15 +131,15 @@ void init_process_graphics_backend( const WCHAR *image_path )
     if (process_uses_launcher_dxmt)
         process_graphics_backend = PROCESS_GRAPHICS_BACKEND_DXMT;
 
-    /* WineForge-Internal: wfdxcompat/rockstar-launcher-policy-v1. */
+    /* WineForge-Internal: wfdxcompat/rockstar-launcher-policy-v1. MetalSharp: as on the arm64
+     * runtime, the Rockstar Games Launcher and SocialClubHelper run on Mullion with WFDXCompat's
+     * launcher companion interposing D3D11 device creation. On D3DMetal their UI's D3D11 device
+     * could not be created (metalsharp/MetalSharp-Wine#113). */
     process_uses_wfdx_launchers = FALSE;
-    if (launcher.wfdx)
+    if (launcher.wfdx && dxmt_runtime_available())
     {
-        process_graphics_backend = PROCESS_GRAPHICS_BACKEND_D3DMETAL;
-        if (wfdxcompat_launcher_runtime_available())
-            process_uses_wfdx_launchers = TRUE;
-        else
-            process_graphics_backend = configured_backend;
+        process_graphics_backend = PROCESS_GRAPHICS_BACKEND_DXMT;
+        process_uses_wfdx_launchers = wfdxcompat_launcher_runtime_available();
     }
 
     TRACE( "graphics backend for %s: global %s, selected %s, policy %s%s%s\n", image_nameA,
