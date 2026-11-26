@@ -1,0 +1,71 @@
+From 67fe6bbc92a7544b23369297ecd6b5d6316dbde7 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Wed, 25 Nov 2026 20:16:27 -0700
+Subject: [PATCH 205/205] winebus.sys: Pass USB vendor-defined HID devices through on
+ macOS.
+
+The IOHID backend only creates devices for joysticks and gamepads, so
+Windows programs never see licence dongles and similar USB devices that
+they open through HID.dll. EXOCAD DentalCAD 3.3 and DentalDB load
+their Feitian dongle code (DentalCADExternals64.dll,
+WPFToothSelectionControlv2Base.dll), find no device and show a message
+box (metalsharp/MetalSharp-Wine#66).
+
+Also create devices whose primary usage page is vendor-defined
+(0xff00-0xffff) when they are on USB, are not Apple's, and have no
+keyboard, keypad, mouse or pointer collection. Opening those doesn't
+need the input monitoring permission, and the Mac's internal
+vendor-defined devices (Touch Bar, SPU and SPMI sensors) are still
+left out. is_hidraw_enabled() already accepts hidraw devices outside
+the generic desktop page.
+
+Tested on a Mac without such a device: the IOHID bus starts, ignores
+the same devices as before (the internal vendor-defined ones included)
+and shows no permission prompt.
+---
+ dlls/winebus.sys/bus_iohid.c | 25 ++++++++++++++++++++++++-
+ 1 file changed, 24 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/winebus.sys/bus_iohid.c b/dlls/winebus.sys/bus_iohid.c
+index ebfccd49f28..9696b610c9b 100644
+--- a/dlls/winebus.sys/bus_iohid.c
++++ b/dlls/winebus.sys/bus_iohid.c
+@@ -381,6 +381,26 @@ static void get_usb_device_info(io_service_t usb_hid_dev, struct device_desc *de
+     if (!ret) desc->bus_type = BUS_TYPE_UNKNOWN;
+ }
+ 
++/* USB devices with a vendor-defined primary usage page: licence dongles
++ * (Feitian ROCKEY, Sentinel HL and others), security keys and similar
++ * devices that Windows programs open through HID.dll. Apple's own devices,
++ * such as the Touch Bar, are left out, as are devices that also have a
++ * keyboard or pointer collection, since opening those needs the input
++ * monitoring permission. */
++static BOOL is_vendor_usb_device(IOHIDDeviceRef device, const struct device_desc *desc,
++                                 const USAGE_AND_PAGE *usages)
++{
++    if (desc->bus_type != BUS_TYPE_USB) return FALSE;
++    if (usages->UsagePage < 0xff00) return FALSE;
++    if (desc->vid == 0x05ac) return FALSE;
++    if (IOHIDDeviceConformsTo(device, kHIDPage_GenericDesktop, kHIDUsage_GD_Keyboard) ||
++        IOHIDDeviceConformsTo(device, kHIDPage_GenericDesktop, kHIDUsage_GD_Keypad) ||
++        IOHIDDeviceConformsTo(device, kHIDPage_GenericDesktop, kHIDUsage_GD_Mouse) ||
++        IOHIDDeviceConformsTo(device, kHIDPage_GenericDesktop, kHIDUsage_GD_Pointer))
++        return FALSE;
++    return TRUE;
++}
++
+ static void handle_DeviceMatchingCallback(void *context, IOReturn result, void *sender, IOHIDDeviceRef IOHIDDevice)
+ {
+     struct device_desc desc =
+@@ -409,7 +429,10 @@ static void handle_DeviceMatchingCallback(void *context, IOReturn result, void *
+             desc.bus_type = BUS_TYPE_USB;
+     }
+ 
+-    if (usages.UsagePage != HID_USAGE_PAGE_GENERIC ||
++    if (is_vendor_usb_device(IOHIDDevice, &desc, &usages))
++        TRACE("HID device %p (vid %04x, pid %04x): vendor-defined usage page %04x\n",
++              IOHIDDevice, desc.vid, desc.pid, usages.UsagePage);
++    else if (usages.UsagePage != HID_USAGE_PAGE_GENERIC ||
+         !(usages.Usage == HID_USAGE_GENERIC_JOYSTICK || usages.Usage == HID_USAGE_GENERIC_GAMEPAD))
+     {
+         /* winebus isn't currently meant to handle anything but these, and
