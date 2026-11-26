@@ -39,7 +39,7 @@ WINE_DEFAULT_DEBUG_CHANNEL(module);
 #define WFDX_LAUNCHER_FLAG_INTERPOSE     0x00000001
 #define WFDX_LAUNCHER_FLAG_CONTEXT_STATE 0x00000002
 #define WFDX_LAUNCHER_FLAG_GDI_SURFACE   0x00000004
-#define WFDX_LAUNCHER_FLAG_NATIVE_D3D10  0x00000008
+#define WFDX_LAUNCHER_FLAG_NATIVE_D3D10  0x00000010
 
 /* Mullion implements D3D10 devices, device context state and GDI-compatible surfaces itself,
  * which WineForge's companion emulated for D3DMetal: by default the companion only interposes
