@@ -2,6 +2,8 @@
  * msync server shared state
  * WineForge-Internal: msync-v6.
  *
+ * Ported from WineForge's USync 6 (server/usync.c); MetalSharp Wine renamed it msync and modified it.
+ *
  * Copyright (C) 2026 Radim Vesely
  *
  * This library is free software; you can redistribute it and/or
