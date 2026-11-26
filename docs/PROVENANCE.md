@@ -20,7 +20,7 @@ MetalSharp Wine ported these WineForge changes onto its own Wine tree. The commi
 | 0030 winemac EA App redraw | EA App redraw after focus returns | Ported with authorship kept |
 | 0033 server directory polling | Epic install directory change polling on macOS | Ported |
 | 0034 server BUILTIN\Users access | Epic install directory ACLs | Ported |
-| 0035 msync | WFUSync, WineForge's opt-in userspace synchronization backend | Renamed msync; arm64 and long-running-server fixes (0037, 0046, 0047, 0070) |
+| 0035 msync | WFUSync, WineForge's opt-in userspace synchronization backend | Renamed msync; arm64 and long-running-server fixes (0037, 0046, 0047, 0070). Since 0206 it is WineForge's USync 6, renamed msync, with the fixed 64K mapping granules and the abandoned-mutex fix kept |
 | 0038 winemac GCMouse | Elvin Hayatov's WineHQ MR !11799, ported to WineForge's Wine by Radim Vesely | Ported with authorship kept; coalescing change (0065) is ours |
 | 0039 winemac native fullscreen | Native macOS fullscreen lifecycle | Ported with authorship kept |
 | 0040 ntdll PE patch framework | Verified PE patch loader (Steam overlay) | Ported |
@@ -31,7 +31,10 @@ MetalSharp Wine ported these WineForge changes onto its own Wine tree. The commi
 
 Some WineForge notices were rebranded on the way into MetalSharp. In particular, "Copyright (C) 2026 Radim Vesely for WineForge" became "... for MetalSharp", and the `WineForge-Internal`/`WineForge-Feature` provenance markers became MetalSharp ones. Patch 0072 restores the original notices in every affected file. Where MetalSharp Wine modified WineForge code, the file now says so next to the original notice. Patches before 0072 are kept as published, so 0020 and 0021 still show the rebranded header that 0072 corrects.
 
-[WFDXCompat](https://github.com/metalsharp/MetalSharp-Wine/tree/source/wfdxcompat), WineForge's DirectX compatibility companion by Radim Vesely, is carried with its LGPL 2.1 license. MetalSharp Wine's change to it (running the companion on Mullion as ARM64EC) is a separate commit on top.
+[WFDXCompat](https://github.com/metalsharp/MetalSharp-Wine/tree/source/wfdxcompat), WineForge's DirectX compatibility companion by Radim Vesely, is carried with its LGPL 2.1 license. MetalSharp Wine's changes to it are separate commits on top:
+- the launcher companion runs on Mullion, built as ARM64EC for the arm64 build;
+- upstream's service swapchain guard is merged, with MetalSharp's `NATIVE_D3D10` flag moved to `0x10`;
+- the x86_64 build runs its native x86_64 companion on Mullion too.
 
 ## WineForge's Wine 11.22 (the x86_64 build)
 
@@ -86,6 +89,8 @@ The Linux module host itself (`source/linuxhost`, built into `lib/linuxhost`) is
 | [Wine](https://www.winehq.org/) | The Wine project | LGPL 2.1 or later | `source/wine` branch; `patches/wine/` against the upstream tag |
 | CrossOver macOS work | CodeWeavers | LGPL 2.1 or later (as part of Wine) | Same |
 | Wine (x86_64 build), on [WineForge](https://github.com/Alien4042x/WineForge)'s Wine 11.22 | The Wine project, Radim Vesely | LGPL 2.1 or later | `source/wine-x86_64` branch; `patches/wine-x86_64/` against WineForge `a05564cf`, then after the merge of WineForge `ce7ab1bc` |
+| [WFDXCompat](https://github.com/Alien4042x/WFDXCompat) | Radim Vesely | LGPL 2.1 or later | `source/wfdxcompat` branch |
+| Native Steam bridge (x86_64 build): `lsteamclient` and ntdll's bridge | Valve (Proton's `lsteamclient`), [NotProton](https://github.com/NotProtonNot/NotProton)'s macOS adaptations, WineForge contributors | `lsteamclient`: Valve's Steamworks SDK license (`share/licenses/lsteamclient`); ntdll's bridge: LGPL 2.1 or later | In `source/wine-x86_64`, from WineForge's Wine 11.22 |
 | [FEX](https://github.com/FEX-Emu/FEX) | FEX-Emu contributors | MIT | `source/fex` branch; `patches/fex/` |
 | [Mullion](https://github.com/dttdrv/mullion), based on [DXMT](https://github.com/3Shain/dxmt) | Feifan He for CodeWeavers, Mullion contributors | LGPL 2.1 or later | aaf2tbz/mullion, branch `metalsharp-2.1-main` |
 | [VKD3D-Proton](https://github.com/HansKristian-Work/vkd3d-proton) | Hans-Kristian Arntzen and contributors | LGPL 2.1 | metalsharp/VKD3D-Proton-MacOS |
@@ -121,6 +126,6 @@ Apple's Game Porting Toolkit license allows distributing it, with these conditio
 
 Apple's license governs.
 
-Every bundle carries these licenses in `share/licenses/` and next to each runtime in `lib/` (for example `lib/mullion/LICENSE` and `lib/wfdxcompat/LICENSE`).
+Every bundle carries these licenses in `share/licenses/`, and next to each runtime in `lib/` (for example `lib/mullion/LICENSE` and `lib/wfdxcompat/LICENSE`; the x86_64 app has WFDXCompat's in `share/metalsharp/runtime/wfdxcompat/LICENSE`). Wine's `NOTICES.md`, with the notices of the third-party code Wine imports, is in `share/licenses/wine/`.
 
 A release's binaries are built from the commits of the branches above at the time of that release, and the modified LGPL components' source is published there. Local debugging changes that aren't committed never go into a release build.

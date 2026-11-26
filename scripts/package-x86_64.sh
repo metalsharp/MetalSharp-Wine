@@ -45,6 +45,7 @@
 #   libraries the unix side loads (lib/wine/x86_64-unix/*.dylib) and MetalSharp's mscompatdb.so
 #   [or, for a Wine of the bundle's version only: WINE_BUILD=<the x86_64 Wine's build tree> WINE_MODULES="ntdll win32u
 #   ..." (modules rebuilt there, which replace the bundle's; server for the wineserver)]
+#   [WFDX_SRC=<src/wfdxcompat>: WFDXCompat's license, by default the submodule]
 #   WINEMETALGL=<install-x86_64/winemetalgl> VCRUN_X64=<Microsoft's x64 VC++ runtime DLLs> DEPS_SRC=<deps/src-x86_64:deps/src> LICENSES_EXTRA=<dir of license folders> (share/licenses)
 #   [ZINK=<install-x86_64/zink, from build-zink.sh x86_64>: OpenGL on Zink with SharpGL_Switch=1]
 #   [KOSMICKRISP=<install-x86_64/kosmickrisp, from build-kosmickrisp.sh x86_64>: Vulkan on KosmicKrisp with SharpVK_Switch=1]
@@ -401,8 +402,24 @@ for p in "${LICENSED[@]}"; do
   [ -d "$LIC/$p" ] || echo "warning: no license source for $p" >&2
 done
 [ -n "${LICENSES_EXTRA:-}" ] && cp -R "$LICENSES_EXTRA"/. "$LIC/"
-mkdir -p "$LIC/wine" "$LIC/zlib" "$LIC/mullion" "$LIC/dxvk-macos" "$LIC/vkd3d-proton"
-[ -n "${WINE_SRC:-}" ] && cp -p "$WINE_SRC/COPYING.LIB" "$WINE_SRC/LICENSE" "$WINE_SRC/AUTHORS" "$LIC/wine/"
+mkdir -p "$LIC/wine" "$LIC/zlib" "$LIC/mullion" "$LIC/dxvk-macos" "$LIC/vkd3d-proton" "$LIC/wfdxcompat"
+# Wine (WineForge's Wine 11.22 with MetalSharp's changes, LGPL-2.1-or-later), and NOTICES.md: the notices of the
+# third-party code Wine imports
+[ -n "${WINE_SRC:-}" ] && cp -p "$WINE_SRC/COPYING.LIB" "$WINE_SRC/LICENSE" "$WINE_SRC/AUTHORS" "$WINE_SRC/NOTICES.md" "$LIC/wine/"
+# lsteamclient (WineForge's native Steam bridge, from Proton's lsteamclient with NotProton's macOS adaptations):
+# its LICENSE is the Steamworks SDK license its Steam API headers come under; its sources keep their own notices
+if [ -n "${WINE_SRC:-}" ] && [ -f "$WINE_SRC/dlls/lsteamclient/LICENSE" ]; then
+  mkdir -p "$LIC/lsteamclient"
+  cp -p "$WINE_SRC/dlls/lsteamclient/LICENSE" "$LIC/lsteamclient/"
+fi
+# WFDXCompat, WineForge's DirectX companion by Radim Vesely (LGPL-2.1-or-later): here and next to its runtime
+WFDX_SRC=${WFDX_SRC:-$HERE/../src/wfdxcompat}
+if [ -f "$WFDX_SRC/LICENSE" ]; then
+  cp -p "$WFDX_SRC/LICENSE" "$LIC/wfdxcompat/"
+  cp -p "$WFDX_SRC/LICENSE" "$M/runtime/wfdxcompat/LICENSE"
+else
+  echo "warning: no WFDXCompat license at $WFDX_SRC (WFDX_SRC)" >&2
+fi
 [ -n "${WINE_SRC:-}" ] && cp -p "$WINE_SRC/libs/zlib/LICENSE" "$LIC/zlib/"
 cp -p "$MULLION/LICENSE" "$LIC/mullion/"
 cp -p "$DXVK"/LICENSE* "$LIC/dxvk-macos/"
