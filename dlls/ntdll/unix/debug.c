@@ -60,13 +60,43 @@ static struct debug_info initial_info;  /* debug info for initial thread */
 static unsigned char default_flags = (1 << __WINE_DBCL_ERR) | (1 << __WINE_DBCL_FIXME);
 static int nb_debug_options = -1;
 static int options_size;
-/* MetalSharp: the trace log stderr goes to (metalsharp_init_trace) */
-static char trace_path[PATH_MAX];
 static struct __wine_debug_channel *debug_options;
 
 static const char * const debug_classes[] = { "fixme", "err", "warn", "trace" };
 
 /* get the debug info pointer for the current thread */
+/* MetalSharp: the trace log stderr goes to (metalsharp_init_trace), and its size limit; 0 without one */
+static char trace_path[PATH_MAX];
+static unsigned long long trace_limit, trace_written;
+static int trace_rotating;
+
+/* write debug output to stderr; a trace log past its limit is moved to <log>.1 and a new one started, so
+ * the end of a long run is kept in at most twice the limit */
+static ssize_t dbg_write( const void *buf, size_t len )
+{
+    ssize_t ret = write( 2, buf, len );
+    int fd;
+
+    if (!trace_limit || ret <= 0) return ret;
+    if (__atomic_add_fetch( &trace_written, ret, __ATOMIC_RELAXED ) < trace_limit) return ret;
+    if (__atomic_exchange_n( &trace_rotating, 1, __ATOMIC_ACQUIRE )) return ret;
+    if (__atomic_load_n( &trace_written, __ATOMIC_RELAXED ) >= trace_limit)
+    {
+        char old[PATH_MAX + 2];
+
+        snprintf( old, sizeof(old), "%s.1", trace_path );
+        rename( trace_path, old );
+        if ((fd = open( trace_path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644 )) != -1)
+        {
+            dup2( fd, 2 );
+            close( fd );
+        }
+        __atomic_store_n( &trace_written, 0, __ATOMIC_RELAXED );
+    }
+    __atomic_store_n( &trace_rotating, 0, __ATOMIC_RELEASE );
+    return ret;
+}
+
 static inline struct debug_info *get_info( struct thread_data *data )
 {
     return data ? (struct debug_info *)data->debug_info : &initial_info;
@@ -189,7 +219,7 @@ static void debug_usage(void)
         "Example: WINEDEBUG=+relay,warn-heap\n"
         "    turns on relay traces, disable heap warnings\n"
         "Available message classes: err, warn, fixme, trace\n";
-    write( 2, usage, sizeof(usage) - 1 );
+    dbg_write( usage, sizeof(usage) - 1 );
     exit(1);
 }
 
@@ -278,7 +308,7 @@ NTSTATUS unixcall_wine_dbg_write( void *args )
 {
     struct wine_dbg_write_params *params = args;
 
-    return write( 2, params->str, params->len );
+    return dbg_write( params->str, params->len );
 }
 
 #ifdef _WIN64
@@ -293,7 +323,7 @@ NTSTATUS wow64_wine_dbg_write( void *args )
         unsigned int len;
     } const *params32 = args;
 
-    return write( 2, ULongToPtr(params32->str), params32->len );
+    return dbg_write( ULongToPtr(params32->str), params32->len );
 }
 #endif
 
@@ -309,7 +339,7 @@ int __cdecl __wine_dbg_output( const char *str )
     if (end)
     {
         ret += append_output( info, str, end + 1 - str );
-        write( 2, info->output, info->out_pos );
+        dbg_write( info->output, info->out_pos );
         info->out_pos = 0;
         str = end + 1;
     }
@@ -393,22 +423,8 @@ void metalsharp_init_trace( const char *exe )
         trace_path[0] = 0;
         return;
     }
-    {
-        char fds[96];
-        int i, n = 0;
-        for (i = 0; i <= 2; i++)
-        {
-            char link[PATH_MAX] = "";
-            if (i != fd && fcntl( i, F_GETPATH, link ) == -1) snprintf( link, sizeof(link), "%s", fcntl( i, F_GETFD ) == -1 ? "closed" : "?" );
-            n += snprintf( fds + n, sizeof(fds) - n, " %d=%.20s", i, i == fd ? "(the log)" : link );
-        }
-        if (fd != 2)
-        {
-            dup2( fd, 2 );
-            close( fd );
-        }
-        fprintf( stderr, "MetalSharp: std fds at start:%s\n", fds );
-    }
+    dup2( fd, 2 );
+    close( fd );
     if (spec[0]) setenv( "WINEDEBUG", spec, 1 );
     /* the options again, now that stderr is the log */
     free( debug_options );
@@ -417,7 +433,7 @@ void metalsharp_init_trace( const char *exe )
     nb_debug_options = -1;
     default_flags = (1 << __WINE_DBCL_ERR) | (1 << __WINE_DBCL_FIXME);
     init_options();
-    (void)limit;
+    trace_limit = limit ? limit << 20 : 0;
     fprintf( stderr, "MetalSharp: tracing %s (pid %d) with WINEDEBUG=%s\n", exe, (int)getpid(), spec );
 }
 
