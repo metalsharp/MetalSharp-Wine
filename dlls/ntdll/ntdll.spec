@@ -293,6 +293,7 @@
 @ stdcall -syscall NtOpenKeyedEvent(ptr long ptr)
 @ stdcall -syscall NtOpenMutant(ptr long ptr)
 # @ stub NtOpenObjectAuditAlarm
+@ stdcall -syscall NtOpenPrivateNamespace(ptr long ptr ptr)
 @ stdcall -syscall=0x0026 NtOpenProcess(ptr long ptr ptr)
 @ stdcall -syscall NtOpenProcessToken(long long ptr)
 @ stdcall -syscall=0x0030 NtOpenProcessTokenEx(long long long ptr)
@@ -1374,6 +1375,7 @@
 @ stdcall -private ZwOpenKeyedEvent(ptr long ptr) NtOpenKeyedEvent
 @ stdcall -private ZwOpenMutant(ptr long ptr) NtOpenMutant
 # @ stub ZwOpenObjectAuditAlarm
+@ stdcall -private ZwOpenPrivateNamespace(ptr long ptr ptr) NtOpenPrivateNamespace
 @ stdcall -private ZwOpenProcess(ptr long ptr ptr) NtOpenProcess
 @ stdcall -private ZwOpenProcessToken(long long ptr) NtOpenProcessToken
 @ stdcall -private ZwOpenProcessTokenEx(long long long ptr) NtOpenProcessTokenEx
@@ -1556,7 +1558,8 @@
 @ cdecl -private -arch=i386 _CIpow()
 @ cdecl -private -arch=i386 _CIsin()
 @ cdecl -private -arch=i386 _CIsqrt()
-@ stdcall -arch=!i386 __C_specific_handler(ptr long ptr ptr)
+@ stdcall -arch=!i386,!arm64ec __C_specific_handler(ptr long ptr ptr)
+@ stdcall -arch=arm64ec -norelay __C_specific_handler(ptr long ptr ptr)
 @ cdecl -arch=!i386 -norelay __chkstk()
 @ cdecl -arch=arm64ec -norelay __chkstk_arm64ec()
 @ cdecl __isascii(long)
@@ -1683,11 +1686,14 @@
 @ cdecl mbstowcs(ptr str long)
 @ cdecl memchr(ptr long long)
 @ cdecl memcmp(ptr ptr long)
-@ cdecl memcpy(ptr ptr long)
+@ cdecl -arch=!arm64ec memcpy(ptr ptr long)
+@ cdecl -arch=arm64ec -norelay memcpy(ptr ptr long)
 @ cdecl memcpy_s(ptr long ptr long)
-@ cdecl memmove(ptr ptr long)
+@ cdecl -arch=!arm64ec memmove(ptr ptr long)
+@ cdecl -arch=arm64ec -norelay memmove(ptr ptr long)
 @ cdecl memmove_s(ptr long ptr long)
-@ cdecl memset(ptr long long)
+@ cdecl -arch=!arm64ec memset(ptr long long)
+@ cdecl -arch=arm64ec -norelay memset(ptr long long)
 @ cdecl pow(double double)
 @ cdecl qsort(ptr long long ptr)
 @ cdecl qsort_s(ptr long long ptr ptr)

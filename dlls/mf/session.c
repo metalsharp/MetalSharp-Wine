@@ -1130,6 +1130,61 @@ static void session_flush_nodes(struct media_session *session)
 
 static void session_handle_source_shutdown(struct media_session *session);
 
+static void session_select_topo_streams(struct media_session *session)
+{
+    struct media_source *source;
+    struct topo_node *node;
+    DWORD count;
+    UINT i;
+
+    /* deselect all source streams */
+    LIST_FOR_EACH_ENTRY(source, &session->presentation.sources, struct media_source, entry)
+    {
+        if (FAILED(IMFPresentationDescriptor_GetStreamDescriptorCount(source->pd, &count))) continue;
+
+        for (i = 0; i < count; ++i)
+        {
+            IMFPresentationDescriptor_DeselectStream(source->pd, i);
+        }
+    }
+
+    /* only select source streams that exist in the topology */
+    LIST_FOR_EACH_ENTRY(node, &session->presentation.nodes, struct topo_node, entry)
+    {
+        IMFStreamDescriptor *sd;
+        DWORD id;
+        BOOL selected;
+
+        if (node->type != MF_TOPOLOGY_SOURCESTREAM_NODE)
+            continue;
+
+        LIST_FOR_EACH_ENTRY(source, &session->presentation.sources, struct media_source, entry)
+        {
+            if (source->source != node->u.source.source)
+                continue;
+
+            count = 0;
+            IMFPresentationDescriptor_GetStreamDescriptorCount(source->pd, &count);
+            for (i = 0; i < count; ++i)
+            {
+                if (FAILED(IMFPresentationDescriptor_GetStreamDescriptorByIndex(source->pd, i, &selected, &sd)))
+                    continue;
+
+                if (SUCCEEDED(IMFStreamDescriptor_GetStreamIdentifier(sd, &id)) && id == node->u.source.stream_id)
+                {
+                    if (FAILED(IMFPresentationDescriptor_SelectStream(source->pd, i)))
+                        WARN("failed to select stream index %u.\n", i);
+
+                    IMFStreamDescriptor_Release(sd);
+                    break;
+                }
+
+                IMFStreamDescriptor_Release(sd);
+            }
+        }
+    }
+}
+
 static void session_start(struct media_session *session, const GUID *time_format, const PROPVARIANT *start_position)
 {
     struct media_source *source;
@@ -1201,6 +1256,8 @@ static void session_start(struct media_session *session, const GUID *time_format
             session->presentation.time_format = *time_format;
             session->presentation.start_position.vt = VT_EMPTY;
             PropVariantCopy(&session->presentation.start_position, start_position);
+
+            session_select_topo_streams(session);
 
             if (FAILED(hr = session_subscribe_sources(session)))
             {
@@ -3131,7 +3188,7 @@ static BOOL session_is_output_nodes_state(struct media_session *session, enum ob
     return TRUE;
 }
 
-static enum object_state session_get_object_state_for_event(MediaEventType event)
+static enum object_state session_get_object_state_for_event(struct media_session *session, MediaEventType event)
 {
     switch (event)
     {
@@ -3145,9 +3202,15 @@ static enum object_state session_get_object_state_for_event(MediaEventType event
         case MEStreamPaused:
         case MEStreamSinkPaused:
             return OBJ_STATE_PAUSED;
+        case MEStreamSinkStopped:
+            /* MEStreamSinkStopped may be sent when starting a new topology because of the sequence (which occurs in native):
+             * media sink SetPresentationClock() -> AddClockStateSink() -> callback Invoke() -> OnClockStop().
+             * Callback notification is suppressed for the first topology because the clock state is MFCLOCK_STATE_INVALID. */
+            if (session->command_state == COMMAND_STATE_PREROLLING_SINKS || session->command_state == COMMAND_STATE_STARTING_SINKS)
+                return OBJ_STATE_INVALID;
+            /* fall through */
         case MESourceStopped:
         case MEStreamStopped:
-        case MEStreamSinkStopped:
             return OBJ_STATE_STOPPED;
         case MEStreamSinkPrerolled:
             return OBJ_STATE_PREROLLED;
@@ -3221,7 +3284,7 @@ static void session_set_source_object_state(struct media_session *session, IUnkn
     DWORD i, count;
     HRESULT hr;
 
-    if ((state = session_get_object_state_for_event(event_type)) == OBJ_STATE_INVALID)
+    if ((state = session_get_object_state_for_event(session, event_type)) == OBJ_STATE_INVALID)
         return;
 
     switch (event_type)
@@ -3408,7 +3471,7 @@ static void session_set_sink_stream_state(struct media_session *session, IMFStre
     HRESULT hr = S_OK;
     BOOL changed;
 
-    if ((state = session_get_object_state_for_event(event_type)) == OBJ_STATE_INVALID)
+    if ((state = session_get_object_state_for_event(session, event_type)) == OBJ_STATE_INVALID)
         return;
 
     if (!(changed = session_set_node_object_state(session, (IUnknown *)stream, MF_TOPOLOGY_OUTPUT_NODE, state)))
@@ -4659,6 +4722,9 @@ static HRESULT WINAPI session_events_callback_Invoke(IMFAsyncCallback *iface, IM
             UINT32 input = 0;
             BOOL is_sample;
             DWORD output;
+
+            if (!topo_node)
+                break;
 
             if (FAILED(hr = IMFMediaEvent_GetUINT32(event, &MF_EVENT_MFT_INPUT_STREAM_ID, &input)))
                 WARN("Failed to get input id, hr %#lx.\n", hr);

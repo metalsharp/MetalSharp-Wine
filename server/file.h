@@ -57,6 +57,8 @@ struct fd_ops
     void (*poll_event)(struct fd *,int event);
     /* get file information */
     enum server_fd_type (*get_fd_type)(struct fd *fd);
+    /* perform an asynchronous create */
+    void (*create)( struct fd *, struct async *, unsigned int access, unsigned int sharing, unsigned int options );
     /* perform a read on the file */
     void (*read)(struct fd *, struct async *, file_pos_t );
     /* perform a write on the file */
@@ -65,6 +67,8 @@ struct fd_ops
     void (*flush)(struct fd *, struct async *);
     /* query file info */
     void (*get_file_info)( struct fd *, obj_handle_t, unsigned int );
+    /* set file info */
+    void (*set_file_info)( struct fd *, struct async *, unsigned int );
     /* query volume info */
     void (*get_volume_info)( struct fd *, struct async *, unsigned int );
     /* perform an ioctl on the file */
@@ -82,8 +86,8 @@ struct fd_ops
 extern struct fd *alloc_pseudo_fd( const struct fd_ops *fd_user_ops, struct object *user,
                                    unsigned int options );
 extern struct fd *open_fd( struct fd *root, const char *name, struct unicode_str nt_name,
-                           int flags, mode_t *mode, unsigned int access,
-                           unsigned int sharing, unsigned int options );
+                           mode_t *mode, unsigned int access, unsigned int sharing,
+                           unsigned int disposition, unsigned int options );
 extern struct fd *create_anonymous_fd( const struct fd_ops *fd_user_ops,
                                        int unix_fd, struct object *user, unsigned int options );
 extern struct fd *dup_fd_object( struct fd *orig, unsigned int access, unsigned int sharing,
@@ -117,6 +121,7 @@ extern void fd_queue_async( struct fd *fd, struct async *async, int type );
 extern void fd_async_wake_up( struct fd *fd, int type, unsigned int status );
 extern void fd_reselect_async( struct fd *fd, struct async_queue *queue );
 extern void default_fd_get_file_info( struct fd *fd, obj_handle_t handle, unsigned int info_class );
+extern void default_fd_set_file_info( struct fd *fd, struct async *async, unsigned int info_class );
 extern void default_fd_ioctl( struct fd *fd, ioctl_code_t code, struct async *async );
 extern void default_fd_queue_async( struct fd *fd, struct async *async, int type, int count );
 extern void default_fd_reselect_async( struct fd *fd, struct async_queue *queue );
@@ -244,8 +249,7 @@ typedef void (*async_completion_callback)( void *private );
 
 extern void free_async_queue( struct async_queue *queue );
 extern struct async *create_async( struct fd *fd, struct thread *thread, const struct async_data *data, struct iosb *iosb );
-extern struct async *create_request_async( struct fd *fd, unsigned int comp_flags, const struct async_data *data,
-                                           int is_system );
+extern struct async *create_request_async( struct fd *fd, const struct async_data *data, int is_system );
 extern obj_handle_t async_handoff( struct async *async, data_size_t *result, int force_blocking );
 extern void queue_async( struct async_queue *queue, struct async *async );
 extern void async_set_timeout( struct async *async, timeout_t timeout, unsigned int status );
@@ -282,12 +286,6 @@ static inline int async_queued( struct async_queue *queue )
     return !list_empty( &queue->queue );
 }
 
-
-/* access rights that require Unix read permission */
-#define FILE_UNIX_READ_ACCESS (FILE_READ_DATA|FILE_READ_ATTRIBUTES|FILE_READ_EA)
-
-/* access rights that require Unix write permission */
-#define FILE_UNIX_WRITE_ACCESS (FILE_WRITE_DATA|FILE_APPEND_DATA|FILE_WRITE_ATTRIBUTES|FILE_WRITE_EA)
 
 /* magic file access rights for mappings */
 #define FILE_MAPPING_IMAGE  0x80000000  /* set for SEC_IMAGE mappings */

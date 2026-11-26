@@ -59,13 +59,9 @@ struct ConnectionPoint
     IConnectionPointContainer *container;
     domdoc *doc;
 
-    union
-    {
-        IUnknown *unk;
-        IDispatch *disp;
-        IPropertyNotifySink *propnotif;
-    } *sinks;
-    DWORD sinks_size;
+    IUnknown **sinks;
+    size_t count;
+    size_t capacity;
 };
 
 typedef enum {
@@ -791,20 +787,15 @@ static HRESULT WINAPI domdoc_transformNodeToObject(IXMLDOMDocument3 *iface,
 static HRESULT WINAPI domdoc_get_doctype(IXMLDOMDocument3 *iface, IXMLDOMDocumentType **doctype)
 {
     domdoc *doc = impl_from_IXMLDOMDocument3(iface);
-    struct domnode *node = NULL;
+    struct domnode *dtd;
 
     TRACE("%p, %p.\n", iface, doctype);
 
     if (!doctype)
         return E_INVALIDARG;
 
-    LIST_FOR_EACH_ENTRY(node, &doc->node->children, struct domnode, entry)
-    {
-        if (node->type == NODE_DOCUMENT_TYPE)
-        {
-            return create_node(node, (IXMLDOMNode **)doctype);
-        }
-    }
+    if ((dtd = domnode_get_dtd(doc->node)))
+        return create_node(dtd, (IXMLDOMNode **)doctype);
 
     return return_null_node((IXMLDOMNode **)doctype);
 }
@@ -1165,6 +1156,11 @@ static HRESULT WINAPI domdoc_createNode(IXMLDOMDocument3 *iface, VARIANT type, B
         return hr;
     }
 
+    if (node_type == NODE_ELEMENT)
+    {
+        domnode->flags |= DOMNODE_USE_EMPTY_TAG;
+    }
+
     return create_node(domnode, node);
 }
 
@@ -1394,9 +1390,7 @@ static HRESULT WINAPI domdoc_get_parseError(IXMLDOMDocument3 *iface, IXMLDOMPars
     if (doc->error)
         error_string = SysAllocString(L"error");
 
-    *obj = create_parseError(doc->error, NULL, error_string, NULL, 0, 0, 0);
-    if (!*obj) return E_OUTOFMEMORY;
-    return S_OK;
+    return create_parse_error(doc->error, error_string, obj);
 }
 
 static HRESULT WINAPI domdoc_get_url(IXMLDOMDocument3 *iface, BSTR *url)
@@ -1753,29 +1747,15 @@ static HRESULT WINAPI domdoc_putref_schemas(IXMLDOMDocument3 *iface, VARIANT sch
     return hr;
 }
 
-static HRESULT WINAPI domdoc_validateNode(IXMLDOMDocument3 *iface, IXMLDOMNode *node, IXMLDOMParseError **err)
+static HRESULT WINAPI domdoc_validate(IXMLDOMDocument3 *iface, IXMLDOMParseError **err)
 {
     domdoc *doc = impl_from_IXMLDOMDocument3(iface);
 
-    TRACE("%p, %p, %p.\n", iface, node, err);
+    TRACE("%p, %p.\n", iface, err);
 
     /* TODO: check ready state */
 
-    if (!node)
-    {
-        if (err)
-            *err = create_parseError(0, NULL, NULL, NULL, 0, 0, 0);
-        return E_POINTER;
-    }
-
-    return node_validate(doc->node, node, err);
-}
-
-static HRESULT WINAPI domdoc_validate(IXMLDOMDocument3 *iface, IXMLDOMParseError **err)
-{
-    TRACE("%p, %p.\n", iface, err);
-
-    return IXMLDOMDocument3_validateNode(iface, (IXMLDOMNode *)iface, err);
+    return node_validate(doc->node, NULL, err);
 }
 
 static HRESULT variant_get_bool_property(const VARIANT *v, VARIANT_BOOL *ret)
@@ -1851,7 +1831,8 @@ static HRESULT WINAPI domdoc_setProperty(IXMLDOMDocument3 *iface, BSTR p, VARIAN
              wcsicmp(p, L"ResolveExternals") == 0 ||
              wcsicmp(p, L"AllowXsltScript") == 0 ||
              wcsicmp(p, L"AllowDocumentFunction") == 0 ||
-             wcsicmp(p, L"UseInlineSchema") == 0)
+             wcsicmp(p, L"UseInlineSchema") == 0 ||
+             wcscmp(p, L"MaxXMLSize") == 0)
     {
         /* Ignore */
         FIXME("Ignoring property %s, value %s\n", debugstr_w(p), debugstr_variant(&value));
@@ -1959,6 +1940,20 @@ static HRESULT WINAPI domdoc_getProperty(IXMLDOMDocument3 *iface, BSTR p, VARIAN
 
     FIXME("Unknown property %s\n", debugstr_w(p));
     return E_FAIL;
+}
+
+static HRESULT WINAPI domdoc_validateNode(IXMLDOMDocument3 *iface, IXMLDOMNode *node, IXMLDOMParseError **err)
+{
+    domdoc *doc = impl_from_IXMLDOMDocument3(iface);
+
+    TRACE("%p, %p, %p.\n", iface, node, err);
+
+    /* TODO: check ready state */
+
+    if (!node || !err)
+        return E_INVALIDARG;
+
+    return node_validate(doc->node, node, err);
 }
 
 static HRESULT WINAPI domdoc_importNode(IXMLDOMDocument3 *iface, IXMLDOMNode *node, VARIANT_BOOL deep, IXMLDOMNode **clone)
@@ -2182,36 +2177,33 @@ static HRESULT WINAPI ConnectionPoint_GetConnectionPointContainer(IConnectionPoi
 static HRESULT WINAPI ConnectionPoint_Advise(IConnectionPoint *iface, IUnknown *unk_sink,
                                              DWORD *cookie)
 {
-    ConnectionPoint *This = impl_from_IConnectionPoint(iface);
+    ConnectionPoint *cp = impl_from_IConnectionPoint(iface);
     IUnknown *sink;
     HRESULT hr;
-    DWORD i;
+    size_t i;
 
-    TRACE("(%p)->(%p %p)\n", This, unk_sink, cookie);
+    TRACE("%p, %p, %p.\n", iface, unk_sink, cookie);
 
-    hr = IUnknown_QueryInterface(unk_sink, This->iid, (void**)&sink);
-    if(FAILED(hr) && !IsEqualGUID(&IID_IPropertyNotifySink, This->iid))
+    hr = IUnknown_QueryInterface(unk_sink, cp->iid, (void **)&sink);
+    if(FAILED(hr) && !IsEqualGUID(&IID_IPropertyNotifySink, cp->iid))
         hr = IUnknown_QueryInterface(unk_sink, &IID_IDispatch, (void**)&sink);
     if(FAILED(hr))
         return CONNECT_E_CANNOTCONNECT;
 
-    if(This->sinks)
+    for (i = 0; i < cp->count; ++i)
     {
-        for (i = 0; i < This->sinks_size; i++)
-            if (!This->sinks[i].unk)
-                break;
-
-        if (i == This->sinks_size)
-            This->sinks = realloc(This->sinks, (++This->sinks_size) * sizeof(*This->sinks));
-    }
-    else
-    {
-        This->sinks = malloc(sizeof(*This->sinks));
-        This->sinks_size = 1;
-        i = 0;
+        if (!cp->sinks[i])
+            break;
     }
 
-    This->sinks[i].unk = sink;
+    if (i == cp->count)
+    {
+        if (!array_reserve((void **)&cp->sinks, &cp->capacity, cp->count + 1, sizeof(*cp->sinks)))
+            return E_OUTOFMEMORY;
+        cp->count++;
+    }
+
+    cp->sinks[i] = sink;
     if (cookie)
         *cookie = i+1;
 
@@ -2220,15 +2212,15 @@ static HRESULT WINAPI ConnectionPoint_Advise(IConnectionPoint *iface, IUnknown *
 
 static HRESULT WINAPI ConnectionPoint_Unadvise(IConnectionPoint *iface, DWORD cookie)
 {
-    ConnectionPoint *This = impl_from_IConnectionPoint(iface);
+    ConnectionPoint *cp = impl_from_IConnectionPoint(iface);
 
     TRACE("%p, %ld.\n", iface, cookie);
 
-    if (cookie == 0 || cookie > This->sinks_size || !This->sinks[cookie-1].unk)
+    if (cookie == 0 || cookie > cp->count || !cp->sinks[cookie-1])
         return CONNECT_E_NOCONNECTION;
 
-    IUnknown_Release(This->sinks[cookie-1].unk);
-    This->sinks[cookie-1].unk = NULL;
+    IUnknown_Release(cp->sinks[cookie-1]);
+    cp->sinks[cookie-1] = NULL;
 
     return S_OK;
 }
@@ -2259,7 +2251,7 @@ static void ConnectionPoint_Init(ConnectionPoint *cp, struct domdoc *doc, REFIID
     cp->doc = doc;
     cp->iid = riid;
     cp->sinks = NULL;
-    cp->sinks_size = 0;
+    cp->count = cp->capacity = 0;
 
     cp->next = doc->cp_list;
     doc->cp_list = cp;

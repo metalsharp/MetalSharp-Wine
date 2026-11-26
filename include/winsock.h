@@ -125,8 +125,7 @@ typedef unsigned char  WS_u_char;
 typedef unsigned short WS_u_short;
 typedef unsigned int   WS_u_int;
 typedef ULONG          WS_u_long;
-#elif (defined(_MSC_VER) || defined(__MINGW32__) || defined(__WATCOMC__)) && !defined(_BSDTYPES_DEFINED)
-/* MinGW doesn't define the u_xxx types */
+#elif (defined(__MINGW32__) || defined (_MSC_VER) || defined(__WINE_USE_MSVCRT)) && !defined(_BSDTYPES_DEFINED)
 typedef unsigned char  u_char;
 typedef unsigned short u_short;
 typedef unsigned int   u_int;
@@ -209,7 +208,7 @@ extern "C" {
 #define WS_AF_NS                   6
 #define WS_AF_IPX                  WS_AF_NS
 #define WS_AF_ISO                  7
-#define WS_AF_OSI                  AF_ISO
+#define WS_AF_OSI                  WS_AF_ISO
 #define WS_AF_ECMA                 8
 #define WS_AF_DATAKIT              9
 #define WS_AF_CCITT                10

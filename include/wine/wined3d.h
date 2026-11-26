@@ -35,6 +35,7 @@
 #define _FACWINED3D                                             0x876
 #define MAKE_WINED3DSTATUS(code)                                MAKE_HRESULT(0, _FACWINED3D, code)
 #define WINED3DOK_NOMIPGEN                                      MAKE_WINED3DSTATUS(2159)
+#define WINED3DOK_PRESENT_OCCLUDED                              MAKE_WINED3DSTATUS(2168)
 
 #define MAKE_WINED3DHRESULT(code)                               MAKE_HRESULT(1, _FACWINED3D, code)
 #define WINED3DERR_CONFLICTINGRENDERSTATE                       MAKE_WINED3DHRESULT(2081)
@@ -923,6 +924,7 @@ enum wined3d_memory_segment_group
 /* Allow the swapchain flag, but not actual locking */
 #define WINED3D_SWAPCHAIN_ALLOW_MS_LOCKABLE_BACKBUFFER          0x00200000u
 #define WINED3D_SWAPCHAIN_FRAME_LATENCY_WAITABLE_OBJECT         0x00400000u
+#define WINED3D_SWAPCHAIN_REPORT_OCCLUSION                      0x00800000u
 
 #define WINED3DDP_MAXTEXCOORD                                   8
 
@@ -1354,14 +1356,10 @@ enum wined3d_memory_segment_group
 #define WINED3D_RESTORE_MODE_ON_ACTIVATE                        0x00000010
 #define WINED3D_FOCUS_MESSAGES                                  0x00000020
 #define WINED3D_HANDLE_RESTORE                                  0x00000040
-#define WINED3D_PIXEL_CENTER_INTEGER                            0x00000080
+#define WINED3D_LEGACY                                          0x00000080
 #define WINED3D_LEGACY_FFP_LIGHTING                             0x00000100
 #define WINED3D_SRGB_READ_WRITE_CONTROL                         0x00000200
-#define WINED3D_LEGACY_UNBOUND_RESOURCE_COLOR                   0x00000400
-#define WINED3D_NO_PRIMITIVE_RESTART                            0x00000800
-#define WINED3D_LEGACY_CUBEMAP_FILTERING                        0x00001000
 #define WINED3D_NORMALIZED_DEPTH_BIAS                           0x00002000
-#define WINED3D_NO_DRAW_INDIRECT                                0x00004000
 
 #define WINED3D_RESZ_CODE                                       0x7fa05000
 
@@ -2372,6 +2370,8 @@ BOOL __cdecl wined3d_register_window(struct wined3d *wined3d, HWND window,
 HRESULT __cdecl wined3d_restore_display_modes(struct wined3d *wined3d);
 void __cdecl wined3d_unregister_windows(struct wined3d *wined3d);
 
+unsigned int __cdecl wined3d_adapter_get_decode_profile_count(struct wined3d_adapter *adapter);
+HRESULT __cdecl wined3d_adapter_get_decode_profile(struct wined3d_adapter *adapter, unsigned int idx, GUID *profile);
 HRESULT __cdecl wined3d_adapter_get_identifier(const struct wined3d_adapter *adapter,
         uint32_t flags, struct wined3d_adapter_identifier *identifier);
 struct wined3d_output * __cdecl wined3d_adapter_get_output(const struct wined3d_adapter *adapter,
@@ -2460,8 +2460,6 @@ struct wined3d_state * __cdecl wined3d_device_get_state(struct wined3d_device *d
 struct wined3d_swapchain * __cdecl wined3d_device_get_swapchain(const struct wined3d_device *device,
         UINT swapchain_idx);
 UINT __cdecl wined3d_device_get_swapchain_count(const struct wined3d_device *device);
-unsigned int __cdecl wined3d_device_get_video_decode_profile_count(struct wined3d_device *device);
-HRESULT __cdecl wined3d_device_get_video_decode_profile(struct wined3d_device *device, unsigned int idx, GUID *profile);
 struct wined3d * __cdecl wined3d_device_get_wined3d(const struct wined3d_device *device);
 ULONG __cdecl wined3d_device_incref(struct wined3d_device *device);
 HRESULT __cdecl wined3d_device_process_vertices(struct wined3d_device *device, struct wined3d_stateblock *stateblock,
@@ -2512,6 +2510,8 @@ HRESULT __cdecl wined3d_device_context_copy_sub_resource_region(struct wined3d_d
         unsigned int src_sub_resource_idx, const struct wined3d_box *src_box, unsigned int flags);
 void __cdecl wined3d_device_context_copy_uav_counter(struct wined3d_device_context *context,
         struct wined3d_buffer *dst_buffer, unsigned int offset, struct wined3d_unordered_access_view *uav);
+void __cdecl wined3d_device_context_discard_resource(struct wined3d_device_context *context,
+        struct wined3d_resource *resource, const struct wined3d_view_desc *desc);
 void __cdecl wined3d_device_context_dispatch(struct wined3d_device_context *context,
         unsigned int group_count_x, unsigned int group_count_y, unsigned int group_count_z);
 void __cdecl wined3d_device_context_dispatch_indirect(struct wined3d_device_context *context,
@@ -2993,8 +2993,8 @@ void * __cdecl wined3d_unordered_access_view_get_parent(const struct wined3d_uno
 ULONG __cdecl wined3d_unordered_access_view_incref(struct wined3d_unordered_access_view *view);
 
 HRESULT __cdecl wined3d_vertex_declaration_create(struct wined3d_device *device,
-        const struct wined3d_vertex_element *elements, UINT element_count, void *parent,
-        const struct wined3d_parent_ops *parent_ops, struct wined3d_vertex_declaration **declaration);
+        const struct wined3d_vertex_element *elements, UINT element_count, const struct wined3d_shader *shader,
+        void *parent, const struct wined3d_parent_ops *parent_ops, struct wined3d_vertex_declaration **declaration);
 HRESULT __cdecl wined3d_vertex_declaration_create_from_fvf(struct wined3d_device *device,
         uint32_t fvf, void *parent, const struct wined3d_parent_ops *parent_ops,
         struct wined3d_vertex_declaration **declaration);
@@ -3056,7 +3056,7 @@ static inline int wined3d_bit_scan(unsigned int *x)
     for (bit_offset = 0; bit_offset < 32; bit_offset++)
         if (*x & (1u << bit_offset)) break;
 #endif
-    *x ^= 1u << bit_offset;
+    *x &= *x - 1;
     return bit_offset;
 }
 

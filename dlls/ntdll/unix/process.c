@@ -419,7 +419,8 @@ static NTSTATUS spawn_process( const RTL_USER_PROCESS_PARAMETERS *params, int so
     {
         if (!(pid = fork()))  /* grandchild */
         {
-            if ((peb->ProcessParameters && params->ProcessGroupId != peb->ProcessParameters->ProcessGroupId) ||
+            if ((peb && peb->ProcessParameters &&
+                 params->ProcessGroupId != peb->ProcessParameters->ProcessGroupId) ||
                 params->ConsoleHandle == CONSOLE_HANDLE_ALLOC ||
                 params->ConsoleHandle == CONSOLE_HANDLE_ALLOC_NO_WINDOW ||
                 params->ConsoleHandle == NULL)
@@ -576,7 +577,8 @@ static NTSTATUS fork_and_exec( OBJECT_ATTRIBUTES *attr, const char *unix_name, i
         {
             close( fd[0] );
 
-            if ((peb->ProcessParameters && params->ProcessGroupId != peb->ProcessParameters->ProcessGroupId) ||
+            if ((peb && peb->ProcessParameters &&
+                 params->ProcessGroupId != peb->ProcessParameters->ProcessGroupId) ||
                 params->ConsoleHandle == CONSOLE_HANDLE_ALLOC ||
                 params->ConsoleHandle == CONSOLE_HANDLE_ALLOC_NO_WINDOW ||
                 params->ConsoleHandle == NULL)
@@ -958,12 +960,13 @@ NTSTATUS WINAPI NtTerminateProcess( HANDLE handle, LONG exit_code )
         req->exit_code = exit_code;
         ret = wine_server_call( req );
         self = reply->self;
+        exit_code = reply->exit_code;
     }
     SERVER_END_REQ;
     if (self)
     {
-        if (!handle) process_exiting = TRUE;
-        else if (process_exiting) exit_process( exit_code );
+        if (process_exiting) exit_process( exit_code );
+        else if (!handle) process_exiting = TRUE;
         else abort_process( exit_code );
     }
     return ret;

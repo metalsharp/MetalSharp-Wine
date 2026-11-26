@@ -164,11 +164,11 @@ UINT64 adapter_adjust_memory(struct wined3d_adapter *adapter, INT64 amount)
     return adapter->vram_bytes_used;
 }
 
-ssize_t adapter_adjust_mapped_memory(struct wined3d_adapter *adapter, ssize_t size)
+SSIZE_T adapter_adjust_mapped_memory(struct wined3d_adapter *adapter, SSIZE_T size)
 {
     /* Note that this needs to be thread-safe; the Vulkan adapter may map from
      * client threads. */
-    ssize_t ret = InterlockedExchangeAddSizeT(&adapter->mapped_size, size) + size;
+    SSIZE_T ret = InterlockedExchangeAddSizeT(&adapter->mapped_size, size) + size;
     TRACE("Adjusted mapped adapter memory by %Id to %Id.\n", size, ret);
     return ret;
 }
@@ -499,6 +499,7 @@ static const struct wined3d_gpu_description gpu_description_table[] =
     {HW_VENDOR_NVIDIA,     CARD_NVIDIA_TESLA_T4,           "NVIDIA Tesla T4",                  DRIVER_NVIDIA_KEPLER,  16384},
     {HW_VENDOR_NVIDIA,     CARD_NVIDIA_AMPERE_A10,         "NVIDIA Ampere A10",                DRIVER_NVIDIA_KEPLER,  24576},
     {HW_VENDOR_NVIDIA,     CARD_NVIDIA_AMPERE_A10G,        "NVIDIA A10G",                      DRIVER_NVIDIA_KEPLER,  24564},
+    {HW_VENDOR_NVIDIA,     CARD_NVIDIA_L4,                 "NVIDIA L4",                        DRIVER_NVIDIA_KEPLER,  24570},
     {HW_VENDOR_NVIDIA,     CARD_NVIDIA_GEFORCE_RTX4060,    "NVIDIA GeForce RTX 4060",          DRIVER_NVIDIA_KEPLER,  8192},
     {HW_VENDOR_NVIDIA,     CARD_NVIDIA_GEFORCE_RTX4060M,   "NVIDIA GeForce RTX 4060M",         DRIVER_NVIDIA_KEPLER,  8192},
     {HW_VENDOR_NVIDIA,     CARD_NVIDIA_GEFORCE_RTX4060TI8G, "NVIDIA GeForce RTX 4060 Ti 8GB",  DRIVER_NVIDIA_KEPLER,  8192},
@@ -1815,6 +1816,33 @@ HRESULT CDECL wined3d_adapter_get_identifier(const struct wined3d_adapter *adapt
     wined3d_mutex_unlock();
 
     return WINED3D_OK;
+}
+
+unsigned int CDECL wined3d_adapter_get_decode_profile_count(struct wined3d_adapter *adapter)
+{
+    GUID profiles[WINED3D_DECODER_MAX_PROFILE_COUNT];
+    unsigned int count;
+
+    TRACE("adapter %p.\n", adapter);
+
+    adapter->decoder_ops->get_profiles(adapter, &count, profiles);
+    return count;
+}
+
+HRESULT CDECL wined3d_adapter_get_decode_profile(struct wined3d_adapter *adapter, unsigned int idx, GUID *profile)
+{
+    GUID profiles[WINED3D_DECODER_MAX_PROFILE_COUNT];
+    unsigned int count;
+
+    TRACE("adapter %p, idx %u.\n", adapter, idx);
+
+    adapter->decoder_ops->get_profiles(adapter, &count, profiles);
+
+    if (idx >= count)
+        return E_INVALIDARG;
+
+    *profile = profiles[idx];
+    return S_OK;
 }
 
 HRESULT CDECL wined3d_output_get_raster_status(const struct wined3d_output *output,

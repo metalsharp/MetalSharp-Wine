@@ -607,7 +607,11 @@ static HRESULT media_source_start(struct media_source *source, IMFPresentationDe
         return E_OUTOFMEMORY;
 
     if (FAILED(hr = IMFPresentationDescriptor_GetStreamDescriptorCount(descriptor, &count)))
+    {
         WARN("Failed to get presentation descriptor stream count, hr %#lx\n", hr);
+        free(descriptors);
+        return hr;
+    }
 
     for (i = 0; i < count; i++)
     {
@@ -1464,6 +1468,9 @@ static HRESULT WINAPI media_source_CreatePresentationDescriptor(IMFMediaSource *
 
         for (i = 0; i < source->stream_count; ++i)
         {
+            if (!source->streams[i]->active)
+                continue;
+
             if (FAILED(hr = IMFPresentationDescriptor_SelectStream(*descriptor, i)))
                 WARN("Failed to select stream %u, hr %#lx\n", i, hr);
         }

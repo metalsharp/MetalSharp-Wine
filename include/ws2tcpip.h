@@ -58,11 +58,7 @@ typedef struct WS(addrinfoW)
 typedef WINELIB_NAME_AW(ADDRINFO) ADDRINFOT, *PADDRINFOT;
 #endif
 
-#ifdef USE_WS_PREFIX
-typedef int WS_socklen_t;
-#else
-#define socklen_t int  /* avoid conflicts with the system's socklen_t typedef */
-#endif
+typedef int WS(socklen_t);
 
 typedef ADDRINFOA ADDRINFO, *LPADDRINFO;
 
@@ -192,7 +188,7 @@ int WINAPI  GetAddrInfoExA(const char*,const char*,DWORD,GUID*,const ADDRINFOEXA
                            OVERLAPPED*,LPLOOKUPSERVICE_COMPLETION_ROUTINE,HANDLE*);
 int WINAPI  GetAddrInfoExW(const WCHAR*,const WCHAR*,DWORD,GUID*, const ADDRINFOEXW*,ADDRINFOEXW**,struct WS(timeval)*,
                            OVERLAPPED*,LPLOOKUPSERVICE_COMPLETION_ROUTINE,HANDLE*);
-#define     GetAddrInfoEx WINELIB_NAME_AW(GetAddrInfoExW)
+#define     GetAddrInfoEx WINELIB_NAME_AW(GetAddrInfoEx)
 int WINAPI  GetAddrInfoExOverlappedResult(OVERLAPPED*);
 int WINAPI  GetAddrInfoExCancel(HANDLE*);
 int WINAPI  WS(getnameinfo)(const SOCKADDR*,WS(socklen_t),PCHAR,DWORD,PCHAR,DWORD,INT);

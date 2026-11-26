@@ -75,13 +75,11 @@ _ACRTIMP size_t  __cdecl strxfrm(char*,const char*,size_t);
 #endif
 
 
-static inline int strcasecmp(const char* s1, const char* s2) { return _stricmp(s1, s2); }
 static inline int strcmpi(const char* s1, const char* s2) { return _strcmpi(s1, s2); }
 static inline char* strdup(const char* buf) { return _strdup(buf); }
 static inline int stricmp(const char* s1, const char* s2) { return _stricmp(s1, s2); }
 static inline int stricoll(const char* s1, const char* s2) { return _stricoll(s1, s2); }
 static inline char* strlwr(char* str) { return _strlwr(str); }
-static inline int strncasecmp(const char *str1, const char *str2, size_t n) { return _strnicmp(str1, str2, n); }
 static inline int strnicmp(const char* s1, const char* s2, size_t n) { return _strnicmp(s1, s2, n); }
 static inline char* strnset(char* str, int value, unsigned int len) { return _strnset(str, value, len); }
 static inline char* strrev(char* str) { return _strrev(str); }
@@ -97,5 +95,14 @@ static inline wchar_t* wcsnset(wchar_t* str, wchar_t c, size_t n) { return _wcsn
 static inline wchar_t* wcsrev(wchar_t* str) { return _wcsrev(str); }
 static inline wchar_t* wcsset(wchar_t* str, wchar_t c) { return _wcsset(str, c); }
 static inline wchar_t* wcsupr(wchar_t* str) { return _wcsupr(str); }
+
+#ifdef __cplusplus
+extern "C++" {
+template <size_t S> inline errno_t strcat_s(char (&dst)[S], const char *arg) throw() { return strcat_s(dst, S, arg); }
+template <size_t S> inline errno_t strncat_s(char (&dst)[S], const char *arg, size_t count) throw() { return strcat_s(dst, S, arg, count); }
+template <size_t S> inline errno_t strcpy_s(char (&dst)[S], const char *arg) throw() { return strcpy_s(dst, S, arg); }
+template <size_t S> inline errno_t strncpy_s(char (&dst)[S], const char *arg, size_t count) throw() { return strcpy_s(dst, S, arg, count); }
+} /* extern "C++" */
+#endif /* __cplusplus */
 
 #endif /* __WINE_STRING_H */

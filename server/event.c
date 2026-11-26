@@ -1,5 +1,6 @@
 /*
  * Server-side event management
+ * WineForge-Internal: msync-v6.
  *
  * Copyright (C) 1998 Alexandre Julliard
  *
@@ -339,7 +340,7 @@ int get_event_msync_idx( struct object *obj, int *type )
     if (!event->sync || event->sync->ops != &event_sync_ops) return -1;
     sync = (struct event_sync *)event->sync;
     if (!sync->msync) return -1;
-    msync_grab_object( sync->msync );
+
     *type = INPROC_SYNC_EVENT;
     return msync_get_index( sync->msync );
 }
@@ -422,6 +423,26 @@ DECL_HANDLER(event_op)
     if (event->sync->ops == &event_sync_ops)
     {
         sync = (struct event_sync *)event->sync;
+        if (sync->msync && req->op == PULSE_EVENT &&
+            msync_event_pulse_begin( sync->msync, &signaled ))
+        {
+            reply->state = signaled;
+            sync->signaled = 1;
+            wake_up( &sync->obj, !sync->manual );
+            msync_event_pulse_end( sync->msync );
+            sync->signaled = 0;
+            release_object( event );
+            return;
+        }
+        if (sync->msync && (req->op == SET_EVENT || req->op == RESET_EVENT) &&
+            msync_event_op( sync->msync, req->op == SET_EVENT, &signaled ))
+        {
+            reply->state = signaled;
+            sync->signaled = req->op == SET_EVENT;
+            wake_up( &sync->obj, !sync->manual );
+            release_object( event );
+            return;
+        }
         if (!sync->msync || !msync_get_event_state( sync->msync, NULL, &signaled ))
             signaled = sync->signaled;
     }

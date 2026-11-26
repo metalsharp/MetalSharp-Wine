@@ -101,6 +101,7 @@ DEFINE_EXPECT(testobj_propput_d);
 DEFINE_EXPECT(testobj_propput_i);
 DEFINE_EXPECT(testobj_value_i);
 DEFINE_EXPECT(testobj_valueput_i);
+DEFINE_EXPECT(testobj_getclassinfo);
 DEFINE_EXPECT(global_propargput_d);
 DEFINE_EXPECT(global_propargput_i);
 DEFINE_EXPECT(global_propargput1_d);
@@ -1038,12 +1039,69 @@ static HRESULT WINAPI testObj_InvokeEx(IDispatchEx *iface, DISPID id, LCID lcid,
     return E_FAIL;
 }
 
+static HRESULT WINAPI ProvideClassInfo_QueryInterface(IProvideClassInfo *iface, REFIID riid, void **ppv)
+{
+    if(IsEqualGUID(riid, &IID_IUnknown) || IsEqualGUID(riid, &IID_IProvideClassInfo)) {
+        *ppv = iface;
+        return S_OK;
+    }
+
+    *ppv = NULL;
+    return E_NOINTERFACE;
+}
+
+static ULONG WINAPI ProvideClassInfo_AddRef(IProvideClassInfo *iface)
+{
+    return 2;
+}
+
+static ULONG WINAPI ProvideClassInfo_Release(IProvideClassInfo *iface)
+{
+    return 1;
+}
+
+static BOOL testobj_classinfo;
+static int testobj_gettypeinfo_cnt;
+
+static HRESULT WINAPI ProvideClassInfo_GetClassInfo(IProvideClassInfo *iface, ITypeInfo **ppTI)
+{
+    CHECK_EXPECT(testobj_getclassinfo);
+    *ppTI = NULL;
+    return E_NOTIMPL;
+}
+
+static const IProvideClassInfoVtbl ProvideClassInfoVtbl = {
+    ProvideClassInfo_QueryInterface,
+    ProvideClassInfo_AddRef,
+    ProvideClassInfo_Release,
+    ProvideClassInfo_GetClassInfo
+};
+
+static IProvideClassInfo testObjClassInfo = { &ProvideClassInfoVtbl };
+
+static HRESULT WINAPI testObj_QueryInterface(IDispatchEx *iface, REFIID riid, void **ppv)
+{
+    if(testobj_classinfo && IsEqualGUID(riid, &IID_IProvideClassInfo)) {
+        *ppv = &testObjClassInfo;
+        return S_OK;
+    }
+
+    return DispatchEx_QueryInterface(iface, riid, ppv);
+}
+
+static HRESULT WINAPI testObj_GetTypeInfo(IDispatchEx *iface, UINT iTInfo, LCID lcid, ITypeInfo **ppTInfo)
+{
+    testobj_gettypeinfo_cnt++;
+    *ppTInfo = NULL;
+    return E_NOTIMPL;
+}
+
 static IDispatchExVtbl testObjVtbl = {
-    DispatchEx_QueryInterface,
+    testObj_QueryInterface,
     DispatchEx_AddRef,
     DispatchEx_Release,
     DispatchEx_GetTypeInfoCount,
-    DispatchEx_GetTypeInfo,
+    testObj_GetTypeInfo,
     DispatchEx_GetIDsOfNames,
     DispatchEx_Invoke,
     testObj_GetDispID,
@@ -2444,6 +2502,7 @@ static void test_procedures(void)
     IDispatch *disp;
     EXCEPINFO ei = {0};
     VARIANT v;
+    BSTR str;
     HRESULT hres;
 
     strict_enter_script = TRUE;
@@ -2455,6 +2514,21 @@ static void test_procedures(void)
     hres = IActiveScriptParseProcedure2_ParseProcedureText(parse_proc, NULL, NULL, L"", NULL, NULL, NULL, 0, 0, 0, &disp);
     ok(hres == S_OK, "ParseProcedureText failed: %08lx\n", hres);
     IDispatch_Release(disp);
+
+    /* Unlike script text, procedure text does not skip a leading BOM */
+    str = SysAllocString(L"\xfeff""dim x\n");
+    SET_EXPECT(OnScriptError);
+    hres = IActiveScriptParseProcedure2_ParseProcedureText(parse_proc, str, NULL, L"", NULL, NULL, NULL, 0, 0, 0, &disp);
+    ok(hres == MAKE_VBSERROR(1032), "ParseProcedureText returned: %08lx\n", hres);
+    CHECK_CALLED(OnScriptError);
+    SysFreeString(str);
+
+    str = SysAllocString(L"\xfffe""dim x\n");
+    SET_EXPECT(OnScriptError);
+    hres = IActiveScriptParseProcedure2_ParseProcedureText(parse_proc, str, NULL, L"", NULL, NULL, NULL, 0, 0, 0, &disp);
+    ok(hres == MAKE_VBSERROR(1032), "ParseProcedureText returned: %08lx\n", hres);
+    CHECK_CALLED(OnScriptError);
+    SysFreeString(str);
 
     proc = parse_procedure(parse_proc, L"dim x\nif true then x=false", 0);
 
@@ -2996,7 +3070,19 @@ static void test_parse_errors(void)
             /* Hex literal overflow */
             L"x = &H100000001\n",
             0, 4,
-            L"x = &H100000001", S_OK
+            L"x = &H100000001", S_OK, 1002
+        },
+        {
+            /* Octal literal overflow */
+            L"x = &O40000000000\n",
+            0, 4,
+            L"x = &O40000000000", S_OK, 1002
+        },
+        {
+            /* Overflowing literal at the start of a statement */
+            L"x = 1\n&H100000000\n",
+            1, 0,
+            L"&H100000000", S_OK, -1024
         },
         {
             /* Unterminated string constant - error 1033 */
@@ -3177,6 +3263,41 @@ static void test_parse_errors(void)
             L"Class C\nDefault Private Function f()\nf = 1\nEnd Function\nEnd Class\n",
             1, 0,
             NULL, S_OK, 1057
+        },
+        {
+            L"Class C\nDefault Sub f\nEnd Sub\nEnd Class\n",
+            1, 0,
+            NULL, S_OK, 1057
+        },
+        {
+            L"Class C\nDefault x\nEnd Class\n",
+            1, 0,
+            NULL, S_OK, 1057
+        },
+        {
+            L"Class C\nPublic Default Property x\nEnd Class\n",
+            1, 24,
+            NULL, S_OK, 1049
+        },
+        {
+            L"Class C\nPublic Default Property\nEnd Class\n",
+            1, 23,
+            NULL, S_OK, 1049
+        },
+        {
+            L"Public Property Get x\nEnd Property\n",
+            0, 16,
+            NULL, S_OK, 1048
+        },
+        {
+            L"Class C\n"
+            "Public Default Function f\n"
+            "End Function\n"
+            "Public Default Property Get p\n"
+            "End Property\n"
+            "End Class\n",
+            3, 15,
+            NULL, S_OK, 1052
         },
         {
             /* Unterminated date literal */
@@ -3533,6 +3654,213 @@ static void test_parse_errors(void)
             L"Dim x\nFor Each x.y In Array(1)\nNext\n",
             1, 13,
             NULL, S_OK, 1040
+        },
+        {
+            /* Assignment to an expression in parentheses - error 1024 */
+            L"Dim x\n  (x) = 1\n",
+            1, 2,
+            L"  (x) = 1", S_OK, 1024
+        },
+        {
+            /* Duplicate parameter name - error 1041 */
+            L"Sub S(a, A)\nEnd Sub\n",
+            0, 9,
+            L"Sub S(a, A)", S_OK, 1041
+        },
+        {
+            L"Sub S(ByVal a, ByRef a)\nEnd Sub\n",
+            0, 21,
+            L"Sub S(ByVal a, ByRef a)", S_OK, 1041
+        },
+        {
+            /* Parameter named like its procedure - error 1041 */
+            L"Function F(F)\nEnd Function\n",
+            0, 11,
+            L"Function F(F)", S_OK, 1041
+        },
+        {
+            L"Sub S(a, b, s)\nEnd Sub\n",
+            0, 12,
+            L"Sub S(a, b, s)", S_OK, 1041
+        },
+        {
+            L"Class C\n  Public Property Let P(a, P)\n  End Property\nEnd Class\n",
+            1, 27,
+            L"  Public Property Let P(a, P)", S_OK, 1041
+        },
+        {
+            /* Variable declared twice in one Dim statement - error 1041 */
+            L"Sub S\n  Dim a, b, A\nEnd Sub\n",
+            1, 12,
+            L"  Dim a, b, A", S_OK, 1041
+        },
+        {
+            L"Dim a(1), a\n",
+            0, 10,
+            L"Dim a(1), a", S_OK, 1041
+        },
+        {
+            /* Local variable named like its function - error 1041 */
+            L"Function F\n  Dim F\nEnd Function\n",
+            1, 6,
+            L"  Dim F", S_OK, 1041
+        },
+        {
+            L"Function F\n  Const F = 1\nEnd Function\n",
+            1, 8,
+            L"  Const F = 1", S_OK, 1041
+        },
+        {
+            L"Class C\n  Property Let P(v)\n    Dim P\n  End Property\nEnd Class\n",
+            2, 8,
+            L"    Dim P", S_OK, 1041
+        },
+        {
+            /* Class variable declared twice - error 1041 */
+            L"Class C\n  Public a\n  Public A\nEnd Class\n",
+            2, 9,
+            L"  Public A", S_OK, 1041
+        },
+        {
+            L"Class C\n  Public a\n  Dim a\nEnd Class\n",
+            2, 6,
+            L"  Dim a", S_OK, 1041
+        },
+        {
+            L"Class C\n  Dim a, a\nEnd Class\n",
+            1, 9,
+            L"  Dim a, a", S_OK, 1041
+        },
+        {
+            L"Class C\n  Public a(2)\n  Private a\nEnd Class\n",
+            2, 10,
+            L"  Private a", S_OK, 1041
+        },
+        {
+            /* Declaration of a name that a ReDim declared - error 1041 */
+            L"Sub S\n  ReDim a(2)\n  Dim a\nEnd Sub\n",
+            2, 6,
+            L"  Dim a", S_OK, 1041
+        },
+        {
+            L"Sub S\n  ReDim Preserve a(2), b(3)\n  Dim B\nEnd Sub\n",
+            2, 6,
+            L"  Dim B", S_OK, 1041
+        },
+        {
+            L"Sub S\n  ReDim a(1)\n  ReDim a(2)\n  Const a = 1\nEnd Sub\n",
+            3, 8,
+            L"  Const a = 1", S_OK, 1041
+        },
+        {
+            L"Dim g\nSub S\n  ReDim g(2)\n  Dim g\nEnd Sub\n",
+            3, 6,
+            L"  Dim g", S_OK, 1041
+        },
+        {
+            L"Class C\n  Public a\n  Sub S\n    ReDim a(2)\n    Dim a\n  End Sub\nEnd Class\n",
+            4, 8,
+            L"    Dim a", S_OK, 1041
+        },
+        {
+            L"ReDim a(2)\nDim a\n",
+            1, 4,
+            L"Dim a", S_OK, 1041
+        },
+        {
+            L"ReDim a(2)\nConst a = 1\n",
+            1, 6,
+            L"Const a = 1", S_OK, 1041
+        },
+        {
+            L"ReDim a(2)\nSub a\nEnd Sub\n",
+            1, 4,
+            L"Sub a", S_OK, 1041
+        },
+        {
+            L"Sub a\nEnd Sub\nReDim a(2)\n",
+            2, 6,
+            L"ReDim a(2)", S_OK, 1041
+        },
+        {
+            L"ReDim a(2)\nClass a\nEnd Class\n",
+            1, 6,
+            L"Class a", S_OK, 1041
+        },
+        {
+            L"Class a\nEnd Class\nReDim a(2)\n",
+            2, 6,
+            L"ReDim a(2)", S_OK, 1041
+        },
+        {
+            /* A dot separated from a literal is not a member access */
+            L"Dim x, y\nWith x\ny = \"s\" .p\nEnd With\n",
+            2, 8,
+            L"y = \"s\" .p", S_OK
+        },
+        {
+            /* Member access on a literal can't start a statement - error 1024 */
+            L"Dim x\n  \"s\".p = 1\n",
+            1, 2,
+            L"  \"s\".p = 1", S_OK, 1024
+        },
+        {
+            /* Arguments after a call with empty parentheses - error 1025 */
+            L"Sub f\nEnd Sub\nf(),0\n",
+            2, 3,
+            L"f(),0", S_OK, 1025
+        },
+        {
+            L"Sub f\nEnd Sub\nf() 0\n",
+            2, 4,
+            L"f() 0", S_OK, 1025
+        },
+        {
+            /* An operator after a call with empty parentheses - error 1025 */
+            L"Sub f\nEnd Sub\nf() + 1\n",
+            2, 4,
+            L"f() + 1", S_OK, 1025
+        },
+        {
+            /* Missing comma after a parenthesized first argument - error 1025 */
+            L"Sub f(a, b)\nEnd Sub\nf(1) 0\n",
+            2, 5,
+            L"f(1) 0", S_OK, 1025
+        },
+        {
+            L"Dim o\no.M(),0\n",
+            1, 5,
+            L"o.M(),0", S_OK, 1025
+        },
+        {
+            /* Whitespace between a with-statement dot and the member name */
+            L"With x\n. y = 1\nEnd With\n",
+            1, 2,
+            L". y = 1", S_OK, 1002
+        },
+        {
+            /* Only a single leading BOM is skipped */
+            L"\xfeff\xfeff""x = 1\n",
+            0, 0,
+            NULL, S_OK, 1032
+        },
+        {
+            /* A byte-swapped BOM after a BOM */
+            L"\xfeff\xfffe""x = 1\n",
+            0, 0,
+            NULL, S_OK, 1032
+        },
+        {
+            /* BOM after leading whitespace */
+            L" \xfeff""x = 1\n",
+            0, 1,
+            NULL, S_OK, 1032
+        },
+        {
+            /* BOM at the start of a later line */
+            L"x = 1\n\xfeff""y = 2\n",
+            1, 0,
+            NULL, S_OK, 1032
         }
     };
     HRESULT hres;
@@ -3581,6 +3909,19 @@ static void test_redefine_scope(void)
         /* a Class name does not collide with a local Dim of another Sub */
         L"Class S\nEnd Class\nSub Other\nDim s\nEnd Sub\n",
         L"Sub Other\nDim s\nEnd Sub\nClass S\nEnd Class\n",
+        /* a class method may be named like a local of another method */
+        L"Class C\nSub A\nDim b\nConst c = 1\nEnd Sub\nSub b\nEnd Sub\nSub c\nEnd Sub\nEnd Class\n",
+        L"Class C\nSub A\nReDim b(1)\nEnd Sub\nSub b\nEnd Sub\nEnd Class\n",
+        /* a ReDim of a declared name does not declare it again */
+        L"Sub S\nDim a()\nReDim a(2)\nReDim a(3), a(4)\nEnd Sub\n",
+        L"Sub S(a)\nReDim a(2)\nEnd Sub\n",
+        L"Sub S\nConst a = 1\nReDim a(2)\nEnd Sub\n",
+        L"Function F\nReDim F(2)\nEnd Function\nSub S\nDim F\nEnd Sub\n",
+        L"Sub S\nReDim S(2)\nEnd Sub\n",
+        /* a class property may follow a method of the same name */
+        L"Class C\nSub a\nEnd Sub\nProperty Get a\nEnd Property\nProperty Let a(v)\nEnd Property\nEnd Class\n",
+        L"Class C\nFunction a(x, y)\nEnd Function\nProperty Get a\nEnd Property\nEnd Class\n",
+        L"Class C\nSub a\nEnd Sub\nProperty Set a(v)\nEnd Property\nEnd Class\n",
     };
     /* A class member lives in a separate namespace, so its name may collide
      * with a global Dim or Const. Each script also calls the member to prove
@@ -3976,6 +4317,15 @@ static void test_isexpression(void)
     VariantClear(&var);
     SysFreeString(str);
 
+    /* A leading BOM is skipped in expressions */
+    str = SysAllocString(L"\xfeff""(1 + 7) * 2 - 3");
+    hres = IActiveScriptParse_ParseScriptText(parser, str, NULL, NULL, NULL, 0, 0, SCRIPTTEXT_ISEXPRESSION, &var, NULL);
+    ok(hres == S_OK, "ParseScriptText failed: %08lx\n", hres);
+    ok(V_VT(&var) == VT_I2, "Expected VT_I2, got %s\n", vt2a(&var));
+    ok(V_I2(&var) == 13, "Expected 13, got %d\n", V_I2(&var));
+    VariantClear(&var);
+    SysFreeString(str);
+
     /* Without a global host or named item context, "me" returns the script dispatch */
     hres = IActiveScript_GetScriptDispatch(engine, NULL, &disp);
     ok(hres == S_OK, "GetScriptDispatch failed: %08lx\n", hres);
@@ -4225,6 +4575,12 @@ static void run_tests(void)
     parse_script_w(L"x\x0b""=\x0b""1\n");
     parse_script_w(L"x\x0c""=\x0c""1\n");
 
+    /* A single BOM at the start of the script text is skipped */
+    parse_script_w(L"\xfeff");
+    parse_script_w(L"\xfeff""dim x\n");
+    parse_script_w(L"\xfeff\n""dim x\n");
+    parse_script_w(L"\xfffe""dim x\n");
+
     SET_EXPECT(global_success_d);
     SET_EXPECT(global_success_i);
     parse_script_w(L"reportSuccess");
@@ -4284,7 +4640,7 @@ static void run_tests(void)
     CHECK_CALLED(global_setobj_i);
 
     hres = parse_script_wr(L"dim x\nx = testObj.rem");
-    ok(hres == S_OK, "use of 'rem' as dot identifier failed: %lx08\n", hres);
+    ok(hres == S_OK, "use of 'rem' as dot identifier failed: %08lx\n", hres);
 
     SET_EXPECT(testobj_propget_d);
     SET_EXPECT(testobj_propget_i);
@@ -4358,6 +4714,7 @@ static void run_tests(void)
     parse_htmlscript(L" -->");
     parse_htmlscript(L"<!--\ndim x\nx=1\n-->\n");
     parse_htmlscript(L"<!--\ndim x\n-->\n<!--\nx=1\n-->\n");
+    parse_htmlscript(L"\xfeff""dim x\n");
 
     SET_EXPECT(OnScriptError);
     hres = parse_script_wr(L"<!--");
@@ -4377,6 +4734,18 @@ static void run_tests(void)
     CHECK_CALLED(collectionobj_newenum_i);
     CHECK_CALLED(Next);
     ok(next_cnt == 4, "next_cnt = %d\n", next_cnt);
+
+    testobj_classinfo = TRUE;
+    testobj_gettypeinfo_cnt = 0;
+    SET_EXPECT(testobj_getclassinfo);
+    parse_script_w(L"x = TypeName(testObj)\nCall ok(x = \"Object\", \"TypeName(testObj) = \" & x)");
+    CHECK_CALLED(testobj_getclassinfo);
+    ok(!testobj_gettypeinfo_cnt, "GetTypeInfo called %d times\n", testobj_gettypeinfo_cnt);
+
+    testobj_classinfo = FALSE;
+    testobj_gettypeinfo_cnt = 0;
+    parse_script_w(L"x = TypeName(testObj)\nCall ok(x = \"Object\", \"TypeName(testObj) = \" & x)");
+    ok(testobj_gettypeinfo_cnt == 1, "GetTypeInfo called %d times\n", testobj_gettypeinfo_cnt);
 
     parse_script_w(L"x = 1\n Call ok(x = 1, \"x = \" & x)");
 

@@ -14683,6 +14683,99 @@ static void test_update_subresource(void)
     release_test_context(&test_context);
 }
 
+static void test_discard(void)
+{
+    static const DWORD colors[] = {0x11111111, 0x22222222, 0x33333333, 0x44444444};
+    D3D11_SUBRESOURCE_DATA resource_data[ARRAY_SIZE(colors)];
+    DWORD data[ARRAY_SIZE(colors)][4 * 4];
+    D3D11_RENDER_TARGET_VIEW_DESC rtv_desc;
+    D3D11_TEXTURE2D_DESC texture_desc;
+    ID3D11DeviceContext1 *context1;
+    ID3D11DeviceContext *context;
+    struct resource_readback rb;
+    ID3D11RenderTargetView *rtv;
+    ID3D11Texture2D *texture;
+    ID3D11Buffer *buffer;
+    ID3D11Device *device;
+    unsigned int i, j;
+    ULONG refcount;
+    DWORD color;
+    HRESULT hr;
+
+    if (!(device = create_device(NULL)))
+    {
+        skip("Failed to create device.\n");
+        return;
+    }
+    ID3D11Device_GetImmediateContext(device, &context);
+    hr = ID3D11DeviceContext_QueryInterface(context, &IID_ID3D11DeviceContext1, (void **)&context1);
+    if (FAILED(hr))
+    {
+        win_skip("ID3D11DeviceContext1 is not supported.\n");
+        ID3D11DeviceContext_Release(context);
+        ID3D11Device_Release(device);
+        return;
+    }
+
+    /* A buffer without a structure byte stride. */
+    buffer = create_buffer(device, D3D11_BIND_VERTEX_BUFFER, 256, NULL);
+    ID3D11DeviceContext1_DiscardResource(context1, (ID3D11Resource *)buffer);
+    ID3D11DeviceContext1_Flush(context1);
+    ID3D11Buffer_Release(buffer);
+
+    /* Discarding a view of one array layer leaves the other sub-resources
+     * intact. Sub-resource i is mip level i % 2 of array layer i / 2. */
+    for (i = 0; i < ARRAY_SIZE(colors); ++i)
+    {
+        for (j = 0; j < ARRAY_SIZE(data[i]); ++j)
+            data[i][j] = colors[i];
+        resource_data[i].pSysMem = data[i];
+        resource_data[i].SysMemPitch = (i & 1 ? 2 : 4) * sizeof(DWORD);
+        resource_data[i].SysMemSlicePitch = 0;
+    }
+    texture_desc.Width = 4;
+    texture_desc.Height = 4;
+    texture_desc.MipLevels = 2;
+    texture_desc.ArraySize = 2;
+    texture_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    texture_desc.SampleDesc.Count = 1;
+    texture_desc.SampleDesc.Quality = 0;
+    texture_desc.Usage = D3D11_USAGE_DEFAULT;
+    texture_desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+    texture_desc.CPUAccessFlags = 0;
+    texture_desc.MiscFlags = 0;
+    hr = ID3D11Device_CreateTexture2D(device, &texture_desc, resource_data, &texture);
+    ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
+
+    rtv_desc.Format = texture_desc.Format;
+    rtv_desc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2DARRAY;
+    rtv_desc.Texture2DArray.MipSlice = 0;
+    rtv_desc.Texture2DArray.FirstArraySlice = 1;
+    rtv_desc.Texture2DArray.ArraySize = 1;
+    hr = ID3D11Device_CreateRenderTargetView(device, (ID3D11Resource *)texture, &rtv_desc, &rtv);
+    ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
+
+    ID3D11DeviceContext1_DiscardView(context1, (ID3D11View *)rtv);
+
+    for (i = 0; i < ARRAY_SIZE(colors); ++i)
+    {
+        /* Sub-resource 2 is the discarded one; its contents are undefined. */
+        if (i == 2)
+            continue;
+        get_texture_readback(texture, i, &rb);
+        color = get_readback_color(&rb, 0, 0, 0);
+        ok(color == colors[i], "Got unexpected color 0x%08lx for sub-resource %u.\n", color, i);
+        release_resource_readback(&rb);
+    }
+
+    ID3D11RenderTargetView_Release(rtv);
+    ID3D11Texture2D_Release(texture);
+    ID3D11DeviceContext1_Release(context1);
+    ID3D11DeviceContext_Release(context);
+    refcount = ID3D11Device_Release(device);
+    ok(!refcount, "Device has %lu references left.\n", refcount);
+}
+
 static void test_copy_subresource_region(void)
 {
     ID3D11Texture2D *dst_texture, *src_texture;
@@ -33582,6 +33675,27 @@ static void test_deferred_context_rendering(void)
     ID3D11CommandList_Release(list1);
     ID3D11DeviceContext_Release(deferred);
 
+    /* A NULL command list returns E_UNEXPECTED, but still drops the recorded commands. */
+
+    hr = ID3D11Device_CreateDeferredContext(device, 0, &deferred);
+    ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
+
+    clear_rtv(immediate, test_context.backbuffer_rtv, &white);
+    ID3D11DeviceContext_ClearRenderTargetView(deferred, test_context.backbuffer_rtv, green);
+
+    hr = ID3D11DeviceContext_FinishCommandList(deferred, FALSE, NULL);
+    ok(hr == E_UNEXPECTED, "Got unexpected hr %#lx.\n", hr);
+
+    hr = ID3D11DeviceContext_FinishCommandList(deferred, FALSE, &list1);
+    ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
+
+    ID3D11DeviceContext_ExecuteCommandList(immediate, list1, TRUE);
+    color = get_texture_color(test_context.backbuffer, 320, 240);
+    ok(color == 0xffffffff, "Got unexpected colour %#08lx.\n", color);
+
+    ID3D11CommandList_Release(list1);
+    ID3D11DeviceContext_Release(deferred);
+
     ID3D11Texture2D_GetDesc(test_context.backbuffer, &texture_desc);
     hr = ID3D11Device_CreateTexture2D(device, &texture_desc, NULL, &texture);
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
@@ -37605,6 +37719,95 @@ static void test_filter_minmax(void)
     release_test_context(&test_context);
 }
 
+static void test_video_support(void)
+{
+    ID3D11VideoDevice *video_device;
+    IDXGIFactory4 *factory4;
+    IDXGIAdapter *adapter;
+    IDXGIFactory *factory;
+    ID3D11Device *device;
+    unsigned int count;
+    HRESULT hr;
+
+    static const D3D_DRIVER_TYPE driver_types[] =
+    {
+        D3D_DRIVER_TYPE_UNKNOWN,
+        D3D_DRIVER_TYPE_HARDWARE,
+        D3D_DRIVER_TYPE_REFERENCE,
+        D3D_DRIVER_TYPE_NULL,
+        D3D_DRIVER_TYPE_SOFTWARE,
+        D3D_DRIVER_TYPE_WARP
+    };
+
+    if (FAILED(hr = CreateDXGIFactory1(&IID_IDXGIFactory, (void **)&factory)))
+    {
+        trace("Failed to create IDXGIFactory, hr %#lx.\n", hr);
+        return;
+    }
+
+    for (unsigned int i = 0; i < ARRAY_SIZE(driver_types); ++i)
+    {
+        winetest_push_context("driver_type %d", driver_types[i]);
+
+        /* WARP fails video support if created directly, but still allows it
+         * when created with a NULL adapter. */
+        hr = D3D11CreateDevice(NULL, driver_types[i], NULL, D3D11_CREATE_DEVICE_VIDEO_SUPPORT, NULL, 0, D3D11_SDK_VERSION, &device, NULL, NULL);
+        if (driver_types[i] == D3D_DRIVER_TYPE_HARDWARE)
+            ok(hr == S_OK, "Got %#lx.\n", hr);
+        else if (driver_types[i] == D3D_DRIVER_TYPE_UNKNOWN || driver_types[i] == D3D_DRIVER_TYPE_SOFTWARE)
+            todo_wine ok(hr == E_INVALIDARG, "Got %#lx.\n", hr);
+        else
+            todo_wine_if(driver_types[i] != D3D_DRIVER_TYPE_WARP || damavand)
+                ok(hr == DXGI_ERROR_UNSUPPORTED, "Got %#lx.\n", hr);
+        if (hr == S_OK)
+            ID3D11Device_Release(device);
+
+        for (unsigned int j = 0; IDXGIFactory_EnumAdapters(factory, j, &adapter) == S_OK; ++j)
+        {
+            winetest_push_context("adapter %u", j);
+
+            hr = D3D11CreateDevice(adapter, driver_types[i], NULL, D3D11_CREATE_DEVICE_VIDEO_SUPPORT, NULL, 0, D3D11_SDK_VERSION, &device, NULL, NULL);
+            if (driver_types[i] == D3D_DRIVER_TYPE_UNKNOWN)
+                ok(hr == S_OK || hr == DXGI_ERROR_UNSUPPORTED, "Got %#lx.\n", hr);
+            else
+                todo_wine ok(hr == E_INVALIDARG, "Got %#lx.\n", hr);
+            if (hr == S_OK)
+            {
+                hr = ID3D11Device_QueryInterface(device, &IID_ID3D11VideoDevice, (void **)&video_device);
+                ok(hr == S_OK, "Got %#lx.\n", hr);
+
+                count = ID3D11VideoDevice_GetVideoDecoderProfileCount(video_device);
+                ok(count > 0, "Got no decoder profiles.\n");
+
+                ID3D11Device_Release(device);
+            }
+
+            IDXGIAdapter_Release(adapter);
+            winetest_pop_context();
+        }
+
+        if (SUCCEEDED(hr = IDXGIFactory_QueryInterface(factory, &IID_IDXGIFactory4, (void **)&factory4)))
+        {
+            hr = IDXGIFactory4_EnumWarpAdapter(factory4, &IID_IDXGIAdapter, (void **)&adapter);
+            ok(hr == S_OK, "Got %#lx.\n", hr);
+
+            hr = D3D11CreateDevice(adapter, driver_types[i], NULL, D3D11_CREATE_DEVICE_VIDEO_SUPPORT, NULL, 0, D3D11_SDK_VERSION, &device, NULL, NULL);
+            if (driver_types[i] == D3D_DRIVER_TYPE_UNKNOWN)
+                todo_wine_if(damavand) ok(hr == DXGI_ERROR_UNSUPPORTED, "Got %#lx.\n", hr);
+            else
+                todo_wine ok(hr == E_INVALIDARG, "Got %#lx.\n", hr);
+            if (hr == S_OK)
+                ID3D11Device_Release(device);
+
+            IDXGIAdapter_Release(adapter);
+        }
+
+        winetest_pop_context();
+    }
+
+    IDXGIFactory_Release(factory);
+}
+
 START_TEST(d3d11)
 {
     unsigned int argc, i;
@@ -37694,6 +37897,7 @@ START_TEST(d3d11)
     queue_test(test_initial_texture_data);
     queue_test(test_update_subresource);
     queue_test(test_copy_subresource_region);
+    queue_test(test_discard);
     queue_test(test_copy_subresource_region_1d);
     queue_test(test_copy_subresource_region_3d);
     queue_test(test_resource_map);
@@ -37813,6 +38017,7 @@ START_TEST(d3d11)
     queue_test(test_nv12);
     queue_test(test_h264_decoder);
     queue_test(test_filter_minmax);
+    queue_test(test_video_support);
 
     run_queued_tests();
 

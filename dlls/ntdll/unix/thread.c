@@ -180,7 +180,7 @@ static unsigned int get_server_context_flags( const void *context, USHORT machin
         if (flags & CONTEXT_I386_FLOATING_POINT) ret |= SERVER_CTX_FLOATING_POINT;
         if (flags & CONTEXT_I386_DEBUG_REGISTERS) ret |= SERVER_CTX_DEBUG_REGISTERS;
         if (flags & CONTEXT_I386_EXTENDED_REGISTERS) ret |= SERVER_CTX_EXTENDED_REGISTERS | SERVER_CTX_FLOATING_POINT;
-        if (flags & CONTEXT_I386_XSTATE) ret |= SERVER_CTX_YMM_REGISTERS;
+        if (flags & CONTEXT_I386_XSTATE) ret |= SERVER_CTX_VECTOR_REGISTERS;
         break;
     case IMAGE_FILE_MACHINE_AMD64:
         flags = ((const AMD64_CONTEXT *)context)->ContextFlags & ~CONTEXT_AMD64;
@@ -189,7 +189,7 @@ static unsigned int get_server_context_flags( const void *context, USHORT machin
         if (flags & CONTEXT_AMD64_SEGMENTS) ret |= SERVER_CTX_SEGMENTS;
         if (flags & CONTEXT_AMD64_FLOATING_POINT) ret |= SERVER_CTX_FLOATING_POINT;
         if (flags & CONTEXT_AMD64_DEBUG_REGISTERS) ret |= SERVER_CTX_DEBUG_REGISTERS;
-        if (flags & CONTEXT_AMD64_XSTATE) ret |= SERVER_CTX_YMM_REGISTERS;
+        if (flags & CONTEXT_AMD64_XSTATE) ret |= SERVER_CTX_VECTOR_REGISTERS;
         break;
     case IMAGE_FILE_MACHINE_ARMNT:
         flags = ((const ARM_CONTEXT *)context)->ContextFlags & ~CONTEXT_ARM;
@@ -202,7 +202,8 @@ static unsigned int get_server_context_flags( const void *context, USHORT machin
         flags = ((const ARM64_NT_CONTEXT *)context)->ContextFlags & ~CONTEXT_ARM64;
         if (flags & CONTEXT_ARM64_CONTROL) ret |= SERVER_CTX_CONTROL;
         if (flags & CONTEXT_ARM64_INTEGER) ret |= SERVER_CTX_INTEGER;
-        if (flags & CONTEXT_ARM64_FLOATING_POINT) ret |= SERVER_CTX_FLOATING_POINT;
+        if (flags & (CONTEXT_ARM64_FLOATING_POINT | CONTEXT_ARM64_FLOATING_POINT_LOW)) ret |= SERVER_CTX_FLOATING_POINT;
+        if (flags & (CONTEXT_ARM64_FLOATING_POINT | CONTEXT_ARM64_FLOATING_POINT_HIGH)) ret |= SERVER_CTX_VECTOR_REGISTERS;
         if (flags & CONTEXT_ARM64_X18) ret |= SERVER_CTX_TLS;
         if (flags & CONTEXT_ARM64_DEBUG_REGISTERS) ret |= SERVER_CTX_DEBUG_REGISTERS;
         break;
@@ -222,9 +223,8 @@ static unsigned int get_native_context_flags( USHORT native_machine, USHORT wow_
     switch (MAKELONG( native_machine, wow_machine ))
     {
     case MAKELONG( IMAGE_FILE_MACHINE_AMD64, IMAGE_FILE_MACHINE_I386 ):
-        return SERVER_CTX_DEBUG_REGISTERS | SERVER_CTX_FLOATING_POINT | SERVER_CTX_YMM_REGISTERS | SERVER_CTX_EXEC_SPACE;
     case MAKELONG( IMAGE_FILE_MACHINE_ARM64, IMAGE_FILE_MACHINE_ARMNT ):
-        return SERVER_CTX_DEBUG_REGISTERS | SERVER_CTX_FLOATING_POINT | SERVER_CTX_EXEC_SPACE;
+        return SERVER_CTX_DEBUG_REGISTERS | SERVER_CTX_FLOATING_POINT | SERVER_CTX_VECTOR_REGISTERS | SERVER_CTX_EXEC_SPACE;
     default:
         return SERVER_CTX_EXEC_SPACE;
     }
@@ -241,8 +241,8 @@ static void xstate_to_server( struct context_data *to, const CONTEXT_EX *xctx )
     const XSTATE *xs = (const XSTATE *)((const char *)xctx + xctx->XState.Offset);
 
     if (xs->CompactionMask && !(xs->CompactionMask & 4)) return;
-    to->flags |= SERVER_CTX_YMM_REGISTERS;
-    if (xs->Mask & 4) memcpy( &to->ymm.regs.ymm_high, &xs->YmmContext, sizeof(xs->YmmContext) );
+    to->flags |= SERVER_CTX_VECTOR_REGISTERS;
+    if (xs->Mask & 4) memcpy( &to->vector.ymm_regs.ymm_high, &xs->YmmContext, sizeof(xs->YmmContext) );
 }
 
 
@@ -543,7 +543,7 @@ static NTSTATUS context_to_server( struct context_data *to, USHORT to_machine, c
             to->ctl.arm_regs.sp   = from->Sp;
             to->ctl.arm_regs.lr   = from->Lr;
             to->ctl.arm_regs.pc   = from->Pc;
-            to->ctl.arm_regs.cpsr = from->Cpsr;
+            to->ctl.arm_regs.cpsr = from->Cpsr & cpsr_user_mask;
         }
         if (flags & CONTEXT_ARM_INTEGER)
         {
@@ -592,7 +592,7 @@ static NTSTATUS context_to_server( struct context_data *to, USHORT to_machine, c
             to->integer.arm64_regs.x19[11] = from->Lr;
             to->ctl.arm64_regs.sp     = from->Sp;
             to->ctl.arm64_regs.pc     = from->Pc;
-            to->ctl.arm64_regs.pstate = from->Cpsr;
+            to->ctl.arm64_regs.pstate = from->Cpsr & cpsr_user_mask;
         }
         if (flags & CONTEXT_ARM64_INTEGER)
         {
@@ -600,16 +600,25 @@ static NTSTATUS context_to_server( struct context_data *to, USHORT to_machine, c
             for (i = 0; i < 18; i++) to->integer.arm64_regs.x0[i] = from->X[i];
             for (i = 19; i <= 28; i++) to->integer.arm64_regs.x19[i - 19] = from->X[i];
         }
-        if (flags & CONTEXT_ARM64_FLOATING_POINT)
+        if (flags & (CONTEXT_ARM64_FLOATING_POINT | CONTEXT_ARM64_FLOATING_POINT_LOW))
         {
             to->flags |= SERVER_CTX_FLOATING_POINT;
-            for (i = 0; i < 32; i++)
+            for (i = 0; i < 16; i++)
             {
                 to->fp.arm64_regs.q[i].low = from->V[i].Low;
                 to->fp.arm64_regs.q[i].high = from->V[i].High;
             }
             to->fp.arm64_regs.fpcr = from->Fpcr;
             to->fp.arm64_regs.fpsr = from->Fpsr;
+        }
+        if (flags & (CONTEXT_ARM64_FLOATING_POINT | CONTEXT_ARM64_FLOATING_POINT_HIGH))
+        {
+            to->flags |= SERVER_CTX_VECTOR_REGISTERS;
+            for (i = 0; i < 16; i++)
+            {
+                to->vector.arm64_regs.q16[i].low = from->V[i + 16].Low;
+                to->vector.arm64_regs.q16[i].high = from->V[i + 16].High;
+            }
         }
         if (flags & CONTEXT_ARM64_X18)
         {
@@ -656,10 +665,10 @@ static void xstate_from_server( CONTEXT_EX *xctx, const struct context_data *fro
         if (!(xs->CompactionMask & 4)) return;
     }
 
-    for (i = 0; i < ARRAY_SIZE( from->ymm.regs.ymm_high); i++)
+    for (i = 0; i < ARRAY_SIZE( from->vector.ymm_regs.ymm_high); i++)
     {
-        if (!from->ymm.regs.ymm_high[i].low && !from->ymm.regs.ymm_high[i].high) continue;
-        memcpy( &xs->YmmContext, &from->ymm.regs, sizeof(xs->YmmContext) );
+        if (!from->vector.ymm_regs.ymm_high[i].low && !from->vector.ymm_regs.ymm_high[i].high) continue;
+        memcpy( &xs->YmmContext, &from->vector.ymm_regs, sizeof(xs->YmmContext) );
         xs->Mask |= 4;
         break;
     }
@@ -752,7 +761,7 @@ static NTSTATUS context_from_server( void *dst, const struct context_data *from,
             to->ContextFlags |= CONTEXT_I386_EXTENDED_REGISTERS;
             memcpy( to->ExtendedRegisters, from->ext.i386_regs, sizeof(to->ExtendedRegisters) );
         }
-        if ((from->flags & SERVER_CTX_YMM_REGISTERS) && (to_flags & CONTEXT_I386_XSTATE))
+        if ((from->flags & SERVER_CTX_VECTOR_REGISTERS) && (to_flags & CONTEXT_I386_XSTATE))
             xstate_from_server( (CONTEXT_EX *)(to + 1), from );
         exception_request_flags_from_server( &to->ContextFlags, from );
         return STATUS_SUCCESS;
@@ -817,7 +826,7 @@ static NTSTATUS context_from_server( void *dst, const struct context_data *from,
             to->Dr6 = from->debug.x86_64_regs.dr6;
             to->Dr7 = from->debug.x86_64_regs.dr7;
         }
-        if ((from->flags & SERVER_CTX_YMM_REGISTERS) && (to_flags & CONTEXT_I386_XSTATE))
+        if ((from->flags & SERVER_CTX_VECTOR_REGISTERS) && (to_flags & CONTEXT_I386_XSTATE))
             xstate_from_server( (CONTEXT_EX *)(to + 1), from );
         exception_request_flags_from_server( &to->ContextFlags, from );
         return STATUS_SUCCESS;
@@ -880,7 +889,7 @@ static NTSTATUS context_from_server( void *dst, const struct context_data *from,
             to->Dr6 = from->debug.x86_64_regs.dr6;
             to->Dr7 = from->debug.x86_64_regs.dr7;
         }
-        if ((from->flags & SERVER_CTX_YMM_REGISTERS) && (to_flags & CONTEXT_AMD64_XSTATE))
+        if ((from->flags & SERVER_CTX_VECTOR_REGISTERS) && (to_flags & CONTEXT_AMD64_XSTATE))
             xstate_from_server( (CONTEXT_EX *)(to + 1), from );
         exception_request_flags_from_server( &to->ContextFlags, from );
         return STATUS_SUCCESS;
@@ -953,7 +962,7 @@ static NTSTATUS context_from_server( void *dst, const struct context_data *from,
             to->Dr6 = from->debug.i386_regs.dr6;
             to->Dr7 = from->debug.i386_regs.dr7;
         }
-        if ((from->flags & SERVER_CTX_YMM_REGISTERS) && (to_flags & CONTEXT_AMD64_XSTATE))
+        if ((from->flags & SERVER_CTX_VECTOR_REGISTERS) && (to_flags & CONTEXT_AMD64_XSTATE))
             xstate_from_server( (CONTEXT_EX *)(to + 1), from );
         exception_request_flags_from_server( &to->ContextFlags, from );
         return STATUS_SUCCESS;
@@ -1027,16 +1036,31 @@ static NTSTATUS context_from_server( void *dst, const struct context_data *from,
             for (i = 0; i < 18; i++) to->X[i] = from->integer.arm64_regs.x0[i];
             for (i = 19; i <= 28; i++) to->X[i] = from->integer.arm64_regs.x19[i - 19];
         }
-        if ((from->flags & SERVER_CTX_FLOATING_POINT) && (to_flags & CONTEXT_ARM64_FLOATING_POINT))
+        if ((from->flags & SERVER_CTX_FLOATING_POINT) &&
+            (to_flags & (CONTEXT_ARM64_FLOATING_POINT | CONTEXT_ARM64_FLOATING_POINT_LOW)))
         {
-            to->ContextFlags |= CONTEXT_ARM64_FLOATING_POINT;
-            for (i = 0; i < 32; i++)
+            to->ContextFlags |= CONTEXT_ARM64 | (to_flags & (CONTEXT_ARM64_FLOATING_POINT | CONTEXT_ARM64_FLOATING_POINT_LOW));
+            for (i = 0; i < 16; i++)
             {
                 to->V[i].Low = from->fp.arm64_regs.q[i].low;
                 to->V[i].High = from->fp.arm64_regs.q[i].high;
             }
             to->Fpcr = from->fp.arm64_regs.fpcr;
             to->Fpsr = from->fp.arm64_regs.fpsr;
+        }
+        if ((from->flags & SERVER_CTX_VECTOR_REGISTERS) &&
+            (to_flags & (CONTEXT_ARM64_FLOATING_POINT | CONTEXT_ARM64_FLOATING_POINT_HIGH)))
+        {
+            to->ContextFlags |= CONTEXT_ARM64 | (to_flags & CONTEXT_ARM64_FLOATING_POINT_HIGH);
+            for (i = 0; i < 16; i++)
+            {
+                to->V[i + 16].Low = from->vector.arm64_regs.q16[i].low;
+                to->V[i + 16].High = from->vector.arm64_regs.q16[i].high;
+            }
+        }
+        else if (to_flags & CONTEXT_ARM64_FLOATING_POINT)
+        {
+            memset( &to->V[16], 0, 16 * sizeof(*to->V) );
         }
         if (from->flags & SERVER_CTX_TLS)
         {
@@ -1175,24 +1199,6 @@ void *get_cpu_area( struct thread_data *data, USHORT machine )
     default: return NULL;
     }
     return (void *)(((ULONG_PTR)(cpu + 1) + align - 1) & ~((ULONG_PTR)align - 1));
-}
-
-
-/***********************************************************************
- *           set_thread_id
- */
-void set_thread_id( struct thread_data *data )
-{
-    TEB *teb = data->teb;
-    WOW_TEB *wow_teb = get_wow_teb( teb );
-
-    teb->RealClientId = teb->ClientId = make_client_id( pid, data->tid );
-    if (wow_teb)
-    {
-        wow_teb->ClientId.UniqueProcess = pid;
-        wow_teb->ClientId.UniqueThread  = data->tid;
-        wow_teb->RealClientId = wow_teb->ClientId;
-    }
 }
 
 
@@ -1510,7 +1516,6 @@ NTSTATUS WINAPI NtCreateThreadEx( HANDLE *handle, ACCESS_MASK access, OBJECT_ATT
 
     if ((status = virtual_alloc_teb( data ))) goto done;
     teb = data->teb;
-    set_thread_id( data );
 
     if ((status = init_thread_stack( teb, get_zero_bits_limit( zero_bits ), stack_reserve, stack_commit )))
         goto done;
@@ -1686,7 +1691,7 @@ NTSTATUS apple_spawn_main_thread( void )
  * Send an EXCEPTION_DEBUG_EVENT event to the debugger.
  */
 NTSTATUS send_debug_event( struct thread_data *data, EXCEPTION_RECORD *rec,
-                           CONTEXT *context, BOOL first_chance, BOOL exception )
+                           CONTEXT *context, BOOL first_chance )
 {
     unsigned int ret;
     DWORD i;
@@ -1730,7 +1735,7 @@ NTSTATUS send_debug_event( struct thread_data *data, EXCEPTION_RECORD *rec,
 
         contexts_to_server( server_contexts, context );
         server_contexts[0].flags |= SERVER_CTX_EXEC_SPACE;
-        server_contexts[0].exec_space.space.space = exception ? EXEC_SPACE_EXCEPTION : EXEC_SPACE_SYSCALL;
+        server_contexts[0].exec_space.space.space = EXEC_SPACE_EXCEPTION;
         server_select( &select_op, offsetof( union select_op, wait.handles[1] ), SELECT_INTERRUPTIBLE,
                        TIMEOUT_INFINITE, server_contexts, NULL );
 
@@ -1754,7 +1759,7 @@ NTSTATUS send_debug_event( struct thread_data *data, EXCEPTION_RECORD *rec,
 NTSTATUS WINAPI NtRaiseException( EXCEPTION_RECORD *rec, CONTEXT *context, BOOL first_chance )
 {
     struct thread_data *data = get_thread_data();
-    NTSTATUS status = send_debug_event( data, rec, context, first_chance, !(is_win64 || is_wow64()) );
+    NTSTATUS status = send_debug_event( data, rec, context, first_chance );
 
     if (status == DBG_CONTINUE || status == DBG_EXCEPTION_HANDLED)
         return NtContinue( context, FALSE );
@@ -2638,17 +2643,16 @@ NTSTATUS WINAPI NtSetInformationThread( HANDLE handle, THREADINFOCLASS class,
 
     case ThreadAffinityMask:
     {
-        const ULONG_PTR affinity_mask = get_system_affinity_mask();
         ULONG_PTR req_aff;
 
         if (length != sizeof(ULONG_PTR)) return STATUS_INVALID_PARAMETER;
-        req_aff = *(const ULONG_PTR *)data & affinity_mask;
-        if (!req_aff) return STATUS_INVALID_PARAMETER;
+        req_aff = *(const ULONG_PTR *)data;
 
         SERVER_START_REQ( set_thread_info )
         {
             req->handle   = wine_server_obj_handle( handle );
             req->affinity = req_aff;
+            req->system_affinity = get_system_affinity_mask();
             req->mask     = SET_THREAD_INFO_AFFINITY;
             status = wine_server_call( req );
         }
@@ -2684,8 +2688,8 @@ NTSTATUS WINAPI NtSetInformationThread( HANDLE handle, THREADINFOCLASS class,
 
     case ThreadGroupInformation:
     {
-        const ULONG_PTR affinity_mask = get_system_affinity_mask();
         const GROUP_AFFINITY *req_aff;
+        ULONG_PTR affinity_mask;
 
         if (length != sizeof(*req_aff)) return STATUS_INVALID_PARAMETER;
         if (!data) return STATUS_ACCESS_VIOLATION;
@@ -2697,13 +2701,13 @@ NTSTATUS WINAPI NtSetInformationThread( HANDLE handle, THREADINFOCLASS class,
 
         /* Wine only supports max 64 processors */
         if (req_aff->Group) return STATUS_INVALID_PARAMETER;
-        if (req_aff->Mask & ~affinity_mask) return STATUS_INVALID_PARAMETER;
-        if (!req_aff->Mask) return STATUS_INVALID_PARAMETER;
+        affinity_mask = req_aff->Mask;
         SERVER_START_REQ( set_thread_info )
         {
             req->handle   = wine_server_obj_handle( handle );
-            req->affinity = req_aff->Mask;
-            req->mask     = SET_THREAD_INFO_AFFINITY;
+            req->affinity = affinity_mask;
+            req->system_affinity = get_system_affinity_mask();
+            req->mask     = SET_THREAD_INFO_GROUP_AFFINITY;
             status = wine_server_call( req );
         }
         SERVER_END_REQ;
@@ -2851,21 +2855,20 @@ ULONG WINAPI NtGetCurrentProcessorNumber(void)
     }
 #endif
 
-    if (peb->NumberOfProcessors > 1)
+    if (cpu_count > 1)
     {
         ULONG_PTR thread_mask, processor_mask;
 
         if (!NtQueryInformationThread( GetCurrentThread(), ThreadAffinityMask,
                                        &thread_mask, sizeof(thread_mask), NULL ))
         {
-            for (processor = 0; processor < peb->NumberOfProcessors; processor++)
+            for (processor = 0; processor < cpu_count; processor++)
             {
                 processor_mask = (1 << processor);
                 if (thread_mask & processor_mask)
                 {
                     if (thread_mask != processor_mask)
-                        FIXME( "need multicore support (%d processors)\n",
-                               peb->NumberOfProcessors );
+                        FIXME( "need multicore support (%d processors)\n", cpu_count );
                     return processor;
                 }
             }

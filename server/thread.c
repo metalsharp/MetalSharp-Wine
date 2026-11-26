@@ -1,5 +1,6 @@
 /*
  * Server-side thread management
+ * WineForge-Internal: msync-v6.
  *
  * Copyright (C) 1998 Alexandre Julliard
  *
@@ -349,13 +350,15 @@ static inline void init_thread_structure( struct thread *thread )
 
     thread->sync            = NULL;
     thread->alert_sync      = NULL;
+#ifdef __APPLE__
+    thread->msync_wait_slot = 0;
+#endif
     thread->unix_pid        = -1;  /* not known yet */
     thread->unix_tid        = -1;  /* not known yet */
     thread->context         = NULL;
     thread->teb             = 0;
     thread->entry_point     = 0;
     thread->system_regs     = 0;
-    thread->msync_wait_slot = 0;
     thread->queue           = NULL;
     thread->wait            = NULL;
     thread->error           = 0;
@@ -562,11 +565,10 @@ static void cleanup_thread( struct thread *thread )
 {
     int i;
 
-    cleanup_thread_completion( thread );
 #ifdef __APPLE__
-    msync_free_wait_slot( thread->msync_wait_slot );
-    thread->msync_wait_slot = 0;
+    msync_cleanup_thread( thread );
 #endif
+    cleanup_thread_completion( thread );
     if (thread->context)
     {
         thread->context->status = STATUS_ACCESS_DENIED;
@@ -868,12 +870,27 @@ static void set_thread_info( struct thread *thread,
     }
     if (req->mask & SET_THREAD_INFO_AFFINITY)
     {
-        if ((req->affinity & thread->process->affinity) != req->affinity)
+        affinity_t affinity = req->affinity & req->system_affinity;
+        if (!affinity || (affinity & thread->process->affinity) != affinity)
             set_error( STATUS_INVALID_PARAMETER );
         else if (thread->state == TERMINATED)
             set_error( STATUS_THREAD_IS_TERMINATING );
-        else if (set_thread_affinity( thread, req->affinity ))
+        else if (set_thread_affinity( thread, affinity ))
             file_set_error();
+    }
+    else if (req->mask & SET_THREAD_INFO_GROUP_AFFINITY)
+    {
+        affinity_t affinity = req->affinity;
+        if (!affinity) affinity = thread->process->affinity & req->system_affinity;
+        if (affinity & ~req->system_affinity)
+            set_error( STATUS_INVALID_PARAMETER );
+        else if (thread->state == TERMINATED)
+            set_error( STATUS_THREAD_IS_TERMINATING );
+        else
+        {
+            if (affinity & ~thread->process->affinity) thread->process->affinity = ~0;
+            if (set_thread_affinity( thread, affinity )) file_set_error();
+        }
     }
     if (req->mask & SET_THREAD_INFO_TOKEN)
         security_set_thread_token( thread, req->token );
@@ -1563,6 +1580,7 @@ int thread_get_inflight_fd( struct thread *thread, int client )
             {
                 ret = thread->inflight[i].server;
                 thread->inflight[i].server = thread->inflight[i].client = -1;
+                clear_error();
                 return ret;
             }
         }
@@ -1587,6 +1605,9 @@ void kill_thread( struct thread *thread, int violent_death )
         /* if it is waiting on the socket, we don't need to send a SIGQUIT */
         violent_death = 0;
     }
+#ifdef __APPLE__
+    msync_cleanup_thread( thread );
+#endif
     kill_console_processes( thread, 0 );
     abandon_mutexes( thread );
     signal_sync( thread->sync );
@@ -1606,7 +1627,7 @@ static void copy_context( struct context_data *to, const struct context_data *fr
     if (flags & SERVER_CTX_FLOATING_POINT) to->fp = from->fp;
     if (flags & SERVER_CTX_DEBUG_REGISTERS) to->debug = from->debug;
     if (flags & SERVER_CTX_EXTENDED_REGISTERS) to->ext = from->ext;
-    if (flags & SERVER_CTX_YMM_REGISTERS) to->ymm = from->ymm;
+    if (flags & SERVER_CTX_VECTOR_REGISTERS) to->vector = from->vector;
     if (flags & SERVER_CTX_EXEC_SPACE) to->exec_space = from->exec_space;
     if (flags & SERVER_CTX_TLS) to->tls = from->tls;
 }

@@ -20,6 +20,8 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
+/* WineForge-Internal: launcher-compat/epic-launcher-v1. */
+
 #ifndef __WINE_MACDRV_H
 #define __WINE_MACDRV_H
 
@@ -29,18 +31,58 @@
 
 #include "macdrv_cocoa.h"
 
+#ifdef __OBJC__
+# define BOOL WINBOOL
+#endif
+
+/* All Windows headers needed by Unix C/ObjC files must be included here. */
+#define OEMRESOURCE
 #include "ntstatus.h"
 #include "windef.h"
 #include "winbase.h"
 #include "ntgdi.h"
+#include "ddrawi.h"
+#include "oleidl.h"
+#include "shellapi.h"
+#include "shlobj.h"
+#include "unixlib.h"
+#include "winnt.h"
+#include "winternl.h"
+#include "winuser.h"
 #include "wine/debug.h"
 #include "wine/gdi_driver.h"
-#include "unixlib.h"
+#include "wine/list.h"
+#include "wine/server.h"
+#include "wine/opengl_driver.h"
+#include "wine/vulkan.h"
+#include "wine/vulkan_driver.h"
+
+#ifdef __OBJC__
+# undef BOOL
+# undef interface /* objbase defines 'interface' to 'struct' */
+
+/* This file is included by C and ObjC, and BOOL could mean either Win32 BOOL or ObjC BOOL.
+ * Use the C 'bool' type instead, or use 'WINBOOL' if you need a Win32 BOOL.
+ */
+# define BOOL DoNotUseBOOLInThisFile
+#else
+  typedef BOOL WINBOOL;
+#endif
+
+/* Include OpenGL here to avoid typedef conflicts between Windows wgl and OpenGL.framework */
+#define GL_SILENCE_DEPRECATION
+#define __gl_h_
+#define __gltypes_h_
+#include <OpenGL/OpenGL.h>
+#include <OpenGL/gl.h>
+#include <OpenGL/glext.h>
+#include <OpenGL/glu.h>
+#include <OpenGL/CGLRenderers.h>
 
 
-extern BOOL allow_vsync;
-extern BOOL allow_set_gamma;
-extern BOOL allow_software_rendering;
+extern bool allow_vsync;
+extern bool allow_set_gamma;
+extern bool allow_software_rendering;
 
 extern UINT64 app_icon_callback;
 extern UINT64 app_quit_request_callback;
@@ -102,19 +144,21 @@ enum macdrv_window_messages
     WM_MACDRV_UPDATE_REMOTE_CHILD,
     WM_MACDRV_REMOVE_REMOTE_CHILD,
     WM_MACDRV_SET_REMOTE_CURSOR,
+    WM_MACDRV_INACTIVE_WINDOW_COMMAND,
 };
 
 struct macdrv_thread_data
 {
-    macdrv_event_queue          queue;
+    WineEventQueue             *queue;
     const macdrv_event         *current_event;
-    macdrv_window               capture_window;
+    WineWindow                 *capture_window;
     CFDataRef                   keyboard_layout_uchr;
     CGEventSourceKeyboardType   keyboard_type;
     bool                        iso_keyboard;
     CGEventFlags                last_modifiers;
     UInt32                      dead_key_state;
     HKL                         active_keyboard_layout;
+    bool                        ime_open;
     WORD                        keyc2vkey[128];
     WORD                        keyc2scan[128];
 };
@@ -128,6 +172,12 @@ static inline struct macdrv_thread_data *macdrv_thread_data(void)
 }
 
 
+/* Don't expose GDI driver function prototypes to ObjC code, they aren't defined or
+ * used there.
+ *
+ * If that's desired in the future, the signatures need to use WINBOOL or the C bool type.
+ */
+#ifndef __OBJC__
 extern BOOL macdrv_ActivateKeyboardLayout(HKL hkl, UINT flags);
 extern void macdrv_Beep(void);
 extern LONG macdrv_ChangeDisplaySettings(LPDEVMODEW displays, LPCWSTR primary_name, HWND hwnd, DWORD flags, LPVOID lpvoid);
@@ -166,7 +216,7 @@ extern BOOL macdrv_SetCursorPos(INT x, INT y);
 extern BOOL macdrv_RegisterHotKey(HWND hwnd, UINT mod_flags, UINT vkey);
 extern void macdrv_UnregisterHotKey(HWND hwnd, UINT modifiers, UINT vkey);
 extern SHORT macdrv_VkKeyScanEx(WCHAR wChar, HKL hkl);
-extern UINT macdrv_ImeToAsciiEx(UINT vkey, UINT vsc, const BYTE *state, HIMC himc);
+extern UINT macdrv_ImeToAsciiEx(UINT vkey, UINT vsc, const BYTE *state, void *update);
 extern UINT macdrv_MapVirtualKeyEx(UINT wCode, UINT wMapType, HKL hkl);
 extern INT macdrv_ToUnicodeEx(UINT virtKey, UINT scanCode, const BYTE *lpKeyState,
                               LPWSTR bufW, int bufW_size, UINT flags, HKL hkl);
@@ -178,16 +228,21 @@ extern BOOL macdrv_SystemParametersInfo(UINT action, UINT int_param, void *ptr_p
                                         UINT flags);
 extern BOOL macdrv_ProcessEvents(DWORD mask);
 extern void macdrv_ThreadDetach(void);
+#endif
 
+/* ime.c */
+extern pthread_mutex_t ime_composition_rect_mutex;
+extern CGRect ime_composition_rect;
+extern void macdrv_ime_set_text(HWND hwnd, CFStringRef text, bool complete,
+                                unsigned int cursor_begin, unsigned int cursor_end, void *update);
 
 /* macdrv private window data */
 struct macdrv_win_data
 {
     HWND                hwnd;                   /* hwnd that this private data belongs to */
-    macdrv_window       cocoa_window;
-    macdrv_view         client_view;
+    WineWindow         *cocoa_window;
+    WineContentView    *client_view;
     struct window_rects rects;                  /* window rects in monitor DPI, relative to parent client area */
-    int                 pixel_format;           /* pixel format for GL */
     HANDLE              drag_event;             /* event to signal that Cocoa-driven window dragging has ended */
     unsigned int        on_screen : 1;          /* is window ordered in? (minimized or not) */
     unsigned int        shaped : 1;             /* is window using a custom region shape? */
@@ -209,20 +264,21 @@ struct macdrv_win_data
 struct macdrv_client_surface
 {
     struct client_surface   client;
-    macdrv_view             cocoa_view;
-    macdrv_metal_swapchain  metal_swapchain;
+    WineContentView        *cocoa_view;
+    WineMetalSwapChain_id   metal_swapchain;
 };
 
 extern struct macdrv_client_surface *impl_from_client_surface(struct client_surface *client);
-extern BOOL macdrv_client_surface_acquire_metal_swapchain(struct macdrv_client_surface *surface);
+extern bool macdrv_client_surface_acquire_metal_swapchain(struct macdrv_client_surface *surface);
 
 extern struct macdrv_win_data *get_win_data(HWND hwnd);
-extern BOOL macdrv_is_remote_child(HWND hwnd);
+extern bool macdrv_is_remote_child(HWND hwnd);
 extern void macdrv_ensure_remote_child(struct macdrv_win_data *data);
 extern void macdrv_set_remote_cursor_index(WPARAM index);
 extern void release_win_data(struct macdrv_win_data *data);
+extern bool macdrv_preserve_epic_client_view(HWND hwnd, const struct macdrv_win_data *data);
 extern void init_win_context(void);
-extern macdrv_window macdrv_get_cocoa_window(HWND hwnd, BOOL require_on_screen);
+extern WineWindow *macdrv_get_cocoa_window(HWND hwnd, bool require_on_screen);
 extern RGNDATA *get_region_data(HRGN hrgn, HDC hdc_lptodp);
 extern void activate_on_following_focus(void);
 
@@ -232,12 +288,10 @@ extern void macdrv_window_close_requested(HWND hwnd);
 extern void macdrv_window_frame_changed(HWND hwnd, const macdrv_event *event);
 extern void macdrv_window_got_focus(HWND hwnd, const macdrv_event *event);
 extern void macdrv_window_lost_focus(HWND hwnd, const macdrv_event *event);
-extern void macdrv_app_activated(void);
 extern void macdrv_app_deactivated(void);
 extern void macdrv_app_quit_requested(const macdrv_event *event);
 extern void macdrv_window_maximize_requested(HWND hwnd);
 extern void macdrv_window_minimize_requested(HWND hwnd);
-extern void macdrv_window_did_minimize(HWND hwnd);
 extern void macdrv_window_did_unminimize(HWND hwnd);
 extern void macdrv_window_brought_forward(HWND hwnd);
 extern void macdrv_window_resize_ended(HWND hwnd);
@@ -245,9 +299,9 @@ extern void macdrv_window_restore_requested(HWND hwnd, const macdrv_event *event
 extern void macdrv_window_drag_begin(HWND hwnd, const macdrv_event *event);
 extern void macdrv_window_drag_end(HWND hwnd);
 extern void macdrv_reassert_window_position(HWND hwnd);
-extern BOOL query_resize_size(HWND hwnd, macdrv_query *query);
-extern BOOL query_resize_start(HWND hwnd);
-extern BOOL query_min_max_info(HWND hwnd);
+extern bool query_resize_size(HWND hwnd, macdrv_query *query);
+extern bool query_resize_start(HWND hwnd);
+extern bool query_min_max_info(HWND hwnd);
 
 extern void macdrv_mouse_button(HWND hwnd, const macdrv_event *event);
 extern void macdrv_mouse_moved(HWND hwnd, const macdrv_event *event);
@@ -264,7 +318,8 @@ extern HKL macdrv_get_hkl_from_source(TISInputSourceRef input_source);
 extern void macdrv_displays_changed(const macdrv_event *event);
 
 extern void macdrv_UpdateClipboard(void);
-extern BOOL query_pasteboard_data(HWND hwnd, CFStringRef type);
+extern void macdrv_update_clipboard_async(void);
+extern bool query_pasteboard_data(HWND hwnd, CFStringRef type);
 extern void macdrv_lost_pasteboard_ownership(HWND hwnd);
 
 extern UINT macdrv_OpenGLInit(UINT version, const struct opengl_funcs *opengl_funcs, const struct opengl_driver_funcs **driver_funcs);
@@ -302,11 +357,11 @@ static inline LRESULT send_message_timeout(HWND hwnd, UINT msg, WPARAM wparam, L
     return res;
 }
 
-static inline HWND get_active_window(void)
+static inline HWND get_active_window(DWORD thread_id)
 {
     GUITHREADINFO info;
     info.cbSize = sizeof(info);
-    return NtUserGetGUIThreadInfo(GetCurrentThreadId(), &info) ? info.hwndActive : 0;
+    return NtUserGetGUIThreadInfo(thread_id, &info) ? info.hwndActive : 0;
 }
 
 static inline HWND get_capture(void)
@@ -323,7 +378,7 @@ static inline HWND get_focus(void)
     return NtUserGetGUIThreadInfo(GetCurrentThreadId(), &info) ? info.hwndFocus : 0;
 }
 
-static inline BOOL intersect_rect( RECT *dst, const RECT *src1, const RECT *src2 )
+static inline bool intersect_rect( RECT *dst, const RECT *src1, const RECT *src2 )
 {
     dst->left   = max(src1->left, src2->left);
     dst->top    = max(src1->top, src2->top);
@@ -341,7 +396,7 @@ extern HKEY reg_create_ascii_key(HKEY root, const char *name, DWORD options,
                                  DWORD *disposition);
 extern HKEY reg_create_key(HKEY root, const WCHAR *name, ULONG name_len,
                            DWORD options, DWORD *disposition);
-extern BOOL reg_delete_tree(HKEY parent, const WCHAR *name, ULONG name_len);
+extern bool reg_delete_tree(HKEY parent, const WCHAR *name, ULONG name_len);
 extern HKEY reg_open_key(HKEY root, const WCHAR *name, ULONG name_len);
 
 /* string helpers */
@@ -358,4 +413,5 @@ static inline UINT asciiz_to_unicode(WCHAR *dst, const char *src)
     return (p - dst) * sizeof(WCHAR);
 }
 
+#undef BOOL
 #endif  /* __WINE_MACDRV_H */

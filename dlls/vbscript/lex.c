@@ -44,23 +44,30 @@ static const struct {
     int token;
 } keywords[] = {
     {L"and",       tAND},
+    {L"as",        tRESERVED},
+    {L"boolean",   tRESERVED},
     {L"byref",     tBYREF},
+    {L"byte",      tRESERVED},
     {L"byval",     tBYVAL},
     {L"call",      tCALL},
     {L"case",      tCASE},
     {L"class",     tCLASS},
     {L"const",     tCONST},
+    {L"currency",  tRESERVED},
     {L"default",   tDEFAULT},
     {L"dim",       tDIM},
     {L"do",        tDO},
+    {L"double",    tRESERVED},
     {L"each",      tEACH},
     {L"else",      tELSE},
     {L"elseif",    tELSEIF},
     {L"empty",     tEMPTY},
     {L"end",       tEND},
+    {L"endif",     tRESERVED},
+    {L"enum",      tRESERVED},
     {L"eqv",       tEQV},
-    {L"erase",     tERASE},
     {L"error",     tERROR},
+    {L"event",     tRESERVED},
     {L"exit",      tEXIT},
     {L"explicit",  tEXPLICIT},
     {L"false",     tFALSE},
@@ -70,10 +77,15 @@ static const struct {
     {L"goto",      tGOTO},
     {L"if",        tIF},
     {L"imp",       tIMP},
+    {L"implements", tRESERVED},
     {L"in",        tIN},
+    {L"integer",   tRESERVED},
     {L"is",        tIS},
     {L"let",       tLET},
+    {L"like",      tRESERVED},
+    {L"long",      tRESERVED},
     {L"loop",      tLOOP},
+    {L"lset",      tRESERVED},
     {L"me",        tME},
     {L"mod",       tMOD},
     {L"new",       tNEW},
@@ -83,23 +95,33 @@ static const struct {
     {L"null",      tNULL},
     {L"on",        tON},
     {L"option",    tOPTION},
+    {L"optional",  tRESERVED},
     {L"or",        tOR},
+    {L"paramarray", tRESERVED},
     {L"preserve",  tPRESERVE},
     {L"private",   tPRIVATE},
     {L"property",  tPROPERTY},
     {L"public",    tPUBLIC},
+    {L"raiseevent", tRESERVED},
     {L"redim",     tREDIM},
     {L"rem",       tREM},
     {L"resume",    tRESUME},
+    {L"rset",      tRESERVED},
     {L"select",    tSELECT},
     {L"set",       tSET},
+    {L"shared",    tRESERVED},
+    {L"single",    tRESERVED},
+    {L"static",    tRESERVED},
     {L"step",      tSTEP},
     {L"stop",      tSTOP},
     {L"sub",       tSUB},
     {L"then",      tTHEN},
     {L"to",        tTO},
     {L"true",      tTRUE},
+    {L"type",      tRESERVED},
+    {L"typeof",    tRESERVED},
     {L"until",     tUNTIL},
+    {L"variant",   tRESERVED},
     {L"wend",      tWEND},
     {L"while",     tWHILE},
     {L"with",      tWITH},
@@ -386,6 +408,14 @@ static int hex_to_int(WCHAR c)
     return -1;
 }
 
+/* The error is reported at the '&' that starts the literal. */
+static int literal_overflow_error(parser_ctx_t *ctx)
+{
+    while(*ctx->ptr != '&')
+        ctx->ptr--;
+    return lex_error(ctx, MAKE_VBSERROR(VBSE_SYNTAX_ERROR));
+}
+
 static int parse_hex_literal(parser_ctx_t *ctx, LONG *ret)
 {
     const WCHAR *begin;
@@ -402,7 +432,7 @@ static int parse_hex_literal(parser_ctx_t *ctx, LONG *ret)
 
     if(begin + 9 /* max 8 significant digits + 1 */ < ctx->ptr) {
         WARN("overflow in hex literal\n");
-        return 0;
+        return literal_overflow_error(ctx);
     }
 
     if(*ctx->ptr == '&') {
@@ -430,7 +460,7 @@ static int parse_oct_literal(parser_ctx_t *ctx, LONG *ret)
         l = l*8 + d;
         if(l > UINT_MAX) {
             WARN("overflow in oct literal\n");
-            return 0;
+            return literal_overflow_error(ctx);
         }
     }
 
@@ -447,10 +477,33 @@ static int parse_oct_literal(parser_ctx_t *ctx, LONG *ret)
     return tInt;
 }
 
+static BOOL is_space(WCHAR c)
+{
+    return c == ' ' || c == '\t' || c == '\v' || c == '\f';
+}
+
 static void skip_spaces(parser_ctx_t *ctx)
 {
-    while(*ctx->ptr == ' ' || *ctx->ptr == '\t' || *ctx->ptr == '\v' || *ctx->ptr == '\f')
+    while(is_space(*ctx->ptr))
         ctx->ptr++;
+}
+
+static BOOL is_literal_token(int token)
+{
+    switch(token) {
+    case tString:
+    case tInt:
+    case tDouble:
+    case tDate:
+    case tTRUE:
+    case tFALSE:
+    case tEMPTY:
+    case tNULL:
+    case tNOTHING:
+        return TRUE;
+    default:
+        return FALSE;
+    }
 }
 
 static int comment_line(parser_ctx_t *ctx)
@@ -491,6 +544,87 @@ static int parse_bracket_identifier(parser_ctx_t *ctx, const WCHAR **ret)
     return tIdentifier;
 }
 
+/* Check if the next word, possibly after a line continuation, is the given
+ * keyword. If it is, move the position past it and store its location. */
+static BOOL skip_keyword(parser_ctx_t *ctx, const WCHAR **pos, const WCHAR *word, unsigned *loc)
+{
+    const WCHAR *ptr = *pos, *end;
+    WCHAR c;
+
+    while(1) {
+        while(ptr < ctx->end && is_space(*ptr))
+            ptr++;
+        if(ptr == ctx->end || *ptr != '_')
+            break;
+        end = ptr + 1;
+        while(end < ctx->end && is_space(*end))
+            end++;
+        if(end == ctx->end || (*end != '\n' && *end != '\r'))
+            return FALSE;
+        if(*end == '\r')
+            end++;
+        if(end < ctx->end && *end == '\n')
+            end++;
+        ptr = end;
+    }
+
+    for(end = ptr; *word; end++, word++) {
+        if(end == ctx->end)
+            return FALSE;
+        c = *end;
+        if(c >= 'A' && c <= 'Z') c += 'a' - 'A';
+        if(c != *word)
+            return FALSE;
+    }
+    if(end < ctx->end && is_identifier_char(*end))
+        return FALSE;
+
+    if(loc)
+        *loc = ptr - ctx->code;
+    *pos = end;
+    return TRUE;
+}
+
+/* The keyword of a Sub, Function or Property declaration is returned together
+ * with the storage specifiers preceding it, which are the token value. Default
+ * and Property are keywords only as a part of such a declaration: "Public
+ * Default" and "Private Property" declare member variables. */
+static int parse_decl_keywords(parser_ctx_t *ctx, int token, unsigned *storage, unsigned *loc)
+{
+    const WCHAR *ptr = ctx->ptr, *kind;
+    unsigned flags = 0, decl_loc = *loc;
+    int ret = token;
+
+    if(token == tPUBLIC || token == tPRIVATE) {
+        if(token == tPRIVATE)
+            flags = STORAGE_IS_PRIVATE;
+        else if(skip_keyword(ctx, &ptr, L"default", NULL))
+            flags = STORAGE_IS_DEFAULT;
+
+        if(skip_keyword(ctx, &ptr, L"sub", &decl_loc))
+            ret = tSUB;
+        else if(skip_keyword(ctx, &ptr, L"function", &decl_loc))
+            ret = tFUNCTION;
+        else if(skip_keyword(ctx, &ptr, L"property", &decl_loc))
+            ret = tPROPERTY;
+        else
+            return token;
+    }
+
+    if(ret == tPROPERTY) {
+        kind = ptr;
+        if(!(flags & STORAGE_IS_DEFAULT) && !skip_keyword(ctx, &kind, L"get", NULL)
+                && !skip_keyword(ctx, &kind, L"let", NULL) && !skip_keyword(ctx, &kind, L"set", NULL))
+            return token;
+        ret = tPROPDECL;
+    }
+
+    ctx->ptr = ptr;
+    *loc = decl_loc;
+    *storage = flags;
+    return ret;
+}
+
 static int parse_next_token(void *lval, unsigned *loc, parser_ctx_t *ctx)
 {
     WCHAR c;
@@ -509,10 +643,20 @@ static int parse_next_token(void *lval, unsigned *loc, parser_ctx_t *ctx)
         int ret = 0;
         if(ctx->last_token != '.' && ctx->last_token != tDOT)
             ret = check_keywords(ctx, lval);
-        if(!ret)
+        switch(ret) {
+        case 0:
             return parse_identifier(ctx, lval);
-        if(ret != tREM)
+        case tPUBLIC:
+        case tPRIVATE:
+        case tPROPERTY:
+        case tSUB:
+        case tFUNCTION:
+            return parse_decl_keywords(ctx, ret, lval, loc);
+        case tREM:
+            break;
+        default:
             return ret;
+        }
         c = '\'';
     }
 
@@ -551,6 +695,12 @@ static int parse_next_token(void *lval, unsigned *loc, parser_ctx_t *ctx)
             ctx->ptr++;
             return '.';
         }
+        /* A dot right after a literal is a member access too, "s".p is valid
+         * and fails at run time. */
+        if(!is_space(c) && is_literal_token(ctx->last_token)) {
+            ctx->ptr++;
+            return '.';
+        }
         /* After line continuation, ptr[-1] is a newline or space, but the dot
          * is logically on the same line as the previous token. */
         if(ctx->after_continuation
@@ -559,7 +709,13 @@ static int parse_next_token(void *lval, unsigned *loc, parser_ctx_t *ctx)
             ctx->ptr++;
             return '.';
         }
+        /* Unlike a member dot, a with-statement dot can only be separated from
+         * the member name by a line continuation. */
         ctx->ptr++;
+        skip_spaces(ctx);
+        c = *ctx->ptr;
+        if(ctx->ptr[-1] != '.' && ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '['))
+            return lex_error(ctx, MAKE_VBSERROR(VBSE_SYNTAX_ERROR));
         return tDOT;
     case '-':
         if(ctx->is_html && ctx->ptr[1] == '-' && ctx->ptr[2] == '>')
@@ -583,6 +739,11 @@ static int parse_next_token(void *lval, unsigned *loc, parser_ctx_t *ctx)
          */
         if(ctx->last_token == tIdentifier || ctx->last_token == ')' || ctx->last_token == tME
                 || ctx->last_token == tEMPTYBRACKETS)
+            return '(';
+        /* default and property are never followed by a bracket as keywords, so they
+         * are identifiers here. The parser needs this token as lookahead to tell,
+         * so it has not updated last_token yet. */
+        if(ctx->last_token == tDEFAULT || ctx->last_token == tPROPERTY)
             return '(';
         return tEXPRLBRACKET;
     case '[':

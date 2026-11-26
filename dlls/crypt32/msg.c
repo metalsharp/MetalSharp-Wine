@@ -341,7 +341,7 @@ static BOOL CDataEncodeMsg_GetParam(HCRYPTMSG hCryptMsg, DWORD dwParamType,
         else
         {
             CRYPT_CONTENT_INFO info;
-            char rsa_data[] = "1.2.840.113549.1.7.1";
+            char rsa_data[] = szOID_RSA_data;
 
             info.pszObjId = rsa_data;
             info.Content.cbData = msg->bare_content_len;
@@ -1136,9 +1136,22 @@ static BOOL CSignedMsgData_UpdateAuthenticatedAttributes(
                 LPBYTE encodedAttrs;
                 DWORD size;
 
-                ret = CryptEncodeObjectEx(X509_ASN_ENCODING, PKCS_ATTRIBUTES,
-                 &msg_data->info->rgSignerInfo[i].AuthAttrs,
-                 CRYPT_ENCODE_ALLOC_FLAG, NULL, &encodedAttrs, &size);
+                /* The signature covers the authenticated attributes exactly
+                 * as the signer encoded them, and that encoding is not
+                 * required to be in canonical DER SET OF order.  Sorting
+                 * them here would change the digest and reject a valid
+                 * signature, so preserve the decoded order when verifying.
+                 * When signing, sort as DER requires.
+                 */
+                if (flag == Verify)
+                    ret = CRYPT_AsnEncodePKCSAttributesUnsorted(
+                     &msg_data->info->rgSignerInfo[i].AuthAttrs,
+                     &encodedAttrs, &size);
+                else
+                    ret = CryptEncodeObjectEx(X509_ASN_ENCODING,
+                     PKCS_ATTRIBUTES,
+                     &msg_data->info->rgSignerInfo[i].AuthAttrs,
+                     CRYPT_ENCODE_ALLOC_FLAG, NULL, &encodedAttrs, &size);
                 if (ret)
                 {
                     ret = CryptHashData(
@@ -3198,8 +3211,28 @@ static BOOL CDecodeSignedMsg_GetParam(CDecodeMsg *msg, DWORD dwParamType,
             SetLastError(CRYPT_E_INVALID_MSG_TYPE);
         break;
     case CMSG_ENCODED_MESSAGE:
-        if (msg->msg_data.pbData)
-            ret = CRYPT_CopyParam(pvData, pcbData, msg->msg_data.pbData, msg->msg_data.cbData);
+        if (msg->u.signed_data.info)
+        {
+            CRYPT_CONTENT_INFO info;
+
+            ret = CRYPT_AsnEncodeCMSSignedInfo(msg->u.signed_data.info, NULL, &info.Content.cbData);
+            if (ret)
+            {
+                info.Content.pbData = CryptMemAlloc(info.Content.cbData);
+                if (info.Content.pbData)
+                {
+                    ret = CRYPT_AsnEncodeCMSSignedInfo(msg->u.signed_data.info, info.Content.pbData, &info.Content.cbData);
+                    if (ret)
+                    {
+                        char oid_rsa_signed[] = szOID_RSA_signedData;
+
+                        info.pszObjId = oid_rsa_signed;
+                        ret = CryptEncodeObjectEx(X509_ASN_ENCODING, PKCS_CONTENT_INFO, &info, 0, NULL, pvData, pcbData);
+                    }
+                    CryptMemFree(info.Content.pbData);
+                }
+            }
+        }
         else
             SetLastError(CRYPT_E_INVALID_MSG_TYPE);
         break;

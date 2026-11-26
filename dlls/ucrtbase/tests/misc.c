@@ -45,7 +45,10 @@
     static BOOL expect_ ## func = FALSE, called_ ## func = FALSE
 
 #define SET_EXPECT(func) \
-    expect_ ## func = TRUE
+    do { \
+        called_ ## func = FALSE; \
+        expect_ ## func = TRUE; \
+    } while(0)
 
 #define CHECK_EXPECT2(func) \
     do { \
@@ -1012,6 +1015,36 @@ static void test_strftime(void)
         {"%X", "00:00:00", { 0, 0, 0, 1, 0, 70, 4, 0, 0 }},
         {"%X", "14:00:00", { 0, 0, 14, 1, 0, 70, 4, 0, 0 }},
         {"%X", "23:59:60", { 60, 59, 23, 1, 0, 70, 4, 0, 0 }},
+        {"%e", "12", { 0, 0, 0, 12, 0, 70, 0, 0, 0 }},
+        {"%Oe", "12", { 0, 0, 0, 12, 0, 70, 0, 0, 0 }},
+        {"%H", "23", { 0, 0, 23, 0, 0, 70, 0, 0, 0 }},
+        {"%OH", "23", { 0, 0, 23, 0, 0, 70, 0, 0, 0 }},
+        {"%I", "11", { 0, 0, 23, 0, 0, 70, 0, 0, 0 }},
+        {"%OI", "11", { 0, 0, 23, 0, 0, 70, 0, 0, 0 }},
+        {"%m", "12", { 0, 0, 0, 0, 11, 70, 0, 0, 0 }},
+        {"%Om", "12", { 0, 0, 0, 0, 11, 70, 0, 0, 0 }},
+        {"%M", "42", { 0, 42, 0, 0, 0, 70, 0, 0, 0 }},
+        {"%OM", "42", { 0, 42, 0, 0, 0, 70, 0, 0, 0 }},
+        {"%S", "12", { 12, 0, 0, 1, 0, 70, 0, 0, 0 }},
+        {"%OS", "12", { 12, 0, 0, 1, 0, 70, 0, 0, 0 }},
+        {"%u", "4", { 0, 0, 0, 1, 0, 70, 4, 0, 0 }},
+        {"%Ou", "4", { 0, 0, 0, 1, 0, 70, 4, 0, 0 }},
+        {"%U", "05", { 0, 0, 0, 1, 1, 70, 0, 31, 0 }},
+        {"%OU", "05", { 0, 0, 0, 1, 1, 70, 0, 31, 0 }},
+        {"%U", "00", { 0, 0, 0, 1, 0, 70, 4, 0, 0 }},
+        {"%OU", "00", { 0, 0, 0, 1, 0, 70, 4, 0, 0 }},
+        {"%V", "05", { 0, 0, 0, 1, 1, 70, 0, 31, 0 }},
+        {"%OV", "05", { 0, 0, 0, 1, 1, 70, 0, 31, 0 }},
+        {"%V", "01", { 0, 0, 0, 1, 1, 70, 4, 0, 0 }},
+        {"%OV", "01", { 0, 0, 0, 1, 1, 70, 4, 0, 0 }},
+        {"%w", "4", { 0, 0, 0, 1, 0, 70, 4, 0, 0 }},
+        {"%Ow", "4", { 0, 0, 0, 1, 0, 70, 4, 0, 0 }},
+        {"%W", "04", { 0, 0, 0, 1, 0, 70, 0, 31, 0 }},
+        {"%OW", "04", { 0, 0, 0, 1, 0, 70, 0, 31, 0 }},
+        {"%W", "00", { 0, 0, 0, 1, 0, 70, 4, 0, 0 }},
+        {"%OW", "00", { 0, 0, 0, 1, 0, 70, 4, 0, 0 }},
+        {"%y", "70", { 0, 0, 0, 1, 0, 170, 3, 0, 0 }},
+        {"%Oy", "70", { 0, 0, 0, 1, 0, 170, 3, 0, 0 }},
     };
 
     const struct {
@@ -1789,6 +1822,62 @@ static void test__get_heap_handle(void)
     ok((HANDLE)_get_heap_handle() == GetProcessHeap(), "Expected _get_heap_handle() to return GetProcessHeap()\n");
 }
 
+static BOOL mem_is(const unsigned char *mem, unsigned char c, size_t size)
+{
+    size_t i;
+
+    for (i = 0; i < size; i++)
+        if (mem[i] != c) return FALSE;
+    return TRUE;
+}
+
+static void test__aligned_recalloc(void)
+{
+    void* (CDECL *p__aligned_recalloc)(void*, size_t, size_t, size_t);
+    unsigned char *mem, *mem2;
+
+    p__aligned_recalloc = (void*)GetProcAddress(GetModuleHandleW(L"ucrtbase.dll"), "_aligned_recalloc");
+
+    mem = p__aligned_recalloc(NULL, 4, 8, 16);
+    ok(mem != NULL, "_aligned_recalloc failed\n");
+    ok(!((uintptr_t)mem & 15), "mem = %p\n", mem);
+    ok(mem_is(mem, 0, 32), "memory not zeroed\n");
+    memset(mem, 0xcc, 32);
+
+    mem2 = p__aligned_recalloc(mem, 8, 8, 16);
+    ok(mem2 != NULL, "_aligned_recalloc failed\n");
+    ok(!((uintptr_t)mem2 & 15), "mem2 = %p\n", mem2);
+    ok(mem_is(mem2, 0xcc, 32), "old data not preserved\n");
+    ok(mem_is(mem2 + 32, 0, 32), "new memory not zeroed\n");
+    mem = mem2;
+
+    mem2 = p__aligned_recalloc(mem, 2, 8, 16);
+    ok(mem2 != NULL, "_aligned_recalloc failed\n");
+    ok(!((uintptr_t)mem2 & 15), "mem2 = %p\n", mem2);
+    ok(mem_is(mem2, 0xcc, 16), "old data not preserved\n");
+    mem = mem2;
+
+    errno = 0xdeadbeef;
+    mem2 = p__aligned_recalloc(mem, ~(size_t)0, 2, 16);
+    ok(!mem2, "_aligned_recalloc returned %p\n", mem2);
+    ok(errno == ENOMEM, "errno = %d\n", errno);
+    ok(mem_is(mem, 0xcc, 16), "old data changed\n");
+    _aligned_free(mem);
+
+    mem = _aligned_offset_recalloc(NULL, 3, 8, 32, 8);
+    ok(mem != NULL, "_aligned_offset_recalloc failed\n");
+    ok(!(((uintptr_t)mem + 8) & 31), "mem = %p\n", mem);
+    ok(mem_is(mem, 0, 24), "memory not zeroed\n");
+    memset(mem, 0xcc, 24);
+
+    mem2 = _aligned_offset_recalloc(mem, 6, 8, 32, 8);
+    ok(mem2 != NULL, "_aligned_offset_recalloc failed\n");
+    ok(!(((uintptr_t)mem2 + 8) & 31), "mem2 = %p\n", mem2);
+    ok(mem_is(mem2, 0xcc, 24), "old data not preserved\n");
+    ok(mem_is(mem2 + 24, 0, 24), "new memory not zeroed\n");
+    _aligned_free(mem2);
+}
+
 static void test_exp(void)
 {
     static const struct {
@@ -2198,6 +2287,7 @@ START_TEST(misc)
 #endif
     test_gmtime64();
     test__get_heap_handle();
+    test__aligned_recalloc();
     test_exp();
     test_expf();
     test_cexp();

@@ -107,6 +107,8 @@ static void opengl_client_context_init( HGLRC client_context, struct opengl_cont
     struct opengl_client_context *client = opengl_client_context_from_client( client_context );
     client->unix_handle = (UINT_PTR)context;
     client->unix_funcs = (UINT_PTR)funcs;
+    client->root_context = (UINT_PTR)context->root_context;
+    client->attrs = context->attrs;
 }
 
 /* the current context is assumed valid and doesn't need locking */
@@ -158,29 +160,6 @@ static void free_buffer( const struct opengl_funcs *funcs, struct buffer *buffer
     if (buffer->gl_memory && funcs) funcs->p_glDeleteMemoryObjectsEXT( 1, &buffer->gl_memory );
     if (buffer->vm_ptr) NtFreeVirtualMemory( GetCurrentProcess(), &buffer->vm_ptr, &buffer->vm_size, MEM_RELEASE );
     free( buffer );
-}
-
-static struct opengl_context *context_from_client_context( HGLRC client_context )
-{
-    return opengl_context_from_handle( client_context );
-}
-
-static const char *parse_gl_version( const char *gl_version, int *major, int *minor )
-{
-    const char *ptr = gl_version;
-
-    *major = atoi( ptr );
-    if (*major <= 0)
-        ERR( "Invalid OpenGL major version %d.\n", *major );
-
-    while (isdigit( *ptr )) ++ptr;
-    if (*ptr++ != '.')
-        ERR( "Invalid OpenGL version string %s.\n", debugstr_a(gl_version) );
-
-    *minor = atoi( ptr );
-
-    while (isdigit( *ptr )) ++ptr;
-    return ptr;
 }
 
 static void set_gl_error( TEB *teb, GLenum error )
@@ -480,16 +459,12 @@ static BOOL initialize_vk_device( TEB *teb, const struct opengl_context *ctx )
 static void init_client_context( TEB *teb, struct opengl_client_context *client, const struct opengl_context *ctx )
 {
 #define USE_GL_EXT(x) #x,
-    static const char *extension_names[] = { ALL_GL_EXTS ALL_WGL_EXTS };
+    static const char *extension_names[] = { ALL_EGL_EXTS ALL_GL_EXTS ALL_WGL_EXTS };
 #undef USE_GL_EXT
-    const char *vendor, *device, *version, *rest = "";
+    const char *vendor, *device;
     const struct opengl_funcs *funcs = teb->glTable;
-    size_t count = 0, i, len;
-
-    if (!(version = (const char *)funcs->p_glGetString( GL_VERSION ))) version = "1.0";
-    rest = parse_gl_version( version, &client->major_version, &client->minor_version );
-    if (!client->major_version) client->major_version = 1;
-    TRACE( "context %p version %d.%d\n", client, client->major_version, client->minor_version );
+    struct opengl_drawable *draw = ctx->draw;
+    size_t count = 0, i;
 
     if (!funcs->p_wglQueryCurrentRendererStringWINE) vendor = NULL;
     else vendor = funcs->p_wglQueryCurrentRendererStringWINE( WGL_RENDERER_VENDOR_ID_WINE );
@@ -501,24 +476,16 @@ static void init_client_context( TEB *teb, struct opengl_client_context *client,
     if (!device) device = (const char *)funcs->p_glGetString( GL_RENDERER );
     lstrcpynA( client->device_name, device, ARRAY_SIZE(client->device_name) );
 
-    if ((len = strlen( version )) >= ARRAY_SIZE(client->version_str)) FIXME( "version_str buffer too small, need %zu\n", len );
-    lstrcpynA( client->version_str, version, ARRAY_SIZE(client->version_str) );
-
-    if (client->major_version >= 3)
+    if (is_win64 && is_wow64() && !ctx->extensions[GL_MESA_map_buffer_client_pointer] &&
+        !initialize_vk_device( teb, ctx ) && !ctx->extensions[GL_AMD_pinned_memory])
     {
-        if (client->major_version > 3 || client->minor_version > 1)
-            funcs->p_glGetIntegerv( GL_CONTEXT_PROFILE_MASK, &client->profile_mask );
-        funcs->p_glGetIntegerv( GL_CONTEXT_FLAGS, &client->context_flags );
-    }
-
-    if (is_win64 && is_wow64() && !initialize_vk_device( teb, ctx ) && !ctx->extensions[GL_AMD_pinned_memory])
-    {
-        if (client->major_version > 4 || (client->major_version == 4 && client->minor_version > 3))
+        if (client->attrs.major > 4 || (client->attrs.major == 4 && client->attrs.minor > 3))
         {
-            FIXME( "GL version %d.%d is not supported on wow64, using 4.3\n", client->major_version, client->minor_version );
-            client->major_version = 4;
-            client->minor_version = 3;
-            snprintf( client->version_str, ARRAY_SIZE(client->version_str), "4.3%s", rest );
+            const char *rest = strchr( client->version_str, ' ');
+            FIXME( "GL version %d.%d is not supported on wow64, using 4.3\n", client->attrs.major, client->attrs.minor );
+            client->attrs.major = 4;
+            client->attrs.minor = 3;
+            snprintf( client->version_str, ARRAY_SIZE(client->version_str), "4.3%s", rest ? rest : "" );
         }
         if (client->extensions[GL_ARB_buffer_storage])
         {
@@ -527,19 +494,76 @@ static void init_client_context( TEB *teb, struct opengl_client_context *client,
         }
     }
 
-    for (i = 0; i < WGL_FIRST_EXTENSION; i++) if (client->extensions[i]) client->extension_array[count++] = i;
+    TRACE( "context %p attributes %s version %s\n", client, debugstr_opengl_context_attrs( &client->attrs ), client->version_str );
+
+    for (i = MIN_GL_EXTENSION; i <= MAX_GL_EXTENSION; i++) if (client->extensions[i]) client->extension_array[count++] = i;
     if (client->extensions[WGL_EXT_extensions_string]) client->extension_array[count++] = WGL_EXT_extensions_string;
     if (client->extensions[WGL_EXT_swap_control])      client->extension_array[count++] = WGL_EXT_swap_control;
     client->extension_count = count;
 
     if (TRACE_ON(opengl)) for (i = 0; i < count; i++) TRACE( "++ %s\n", extension_names[client->extension_array[i]] );
+
+    funcs->p_glViewport( 0, 0, draw->virtual_size.cx, draw->virtual_size.cy );
+    funcs->p_glScissor( 0, 0, draw->virtual_size.cx, draw->virtual_size.cy );
+
+    client->initialized = TRUE;
+}
+
+static void free_client_pointer_ranges( TEB *teb, GLbitfield flags )
+{
+    const struct opengl_funcs *funcs = teb->glTable;
+    GLsizeiptr size;
+    void *ptr;
+
+    while ((ptr = funcs->p_glReleaseClientPointerRangeMESA( flags, &size )))
+    {
+        SIZE_T alloc_size = size;
+        NtFreeVirtualMemory( GetCurrentProcess(), &ptr, &alloc_size, MEM_RELEASE );
+    }
 }
 
 BOOL wrap_wglDeleteContext( TEB *teb, HGLRC client_context )
 {
     const struct opengl_funcs *funcs = get_context_funcs( client_context );
-    funcs->p_context_destroy( context_from_client_context( client_context ) );
+    struct opengl_context *ctx = opengl_context_from_handle( client_context );
+
+    UINT64 root_context = opengl_client_context_from_client( client_context )->root_context;
+    bool use_client_pointer = is_wow64() && ctx->extensions[GL_MESA_map_buffer_client_pointer];
+
+    funcs->p_context_destroy( ctx );
+
+    /* destroy the context first to release client memory for still mapped buffers */
+    if (use_client_pointer)
+    {
+        struct set_root_context_params params = { .teb = NtCurrentTeb() };
+
+        params.root_context = root_context;
+        set_root_context( &params );
+
+        free_client_pointer_ranges( teb, GL_CLIENT_POINTER_RELEASE_ALL_MESA );
+
+        params.root_context = 0;
+        set_root_context( &params );
+    }
+
     return TRUE;
+}
+
+static void pop_default_fbo_buffers( TEB *teb )
+{
+    const struct opengl_funcs *funcs = teb->glTable;
+    struct opengl_drawable *draw;
+    struct opengl_context *ctx;
+
+    pop_default_fbo( teb );
+
+    if (!(ctx = get_current_context( teb, &draw, NULL, NULL ))) return;
+    if (!ctx->draw_fbo)
+    {
+        if (!ctx->draw_buffer_count) wrap_glDrawBuffer( teb, ctx->draw_buffers[0], funcs->p_glDrawBuffer );
+        else wrap_glDrawBuffers( teb, ctx->draw_buffer_count, ctx->draw_buffers, funcs->p_glDrawBuffers );
+    }
+    if (!ctx->read_fbo) wrap_glReadBuffer( teb, ctx->read_buffer, funcs->p_glReadBuffer );
 }
 
 static GLenum drawable_buffer_from_buffer( struct opengl_drawable *drawable, GLenum buffer )
@@ -614,6 +638,7 @@ static void flush_context( TEB *teb, void (*flush)(void) )
         /* default implementation: call the functions directly */
         if (flush) flush();
     }
+    if (flags & GL_FLUSH_PRESENT || (ctx && !ctx->draw->client)) pop_default_fbo_buffers( teb );
 
     if (flags & GL_FLUSH_FORCE_SWAP)
     {
@@ -627,25 +652,6 @@ static void flush_context( TEB *teb, void (*flush)(void) )
         funcs->p_glBlitFramebuffer( 0, 0, size.cx, size.cy, 0, 0, size.cx, size.cy, mask, GL_NEAREST );
         if (ctx->read_fbo) funcs->p_glBindFramebuffer( GL_READ_FRAMEBUFFER, ctx->read_fbo );
         else funcs->p_glReadBuffer( drawable_buffer_from_buffer( read, ctx->read_buffer ) );
-    }
-}
-
-static void set_default_fbo_buffers( TEB *teb, struct opengl_context *ctx )
-{
-    const struct opengl_funcs *funcs = teb->glTable;
-    struct opengl_drawable *draw = ctx->draw;
-
-    if (!ctx->draw_fbo)
-    {
-        if (!ctx->draw_buffer_count) wrap_glDrawBuffer( teb, ctx->draw_buffers[0], funcs->p_glDrawBuffer );
-        else wrap_glDrawBuffers( teb, ctx->draw_buffer_count, ctx->draw_buffers, funcs->p_glDrawBuffers );
-    }
-    if (!ctx->read_fbo) wrap_glReadBuffer( teb, ctx->read_buffer, funcs->p_glReadBuffer );
-    if (!ctx->has_viewport && draw->draw_fbo && draw->client)
-    {
-        funcs->p_glViewport( 0, 0, draw->virtual_size.cx, draw->virtual_size.cy );
-        funcs->p_glScissor( 0, 0, draw->virtual_size.cx, draw->virtual_size.cy );
-        ctx->has_viewport = GL_TRUE;
     }
 }
 
@@ -688,6 +694,8 @@ BOOL wrap_wglSwapBuffers( TEB *teb, HDC hdc )
     const struct opengl_funcs *funcs = get_dc_funcs( hdc );
     BOOL ret;
 
+    if (!funcs->p_wglSwapBuffers) return FALSE;
+
     resolve_default_fbo( teb, FALSE );
 
     if (!(ret = funcs->p_wglSwapBuffers( hdc )))
@@ -696,23 +704,35 @@ BOOL wrap_wglSwapBuffers( TEB *teb, HDC hdc )
         flush_context( teb, funcs->p_glFlush );
     }
 
+    pop_default_fbo_buffers( teb );
     return ret;
 }
 
 HGLRC wrap_wglCreateContextAttribsARB( TEB *teb, HDC hdc, HGLRC client_shared, const int *attribs, HGLRC client_context )
 {
-    struct opengl_client_context *client = opengl_client_context_from_client( client_context );
+    struct opengl_context *context, *shared = opengl_context_from_handle( client_shared );
     const struct opengl_funcs *funcs = get_dc_funcs( hdc );
-    struct opengl_context *context;
 
     if (!funcs->p_context_create) return 0;
 
-    if (!(context = funcs->p_context_create( hdc, attribs, &client->broken_sharing ))) return 0;
+    if (!(context = funcs->p_context_create( hdc, shared, attribs ))) return 0;
     opengl_client_context_init( client_context, context, funcs );
     context->client_context = client_context;
-    client->format = context->format;
 
     return client_context;
+}
+
+NTSTATUS set_root_context( void *args )
+{
+    const struct opengl_funcs *funcs = __wine_get_opengl_driver( WINE_OPENGL_DRIVER_VERSION );
+    struct set_root_context_params *params = args;
+    struct opengl_context *root = (struct opengl_context *)(UINT_PTR)params->root_context;
+    TEB *teb = params->teb;
+
+    funcs->p_set_root_context( root );
+    teb->glTable = root || teb->glContext ? (void *)funcs : (void *)&null_opengl_funcs;
+
+    return STATUS_SUCCESS;
 }
 
 BOOL wrap_wglMakeContextCurrentARB( TEB *teb, HDC draw_hdc, HDC read_hdc, HGLRC client_context )
@@ -724,19 +744,19 @@ BOOL wrap_wglMakeContextCurrentARB( TEB *teb, HDC draw_hdc, HDC read_hdc, HGLRC 
     {
         const struct opengl_funcs *funcs = get_context_funcs( client_context );
         if (!(client = opengl_client_context_from_client( client_context ))) return FALSE;
-        if (!(ctx = context_from_client_context( client_context ))) return FALSE;
+        if (!(ctx = opengl_context_from_handle( client_context ))) return FALSE;
         if (!funcs->p_make_current( draw_hdc, read_hdc, ctx )) return FALSE;
         teb->glReserved1[0] = draw_hdc;
         teb->glReserved1[1] = read_hdc;
         teb->glTable = (void *)funcs;
-        if (!client->major_version) init_client_context( teb, client, ctx );
-        pop_default_fbo( teb );
-        set_default_fbo_buffers( teb, ctx );
+        if (!client->initialized) init_client_context( teb, client, ctx );
+        pop_default_fbo_buffers( teb );
     }
     else
     {
-        const struct opengl_funcs *funcs = teb->glTable;
+        const struct opengl_funcs *funcs = __wine_get_opengl_driver( WINE_OPENGL_DRIVER_VERSION );
         if (!funcs->p_make_current( NULL, NULL, NULL )) return FALSE;
+        teb->glTable = (void *)&null_opengl_funcs;
     }
 
     return TRUE;
@@ -745,7 +765,8 @@ BOOL wrap_wglMakeContextCurrentARB( TEB *teb, HDC draw_hdc, HDC read_hdc, HGLRC 
 HPBUFFERARB wrap_wglCreatePbufferARB( TEB *teb, HDC hdc, int format, int width, int height, const int *attribs, HPBUFFERARB client_pbuffer )
 {
     const struct opengl_funcs *funcs = get_dc_funcs( hdc );
-    if (!funcs->p_pbuffer_create( hdc, format, width, height, attribs, client_pbuffer )) return 0;
+    SIZE size = { .cx = width, .cy = height };
+    if (!funcs->p_pbuffer_create( hdc, format, size, attribs, client_pbuffer )) return 0;
     return client_pbuffer;
 }
 
@@ -901,8 +922,7 @@ void resolve_default_fbo( TEB *teb, BOOL read )
         if (drawable->srgb && enabled) funcs->p_glEnable( GL_FRAMEBUFFER_SRGB );
         else if (!drawable->srgb && !enabled) funcs->p_glDisable( GL_FRAMEBUFFER_SRGB );
 
-        pop_default_fbo( teb );
-        set_default_fbo_buffers( teb, ctx );
+        pop_default_fbo_buffers( teb );
     }
 }
 
@@ -1214,6 +1234,11 @@ NTSTATUS process_detach( void *args )
     return STATUS_SUCCESS;
 }
 
+NTSTATUS thread_detach( void *args )
+{
+    return STATUS_SUCCESS;
+}
+
 NTSTATUS get_pixel_formats( void *args )
 {
     struct get_pixel_formats_params *params = args;
@@ -1486,6 +1511,97 @@ static struct buffer *create_buffer_storage( TEB *teb, GLenum target, GLuint nam
     return buffer;
 }
 
+static GLint get_buffer_param( TEB *teb, GLenum target, GLenum param )
+{
+    const struct opengl_funcs *funcs = teb->glTable;
+    GLint size = 0;
+    if (funcs->p_glGetBufferParameteriv) funcs->p_glGetBufferParameteriv( target, param, &size );
+    return size;
+}
+
+static GLint get_named_buffer_param( TEB *teb, GLint buffer, GLenum param )
+{
+    const struct opengl_funcs *funcs = teb->glTable;
+    GLint size = 0;
+    if (funcs->p_glGetNamedBufferParameteriv) funcs->p_glGetNamedBufferParameteriv( buffer, param, &size );
+    return size;
+}
+
+static BOOL use_client_pointer( TEB *teb )
+{
+    struct opengl_context *ctx;
+    if (!(ctx = get_current_context( teb, NULL, NULL, NULL ))) return FALSE;
+    return ctx->extensions[GL_MESA_map_buffer_client_pointer];
+}
+
+static void *map_buffer_client_pointer( TEB *teb, GLenum target, GLuint name, GLintptr offset,
+                                        size_t length, GLbitfield access )
+{
+    const struct opengl_funcs *funcs = teb->glTable;
+    SIZE_T alloc_size;
+    GLsizeiptr size;
+    GLenum err;
+    void *ptr;
+
+    /* save the error in the wrapper so we can check for success */
+    set_gl_error( teb, funcs->p_glGetError() );
+
+    /* first approach, either this succeeds or the driver needs more client memory */
+    if (name) ptr = funcs->p_glMapNamedBufferRange( name, offset, length, access | GL_MAP_CLIENT_POINTER_BIT_MESA );
+    else ptr = funcs->p_glMapBufferRange( target, offset, length, access | GL_MAP_CLIENT_POINTER_BIT_MESA );
+
+    /* if the driver needs more client memory GL_OUT_OF_MEMORY is returned and
+       GL_BUFFER_CLIENT_POINTER_SIZE_MESA is set to the needed size */
+    if ((err = funcs->p_glGetError()) != GL_OUT_OF_MEMORY)
+    {
+        set_gl_error( teb, err );
+        return ptr;
+    }
+
+    size = name ? get_named_buffer_param( teb, name, GL_BUFFER_CLIENT_POINTER_SIZE_MESA )
+                : get_buffer_param( teb, target, GL_BUFFER_CLIENT_POINTER_SIZE_MESA );
+    if (!size)
+    {
+        set_gl_error( teb, GL_OUT_OF_MEMORY );
+        return NULL;
+    }
+
+    alloc_size = size;
+    if (NtAllocateVirtualMemory( GetCurrentProcess(), &ptr, zero_bits, &alloc_size,
+                                 MEM_COMMIT, PAGE_READWRITE ))
+    {
+        WARN( "NtAllocateVirtualMemory failed, freeing client pointer ranges and trying again\n" );
+        free_client_pointer_ranges( teb, 0 );
+
+        if (NtAllocateVirtualMemory( GetCurrentProcess(), &ptr, zero_bits, &alloc_size,
+                                     MEM_COMMIT, PAGE_READWRITE ))
+        {
+            WARN( "NtAllocateVirtualMemory failed, freeing all client pointer ranges and trying again\n" );
+            free_client_pointer_ranges( teb, GL_CLIENT_POINTER_RELEASE_ALL_MESA );
+
+            if (NtAllocateVirtualMemory( GetCurrentProcess(), &ptr, zero_bits, &alloc_size,
+                                         MEM_COMMIT, PAGE_READWRITE ))
+            {
+                ERR( "NtAllocateVirtualMemory failed\n" );
+                set_gl_error( teb, GL_OUT_OF_MEMORY );
+                return NULL;
+            }
+        }
+    }
+
+    TRACE( "Allocated Wow64 client pointer range at %p - %p.\n", ptr, (uint8_t *)ptr + size );
+    assert( size == alloc_size );
+    funcs->p_glAddClientPointerRangeMESA( ptr, alloc_size );
+
+    /* second approach with new memory */
+    if (name) ptr = funcs->p_glMapNamedBufferRange( name, offset, length, access | GL_MAP_CLIENT_POINTER_BIT_MESA );
+    else ptr = funcs->p_glMapBufferRange( target, offset, length, access | GL_MAP_CLIENT_POINTER_BIT_MESA );
+
+    /* the mapping could have failed or gotten client memory from another thread */
+    free_client_pointer_ranges( teb, 0 );
+    return ptr;
+}
+
 static void *wow64_map_buffer( TEB *teb, struct buffer *buffer, GLenum target, GLuint name, GLintptr offset,
                                size_t length, GLbitfield access, void *ptr )
 {
@@ -1626,6 +1742,8 @@ void wow64_glBufferStorage( TEB *teb, GLenum target, GLsizeiptr size, const void
     const struct opengl_funcs *funcs = teb->glTable;
     struct buffer *buffer = NULL, *previous;
 
+    if (use_client_pointer( teb )) return p_glBufferStorage( target, size, data, flags | GL_MAP_CLIENT_POINTER_BIT_MESA );
+
     if (flags & GL_MAP_PERSISTENT_BIT) buffer = create_buffer_storage( teb, target, 0, size, data, flags );
     previous = set_target_buffer_storage( teb, target, buffer );
     if (!buffer) p_glBufferStorage( target, size, data, flags );
@@ -1637,6 +1755,8 @@ void wow64_glNamedBufferStorage( TEB *teb, GLuint name, GLsizeiptr size, const v
 {
     const struct opengl_funcs *funcs = teb->glTable;
     struct buffer *buffer = NULL, *previous;
+
+    if (use_client_pointer( teb )) return p_glNamedBufferStorage( name, size, data, flags | GL_MAP_CLIENT_POINTER_BIT_MESA );
 
     if (flags & GL_MAP_PERSISTENT_BIT) buffer = create_buffer_storage( teb, 0, name, size, data, flags );
     previous = set_named_buffer_storage( teb, name, buffer );
@@ -1681,6 +1801,8 @@ void *wow64_glMapBuffer( TEB *teb, GLenum target, GLenum access, PFN_glMapBuffer
     struct buffer *buffer;
     void *ptr = NULL;
 
+    if (use_client_pointer( teb )) return map_buffer_client_pointer( teb, target, 0, 0, get_buffer_param( teb, target, GL_BUFFER_SIZE ), range_access );
+
     buffer = get_target_buffer_storage( teb, target );
     if (use_driver_buffer_map( buffer )) ptr = p_glMapBuffer( target, access );
     ptr = wow64_map_buffer( teb, buffer, target, 0, 0, 0, range_access, ptr );
@@ -1692,6 +1814,8 @@ void *wow64_glMapBufferRange( TEB *teb, GLenum target, GLintptr offset, GLsizeip
 {
     struct buffer *buffer;
     void *ptr = NULL;
+
+    if (use_client_pointer( teb )) return map_buffer_client_pointer( teb, target, 0, offset, length, access );
 
     buffer = get_target_buffer_storage( teb, target );
     if (use_driver_buffer_map( buffer )) ptr = p_glMapBufferRange( target, offset, length, access );
@@ -1705,6 +1829,8 @@ void *wow64_glMapNamedBuffer( TEB *teb, GLuint name, GLenum access, PFN_glMapNam
     struct buffer *buffer;
     void *ptr = NULL;
 
+    if (use_client_pointer( teb )) return map_buffer_client_pointer( teb, 0, name, 0, get_named_buffer_param( teb, name, GL_BUFFER_SIZE ), range_access );
+
     buffer = get_named_buffer_storage( teb, name );
     if (use_driver_buffer_map( buffer )) ptr = p_glMapNamedBuffer( name, access );
     ptr = wow64_map_buffer( teb, buffer, 0, name, 0, 0, range_access, ptr );
@@ -1716,6 +1842,8 @@ void *wow64_glMapNamedBufferRange( TEB *teb, GLuint name, GLintptr offset, GLsiz
 {
     struct buffer *buffer;
     void *ptr = NULL;
+
+    if (use_client_pointer( teb )) return map_buffer_client_pointer( teb, 0, name, offset, length, access );
 
     buffer = get_named_buffer_storage( teb, name );
     if (use_driver_buffer_map( buffer )) ptr = p_glMapNamedBufferRange( name, offset, length, access );
@@ -1754,6 +1882,7 @@ GLboolean wow64_glUnmapBuffer( TEB *teb, GLenum target, PFN_glUnmapBuffer p_glUn
 
     if ((buffer = get_target_buffer_storage( teb, target ))) ret = wow64_unmap_buffer( teb, buffer );
     if (use_driver_buffer_map( buffer )) ret = p_glUnmapBuffer( target );
+    if (use_client_pointer( teb )) free_client_pointer_ranges( teb, 0 );
     return ret;
 }
 
@@ -1764,6 +1893,7 @@ GLboolean wow64_glUnmapNamedBuffer( TEB *teb, GLuint name, PFN_glUnmapBuffer p_g
 
     if ((buffer = get_named_buffer_storage( teb, name ))) ret = wow64_unmap_buffer( teb, buffer );
     if (use_driver_buffer_map( buffer )) ret = p_glUnmapNamedBuffer( name );
+    if (use_client_pointer( teb )) free_client_pointer_ranges( teb, 0 );
     return ret;
 }
 
@@ -1804,10 +1934,18 @@ void wow64_glBufferAttachMemoryNV( TEB *teb, GLenum target, GLuint memory, GLuin
     p_glBufferAttachMemoryNV( target, memory, offset );
 }
 
+static GLenum map_usage_client_pointer( GLenum usage )
+{
+    assert( usage >= GL_STREAM_DRAW && usage <= GL_DYNAMIC_COPY );
+    return usage + GL_CLIENT_POINTER_STREAM_DRAW_MESA - GL_STREAM_DRAW;
+}
+
 void wow64_glBufferData( TEB *teb, GLenum target, GLsizeiptr size, const void *data, GLenum usage, PFN_glBufferData p_glBufferData )
 {
     const struct opengl_funcs *funcs = teb->glTable;
     struct buffer *buffer;
+
+    if (use_client_pointer( teb )) return p_glBufferData( target, size, data, map_usage_client_pointer( usage ) );
 
     if ((buffer = set_target_buffer_storage( teb, target, NULL ))) free_buffer( funcs, buffer );
     p_glBufferData( target, size, data, usage );
@@ -1836,6 +1974,8 @@ void wow64_glNamedBufferData( TEB *teb, GLuint name, GLsizeiptr size, const void
     const struct opengl_funcs *funcs = teb->glTable;
     struct buffer *buffer;
 
+    if (use_client_pointer( teb )) return p_glNamedBufferData( name, size, data, map_usage_client_pointer( usage ) );
+
     if ((buffer = set_named_buffer_storage( teb, name, NULL ))) free_buffer( funcs, buffer );
     p_glNamedBufferData( name, size, data, usage );
 }
@@ -1861,6 +2001,28 @@ NTSTATUS wow64_process_detach( void *args )
     if ((status = process_detach( NULL ))) return status;
 
     return STATUS_SUCCESS;
+}
+
+NTSTATUS wow64_thread_detach( void *args )
+{
+    TEB *teb = args;
+    if (use_client_pointer( teb )) free_client_pointer_ranges( teb, GL_CLIENT_POINTER_RELEASE_ALL_MESA );
+    return thread_detach( args );
+}
+
+NTSTATUS wow64_set_root_context( void *args )
+{
+    struct
+    {
+        PTR32 teb;
+        UINT64 root_context;
+    } *params32 = args;
+    struct set_root_context_params params =
+    {
+        .teb = get_teb64(params32->teb),
+        .root_context = params32->root_context,
+    };
+    return set_root_context( &params );
 }
 
 NTSTATUS wow64_get_pixel_formats( void *args )

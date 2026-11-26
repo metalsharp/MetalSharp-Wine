@@ -1087,6 +1087,7 @@ void output_stubs( DLLSPEC *spec )
             output_cfi( ".cfi_endproc" );
             break;
         case CPU_x86_64:
+        case CPU_ARM64EC:
             output_cfi( ".cfi_startproc" );
             output_seh( ".seh_proc %s", asm_name(name) );
             output( "\tsubq $0x28,%%rsp\n" );
@@ -1117,8 +1118,7 @@ void output_stubs( DLLSPEC *spec )
             output( "\t.seh_endproc\n" );
             break;
         case CPU_ARM64:
-        case CPU_ARM64EC:
-            output( "\t.seh_proc %s\n", arm64_name(name) );
+            output( "\t.seh_proc %s\n", asm_name(name) );
             output( "\t.seh_endprologue\n" );
             output( "\tadrp x0, .L__wine_spec_file_name\n" );
             output( "\tadd x0, x0, #:lo12:.L__wine_spec_file_name\n" );
@@ -1129,7 +1129,7 @@ void output_stubs( DLLSPEC *spec )
             }
             else
                 output( "\tmov x1, %u\n", odp->ordinal );
-            output( "\tb %s\n", arm64_name("__wine_spec_unimplemented_stub") );
+            output( "\tb %s\n", asm_name("__wine_spec_unimplemented_stub") );
             output( "\t.seh_endproc\n" );
             break;
         }
@@ -1319,7 +1319,7 @@ static void build_windows_import_lib( const char *lib_name, DLLSPEC *spec, struc
 
     /* make sure assemble_files doesn't strip suffixes */
     dll_name = encode_dll_name( spec->file_name );
-    for (i = 0; i < strlen( dll_name ); ++i) if (dll_name[i] == '.') dll_name[i] = '_';
+    for (i = 0; dll_name[i]; ++i) if (dll_name[i] == '.') dll_name[i] = '_';
 
     import_desc = strmake( "__wine_import_%s_desc", dll_name );
     import_name = strmake( "__wine_import_%s_name", dll_name );

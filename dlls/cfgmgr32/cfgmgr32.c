@@ -415,7 +415,9 @@ static LSTATUS enum_class_device_interfaces( HKEY root, struct device_interface 
             for (tmp = wcschr( instance, '\\' ); tmp; tmp = wcschr( tmp, '\\' )) *tmp = '#';
             for (UINT j = 0; !err && !(err = RegEnumKeyW( iface_key, j, iface->refstr, ARRAY_SIZE(iface->refstr) )); j++)
             {
-                ULONG len = swprintf( path, ARRAY_SIZE(path), L"\\\\?\\%s%s%s", instance, iface->refstr, iface->class );
+                ULONG len = swprintf( path, ARRAY_SIZE(path), L"\\\\?\\%s#%s", instance, iface->class );
+
+                if (iface->refstr[1]) len += swprintf( path + len, ARRAY_SIZE(path) - len, L"\\%s", iface->refstr + 1 );
                 if (all || device_interface_enabled( iface_key, iface )) err = callback( iface_key, iface, path, len + 1, context );
             }
             if (err == ERROR_NO_MORE_ITEMS) err = ERROR_SUCCESS;
@@ -1868,6 +1870,7 @@ CONFIGRET WINAPI CM_Get_Device_ID_ExW( DEVINST node, WCHAR *buffer, ULONG len, U
     if (*dev.instance) path_len += swprintf( path + path_len, ARRAY_SIZE(path) - path_len, L"\\%s", dev.instance );
 
     if (path_len > len) return CR_BUFFER_SMALL;
+    wcsupr( path );
     memcpy( buffer, path, path_len * sizeof(WCHAR) );
     if (path_len < len) buffer[path_len] = 0;
 

@@ -219,6 +219,11 @@ C_ASSERT( sizeof( struct syscall_frame ) == 0x330 );
 #define ESR_ELx_ISS_DFSC(esr)           ((esr) & 0x3f)
 #define ESR_ELx_ISS_DFSC_ALIGN_FAULT    0x21
 
+/* Preserve all CPSR bits not covered by user context in signal handlers.
+ * Additionally, preserve the host SSBS bit, which is allowed to be set on
+ * Windows, but is volatile and restored on kernel transition anyway. */
+static const ULONG cpsr_host_mask = ~cpsr_user_mask | 0x1000;
+
 /***********************************************************************
  *           context_init_empty_xstate
  *
@@ -320,7 +325,7 @@ static void save_context( CONTEXT *context, const ucontext_t *sigcontext )
     context->Lr   = LR_sig(sigcontext);     /* Link register */
     context->Sp   = SP_sig(sigcontext);     /* Stack pointer */
     context->Pc   = PC_sig(sigcontext);     /* Program Counter */
-    context->Cpsr = PSTATE_sig(sigcontext); /* Current State Register */
+    context->Cpsr = PSTATE_sig(sigcontext) & cpsr_user_mask; /* Current State Register */
     for (i = 0; i <= 28; i++) context->X[i] = REGn_sig( i, sigcontext );
     if (save_fpu( context->V, &context->Fpcr, &context->Fpsr, sigcontext ))
         context->ContextFlags |= CONTEXT_FLOATING_POINT;
@@ -354,7 +359,7 @@ static void restore_context( struct thread_data *data, const CONTEXT *context, u
 
     FP_sig(sigcontext)     = context->Fp;   /* Frame pointer */
     LR_sig(sigcontext)     = context->Lr;   /* Link register */
-    PSTATE_sig(sigcontext) = context->Cpsr; /* Current State Register */
+    PSTATE_sig(sigcontext) = (PSTATE_sig(sigcontext) & cpsr_host_mask) | (context->Cpsr & ~cpsr_host_mask);
     for (i = 0; i <= 28; i++) REGn_sig( i, sigcontext ) = context->X[i];
     restore_fpu( context, sigcontext );
 }
@@ -440,15 +445,19 @@ NTSTATUS WINAPI NtSetContextThread( HANDLE handle, const CONTEXT *context )
         frame->lr    = context->Lr;
         frame->sp    = context->Sp;
         frame->pc    = context->Pc;
-        frame->cpsr  = context->Cpsr;
+        frame->cpsr  = context->Cpsr & cpsr_user_mask;
         if (is_emulated_code( frame->pc )) flags |= RESTORE_FLAGS_EMULATION;
         else frame->restore_flags &= ~RESTORE_FLAGS_EMULATION;
     }
-    if (flags & CONTEXT_FLOATING_POINT)
+    if (flags & (CONTEXT_FLOATING_POINT | CONTEXT_ARM64_FLOATING_POINT_LOW))
     {
         frame->fpcr = context->Fpcr;
         frame->fpsr = context->Fpsr;
-        memcpy( frame->v, context->V, sizeof(frame->v) );
+        memcpy( frame->v, context->V, 16 * sizeof(frame->v[0]) );
+    }
+    if (flags & (CONTEXT_FLOATING_POINT | CONTEXT_ARM64_FLOATING_POINT_HIGH))
+    {
+        memcpy( &frame->v[16], &context->V[16], 16 * sizeof(frame->v[0]) );
     }
     if (flags & CONTEXT_ARM64_X18)
     {
@@ -494,12 +503,17 @@ NTSTATUS WINAPI NtGetContextThread( HANDLE handle, CONTEXT *context )
         context->Cpsr = frame->cpsr;
         context->ContextFlags |= CONTEXT_CONTROL;
     }
-    if (needed_flags & CONTEXT_FLOATING_POINT)
+    if (needed_flags & (CONTEXT_FLOATING_POINT | CONTEXT_ARM64_FLOATING_POINT_LOW))
     {
         context->Fpcr = frame->fpcr;
         context->Fpsr = frame->fpsr;
-        memcpy( context->V, frame->v, sizeof(context->V) );
-        context->ContextFlags |= CONTEXT_FLOATING_POINT;
+        memcpy( context->V, frame->v, 16 * sizeof(context->V[0]) );
+        context->ContextFlags |= CONTEXT_ARM64 | (needed_flags & (CONTEXT_FLOATING_POINT | CONTEXT_ARM64_FLOATING_POINT_LOW));
+    }
+    if (needed_flags & (CONTEXT_FLOATING_POINT | CONTEXT_ARM64_FLOATING_POINT_HIGH))
+    {
+        memcpy( &context->V[16], &frame->v[16], 16 * sizeof(frame->v[0]) );
+        context->ContextFlags |= CONTEXT_ARM64 | (needed_flags & CONTEXT_ARM64_FLOATING_POINT_HIGH);
     }
     if (needed_flags & CONTEXT_ARM64_X18)
     {
@@ -621,7 +635,7 @@ NTSTATUS set_thread_wow64_context( HANDLE handle, const void *ctx, ULONG size )
             wow_frame->Sp = context->Sp;
             wow_frame->Lr = context->Lr;
             wow_frame->Pc = context->Pc & ~1;
-            wow_frame->Cpsr = context->Cpsr;
+            wow_frame->Cpsr = context->Cpsr & cpsr_user_mask;
             if (context->Cpsr & 0x20) wow_frame->Pc |= 1; /* thumb */
         }
         if (flags & CONTEXT_FLOATING_POINT)
@@ -778,7 +792,7 @@ static void setup_raise_exception( struct thread_data *data, ucontext_t *sigcont
 
     if (!chpe || !chpe->InSimulation)
     {
-        NTSTATUS status = send_debug_event( data, rec, context, TRUE, TRUE );
+        NTSTATUS status = send_debug_event( data, rec, context, TRUE );
         if (status == DBG_CONTINUE || status == DBG_EXCEPTION_HANDLED)
         {
             restore_context( data, context, sigcontext );
@@ -917,11 +931,12 @@ __ASM_GLOBAL_FUNC( call_user_mode_callback,
                    "add x8, x29, #0xd0\n\t"
                    "stp x7, x8, [x1, #0x110]\n\t" /* frame->prev_frame,syscall_cfa */
                    "ldr w11, [x18, #0x380]\n\t"   /* thread_data->syscall_trace */
-                   "cbnz x11, 1f\n\t"
+                   "cbnz x11, 2f\n\t"
                    /* switch to user stack */
-                   "mov sp, x0\n\t"               /* user_sp */
+                   "1:mov sp, x0\n\t"             /* user_sp */
+                   __ASM_LOCAL_LABEL("call_user_mode_callback_user_stack") ":\n\t"
                    "br x3\n"
-                   "1:\tmov x19, x18\n\t"         /* teb */
+                   "2:\tmov x19, x18\n\t"         /* teb */
                    "mov x20, x0\n\t"              /* user_sp */
                    "mov x21, x3\n\t"              /* func */
                    "mov sp, x1\n\t"
@@ -930,8 +945,9 @@ __ASM_GLOBAL_FUNC( call_user_mode_callback,
                    "str x0, [x29, #0xc0]\n\t"     /* id */
                    "bl " __ASM_NAME("trace_usercall") "\n\t"
                    "mov x18, x19\n\t"             /* teb */
-                   "mov sp, x20\n\t"              /* user_sp */
-                   "br x21" )
+                   "mov x0, x20\n\t"              /* user_sp */
+                   "mov x3, x21\n\t"
+                   "b 1b" )
 
 
 /***********************************************************************
@@ -1396,7 +1412,7 @@ static void save_syscall_entry_frame( ucontext_t *sigcontext )
     frame->lr = REGn_sig( 9, sigcontext );
     frame->sp = SP_sig(sigcontext);
     frame->pc = LR_sig(sigcontext);
-    frame->cpsr = PSTATE_sig(sigcontext);
+    frame->cpsr = PSTATE_sig(sigcontext) & cpsr_user_mask;
     frame->restore_flags = 0;
     frame->syscall_id = REGn_sig( 8, sigcontext );
     save_fpu( frame->v, &frame->fpcr, &frame->fpsr, sigcontext );
@@ -1422,6 +1438,7 @@ static void usr1_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
     extern const ULONG_PTR __wine_syscall_dispatcher_user_stack;
     extern const ULONG_PTR __wine_unix_call_dispatcher_kernel_stack_ptr;
     extern const ULONG_PTR __wine_unix_call_dispatcher_user_stack;
+    extern const ULONG_PTR call_user_mode_callback_user_stack_ptr;
 
     /* if we're in a syscall dispatcher, but not yet on the syscall stack, construct
      * the frame now from the signal context. */
@@ -1442,6 +1459,10 @@ static void usr1_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
     {
         struct syscall_frame *frame = get_syscall_frame( data );
         PC_sig(sigcontext) = frame->pc;
+    }
+    else if (PC_sig(sigcontext) == call_user_mode_callback_user_stack_ptr)
+    {
+        PC_sig(sigcontext) = REGn_sig(3, sigcontext);
     }
 
     if (!data->teb)
@@ -1508,7 +1529,7 @@ static void usr2_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
     }
     FP_sig(sigcontext)     = frame->fp;
     LR_sig(sigcontext)     = frame->lr;
-    PSTATE_sig(sigcontext) = frame->cpsr;
+    PSTATE_sig(sigcontext) = (PSTATE_sig(sigcontext) & cpsr_host_mask) | frame->cpsr;
     for (i = 0; i <= 28; i++) REGn_sig( i, sigcontext ) = frame->x[i];
 
 #ifdef linux
@@ -1941,5 +1962,8 @@ __ASM_GLOBAL_POINTER( __ASM_NAME("__wine_unix_call_dispatcher_kernel_stack_ptr")
                       __ASM_LOCAL_LABEL("__wine_unix_call_dispatcher_kernel_stack") )
 __ASM_GLOBAL_POINTER( __ASM_NAME("__wine_unix_call_dispatcher_user_stack"),
                       __ASM_LOCAL_LABEL("__wine_unix_call_dispatcher_user_stack") )
+
+__ASM_GLOBAL_POINTER( __ASM_NAME("call_user_mode_callback_user_stack_ptr"),
+                      __ASM_LOCAL_LABEL("call_user_mode_callback_user_stack") )
 
 #endif  /* __aarch64__ */

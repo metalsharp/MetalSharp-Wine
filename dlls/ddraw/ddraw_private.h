@@ -60,9 +60,8 @@ struct FvfToDecl
 
 #define DDRAW_STRIDE_ALIGNMENT  8
 
-#define DDRAW_WINED3D_FLAGS     (WINED3D_LEGACY_DEPTH_BIAS | WINED3D_RESTORE_MODE_ON_ACTIVATE \
-        | WINED3D_FOCUS_MESSAGES | WINED3D_PIXEL_CENTER_INTEGER | WINED3D_LEGACY_UNBOUND_RESOURCE_COLOR \
-        | WINED3D_NO_PRIMITIVE_RESTART | WINED3D_LEGACY_CUBEMAP_FILTERING | WINED3D_NO_DRAW_INDIRECT)
+#define DDRAW_WINED3D_FLAGS     (WINED3D_LEGACY | WINED3D_LEGACY_DEPTH_BIAS \
+        | WINED3D_RESTORE_MODE_ON_ACTIVATE | WINED3D_FOCUS_MESSAGES)
 
 #define DDRAW_WINED3D_SWAPCHAIN_FLAGS (WINED3D_SWAPCHAIN_ALLOW_MODE_SWITCH \
         | WINED3D_SWAPCHAIN_IMPLICIT | WINED3D_SWAPCHAIN_REGISTER_TOPMOST_TIMER)
@@ -557,7 +556,7 @@ struct d3d_execute_buffer
 
     /* This buffer will store the transformed vertices */
     unsigned int         index_size, index_pos;
-    unsigned int         vertex_size, src_vertex_pos;
+    unsigned int         vertex_size;
     struct wined3d_buffer *src_vertex_buffer, *dst_vertex_buffer, *index_buffer;
 
     /* This flags is set to TRUE if we allocated ourselves the

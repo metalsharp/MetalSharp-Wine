@@ -1,5 +1,6 @@
 /*
  * Process synchronisation
+ * WineForge-Internal: msync-v6.
  *
  * Copyright 1996, 1997, 1998 Marcus Meissner
  * Copyright 1997, 1999 Alexandre Julliard
@@ -959,14 +960,24 @@ static NTSTATUS inproc_wait( DWORD count, const HANDLE *handles, WAIT_TYPE type,
             if (ret) return ret;
             release_inproc_sync( syncs[0] );
         }
-        else if (do_msync() && count > 1 && type == WaitAny)
+
+        else if (do_msync() && count > 1 && count <= ARRAY_SIZE(syncs) &&
+                 (type == WaitAny || type == WaitAll) && !alertable &&
+                 (!timeout || timeout->QuadPart <= 0))
         {
+            enum inproc_sync_type desired[ARRAY_SIZE(syncs)];
             int i;
 
             for (i = 0; i < count; i++)
             {
-                if (!msync_handle_is_local_event( handles[i] )) return STATUS_NOT_IMPLEMENTED;
-                ret = get_inproc_sync( handles[i], INPROC_SYNC_EVENT, SYNCHRONIZE, &stack[i], &syncs[i] );
+                if (msync_handle_is_local_event( handles[i] )) desired[i] = INPROC_SYNC_EVENT;
+                else if (msync_handle_is_local_semaphore( handles[i] )) desired[i] = INPROC_SYNC_SEMAPHORE;
+                else if (msync_handle_is_local_mutex( handles[i] )) desired[i] = INPROC_SYNC_MUTEX;
+                else return STATUS_NOT_IMPLEMENTED;
+            }
+            for (i = 0; i < count; i++)
+            {
+                ret = get_inproc_sync( handles[i], desired[i], SYNCHRONIZE, &stack[i], &syncs[i] );
                 if (ret)
                 {
                     while (i--) release_inproc_sync( syncs[i] );
@@ -1158,11 +1169,14 @@ NTSTATUS WINAPI NtQuerySemaphore( HANDLE handle, SEMAPHORE_INFORMATION_CLASS cla
 #if defined(__APPLE__) && defined(__x86_64__)
 #define NtReleaseSemaphore d3dmetal_sysv_NtReleaseSemaphore
 #endif
-NTSTATUS WINAPI NtReleaseSemaphore( HANDLE handle, ULONG count, ULONG *previous )
+NTSTATUS WINAPI NtReleaseSemaphore( HANDLE handle, LONG count, ULONG *previous )
 {
     unsigned int ret;
 
     TRACE( "handle %p, count %u, prev_count %p\n", handle, count, previous );
+
+    if ((LONG)count <= 0)
+        return STATUS_INVALID_PARAMETER;
 
     if ((ret = msync_release_semaphore( handle, count, previous )) != STATUS_NOT_IMPLEMENTED)
         return ret;
@@ -1190,7 +1204,7 @@ NTSTATUS WINAPI NtReleaseSemaphore( HANDLE handle, ULONG count, ULONG *previous 
 #endif
 
 #if defined(__APPLE__) && defined(__x86_64__)
-NTSTATUS D3DMETAL_IMPORT_ATTR d3dmetal_import_NtReleaseSemaphore( HANDLE handle, ULONG count, ULONG *previous )
+NTSTATUS D3DMETAL_IMPORT_ATTR d3dmetal_import_NtReleaseSemaphore( HANDLE handle, LONG count, ULONG *previous )
 {
     return d3dmetal_sysv_NtReleaseSemaphore( handle, count, previous );
 }
@@ -2022,7 +2036,7 @@ static NTSTATUS get_image_machine( HANDLE handle, USHORT *machine )
                          &iosb, &dos_hdr, sizeof(dos_hdr), &offset, NULL );
     if (!status)
     {
-        offset.QuadPart = dos_hdr.e_lfanew;
+        offset.QuadPart = (ULONG)dos_hdr.e_lfanew;
         status = NtReadFile( handle, NULL, NULL, NULL, &iosb,
                              &nt_hdr, FIELD_OFFSET(IMAGE_NT_HEADERS, OptionalHeader), &offset, NULL );
         if (!status)
@@ -3983,4 +3997,14 @@ NTSTATUS WINAPI NtConvertBetweenAuxiliaryCounterAndPerformanceCounter( ULONG fla
     if (!from) return STATUS_ACCESS_VIOLATION;
 
     return STATUS_NOT_SUPPORTED;
+}
+
+/***********************************************************************
+ *           NtOpenPrivateNamespace (NTDLL.@)
+ */
+NTSTATUS WINAPI NtOpenPrivateNamespace( HANDLE *handle, ACCESS_MASK access, const OBJECT_ATTRIBUTES *attr, const OBJECT_BOUNDARY_DESCRIPTOR *descriptor )
+{
+    FIXME( "%p, %#x, %p, %p stub.\n", handle, access, attr, descriptor );
+
+    return STATUS_NOT_IMPLEMENTED;
 }

@@ -176,13 +176,12 @@ static WCHAR *get_deferred_action(const WCHAR *action, const WCHAR *actiondata, 
     LPWSTR deferred;
     DWORD len;
 
-    if (!actiondata)
-        return wcsdup(action);
+    if (!usersid || !prodcode) return NULL;
+    if (!actiondata) return wcsdup(action);
 
-    len = lstrlenW(action) + lstrlenW(actiondata) +
-          lstrlenW(usersid) + lstrlenW(prodcode) +
+    len = lstrlenW(action) + lstrlenW(actiondata) + lstrlenW(usersid) + lstrlenW(prodcode) +
           lstrlenW(L"[%s<=>%s<=>%s]%s") - 7;
-    deferred = malloc(len * sizeof(WCHAR));
+    if (!(deferred = malloc(len * sizeof(WCHAR)))) return NULL;
 
     swprintf(deferred, len, L"[%s<=>%s<=>%s]%s", actiondata, usersid, prodcode, action);
     return deferred;
@@ -586,15 +585,17 @@ static HANDLE get_admin_token(void)
     return linked.LinkedToken;
 }
 
-static DWORD custom_start_server(MSIPACKAGE *package, DWORD arch)
+static DWORD custom_start_server(MSIPACKAGE *package, DWORD arch, USHORT machine)
 {
-    WCHAR path[MAX_PATH], cmdline[MAX_PATH + 23];
+    WCHAR path[MAX_PATH], cmdline[MAX_PATH + 23], buffer[24];
     PROCESS_INFORMATION pi = {0};
-    STARTUPINFOW si = {0};
-    WCHAR buffer[24];
+    STARTUPINFOEXW si = { .StartupInfo.cb = sizeof(si) };
     HANDLE token;
     void *cookie;
     HANDLE pipe;
+    SIZE_T size = 1024;
+    USHORT process_machine, native_machine;
+    DWORD flags = 0;
 
     if ((arch == SCS_32BIT_BINARY && package->custom_server_32_process) ||
         (arch == SCS_64BIT_BINARY && package->custom_server_64_process))
@@ -617,18 +618,27 @@ static DWORD custom_start_server(MSIPACKAGE *package, DWORD arch)
     swprintf(cmdline, ARRAY_SIZE(cmdline), L"%s -Embedding %d", path, GetCurrentProcessId());
 
     token = get_admin_token();
+    IsWow64Process2(GetCurrentProcess(), &process_machine, &native_machine);
+
+    if (machine == IMAGE_FILE_MACHINE_AMD64 && native_machine != IMAGE_FILE_MACHINE_AMD64)
+    {
+        si.lpAttributeList = malloc(size);
+        InitializeProcThreadAttributeList(si.lpAttributeList, 1, 0, &size);
+        UpdateProcThreadAttribute(si.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_MACHINE_TYPE, &machine, sizeof(machine), NULL, NULL);
+        flags = EXTENDED_STARTUPINFO_PRESENT;
+    }
 
     if (is_wow64 && arch == SCS_64BIT_BINARY)
     {
         Wow64DisableWow64FsRedirection(&cookie);
-        CreateProcessAsUserW(token, path, cmdline, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi);
+        CreateProcessAsUserW(token, path, cmdline, NULL, NULL, FALSE, flags, NULL, NULL, &si.StartupInfo, &pi);
         Wow64RevertWow64FsRedirection(cookie);
     }
     else
-        CreateProcessAsUserW(token, path, cmdline, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi);
+        CreateProcessAsUserW(token, path, cmdline, NULL, NULL, FALSE, flags, NULL, NULL, &si.StartupInfo, &pi);
 
     if (token) CloseHandle(token);
-
+    free(si.lpAttributeList);
     CloseHandle(pi.hThread);
 
     if (arch == SCS_32BIT_BINARY)
@@ -717,7 +727,7 @@ static DWORD WINAPI custom_client_thread(void *arg)
 }
 
 /* based on kernel32.GetBinaryTypeW() */
-static BOOL get_binary_type( const WCHAR *name, DWORD *type )
+static BOOL get_binary_type( const WCHAR *name, DWORD *type, USHORT *machine )
 {
     HANDLE hfile, mapping;
     NTSTATUS status;
@@ -739,7 +749,8 @@ static BOOL get_binary_type( const WCHAR *name, DWORD *type )
             status = NtQuerySection( mapping, SectionImageInformation, &info, sizeof(info), NULL );
             CloseHandle( mapping );
             if (status) return FALSE;
-            switch (info.Machine)
+
+            switch ((*machine = info.Machine))
             {
             case IMAGE_FILE_MACHINE_I386:
             case IMAGE_FILE_MACHINE_ARMNT:
@@ -754,6 +765,7 @@ static BOOL get_binary_type( const WCHAR *name, DWORD *type )
             }
         }
     case STATUS_INVALID_IMAGE_WIN_64:
+        *machine = IMAGE_FILE_MACHINE_UNKNOWN;
         *type = SCS_64BIT_BINARY;
         return TRUE;
     default:
@@ -766,11 +778,10 @@ static custom_action_info *do_msidbCustomActionTypeDll(
 {
     custom_action_info *info;
     RPC_STATUS status;
+    USHORT machine = IMAGE_FILE_MACHINE_UNKNOWN;
     BOOL ret;
 
-    info = malloc( sizeof *info );
-    if (!info)
-        return NULL;
+    if (!(info = calloc( 1, sizeof(*info) ))) return NULL;
 
     msiobj_addref( &package->hdr );
     info->package = package;
@@ -794,6 +805,7 @@ static custom_action_info *do_msidbCustomActionTypeDll(
         if (status != RPC_S_OK)
         {
             ERR("RpcServerUseProtseqEp failed: %#lx\n", status);
+            free_custom_action_data( info );
             return NULL;
         }
 
@@ -802,13 +814,14 @@ static custom_action_info *do_msidbCustomActionTypeDll(
         if (status != RPC_S_OK)
         {
             ERR("RpcServerRegisterIfEx failed: %#lx\n", status);
+            free_custom_action_data( info );
             return NULL;
         }
 
         info->package->rpc_server_started = 1;
     }
 
-    ret = get_binary_type(source, &info->arch);
+    ret = get_binary_type(source, &info->arch, &machine);
     if (!ret)
         info->arch = (sizeof(void *) == 8 ? SCS_64BIT_BINARY : SCS_32BIT_BINARY);
 
@@ -819,7 +832,7 @@ static custom_action_info *do_msidbCustomActionTypeDll(
         return NULL;
     }
 
-    custom_start_server(package, info->arch);
+    custom_start_server(package, info->arch, machine);
 
     info->handle = CreateThread(NULL, 0, custom_client_thread, info, 0, NULL);
     if (!info->handle)

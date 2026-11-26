@@ -690,9 +690,11 @@ static HRESULT open_module16_icon(LPCWSTR szFileName, int nIndex, IStream **ppSt
     }
 
     dosHeader = (IMAGE_DOS_HEADER*)fileBytes;
-    if (sizeof(IMAGE_DOS_HEADER) >= fileSize || dosHeader->e_magic != IMAGE_DOS_SIGNATURE)
+    if (sizeof(IMAGE_DOS_HEADER) >= fileSize ||
+        dosHeader->e_magic != IMAGE_DOS_SIGNATURE ||
+        (ULONG)dosHeader->e_lfanew >= RTL_IMAGE_MAX_DOS_HEADER)
     {
-        WINE_WARN("file too small for MZ header\n");
+        WINE_WARN("not a valid MZ file\n");
         goto end;
     }
 
@@ -1277,7 +1279,7 @@ static BOOL write_desktop_entry(const WCHAR *link, const WCHAR *location, const 
         heap_free( path );
     }
     fprintf(file, "wine \"%s\"", escape(path));
-    if (args) fprintf(file, " \"%s\"", escape(args) );
+    if (args && *args) fprintf(file, " \"%s\"", escape(args) );
     fputc( '\n', file );
     fprintf(file, "Type=Application\n");
     fprintf(file, "StartupNotify=true\n");
@@ -1546,23 +1548,20 @@ static HRESULT get_cmdline( IShellLinkW *sl, LPWSTR szPath, DWORD pathSize,
                 d=szPath;
                 while (*s)
                 {
-                    if ((*s==0x0009 || *s==0x0020) && !in_quotes)
+                    if (!in_quotes)
                     {
                         /* skip the remaining spaces */
-                        do {
+                        while (*s == '\t' || *s == ' ')
                             s++;
-                        } while (*s==0x0009 || *s==0x0020);
                         break;
                     }
-                    else if (*s==0x005c)
+                    else if (*s == '\\')
                     {
-                        /* '\\' */
                         *d++=*s++;
                         bcount++;
                     }
-                    else if (*s==0x0022)
+                    else if (*s == '"')
                     {
-                        /* '"' */
                         if ((bcount & 1)==0)
                         {
                             /* Preceded by an even number of '\', this is

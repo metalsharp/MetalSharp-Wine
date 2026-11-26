@@ -1,5 +1,8 @@
 /*
- * WineForge userspace synchronization client state
+ * msync client shared state
+ * WineForge-Internal: msync-v6.
+ *
+ * Ported from WineForge's USync 6 (dlls/ntdll/unix/usync.h); MetalSharp Wine renamed it msync and modified it.
  *
  * Copyright (C) 2026 Radim Vesely
  *

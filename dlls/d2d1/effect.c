@@ -613,10 +613,49 @@ static struct d2d_transform_node * d2d_transform_graph_get_node(const struct d2d
     return NULL;
 }
 
+static HRESULT d2d_effect_render_info_create(struct d2d_render_info **obj);
+
+static HRESULT d2d_effect_transform_graph_node_set_render_info(struct d2d_transform_node *node)
+{
+    ID2D1DrawTransform *draw_transform;
+    IUnknown *object = NULL;
+    HRESULT hr = S_OK;
+
+    if (SUCCEEDED(ID2D1TransformNode_QueryInterface(node->object, &IID_ID2D1DrawTransform,
+            (void **)&draw_transform)))
+    {
+        if (SUCCEEDED(hr = d2d_effect_render_info_create(&node->render_info)))
+        {
+            hr = ID2D1DrawTransform_SetDrawInfo(draw_transform, &node->render_info->ID2D1DrawInfo_iface);
+            if (FAILED(hr))
+                WARN("Failed to set draw info, hr %#lx.\n", hr);
+        }
+        ID2D1DrawTransform_Release(draw_transform);
+    }
+    else if (SUCCEEDED(ID2D1TransformNode_QueryInterface(node->object, &IID_ID2D1SourceTransform,
+            (void **)&object)))
+    {
+        FIXME("Source transform nodes are not supported.\n");
+        hr = E_NOTIMPL;
+    }
+    else if (SUCCEEDED(ID2D1TransformNode_QueryInterface(node->object, &IID_ID2D1ComputeTransform,
+            (void **)&object)))
+    {
+        FIXME("Compute transform nodes are not supported.\n");
+        hr = E_NOTIMPL;
+    }
+
+    if (object)
+        IUnknown_Release(object);
+
+    return hr;
+}
+
 static HRESULT d2d_transform_graph_add_node(struct d2d_transform_graph *graph,
         ID2D1TransformNode *object)
 {
     struct d2d_transform_node *node;
+    HRESULT hr;
 
     if (!(node = calloc(1, sizeof(*node))))
         return E_OUTOFMEMORY;
@@ -629,9 +668,18 @@ static HRESULT d2d_transform_graph_add_node(struct d2d_transform_graph *graph,
 
     node->object = object;
     ID2D1TransformNode_AddRef(node->object);
-    list_add_tail(&graph->nodes, &node->entry);
+    if (SUCCEEDED(hr = d2d_effect_transform_graph_node_set_render_info(node)))
+    {
+        list_add_tail(&graph->nodes, &node->entry);
+    }
+    else
+    {
+        ID2D1TransformNode_Release(node->object);
+        free(node->inputs);
+        free(node);
+    }
 
-    return S_OK;
+    return hr;
 }
 
 static void d2d_transform_node_disconnect(struct d2d_transform_node *node)
@@ -1804,6 +1852,120 @@ static HRESULT __stdcall scale_factory(IUnknown **effect)
     return d2d_effect_create_impl(effect, &properties, sizeof(properties));
 }
 
+static const WCHAR premultiply_description[] =
+L"<?xml version='1.0'?>                                                   \
+  <Effect>                                                                \
+    <Property name='DisplayName' type='string' value='Premultiply'/>      \
+    <Property name='Author'      type='string' value='The Wine Project'/> \
+    <Property name='Category'    type='string' value='Stub'/>             \
+    <Property name='Description' type='string' value='Premultiply'/>      \
+    <Inputs >                                                             \
+      <Input name='Source'/>                                              \
+    </Inputs>                                                             \
+  </Effect>";
+
+static HRESULT __stdcall premultiply_factory(IUnknown **effect)
+{
+    return d2d_effect_create_impl(effect, NULL, 0);
+}
+
+static const WCHAR _3d_transform_description[] =
+L"<?xml version='1.0'?>                                                   \
+  <Effect>                                                                \
+    <Property name='DisplayName' type='string' value='3D Transform'/>     \
+    <Property name='Author'      type='string' value='The Wine Project'/> \
+    <Property name='Category'    type='string' value='Stub'/>             \
+    <Property name='Description' type='string' value='3D Transform'/>     \
+    <Inputs>                                                              \
+      <Input name='Source'/>                                              \
+    </Inputs>                                                             \
+    <Property name='InterpolationMode' type='enum' />                     \
+    <Property name='BorderMode' type='enum' />                            \
+    <Property name='TransformMatrix' type='matrix4x4' />                  \
+  </Effect>";
+
+struct _3d_transform_properties
+{
+    D2D1_3DTRANSFORM_INTERPOLATION_MODE interpolation_mode;
+    D2D1_BORDER_MODE border_mode;
+    D2D_MATRIX_4X4_F transform_matrix;
+};
+
+EFFECT_PROPERTY_RW(_3d_transform, interpolation_mode, ENUM)
+EFFECT_PROPERTY_RW(_3d_transform, border_mode, ENUM)
+EFFECT_PROPERTY_RW(_3d_transform, transform_matrix, MATRIX_4X4)
+
+static const D2D1_PROPERTY_BINDING _3d_transform_bindings[] =
+{
+    { L"InterpolationMode", BINDING_RW(_3d_transform, interpolation_mode) },
+    { L"BorderMode", BINDING_RW(_3d_transform, border_mode) },
+    { L"TransformMatrix", BINDING_RW(_3d_transform, transform_matrix) },
+};
+
+static HRESULT __stdcall _3d_transform_factory(IUnknown **effect)
+{
+    static const struct _3d_transform_properties properties =
+    {
+        .interpolation_mode = D2D1_3DTRANSFORM_INTERPOLATION_MODE_LINEAR,
+        .border_mode = D2D1_BORDER_MODE_SOFT,
+        .transform_matrix = { ._11 = 1.0f, ._22 = 1.0f, ._33 = 1.0f, ._44 = 1.0f },
+    };
+    return d2d_effect_create_impl(effect, &properties, sizeof(properties));
+}
+
+static const WCHAR color_management_description[] =
+L"<?xml version='1.0'?>                                                   \
+  <Effect>                                                                \
+    <Property name='DisplayName' type='string' value='Color Management'/> \
+    <Property name='Author'      type='string' value='The Wine Project'/> \
+    <Property name='Category'    type='string' value='Stub'/>             \
+    <Property name='Description' type='string' value='Color Management'/> \
+    <Inputs>                                                              \
+      <Input name='Source'/>                                              \
+    </Inputs>                                                             \
+    <Property name='SourceColorContext' type='iunknown' />                \
+    <Property name='SourceRenderingIntent' type='enum' />                 \
+    <Property name='DestinationColorContext' type='iunknown' />           \
+    <Property name='DestinationRenderingIntent' type='enum' />            \
+    <Property name='AlphaMode' type='enum' />                             \
+    <Property name='Quality' type='enum' />                               \
+  </Effect>";
+
+struct color_management_properties
+{
+    ID2D1ColorContext *source_color_context;
+    D2D1_COLORMANAGEMENT_RENDERING_INTENT source_rendering_intent;
+    ID2D1ColorContext *destination_color_context;
+    D2D1_COLORMANAGEMENT_RENDERING_INTENT destination_rendering_intent;
+    D2D1_COLORMANAGEMENT_ALPHA_MODE alpha_mode;
+    D2D1_COLORMANAGEMENT_QUALITY quality;
+};
+
+EFFECT_PROPERTY_RW(color_management, source_rendering_intent, ENUM)
+EFFECT_PROPERTY_RW(color_management, destination_rendering_intent, ENUM)
+EFFECT_PROPERTY_RW(color_management, alpha_mode, ENUM)
+EFFECT_PROPERTY_RW(color_management, quality, ENUM)
+
+static const D2D1_PROPERTY_BINDING color_management_bindings[] =
+{
+    { L"SourceRenderingIntent", BINDING_RW(color_management, source_rendering_intent) },
+    { L"DestinationRenderingIntent", BINDING_RW(color_management, destination_rendering_intent) },
+    { L"AlphaMode", BINDING_RW(color_management, alpha_mode) },
+    { L"Quality", BINDING_RW(color_management, quality) },
+};
+
+static HRESULT __stdcall color_management_factory(IUnknown **effect)
+{
+    static const struct color_management_properties properties =
+    {
+        .source_rendering_intent = D2D1_COLORMANAGEMENT_RENDERING_INTENT_PERCEPTUAL,
+        .destination_rendering_intent = D2D1_COLORMANAGEMENT_RENDERING_INTENT_PERCEPTUAL,
+        .alpha_mode = D2D1_COLORMANAGEMENT_ALPHA_MODE_PREMULTIPLIED,
+        .quality = D2D1_COLORMANAGEMENT_QUALITY_NORMAL,
+    };
+    return d2d_effect_create_impl(effect, &properties, sizeof(properties));
+}
+
 void d2d_effects_init_builtins(struct d2d_factory *factory)
 {
     static const struct builtin_description
@@ -1835,6 +1997,9 @@ void d2d_effects_init_builtins(struct d2d_factory *factory)
         { &CLSID_D2D1HueRotation, X2(hue_rotation) },
         { &CLSID_D2D1Saturation, X2(saturation) },
         { &CLSID_D2D1Scale, X2(scale) },
+        { &CLSID_D2D1Premultiply, X(premultiply) },
+        { &CLSID_D2D13DTransform, X2(_3d_transform) },
+        { &CLSID_D2D1ColorManagement, X2(color_management) },
 #undef X2
 #undef X
     };
@@ -2166,7 +2331,6 @@ static HRESULT d2d_effect_property_get_value(const struct d2d_effect_properties 
     switch (prop->type)
     {
         case D2D1_PROPERTY_TYPE_BLOB:
-            memset(value, 0, size);
             break;
         case D2D1_PROPERTY_TYPE_STRING:
             return d2d_effect_return_string(prop->data.ptr, (WCHAR *)value, size / sizeof(WCHAR));
@@ -2475,14 +2639,17 @@ static HRESULT STDMETHODCALLTYPE d2d_effect_context_CreateVertexBuffer(ID2D1Effe
     if (id && d2d_device_get_indexed_object(&context->vertex_buffers, id, (IUnknown **)buffer))
         return S_OK;
 
-    if (SUCCEEDED(hr = d2d_vertex_buffer_create(buffer)))
-    {
-        if (id)
-            hr = d2d_device_add_indexed_object(&context->vertex_buffers, id, (IUnknown *)*buffer);
-    }
+    if (FAILED(hr = d2d_vertex_buffer_create(buffer)))
+        return hr;
+
+    if (id)
+        hr = d2d_device_add_indexed_object(&context->vertex_buffers, id, (IUnknown *)*buffer);
 
     if (FAILED(hr))
+    {
+        ID2D1VertexBuffer_Release(*buffer);
         *buffer = NULL;
+    }
 
     return hr;
 }
@@ -3059,10 +3226,8 @@ static UINT32 STDMETHODCALLTYPE d2d_effect_properties_GetPropertyNameLength(ID2D
 
     TRACE("iface %p, index %u.\n", iface, index);
 
-    if (!(prop = d2d_effect_properties_get_property_by_index(properties, index)))
-        return D2DERR_INVALID_PROPERTY;
-
-    return wcslen(prop->name);
+    prop = d2d_effect_properties_get_property_by_index(properties, index);
+    return prop ? wcslen(prop->name) : 0;
 }
 
 static D2D1_PROPERTY_TYPE STDMETHODCALLTYPE d2d_effect_properties_GetType(ID2D1Properties *iface,
@@ -3359,64 +3524,6 @@ static HRESULT d2d_effect_render_info_create(struct d2d_render_info **obj)
     return S_OK;
 }
 
-static bool d2d_transform_node_needs_render_info(const struct d2d_transform_node *node)
-{
-    static const GUID *iids[] =
-    {
-        &IID_ID2D1SourceTransform,
-        &IID_ID2D1ComputeTransform,
-        &IID_ID2D1DrawTransform,
-    };
-    unsigned int i;
-    IUnknown *obj;
-
-    for (i = 0; i < ARRAY_SIZE(iids); ++i)
-    {
-        if (SUCCEEDED(ID2D1TransformNode_QueryInterface(node->object, iids[i], (void **)&obj)))
-        {
-            IUnknown_Release(obj);
-            return true;
-        }
-    }
-
-    return false;
-}
-
-static HRESULT d2d_effect_transform_graph_initialize_nodes(struct d2d_transform_graph *graph)
-{
-    ID2D1DrawTransform *draw_transform;
-    struct d2d_transform_node *node;
-    HRESULT hr;
-
-    LIST_FOR_EACH_ENTRY(node, &graph->nodes, struct d2d_transform_node, entry)
-    {
-        if (d2d_transform_node_needs_render_info(node))
-        {
-            if (FAILED(hr = d2d_effect_render_info_create(&node->render_info)))
-                return hr;
-        }
-
-        if (SUCCEEDED(ID2D1TransformNode_QueryInterface(node->object, &IID_ID2D1DrawTransform,
-                (void **)&draw_transform)))
-        {
-            hr = ID2D1DrawTransform_SetDrawInfo(draw_transform, &node->render_info->ID2D1DrawInfo_iface);
-            ID2D1DrawTransform_Release(draw_transform);
-            if (FAILED(hr))
-            {
-                WARN("Failed to set draw info, hr %#lx.\n", hr);
-                return hr;
-            }
-        }
-        else
-        {
-            FIXME("Unsupported node %p.\n", node);
-            return E_NOTIMPL;
-        }
-    }
-
-    return S_OK;
-}
-
 HRESULT d2d_effect_create(struct d2d_device_context *context, const CLSID *effect_id,
         ID2D1Effect **effect)
 {
@@ -3462,7 +3569,7 @@ HRESULT d2d_effect_create(struct d2d_device_context *context, const CLSID *effec
 
     if (FAILED(hr = d2d_transform_graph_create(input_count, &object->graph)))
     {
-        ID2D1EffectContext_Release(&effect_context->ID2D1EffectContext_iface);
+        ID2D1Effect_Release(&object->ID2D1Effect_iface);
         return hr;
     }
 
@@ -3477,13 +3584,6 @@ HRESULT d2d_effect_create(struct d2d_device_context *context, const CLSID *effec
             &object->graph->ID2D1TransformGraph_iface)))
     {
         WARN("Failed to initialize effect, hr %#lx.\n", hr);
-        ID2D1Effect_Release(&object->ID2D1Effect_iface);
-        return hr;
-    }
-
-    if (FAILED(hr = d2d_effect_transform_graph_initialize_nodes(object->graph)))
-    {
-        WARN("Failed to initialize graph nodes, hr %#lx.\n", hr);
         ID2D1Effect_Release(&object->ID2D1Effect_iface);
         return hr;
     }

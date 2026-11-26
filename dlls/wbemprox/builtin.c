@@ -412,6 +412,7 @@ static const struct column col_process[] =
     { L"Create",          CIM_FLAG_ARRAY|COL_FLAG_METHOD },
     { L"GetOwner",        CIM_FLAG_ARRAY|COL_FLAG_METHOD },
 };
+
 static const struct column col_processor[] =
 {
     { L"AddressWidth",              CIM_UINT16 },
@@ -419,9 +420,11 @@ static const struct column col_processor[] =
     { L"Caption",                   CIM_STRING|COL_FLAG_DYNAMIC },
     { L"CpuStatus",                 CIM_UINT16 },
     { L"CurrentClockSpeed",         CIM_UINT32 },
+    { L"CurrentVoltage",            CIM_UINT16 },
     { L"DataWidth",                 CIM_UINT16 },
     { L"Description",               CIM_STRING|COL_FLAG_DYNAMIC },
     { L"DeviceId",                  CIM_STRING|COL_FLAG_DYNAMIC|COL_FLAG_KEY },
+    { L"ExtClock",                  CIM_UINT32 },
     { L"Family",                    CIM_UINT16 },
     { L"Level",                     CIM_UINT16 },
     { L"Manufacturer",              CIM_STRING|COL_FLAG_DYNAMIC },
@@ -432,9 +435,11 @@ static const struct column col_processor[] =
     { L"ProcessorId",               CIM_STRING|COL_FLAG_DYNAMIC },
     { L"ProcessorType",             CIM_UINT16 },
     { L"Revision",                  CIM_UINT16 },
+    { L"Status",                    CIM_STRING },
     { L"UniqueId",                  CIM_STRING },
     { L"Version",                   CIM_STRING|COL_FLAG_DYNAMIC },
 };
+
 static const struct column col_qualifier[] =
 {
     { L"Class",        CIM_STRING },
@@ -469,18 +474,22 @@ static const struct column col_service[] =
 {
     { L"AcceptPause",   CIM_BOOLEAN },
     { L"AcceptStop",    CIM_BOOLEAN },
+    { L"Description",   CIM_STRING|COL_FLAG_DYNAMIC },
     { L"DisplayName",   CIM_STRING|COL_FLAG_DYNAMIC },
     { L"Name",          CIM_STRING|COL_FLAG_DYNAMIC|COL_FLAG_KEY },
+    { L"PathName",      CIM_STRING|COL_FLAG_DYNAMIC },
     { L"ProcessID",     CIM_UINT32 },
     { L"ServiceType",   CIM_STRING },
     { L"StartMode",     CIM_STRING },
+    { L"StartName",     CIM_STRING|COL_FLAG_DYNAMIC },
     { L"State",         CIM_STRING },
     { L"SystemName",    CIM_STRING|COL_FLAG_DYNAMIC },
     /* methods */
-    { L"PauseService",  CIM_FLAG_ARRAY|COL_FLAG_METHOD },
-    { L"ResumeService", CIM_FLAG_ARRAY|COL_FLAG_METHOD },
-    { L"StartService",  CIM_FLAG_ARRAY|COL_FLAG_METHOD },
-    { L"StopService",   CIM_FLAG_ARRAY|COL_FLAG_METHOD },
+    { L"ChangeStartMode", CIM_FLAG_ARRAY|COL_FLAG_METHOD },
+    { L"PauseService",    CIM_FLAG_ARRAY|COL_FLAG_METHOD },
+    { L"ResumeService",   CIM_FLAG_ARRAY|COL_FLAG_METHOD },
+    { L"StartService",    CIM_FLAG_ARRAY|COL_FLAG_METHOD },
+    { L"StopService",     CIM_FLAG_ARRAY|COL_FLAG_METHOD },
 };
 static const struct column col_sid[] =
 {
@@ -994,6 +1003,7 @@ struct record_process
     class_method *create;
     class_method *get_owner;
 };
+
 struct record_processor
 {
     UINT16       addresswidth;
@@ -1001,9 +1011,11 @@ struct record_processor
     const WCHAR *caption;
     UINT16       cpu_status;
     UINT32       currentclockspeed;
+    UINT16       currentvoltage;
     UINT16       datawidth;
     const WCHAR *description;
     const WCHAR *device_id;
+    UINT32       extclock;
     UINT16       family;
     UINT16       level;
     const WCHAR *manufacturer;
@@ -1014,9 +1026,11 @@ struct record_processor
     const WCHAR *processor_id;
     UINT16       processortype;
     UINT16       revision;
+    const WCHAR *status;
     const WCHAR *unique_id;
     const WCHAR *version;
 };
+
 struct record_qualifier
 {
     const WCHAR *class;
@@ -1047,23 +1061,29 @@ struct record_rawsmbiostables
     UINT8        minor_version;
     int          used_20_calling_method;
 };
+
 struct record_service
 {
     int          accept_pause;
     int          accept_stop;
+    const WCHAR *description;
     const WCHAR *displayname;
     const WCHAR *name;
+    const WCHAR *pathname;
     UINT32       process_id;
     const WCHAR *servicetype;
     const WCHAR *startmode;
+    const WCHAR *startname;
     const WCHAR *state;
     const WCHAR *systemname;
     /* methods */
+    class_method *change_start_mode;
     class_method *pause_service;
     class_method *resume_service;
     class_method *start_service;
     class_method *stop_service;
 };
+
 struct record_sid
 {
     const WCHAR *accountname;
@@ -1272,6 +1292,8 @@ static const struct record_param data_param[] =
     { L"Win32_Process", L"GetOwner", -1, L"ReturnValue", CIM_UINT32 },
     { L"Win32_Process", L"GetOwner", -1, L"User", CIM_STRING },
     { L"Win32_Process", L"GetOwner", -1, L"Domain", CIM_STRING },
+    { L"Win32_Service", L"ChangeStartMode", 1, L"StartMode", CIM_STRING },
+    { L"Win32_Service", L"ChangeStartMode", -1, L"ReturnValue", CIM_UINT32 },
     { L"Win32_Service", L"PauseService", -1, L"ReturnValue", CIM_UINT32 },
     { L"Win32_Service", L"ResumeService", -1, L"ReturnValue", CIM_UINT32 },
     { L"Win32_Service", L"StartService", -1, L"ReturnValue", CIM_UINT32 },
@@ -1825,7 +1847,7 @@ static enum fill_status fill_rawbiosdata( struct table *table, const struct expr
     if (!resize_table( table, 1, sizeof(*rec) )) return FILL_STATUS_FAILED;
 
     len = GetSystemFirmwareTable( RSMB, 0, NULL, 0 );
-    if (!(buf = malloc( len ))) return FILL_STATUS_FAILED;
+    if (len < sizeof(*buf) || !(buf = malloc( len ))) return FILL_STATUS_FAILED;
     GetSystemFirmwareTable( RSMB, 0, buf, len );
 
     rec = (struct record_rawsmbiostables *)table->data;
@@ -3729,14 +3751,14 @@ static enum fill_status fill_printer( struct table *table, const struct expr *co
         swprintf( id, ARRAY_SIZE( id ), L"Printer%u", i );
         rec->device_id            = wcsdup( id );
         rec->drivername           = wcsdup( info[i].pDriverName );
-        rec->horizontalresolution = info[i].pDevMode->dmPrintQuality;
+        rec->horizontalresolution = info[i].pDevMode ? info[i].pDevMode->dmPrintQuality : 0;
         rec->local                = -1;
-        rec->location             = wcsdup( info[i].pLocation );
+        rec->location             = info[i].pLocation ? wcsdup( info[i].pLocation ) : NULL;
         rec->name                 = wcsdup( info[i].pPrinterName );
         rec->portname             = wcsdup( info[i].pPortName );
-        if (!match_row( table, i, cond, &status ))
+        if (!match_row( table, num_rows, cond, &status ))
         {
-            free_row_values( table, i );
+            free_row_values( table, num_rows );
             continue;
         }
         offset += sizeof(*rec);
@@ -4003,10 +4025,12 @@ static enum fill_status fill_processor( struct table *table, const struct expr *
         rec->caption                = get_processor_caption( i );
         rec->cpu_status             = proc->status;
         rec->currentclockspeed      = get_processor_currentclockspeed( i );
+        rec->currentvoltage         = proc->voltage;
         rec->datawidth              = rec->addresswidth;
         rec->description            = get_processor_caption( i );
         swprintf( device_id, ARRAY_SIZE( device_id ), L"CPU%u", i );
         rec->device_id              = wcsdup( device_id );
+        rec->extclock               = proc->clock;
         rec->family                 = proc->family;
         rec->level                  = info.ProcessorLevel;
         rec->manufacturer           = get_processor_manufacturer( i, buf, len );
@@ -4018,6 +4042,7 @@ static enum fill_status fill_processor( struct table *table, const struct expr *
         rec->processor_id           = wcsdup( processor_id );
         rec->processortype          = proc->type;
         rec->revision               = info.ProcessorRevision;
+        rec->status                 = L"OK";
         rec->version                = wcsdup( version );
         if (!match_row( table, i, cond, &status ))
         {
@@ -4364,6 +4389,26 @@ done:
     return config;
 }
 
+static WCHAR *get_service_description( SC_HANDLE manager, const WCHAR *name )
+{
+    SC_HANDLE service;
+    SERVICE_DESCRIPTIONW *desc;
+    DWORD size;
+    WCHAR *ret = NULL;
+
+    if (!(service = OpenServiceW( manager, name, SERVICE_QUERY_CONFIG ))) return NULL;
+    QueryServiceConfig2W( service, SERVICE_CONFIG_DESCRIPTION, NULL, 0, &size );
+    if (GetLastError() != ERROR_INSUFFICIENT_BUFFER) goto done;
+    if (!(desc = malloc( size ))) goto done;
+    if (!QueryServiceConfig2W( service, SERVICE_CONFIG_DESCRIPTION, (BYTE *)desc, size, &size )) goto done;
+    ret = wcsdup( desc->lpDescription );
+    free( desc );
+
+done:
+    CloseServiceHandle( service );
+    return ret;
+}
+
 static enum fill_status fill_service( struct table *table, const struct expr *cond )
 {
     struct record_service *rec;
@@ -4406,19 +4451,23 @@ static enum fill_status fill_service( struct table *table, const struct expr *co
 
         status = &services[i].ServiceStatusProcess;
         rec = (struct record_service *)(table->data + offset);
-        rec->accept_pause   = (status->dwControlsAccepted & SERVICE_ACCEPT_PAUSE_CONTINUE) ? -1 : 0;
-        rec->accept_stop    = (status->dwControlsAccepted & SERVICE_ACCEPT_STOP) ? -1 : 0;
-        rec->displayname    = wcsdup( services[i].lpDisplayName );
-        rec->name           = wcsdup( services[i].lpServiceName );
-        rec->process_id     = status->dwProcessId;
-        rec->servicetype    = get_service_type( status->dwServiceType );
-        rec->startmode      = get_service_startmode( config->dwStartType );
-        rec->state          = get_service_state( status->dwCurrentState );
-        rec->systemname     = wcsdup( sysnameW );
-        rec->pause_service  = service_pause_service;
-        rec->resume_service = service_resume_service;
-        rec->start_service  = service_start_service;
-        rec->stop_service   = service_stop_service;
+        rec->accept_pause      = (status->dwControlsAccepted & SERVICE_ACCEPT_PAUSE_CONTINUE) ? -1 : 0;
+        rec->accept_stop       = (status->dwControlsAccepted & SERVICE_ACCEPT_STOP) ? -1 : 0;
+        rec->description       = get_service_description( manager, services[i].lpServiceName );
+        rec->displayname       = wcsdup( services[i].lpDisplayName );
+        rec->name              = wcsdup( services[i].lpServiceName );
+        rec->pathname          = wcsdup( config->lpBinaryPathName );
+        rec->process_id        = status->dwProcessId;
+        rec->servicetype       = get_service_type( status->dwServiceType );
+        rec->startmode         = get_service_startmode( config->dwStartType );
+        rec->startname         = wcsdup( config->lpServiceStartName );
+        rec->state             = get_service_state( status->dwCurrentState );
+        rec->systemname        = wcsdup( sysnameW );
+        rec->change_start_mode = service_change_start_mode;
+        rec->pause_service     = service_pause_service;
+        rec->resume_service    = service_resume_service;
+        rec->start_service     = service_start_service;
+        rec->stop_service      = service_stop_service;
         free( config );
         if (!match_row( table, row, cond, &fill_status ))
         {
@@ -4680,9 +4729,13 @@ static struct display_adapter *get_display_adapters( UINT *count )
 
     if (!(ret = malloc( nb_allocated * sizeof(*ret) ))) return NULL;
 
-    if ((devs = SetupDiGetClassDevsW( &GUID_DEVCLASS_DISPLAY, NULL, NULL, DIGCF_PRESENT )) == INVALID_HANDLE_VALUE) return NULL;
+    if ((devs = SetupDiGetClassDevsW( &GUID_DEVCLASS_DISPLAY, NULL, NULL, DIGCF_PRESENT )) == INVALID_HANDLE_VALUE)
+    {
+        free( ret );
+        return NULL;
+    }
 
-    while(SetupDiEnumDeviceInfo( devs, idx_devinfo++, &dev_info ))
+    while (SetupDiEnumDeviceInfo( devs, idx_devinfo++, &dev_info ))
     {
         WCHAR *driver, *instance_id;
         UINT key_len;
