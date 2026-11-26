@@ -568,6 +568,9 @@ for f in "$@"; do
 done 2>&1 | grep -v 'replacing existing signature' >&2
 exit "${PIPESTATUS[0]}"
 SH
+# Every file owner-writable: D3DMetal's trees come read-only from Apple's packages, and a read-only folder in the app
+# stops whatever copies it from removing it again (MetalSharp's DMG staging failed on them). Modes are not sealed.
+chmod -R u+w "$APP"
 echo "signing $(tr -cd '\0' < "$WORK/macho.list" | wc -c | tr -d ' ') Mach-O files"
 SIGN_ID="$IDENTITY" SIGN_FLAGS="${opts[*]:3}" xargs -0 -P "$(sysctl -n hw.ncpu)" -n 32 bash "$WORK/sign.sh" "$ENT" < "$WORK/macho.list"
 codesign "${opts[@]}" --entitlements "$ENT" "$C/MacOS/wine"

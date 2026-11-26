@@ -15,6 +15,10 @@ APP=$ROOT/dist/MetalSharp-Wine.app
 BUNDLE_ID=${BUNDLE_ID:-com.metalsharp.wine}
 IDENTITY=${SIGN_IDENTITY:--}
 PROFILE=${PROFILE:-$( [[ $IDENTITY != - ]] && ls $ROOT/signing/*.provisionprofile 2>/dev/null | head -1 )}
+# A Developer ID build needs the profile that grants the cross-architecture entitlement (MetalSharp's FEX DMG
+# refuses MetalSharp-Wine.app without embedded.provisionprofile): signing/*.provisionprofile, or PROFILE=
+[[ $IDENTITY == - || -n $PROFILE ]] ||
+  { echo "sign-app: no provisioning profile for $IDENTITY (put it in signing/ or set PROFILE)" >&2; exit 1; }
 
 if [[ -n $PROFILE ]]; then
   security cms -D -i $PROFILE > $ROOT/dist/profile.plist
