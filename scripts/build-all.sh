@@ -20,7 +20,7 @@
 set -e
 S=${0:A:h}
 source $S/env.sh
-NAME=${NAME:-metalsharp-wine-9.0-arm64}
+NAME=${NAME:-metalsharp-wine-10.0-arm64}
 LOG=$ROOT/logs/build-all
 
 steps=(

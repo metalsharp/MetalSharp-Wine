@@ -2,6 +2,43 @@
 
 The [release notes](https://github.com/metalsharp/MetalSharp-Wine/releases) have the full list for each release.
 
+## 10.0
+
+Both builds:
+
+- **Mullion `2702d6e1`**: textures, render targets and draws are much faster. Some examples, measured on an Apple M6:
+  - D3D11 GPU copies into a buffer the render pass read: 147× faster.
+  - D3D12 aliasing barriers no longer end the render pass: 74×.
+  - D3D12 texture creation: 60×.
+  - Big render targets are reused instead of remade: 46× (D3D12) and 8.8× (D3D11).
+  - Depth-stencil textures created with initial data: 31×.
+  - D3D12 render targets keep Metal's lossless compression: 4.5×.
+  - Tessellation is 1.7–1.8× faster in its stages.
+  - Sampled-only textures keep lossless compression too; `MULLION_D3D12_COMPRESS_SAMPLED=0` turns that off, and `MULLION_D3D12_TEXTURE_POOL=0` and `MULLION_D3D11_TEXTURE_POOL=0` turn off the render target reuse.
+- **msync is WineForge's USync 6**, renamed: more of events, semaphores and mutexes stays in process, including WaitAny and WaitAll on all three. It keeps MetalSharp's fixed 64K mapping granules and its abandoned-mutex fix.
+- **USB licence dongles reach Windows programs** (#114, #115): winebus passes USB HID devices with a vendor-defined usage page through, such as EXOCAD's Feitian dongle (#66).
+- **`_strerror_s`** is implemented in ucrtbase and the msvcr DLLs, which GTA V Enhanced's Epic bootstrapper needs (by @multision: #109, #110, #111).
+- **GTA V Enhanced is shown an AMD Radeon RX 6800 XT** in `winemac.conf` (by @multision: #112).
+- **The Wine version reads "MetalSharp Wine 10.0"** in both apps (#126, #127).
+
+x86_64 build:
+
+- **Wine 11.22**, from Wine 11.17: WineForge's `main` (Wine 11.22, WineForge 0.6.0.9) is merged in, with its ports to 11.18 to 11.22, the native Steam bridge, GCMouse and its launcher fixes (#117). All of Wine is now built from `src/wine-x86_64`; the app used to lay eight rebuilt modules over the `bundles` release's Wine (#119).
+- **The Rockstar Games Launcher runs**, on Mullion with WFDXCompat's launcher companion, as on the arm64 build (#113: #120, #122, #123). It used to fail to initialize on every route.
+- **64-bit programs load `d3d8.dll`**, as on the arm64 build.
+- **Licenses**: the app carries `lsteamclient`'s, WFDXCompat's and Wine's `NOTICES.md` (#125).
+
+arm64 build:
+
+- **Wine 11.22**: 9.0 shipped Wine 11.20 (#107).
+- **Assetto Corsa with Custom Shaders Patch runs under FEX** (by @multision: #105, #106).
+- WFDXCompat's `NATIVE_D3D10` launcher flag is `0x10` now that upstream took `0x8` (#121).
+
+Building:
+
+- `scripts/pins.py`, the pre-commit hook and CI keep every `src/` pin on its branch's tip, with its patches (#116).
+- `configure-wine-x86_64.sh` configures the x86_64 Wine's build tree, and `build-wine-x86_64.sh` builds and installs all of it.
+
 ## 9.0
 
 Both builds:
