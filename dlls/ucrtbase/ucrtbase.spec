@@ -1361,7 +1361,7 @@
 @ cdecl _o__strdate_s(ptr long) _strdate_s
 @ cdecl _o__strdup(str) _strdup
 @ cdecl _o__strerror(long) _strerror
-@ stub _o__strerror_s
+@ cdecl _o__strerror_s(ptr long str) _strerror_s
 @ cdecl _o__strftime_l(ptr long str ptr ptr) _strftime_l
 @ cdecl _o__stricmp(str str) _stricmp
 @ cdecl _o__stricmp_l(str str ptr) _stricmp_l
@@ -1928,7 +1928,7 @@
 @ cdecl _strdate_s(ptr long)
 @ cdecl _strdup(str)
 @ cdecl _strerror(long)
-@ stub _strerror_s
+@ cdecl _strerror_s(ptr long str)
 @ cdecl _strftime_l(ptr long str ptr ptr)
 @ cdecl _stricmp(str str)
 @ cdecl _stricmp_l(str str ptr)

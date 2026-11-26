@@ -1042,7 +1042,7 @@
 @ cdecl _strdate_s(ptr long)
 @ cdecl _strdup(str)
 @ cdecl _strerror(long)
-@ stub _strerror_s
+@ cdecl _strerror_s(ptr long str)
 @ cdecl _strftime_l(ptr long str ptr ptr)
 @ cdecl _stricmp(str str)
 @ cdecl _stricmp_l(str str ptr)

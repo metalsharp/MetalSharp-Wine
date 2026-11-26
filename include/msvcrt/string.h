@@ -25,6 +25,7 @@ _ACRTIMP int   __cdecl _strcmpi(const char*,const char*);
 _ACRTIMP int   __cdecl _strcoll_l(const char*, const char*, _locale_t);
 _ACRTIMP char* __cdecl _strdup(const char*) __WINE_DEALLOC(free) __WINE_MALLOC;
 _ACRTIMP char* __cdecl _strerror(const char*);
+_ACRTIMP errno_t __cdecl _strerror_s(char*,size_t,const char*);
 _ACRTIMP errno_t __cdecl strerror_s(char*,size_t,int);
 _ACRTIMP int   __cdecl _stricmp(const char*,const char*);
 _ACRTIMP int   __cdecl _stricoll(const char*,const char*);
