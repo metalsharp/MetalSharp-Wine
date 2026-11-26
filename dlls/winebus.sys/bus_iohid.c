@@ -266,6 +266,26 @@ static const struct raw_device_vtbl iohid_device_vtbl =
     iohid_device_set_feature_report,
 };
 
+/* USB devices with a vendor-defined primary usage page: licence dongles
+ * (Feitian ROCKEY, Sentinel HL and others), security keys and similar
+ * devices that Windows programs open through HID.dll. Apple's own devices,
+ * such as the Touch Bar, are left out, as are devices that also have a
+ * keyboard or pointer collection, since opening those needs the input
+ * monitoring permission. */
+static BOOL is_vendor_usb_device(IOHIDDeviceRef device, const struct device_desc *desc,
+                                 const USAGE_AND_PAGE *usages)
+{
+    if (desc->bus_type != BUS_TYPE_USB) return FALSE;
+    if (usages->UsagePage < 0xff00) return FALSE;
+    if (desc->vid == 0x05ac) return FALSE;
+    if (IOHIDDeviceConformsTo(device, kHIDPage_GenericDesktop, kHIDUsage_GD_Keyboard) ||
+        IOHIDDeviceConformsTo(device, kHIDPage_GenericDesktop, kHIDUsage_GD_Keypad) ||
+        IOHIDDeviceConformsTo(device, kHIDPage_GenericDesktop, kHIDUsage_GD_Mouse) ||
+        IOHIDDeviceConformsTo(device, kHIDPage_GenericDesktop, kHIDUsage_GD_Pointer))
+        return FALSE;
+    return TRUE;
+}
+
 static void handle_DeviceMatchingCallback(void *context, IOReturn result, void *sender, IOHIDDeviceRef IOHIDDevice)
 {
     struct device_desc desc =
@@ -294,7 +314,10 @@ static void handle_DeviceMatchingCallback(void *context, IOReturn result, void *
             desc.bus_type = BUS_TYPE_USB;
     }
 
-    if (usages.UsagePage != HID_USAGE_PAGE_GENERIC ||
+    if (is_vendor_usb_device(IOHIDDevice, &desc, &usages))
+        TRACE("HID device %p (vid %04x, pid %04x): vendor-defined usage page %04x\n",
+              IOHIDDevice, desc.vid, desc.pid, usages.UsagePage);
+    else if (usages.UsagePage != HID_USAGE_PAGE_GENERIC ||
         !(usages.Usage == HID_USAGE_GENERIC_JOYSTICK || usages.Usage == HID_USAGE_GENERIC_GAMEPAD))
     {
         /* winebus isn't currently meant to handle anything but these, and
