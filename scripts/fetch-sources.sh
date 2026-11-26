@@ -36,7 +36,7 @@ else
   clone winemetalgl $REPO source/winemetalgl
   clone wfdxcompat $REPO source/wfdxcompat
   clone linuxhost $REPO source/linuxhost
-  clone mullion https://github.com/aaf2tbz/mullion.git metalsharp-2.1-main
+  clone mullion https://github.com/aaf2tbz/mullion.git main
   clone metalvulkan https://github.com/metalsharp/MetalVulkan.git main
   clone metalvr https://github.com/metalsharp/MetalVR.git main
   [[ ${1:-} = x86_64 ]] && clone wine-x86_64 $REPO source/wine-x86_64
