@@ -1,5 +1,6 @@
 /*
  * Server-side semaphore management
+ * WineForge-Internal: msync-v6.
  *
  * Copyright (C) 1998 Alexandre Julliard
  *
@@ -281,7 +282,7 @@ int get_semaphore_msync_idx( struct object *obj, int *type )
     if (!sem->sync || sem->sync->ops != &semaphore_sync_ops) return -1;
     sync = (struct semaphore_sync *)sem->sync;
     if (!sync->msync) return -1;
-    msync_grab_object( sync->msync );
+
     *type = INPROC_SYNC_SEMAPHORE;
     return msync_get_index( sync->msync );
 #else

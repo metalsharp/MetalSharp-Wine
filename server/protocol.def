@@ -4230,29 +4230,29 @@ enum inproc_sync_type
     unsigned int shm_idx;       /* optional for index-based sync implementations */
 @END
 
-/* Get a per-thread WFUSync wait slot */
+/* Get a per-thread msync wait slot */
 @REQ(get_msync_wait_slot)
 @REPLY
     unsigned int shm_idx;       /* shared-memory index of the wait slot */
 @END
 
-/* Register a WFUSync WaitAny wait */
+/* Register a msync WaitAny wait */
 @REQ(register_msync_wait)
     unsigned int slot_idx;      /* wait slot shared-memory index */
     VARARG(shm_idxs,uints);     /* object shared-memory indexes */
 @END
 
-/* Unregister a WFUSync WaitAny wait */
+/* Unregister a msync WaitAny wait */
 @REQ(unregister_msync_wait)
     unsigned int slot_idx;      /* wait slot shared-memory index */
 @END
 
-/* Wake WFUSync WaitAny wait slots for a signaled object */
+/* Wake msync WaitAny wait slots for a signaled object */
 @REQ(wake_msync_waiters)
     unsigned int shm_idx;       /* object shared-memory index */
 @END
 
-/* Try to satisfy WFUSync WaitAll, optionally registering a wait slot */
+/* Try to satisfy msync WaitAll, optionally registering a wait slot */
 @REQ(try_wait_all_msync)
     thread_id_t  tid;           /* waiting thread id */
     unsigned int slot_idx;      /* wait slot index, or zero for a nonblocking try */

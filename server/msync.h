@@ -1,7 +1,8 @@
 /*
- * WineForge userspace synchronization server state
+ * msync server shared state
+ * WineForge-Internal: msync-v6.
  *
- * Ported from WineForge's WFUSync (server/wfusync.h); MetalSharp Wine renamed it msync and modified it.
+ * Ported from WineForge's USync 6 (server/usync.h); MetalSharp Wine renamed it msync and modified it.
  *
  * Copyright (C) 2026 Radim Vesely
  *
@@ -14,6 +15,7 @@
 extern int do_msync(void);
 
 struct msync;
+struct thread;
 
 #ifdef __APPLE__
 
@@ -23,9 +25,8 @@ extern unsigned int msync_get_index( struct msync *sync );
 extern unsigned int msync_alloc_wait_slot(void);
 extern int msync_register_wait( unsigned int slot_idx, const unsigned int *shm_idxs, unsigned int count );
 extern void msync_unregister_wait( unsigned int slot_idx );
-extern void msync_free_wait_slot( unsigned int slot_idx );
+extern void msync_cleanup_thread( struct thread *thread );
 extern int msync_wake_waiters( unsigned int shm_idx );
-extern void msync_grab_object( struct msync *sync );
 extern void msync_destroy( struct msync *sync );
 extern void msync_add_server_waiter( struct msync *sync );
 extern void msync_remove_server_waiter( struct msync *sync );
@@ -34,6 +35,9 @@ extern int msync_event_signaled( struct msync *sync );
 extern void msync_event_satisfied( struct msync *sync );
 extern void msync_set_event( struct msync *sync );
 extern void msync_reset_event( struct msync *sync );
+extern int msync_event_op( struct msync *sync, int signal, int *previous );
+extern int msync_event_pulse_begin( struct msync *sync, int *previous );
+extern void msync_event_pulse_end( struct msync *sync );
 extern int msync_semaphore_signaled( struct msync *sync );
 extern void msync_semaphore_satisfied( struct msync *sync );
 extern int msync_release_semaphore( struct msync *sync, unsigned int count, unsigned int *prev );
