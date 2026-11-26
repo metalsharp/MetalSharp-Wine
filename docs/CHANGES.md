@@ -2,6 +2,34 @@
 
 The [release notes](https://github.com/metalsharp/MetalSharp-Wine/releases) have the full list for each release.
 
+## 10.5
+
+x86_64 build:
+
+- **Games Steam starts get their launch environment** (#131). A program started by another Windows program, so every game the Steam client starts, read its `.metalsharp/launch.env` from a wrong path and got none of it: no graphics lane, no Metal HUD, no NVIDIA GPU and so no DLSS, on Mullion, D3DMetal and VKD3D / DXVK. Since 9.0. Games now get all of it, and DLSS shows on every lane.
+- **Game Settings > Advanced applies**: `launch.local.env` is read after `launch.env`, as on the FEX build.
+- **The FEX build's fixes, ported** (#131):
+  - Proton's per-game rules for the programs Steam starts (`share/proton/appcompat.env`), with `DXVK_ENABLE_NVAPI=1`, which DXVK's DLSS needs.
+  - God of War Ragnarok's pipeline compiles no longer hang MoltenVK; Hogwarts Legacy is shown no ray tracing, which froze it.
+  - A swapchain MetalFX upscales is no longer reported as suboptimal, so VKD3D-Proton and DXVK stop recreating it every frame.
+  - MetalFX games and ELDEN RING stay out of native fullscreen.
+  - Direct3D 9 describes the GPU Mullion's DXGI does (it showed a GeForce GTX 470, and Counter-Strike 2 called the driver out of date).
+  - The fullscreen presentation options no longer loop when focus moves between apps.
+  - Battle.net's browser composites in software, so its windows aren't black.
+  - Directory changes are reported as they happen, unreadable memory as a partial copy, a process's memory counters are real, `FileAllocationInformation` works, and a path through a file reports the path as not found.
+  - A `.metalsharp/trace` log keeps to its `limit=`; MoltenVK logs errors only.
+  - With msync on, in-process sync objects no longer keep a file descriptor each.
+- **New prefixes get the FEX build's files**: Liberation as `arial`/`times`/`cour` `.ttf` for programs that open fonts by file name (Unity), Japanese, Chinese and Korean font families mapped onto macOS's, and Microsoft's shader compilers (DXC, and the SDK's `d3dcompiler_47` for 64-bit programs).
+
+Both builds:
+
+- **The Wine version reads "MetalSharp Wine 10.5"** (#131, #132).
+
+Building:
+
+- **`scripts/smoke-routes.sh`** checks every graphics lane of a built app, for a program started directly and one started by another program: its `launch.env`, `MTL_HUD_ENABLED`, the NVIDIA GPU (RTX 4080), NVAPI, and Mullion's log. `package-x86_64.sh` and `build-all.sh` (its `smoke` step) run it, and a failure stops the build.
+- `package-x86_64.sh` ships `appcompat.env`, the Liberation copies and the shader compilers (`PREFIX_FILES`, the `fonts` and `shader-compilers` steps' `install/`); `stage-shader-compilers.sh` stages the x64 compilers too.
+
 ## 10.0
 
 Both builds:

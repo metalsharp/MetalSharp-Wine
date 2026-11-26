@@ -47,6 +47,8 @@
 #   ..." (modules rebuilt there, which replace the bundle's; server for the wineserver)]
 #   [WFDX_SRC=<src/wfdxcompat>: WFDXCompat's license, by default the submodule]
 #   WINEMETALGL=<install-x86_64/winemetalgl> VCRUN_X64=<Microsoft's x64 VC++ runtime DLLs> DEPS_SRC=<deps/src-x86_64:deps/src> LICENSES_EXTRA=<dir of license folders> (share/licenses)
+#   PREFIX_FILES=<install/ of build-all.sh's fonts and shader-compilers steps> (default: install/): what wine.inf copies
+#   into every prefix (Liberation as arial/times/cour .ttf, Microsoft's x64 and x86 shader compilers) and their licenses
 #   [ZINK=<install-x86_64/zink, from build-zink.sh x86_64>: OpenGL on Zink with SharpGL_Switch=1]
 #   [KOSMICKRISP=<install-x86_64/kosmickrisp, from build-kosmickrisp.sh x86_64>: Vulkan on KosmicKrisp with SharpVK_Switch=1]
 #   [METALVR=<MetalSharp Wine's install/ after build-metalvr.sh: bin/metalvrd and lib/metalvr>: VR, as in MetalSharp-Wine.app]
@@ -78,6 +80,14 @@ need "$MULLION/x86_64-unix/winemetal.so"
 need "$DXVK/x86_64-windows/dxgi.dll"
 need "$DXVK_I386/i386-windows/d3d9.dll"
 need "$VKD3D/x86_64-windows/d3d12core.dll"
+PREFIX_FILES=${PREFIX_FILES:-$HERE/../install}
+for f in arial arialbd ariali arialbi times timesbd timesi timesbi cour courbd couri courbi; do
+  need "$PREFIX_FILES/share/wine/fonts/$f.ttf"
+done
+for f in x64/d3dcompiler_47.dll x64/dxcompiler.dll x64/dxil.dll x86/dxcompiler.dll x86/dxil.dll; do
+  need "$PREFIX_FILES/share/wine/shadercompilers/$f"
+done
+need "$HERE/../resources/appcompat.env"
 need "$MOLTENVK/libMoltenVK.dylib"
 need "$NGX/nvngx.dll"
 need "$D3DMETAL/external/D3DMetal.framework"
@@ -357,6 +367,23 @@ cp -p "$C/Resources/$ICON.icns" "$C/share/wine/$ICON.icns"
 # the first time a program there loads WebView2Loader.dll, and it installs the WebView2 Runtime from Microsoft.
 mkdir -p "$C/share/wine/webview2"
 cp -p "$HERE/../resources/webview2/MicrosoftEdgeWebview2Setup.exe" "$C/share/wine/webview2/"
+# Proton's per-game rules, as the FEX build ships them: ntdll applies them to the programs Steam starts (its [*] has
+# DXVK_ENABLE_NVAPI=1, which DXVK's DLSS needs)
+mkdir -p "$C/share/proton"
+cp -p "$HERE/../resources/appcompat.env" "$C/share/proton/appcompat.env"
+# What wine.inf copies into every prefix (FontFiles, ShaderCompilers.ntamd64 and .ntx86): Liberation as arial/times/cour
+# .ttf for programs that open fonts by file name (Unity), and Microsoft's shader compilers (scripts/fetch-fonts.sh,
+# scripts/stage-shader-compilers.sh), with their licenses
+for f in arial arialbd ariali arialbi times timesbd timesi timesbi cour courbd couri courbi; do
+  cp -p "$PREFIX_FILES/share/wine/fonts/$f.ttf" "$C/share/wine/fonts/"
+done
+mkdir -p "$C/share/wine/shadercompilers"
+cp -Rp "$PREFIX_FILES/share/wine/shadercompilers/x64" "$PREFIX_FILES/share/wine/shadercompilers/x86" \
+  "$C/share/wine/shadercompilers/"
+[ -f "$PREFIX_FILES/share/wine/shadercompilers/VERSION" ] && cp -p "$PREFIX_FILES/share/wine/shadercompilers/VERSION" "$C/share/wine/shadercompilers/"
+for l in liberation-fonts dxc windows-sdk; do
+  [ -d "$PREFIX_FILES/share/licenses/$l" ] && mkdir -p "$C/share/licenses/$l" && cp -Rp "$PREFIX_FILES/share/licenses/$l/." "$C/share/licenses/$l/"
+done
 # Wine Mono 11.3.99 (Wine Mono's main at c019b64ba8; its x86 package, with the x86 and x86_64 runtimes), unpacked in
 # share/wine/mono as the FEX build carries it (fetch-addons.sh). mscoree runs .NET programs on it, and wineboot upgrades
 # a prefix's own older Wine Mono through its support package. WINE_MONO_X86 names the tarball if it is already here;
@@ -548,4 +575,7 @@ codesign "${opts[@]}" --entitlements "$ENT" "$APP"
 codesign --verify --deep --strict "$APP"
 python3 -I "$HERE/macos-floor.py" --sdk "$MACOS15_SDK" "$APP"
 rm -rf "$WORK"
+# What every game relies on (launch.env, the Metal HUD, DLSS's NVIDIA GPU and NVAPI, on every lane): an app that fails
+# it is not shipped
+zsh "$HERE/smoke-routes.sh" "$APP"
 echo "built: $APP ($(du -sh "$APP" | cut -f1), signed by $IDENTITY)"

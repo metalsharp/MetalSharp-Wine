@@ -12,7 +12,7 @@ mkdir -p $D
 [[ $(shasum -a 256 $D/$L.tar.gz | cut -d' ' -f1) == 7191c669bf38899f73a2094ed00f7b800553364f90e2637010a69c0e268f25d0 ]] ||
   { echo "checksum mismatch: $L.tar.gz" >&2; exit 1; }
 rm -rf $D/$L; tar -xzf $D/$L.tar.gz -C $D
-F=$ROOT/install/share/wine/fonts
+F=$ROOT/install/share/wine/fonts; mkdir -p $F
 # Built like Proton's: the family names inside the files become Arial, Times New Roman and
 # Courier New, since programs (Unity) match fonts by those names, not by file name. The OFL
 # requires a modified Liberation to drop that reserved name, which this does. fontTools is a

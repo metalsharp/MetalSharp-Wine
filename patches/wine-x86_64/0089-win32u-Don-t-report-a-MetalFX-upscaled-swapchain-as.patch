@@ -1,0 +1,78 @@
+From eae4b94fd9f02248afc03c50094468d20331f9d5 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Sun, 1 Nov 2026 17:23:06 -0700
+Subject: [PATCH 89/89] win32u: Don't report a MetalFX-upscaled swapchain as
+ suboptimal.
+
+MoltenVK upscales it to the window with MetalFX (VkSwapchainMetalFXSpatialCreateInfoMVK), so it is
+smaller than the client rect on purpose; reporting it suboptimal had VKD3D-Proton recreate it every frame.
+
+(cherry picked from commit bb9740bcfe7b43536e8e0b605f47adbbc2ec3af3)
+---
+ dlls/win32u/vulkan.c | 23 ++++++++++++++++++++---
+ 1 file changed, 20 insertions(+), 3 deletions(-)
+
+diff --git a/dlls/win32u/vulkan.c b/dlls/win32u/vulkan.c
+index c25a300fc1e..6ba8cb9cdab 100644
+--- a/dlls/win32u/vulkan.c
++++ b/dlls/win32u/vulkan.c
+@@ -159,8 +159,24 @@ struct swapchain
+     struct vulkan_swapchain obj;
+     struct surface *surface;
+     VkExtent2D extents;
++    BOOL upscaled;  /* MetalSharp: MoltenVK upscales it to the window (MetalFX), smaller on purpose */
+ };
+ 
++/* MetalSharp: MoltenVK's VkSwapchainMetalFXSpatialCreateInfoMVK (mvk_metalfx.h in VKD3D-Proton-MacOS's MoltenVK) */
++#define VK_STRUCTURE_TYPE_SWAPCHAIN_METALFX_SPATIAL_CREATE_INFO_MVK ((VkStructureType)1000999101)
++
++static BOOL swapchain_upscaled_by_metalfx( const VkSwapchainCreateInfoKHR *create_info )
++{
++    const VkBaseInStructure *next;
++
++    for (next = create_info->pNext; next; next = next->pNext)
++    {
++        if (next->sType == VK_STRUCTURE_TYPE_SWAPCHAIN_METALFX_SPATIAL_CREATE_INFO_MVK)
++            return ((const uint32_t *)(next + 1))[0] != 0;
++    }
++    return FALSE;
++}
++
+ static struct swapchain *swapchain_from_handle( VkSwapchainKHR handle )
+ {
+     struct vulkan_swapchain *obj = vulkan_swapchain_from_handle( handle );
+@@ -1938,6 +1954,7 @@ static VkResult win32u_vkCreateSwapchainKHR( VkDevice client_device, const VkSwa
+     }
+ 
+     if (!(swapchain = calloc( 1, sizeof(*swapchain) ))) return VK_ERROR_OUT_OF_HOST_MEMORY;
++    swapchain->upscaled = swapchain_upscaled_by_metalfx( create_info );
+ 
+     if ((res = device->p_vkCreateSwapchainKHR( device->host.device, &create_info_host, NULL, &host_swapchain )))
+     {
+@@ -1987,7 +2004,7 @@ static VkResult win32u_vkAcquireNextImage2KHR( VkDevice client_device, const VkA
+     acquire_info_host.fence = fence ? fence->host.fence : 0;
+     res = device->p_vkAcquireNextImage2KHR( device->host.device, &acquire_info_host, image_index );
+ 
+-    if (!res && get_surface_rect( surface->hwnd, &client_rect, get_dpi_for_window( surface->hwnd ) ) &&
++    if (!res && !swapchain->upscaled && get_surface_rect( surface->hwnd, &client_rect, get_dpi_for_window( surface->hwnd ) ) &&
+         !extents_equals( &swapchain->extents, &client_rect ))
+     {
+         WARN( "Swapchain size %dx%d does not match client rect %s, returning VK_SUBOPTIMAL_KHR\n",
+@@ -2013,7 +2030,7 @@ static VkResult win32u_vkAcquireNextImageKHR( VkDevice client_device, VkSwapchai
+                                               semaphore ? semaphore->host.semaphore : 0, fence ? fence->host.fence : 0,
+                                               image_index );
+ 
+-    if (!res && get_surface_rect( surface->hwnd, &client_rect, get_dpi_for_window( surface->hwnd ) ) &&
++    if (!res && !swapchain->upscaled && get_surface_rect( surface->hwnd, &client_rect, get_dpi_for_window( surface->hwnd ) ) &&
+         !extents_equals( &swapchain->extents, &client_rect ))
+     {
+         WARN( "Swapchain size %dx%d does not match client rect %s, returning VK_SUBOPTIMAL_KHR\n",
+@@ -2082,7 +2099,7 @@ static VkResult win32u_vkQueuePresentKHR( VkQueue client_queue, const VkPresentI
+         }
+         else if (swapchain_res)
+             WARN( "Present returned status %d for swapchain %p\n", swapchain_res, swapchain );
+-        else if (!extents_equals( &swapchain->extents, &client_rect ))
++        else if (!swapchain->upscaled && !extents_equals( &swapchain->extents, &client_rect ))
+         {
+             WARN( "Swapchain size %dx%d does not match client rect %s, returning VK_SUBOPTIMAL_KHR\n",
+                   swapchain->extents.width, swapchain->extents.height, wine_dbgstr_rect( &client_rect ) );

@@ -20,7 +20,7 @@
 set -e
 S=${0:A:h}
 source $S/env.sh
-NAME=${NAME:-metalsharp-wine-10.0-arm64}
+NAME=${NAME:-metalsharp-wine-10.5-arm64}
 LOG=$ROOT/logs/build-all
 
 steps=(
@@ -51,6 +51,7 @@ steps=(
   "package|zsh $S/package.sh $NAME"
   "audit-dist|STRICT=1 zsh $S/audit-macho.sh $ROOT/dist/$NAME"
   "sign|zsh $S/sign-app.sh"
+  "smoke|zsh $S/smoke-routes.sh $ROOT/dist/MetalSharp-Wine.app"
 )
 
 if [[ $1 == --list ]]; then
