@@ -28,6 +28,7 @@ Both builds:
 Building:
 
 - **`scripts/smoke-routes.sh`** checks every graphics lane of a built app, for a program started directly and one started by another program: its `launch.env`, `MTL_HUD_ENABLED`, the NVIDIA GPU (RTX 4080), NVAPI, and Mullion's log. `package-x86_64.sh` and `build-all.sh` (its `smoke` step) run it, and a failure stops the build.
+- `package-x86_64.sh` makes the app owner-writable before signing (D3DMetal's trees were read-only, which stopped MetalSharp's DMG staging), and `sign-app.sh` refuses a Developer ID build without its provisioning profile (MetalSharp's FEX DMG requires it).
 - `package-x86_64.sh` ships `appcompat.env`, the Liberation copies and the shader compilers (`PREFIX_FILES`, the `fonts` and `shader-compilers` steps' `install/`); `stage-shader-compilers.sh` stages the x64 compilers too.
 
 ## 10.0
