@@ -50,79 +50,54 @@ Get it from the [latest release](https://github.com/metalsharp/MetalSharp-Wine/r
 
 **On its own,** you run the app from **Terminal**, as below.
 
-## Run Steam
+## Graphics lanes
 
-These steps use the arm64 app, `MetalSharp-Wine.app`. Paste each block into Terminal. Each one sets up what it needs, so it works in a new Terminal window too.
+Each program runs on one graphics lane. Pick a lane with `GRAPHICS_BACKEND`, set on the command that starts the program.
 
-**1. Make a Wine prefix for Steam.** A prefix is a separate Windows install; this one goes in `~/Games/steam`. This takes a minute or two.
+| Lane | Supports | Route |
+|---|---|---|
+| **Mullion** | Direct3D 10, 11 and 12 | `GRAPHICS_BACKEND=dxmt` (the arm64 app's default) |
+| **VKD3D-Proton** | Direct3D 12, with DXVK for Direct3D 3 to 11 | `GRAPHICS_BACKEND=vkd3d` |
+| **DXVK** | Direct3D 3 to 11 | `GRAPHICS_BACKEND=dxvk` |
+| **D3DMetal** (x86_64 app) | Direct3D 10, 11 and 12 | `GRAPHICS_BACKEND=d3dmetal` |
+| **WineMetalGL** | OpenGL 1.0 to 4.6 | Used for OpenGL by default |
 
-```bash
-APP=/Applications/MetalSharp-Wine.app/Contents
-export WINEPREFIX=~/Games/steam WINEDEBUG=-all
-"$APP/MacOS/wine" wineboot -u -r && "$APP/MacOS/wineserver" -w
-for a in x64 x86; do
-  "$APP/MacOS/wine" "$APP/share/metalsharp/redist/vcrun2022/vc_redist.$a.exe" /install /quiet /norestart
-  "$APP/MacOS/wineserver" -w
-done
-```
+## Run a program
 
-**2. Install Steam.**
-
-```bash
-APP=/Applications/MetalSharp-Wine.app/Contents
-export WINEPREFIX=~/Games/steam WINEDEBUG=-all
-"$APP/MacOS/wine" "$APP/share/metalsharp/steam/SteamSetup.exe" /S
-"$APP/MacOS/wineserver" -w
-```
-
-**3. Start Steam.** Run this whenever you want Steam. The first time, Steam updates itself.
-
-```bash
-APP=/Applications/MetalSharp-Wine.app/Contents
-export WINEPREFIX=~/Games/steam WINEDEBUG=-all
-cd "$WINEPREFIX/drive_c/Program Files (x86)/Steam" && "$APP/MacOS/wine" steam.exe
-```
-
-**To quit** Steam and everything else running in the prefix:
-
-```bash
-WINEPREFIX=~/Games/steam /Applications/MetalSharp-Wine.app/Contents/MacOS/wineserver -k
-```
-
-## Run other programs
-
-Point `WINEPREFIX` at a folder for the prefix, and give Wine the program to run. The first run creates the prefix.
+Set `WINE` to the app you installed:
 
 ```bash
 export WINE=/Applications/MetalSharp-Wine.app/Contents/MacOS/wine
-WINEPREFIX=~/Games/my-prefix $WINE ~/Downloads/setup.exe
+# or, for the x86_64 app:
+export WINE=/Applications/MetalSharp-Wine-x86_64.app/Contents/MacOS/wine
 ```
 
-To run an installed game, start it from its own folder; some games need that to find their files:
+**1. Create a prefix.** A prefix is a folder holding its own Windows install. This makes one in `~/Games/my-prefix`; it takes a minute or two.
+
+```bash
+WINEPREFIX=~/Games/my-prefix "$WINE" wineboot -i
+```
+
+**2. Run an installer or program in it** on the lane you want:
+
+```bash
+WINEPREFIX=~/Games/my-prefix GRAPHICS_BACKEND=vkd3d "$WINE" ~/Downloads/setup.exe
+```
+
+**3. Run an installed program** from its own folder, which helps it find its files:
 
 ```bash
 cd ~/Games/my-prefix/drive_c/Program\ Files/MyGame
-WINEPREFIX=~/Games/my-prefix $WINE Game.exe
+WINEPREFIX=~/Games/my-prefix GRAPHICS_BACKEND=dxmt "$WINE" Game.exe
 ```
 
-## Graphics backends
-
-Each game uses one graphics backend. The defaults suit most games; to try another, set its switch before the `$WINE` command, the same way as `WINEPREFIX`.
-
-| What the game uses | Default | Alternatives |
-|---|---|---|
-| Direct3D 10, 11, 12 | **Mullion** (on Metal) | `GRAPHICS_BACKEND=vkd3d`: VKD3D-Proton for Direct3D 12, with DXVK for 11 down to 3 <br> `GRAPHICS_BACKEND=dxvk`: DXVK for Direct3D 11 down to 3 <br> `GRAPHICS_BACKEND=wine`: Wine's own |
-| Direct3D 9 and older | Wine's own | `GRAPHICS_BACKEND=dxvk` |
-| OpenGL | **WineMetalGL** (OpenGL 4.6 on Metal) | `OPENGL_BACKEND=wine`: Wine's own |
-| Vulkan | **MoltenVK** | |
-
-For example:
+**To quit** everything running in the prefix:
 
 ```bash
-GRAPHICS_BACKEND=vkd3d WINEPREFIX=~/Games/my-prefix $WINE Game.exe
+WINEPREFIX=~/Games/my-prefix "${WINE%/wine}/wineserver" -k
 ```
 
-The x86_64 app also has Apple's **D3DMetal** (`GRAPHICS_BACKEND=d3dmetal`). Every switch, including sync, CPU emulation, mouse and per-game settings, is in [docs/USAGE.md](docs/USAGE.md).
+Every other setting is in [docs/USAGE.md](docs/USAGE.md).
 
 ## Reporting problems
 
@@ -130,8 +105,8 @@ Open the issue where the fix will be made:
 
 | The problem | Where to report it |
 |---|---|
-| A game draws wrong on **Mullion** (the default Direct3D backend) | [dttdrv/mullion](https://github.com/dttdrv/mullion/issues) |
-| A game draws wrong on **VKD3D-Proton**, **DXVK** or **MoltenVK** | [metalsharp/MetalVulkan](https://github.com/metalsharp/MetalVulkan/issues) |
+| A game draws wrong on **Mullion** | [dttdrv/mullion](https://github.com/dttdrv/mullion/issues) |
+| A game draws wrong on **VKD3D-Proton** or **DXVK** | [metalsharp/MetalVulkan](https://github.com/metalsharp/MetalVulkan/issues) |
 | Anything else | [this repository's issues](https://github.com/metalsharp/MetalSharp-Wine/issues) |
 
 It helps to include your Mac model, macOS version, the MetalSharp Wine version, the game, and what you tried.
