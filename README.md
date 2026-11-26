@@ -107,6 +107,7 @@ Open the issue where the fix will be made:
 |---|---|
 | A game draws wrong on **Mullion** | [dttdrv/mullion](https://github.com/dttdrv/mullion/issues) |
 | A game draws wrong on **VKD3D-Proton** or **DXVK** | [metalsharp/MetalVulkan](https://github.com/metalsharp/MetalVulkan/issues) |
+| An OpenGL game draws wrong on **WineMetalGL** | [metalsharp/WineMetalGL](https://github.com/metalsharp/WineMetalGL/issues) |
 | Anything else | [this repository's issues](https://github.com/metalsharp/MetalSharp-Wine/issues) |
 
 It helps to include your Mac model, macOS version, the MetalSharp Wine version, the game, and what you tried.
