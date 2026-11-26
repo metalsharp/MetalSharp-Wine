@@ -13,7 +13,9 @@
 #   MULLION_SIGNED_NGX_DIR, MULLION_NGX_SIGNING_KEY_FILE
 #                                       Mullion's signed NGX core (build-mullion.sh); with neither, the newest one
 #                                       signed for src/mullion's nvngx is fetched (fetch-signed-ngx.sh)
-#   SKIP="step step"                    steps to leave out (the app then lacks them)
+#   SKIP="step step"                    steps to leave out (the app then lacks them). The first step, pins,
+#                                       stops a build whose src/ pins are behind their branches or whose
+#                                       submodule checkouts aren't at their pins (scripts/pins.py)
 #   NAME=metalsharp-wine-<version>-arm64   the dist folder package.sh makes (sign-app.sh's default)
 set -e
 S=${0:A:h}
@@ -22,6 +24,7 @@ NAME=${NAME:-metalsharp-wine-9.0-arm64}
 LOG=$ROOT/logs/build-all
 
 steps=(
+  "pins|python3 $S/pins.py check --worktree"
   "toolchain|zsh $S/fetch-toolchain.sh"
   "deps|zsh $S/build-deps.sh"
   "arm64ec-runtimes|[[ -e $ROOT/deps/stamps/arm64ec-runtimes ]] || { zsh $S/build-arm64ec-runtimes.sh && touch $ROOT/deps/stamps/arm64ec-runtimes; }"

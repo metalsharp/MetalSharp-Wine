@@ -1,0 +1,26 @@
+name: Pins
+
+# A source branch (source/wine, source/fex, ...) or another submodule's branch can move after
+# main's last pull request was checked. This checks main's pins against the branches' tips every
+# hour, so a pin left behind fails here (and notifies) before a release is built from it.
+# `python3 scripts/pins.py update`, or the pre-commit hook, moves it.
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pins:
+    name: Pins are current
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+
+      - name: The submodule pins are their branches' tips
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/pins.py check

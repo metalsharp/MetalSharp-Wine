@@ -1,0 +1,11 @@
+#!/bin/sh
+# Keeps main's submodule pins on their branches' tips (scripts/pins.py): a pin that is behind is
+# moved to its branch's tip in this commit, with the patches of the commits that brings in.
+# Enable with:  git config core.hooksPath .githooks
+# PINS=check only checks; PINS=off (or git commit --no-verify) skips it.
+pins="$(git rev-parse --show-toplevel)/scripts/pins.py"
+case ${PINS:-update} in
+  off) exit 0 ;;
+  update) python3 "$pins" update --offline-ok || exit 1 ;;
+esac
+exec python3 "$pins" check --offline-ok >/dev/null

@@ -24,6 +24,20 @@ jobs:
       - name: Python syntax
         run: python3 -m py_compile scripts/*.py
 
+      - name: The submodule pins are their branches' tips, with their patches
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          # the pins this change moves from: the base branch's for a pull request, the previous
+          # commit's for a push (none for a new branch or a manual run)
+          if [ -n "$BASE" ] && [ "$BASE" != 0000000000000000000000000000000000000000 ]; then
+            git fetch --no-tags --depth=1 origin "$BASE"
+            python3 scripts/pins.py check --base "$BASE"
+          else
+            python3 scripts/pins.py check --base HEAD
+          fi
+
       - name: The patches are git patches
         run: |
           for f in patches/*/*.patch; do
