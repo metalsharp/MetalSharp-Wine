@@ -38,7 +38,8 @@
 #
 #   BUNDLES=<dir with the bundles release's .tar.zst> MULLION=<lib/dxmt> DXVK=<dxvk-macos-vX-x86_64 release dir>
 #   DXVK_I386=<dxvk-macos-vX-i386 release dir> VKD3D=<vkd3d-proton-vX-x86_64 release dir> MOLTENVK=<moltenvk-vX-universal dir> NGX=<x86_64 nvngx/nvapi64 dir>
-#   WFDXCOMPAT_X86_64=<source/wfdxcompat lib/wfdxcompat/x86_64-windows> (optional): the D3D11 frontend for D3DMetal
+#   WFDXCOMPAT_X86_64=<source/wfdxcompat lib/wfdxcompat/x86_64-windows>: the D3D11 frontend for D3DMetal and the
+#   Rockstar Games Launcher's companion on Mullion
 #   WINE_INSTALL=<install of src/wine-x86_64 from build-wine-x86_64.sh>: the Wine, which replaces the bundle's (its
 #   programs, lib/wine, share/wine and include/wine); the bundle keeps only what its Wine didn't build, such as the
 #   libraries the unix side loads (lib/wine/x86_64-unix/*.dylib) and MetalSharp's mscompatdb.so
@@ -58,7 +59,7 @@ OUT_DIR=${1:?usage: package-x86_64.sh <output dir>}
 HERE=$(cd "$(dirname "$0")" && pwd)
 # the x86_64 Wine's source (its licenses, and the commit the app names): the src/wine-x86_64 submodule
 WINE_SRC=${WINE_SRC:-$HERE/../src/wine-x86_64}
-: "${BUNDLES:?} ${MULLION:?} ${DXVK:?} ${DXVK_I386:?} ${VKD3D:?} ${MOLTENVK:?} ${NGX:?} ${D3DMETAL:?} ${D3DMETAL_GPTK3:?} ${MEDIA:?}"
+: "${BUNDLES:?} ${WFDXCOMPAT_X86_64:?} ${MULLION:?} ${DXVK:?} ${DXVK_I386:?} ${VKD3D:?} ${MOLTENVK:?} ${NGX:?} ${D3DMETAL:?} ${D3DMETAL_GPTK3:?} ${MEDIA:?}"
 IDENTITY=${SIGN_IDENTITY:--}
 VERSION=${VERSION:?set VERSION to the MetalSharp Wine release it ships in, e.g. 5.1}
 BUNDLE_ID=${BUNDLE_ID:-com.metalsharp.wine.x86_64}
@@ -260,11 +261,13 @@ for f in License.rtf Acknowledgements.rtf; do [ -f "$D3DMETAL/$f" ] && cp -p "$D
 mkdir -p "$C/share/licenses/d3dmetal/gptk3"
 for f in License.rtf Acknowledgements.rtf; do [ -f "$D3DMETAL_GPTK3/$f" ] && cp -p "$D3DMETAL_GPTK3/$f" "$C/share/licenses/d3dmetal/gptk3/"; done
 cp -Rp "$GX/wfdxcompat" "$GX/wfdxcompat-agility" "$R/"
-# WFDXCompat's D3D11 frontend for D3DMetal (source/wfdxcompat, build.sh: lib/wfdxcompat/x86_64-windows),
-# over the graphics bundle's WFDXCompat, which predates it
-if [ -n "${WFDXCOMPAT_X86_64:-}" ]; then
-  for f in d3d11.dll wfdxbackend-d3d11.dll; do cp -p "$WFDXCOMPAT_X86_64/$f" "$R/wfdxcompat/x86_64-windows/$f"; done
-fi
+# WFDXCompat's D3D11 frontend for D3DMetal and the launcher companion (source/wfdxcompat, build.sh:
+# lib/wfdxcompat/x86_64-windows), over the graphics bundle's WFDXCompat, which predates both. ntdll runs the
+# Rockstar Games Launcher on Mullion with this companion (INTERPOSE | NATIVE_D3D10), as the arm64 build does.
+for f in d3d11.dll wfdxbackend-d3d11.dll wfdx-launchers-v1.dll; do
+  need "$WFDXCOMPAT_X86_64/$f"
+  cp -p "$WFDXCOMPAT_X86_64/$f" "$R/wfdxcompat/x86_64-windows/$f"
+done
 for d in mono-x86 mono-arm64 dxvk-1.10.3 goldberg shims fnalibs fna-kickstart faudio; do cp -Rp "$AS/$d" "$R/$d"; done
 # fnalibs' SDL2-linked FNA3D, FAudio, theorafile and FMOD (the fnalibs bundle) over the asset bundle's
 cp -Rp "$WORK/fnalibs/fnalibs/." "$R/fnalibs/"

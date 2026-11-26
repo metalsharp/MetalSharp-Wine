@@ -1,0 +1,275 @@
+From 740dab892f556f9bc793622150873848f1e7c751 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Wed, 25 Nov 2026 23:29:32 -0700
+Subject: [PATCH 85/85] ntdll: Run the Rockstar Games Launcher on Mullion with
+ WFDXCompat's companion, as on arm64.
+
+The Rockstar Games Launcher and SocialClubHelper ran on D3DMetal with WFDXCompat's launcher
+companion, where their UI's D3D11 device could not be created on any route, so the launcher
+quit with "failed to initialize" (metalsharp/MetalSharp-Wine#113). The arm64 runtime runs them
+on Mullion with the companion only interposing device creation, which works. This does the same:
+- graphics_policy.c: a launcher process the policy selects runs on Mullion when its runtime is
+  there, with the companion when that is there too, whatever GRAPHICS_BACKEND says.
+- wfdxcompat_loader.c (unix): the companion needs Mullion, not D3DMetal, and is found by name only
+  in the processes the policy selected, as on arm64.
+- wfdxcompat_loader.c: those processes give the companion INTERPOSE | NATIVE_D3D10 (0x11), as on
+  arm64: Mullion implements D3D10, context state and GDI surfaces itself.
+  WFDXCOMPAT_LAUNCHER_FLAGS overrides. The flags have names; Epic's self-update service keeps
+  INTERPOSE | SERVICE_SWAPCHAIN on D3DMetal.
+
+The companion must be WFDXCompat's with NATIVE_D3D10 at 0x10 (source/wfdxcompat). WFDXCompat's
+runtime directory is found next to Wine when WFDXCOMPAT_RUNTIME_DIR isn't set, as before, so this
+works in any prefix without per-game settings.
+---
+ dlls/ntdll/unix/graphics_policy.c   | 14 ++++----
+ dlls/ntdll/unix/loader.c            | 22 +++++++++++++
+ dlls/ntdll/unix/unix_private.h      |  2 ++
+ dlls/ntdll/unix/wfdxcompat_loader.c | 48 ++++++++++++++++++---------
+ dlls/ntdll/wfdxcompat_loader.c      | 51 +++++++++++++++++++++++++----
+ 5 files changed, 108 insertions(+), 29 deletions(-)
+
+diff --git a/dlls/ntdll/unix/graphics_policy.c b/dlls/ntdll/unix/graphics_policy.c
+index 7a511ce3a97..990759730e9 100644
+--- a/dlls/ntdll/unix/graphics_policy.c
++++ b/dlls/ntdll/unix/graphics_policy.c
+@@ -131,15 +131,15 @@ void init_process_graphics_backend( const WCHAR *image_path )
+     if (process_uses_launcher_dxmt)
+         process_graphics_backend = PROCESS_GRAPHICS_BACKEND_DXMT;
+ 
+-    /* WineForge-Internal: wfdxcompat/rockstar-launcher-policy-v1. */
++    /* WineForge-Internal: wfdxcompat/rockstar-launcher-policy-v1. MetalSharp: as on the arm64
++     * runtime, the Rockstar Games Launcher and SocialClubHelper run on Mullion with WFDXCompat's
++     * launcher companion interposing D3D11 device creation. On D3DMetal their UI's D3D11 device
++     * could not be created (metalsharp/MetalSharp-Wine#113). */
+     process_uses_wfdx_launchers = FALSE;
+-    if (launcher.wfdx)
++    if (launcher.wfdx && dxmt_runtime_available())
+     {
+-        process_graphics_backend = PROCESS_GRAPHICS_BACKEND_D3DMETAL;
+-        if (wfdxcompat_launcher_runtime_available())
+-            process_uses_wfdx_launchers = TRUE;
+-        else
+-            process_graphics_backend = configured_backend;
++        process_graphics_backend = PROCESS_GRAPHICS_BACKEND_DXMT;
++        process_uses_wfdx_launchers = wfdxcompat_launcher_runtime_available();
+     }
+ 
+     TRACE( "graphics backend for %s: global %s, selected %s, policy %s%s%s\n", image_nameA,
+diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
+index 5654f0b776d..431f3f66b85 100644
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -1543,6 +1543,28 @@ static NTSTATUS find_builtin_dll( UNICODE_STRING *nt_name, ANSI_STRING *exp_name
+         goto done;
+     }
+ 
++    /* WineForge-Internal: wfdxcompat-runtime-loader-v1. MetalSharp: the launcher companion, PE
++     * only, in the launcher processes the policy put on Mullion, as on the arm64 runtime. */
++    if (wfdxcompat_launcher_runtime_enabled() && is_wfdxcompat_launcher_module_name( file + pos + 1 ))
++    {
++        char *companion = resolve_wfdxcompat_launcher_pe_path( search_machine );
++
++        if (companion)
++        {
++            status = open_builtin_pe_file( companion, &attr, module, size_ptr, image_info,
++                                           limit_low, limit_high, load_machine, prefer_native, offset );
++            TRACE( "WFDXCompat launcher companion %s for %s -> %#lx\n",
++                   debugstr_a(companion), debugstr_us(nt_name), (long)status );
++            free( companion );
++            if (status != STATUS_DLL_NOT_FOUND)
++            {
++                ptr = file + pos;
++                wfdxcompat_runtime_pe = TRUE;  /* no unix side */
++                goto done;
++            }
++        }
++    }
++
+     /* WineForge-Internal: load DXCompat before the selected D3DMetal backend. */
+     if (d3dmetal_graphics_backend_enabled() &&
+         is_wfdxcompat_frontend_module_name( file + pos + 1 ))
+diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
+index 0d01d8f3d4c..7edb8a6e978 100644
+--- a/dlls/ntdll/unix/unix_private.h
++++ b/dlls/ntdll/unix/unix_private.h
+@@ -386,6 +386,8 @@ extern char *resolve_dxmt_pe_path( const char *module, USHORT machine );
+ extern char *resolve_dxmt_unixlib_path( const char *path );
+ extern BOOL is_wfdxcompat_frontend_module_name( const char *path );
+ extern BOOL is_wfdxcompat_backend_module_name( const char *path );
++extern BOOL is_wfdxcompat_launcher_module_name( const char *path );
++extern char *resolve_wfdxcompat_launcher_pe_path( USHORT machine );
+ extern char *resolve_wfdxcompat_frontend_pe_path( const char *module, USHORT machine );
+ extern char *resolve_wfdxcompat_backend_pe_path( const char *module );
+ extern char *resolve_wfdxcompat_backend_unixlib_path( const char *module );
+diff --git a/dlls/ntdll/unix/wfdxcompat_loader.c b/dlls/ntdll/unix/wfdxcompat_loader.c
+index 08bff216b92..1f867e1c5be 100644
+--- a/dlls/ntdll/unix/wfdxcompat_loader.c
++++ b/dlls/ntdll/unix/wfdxcompat_loader.c
+@@ -91,27 +91,45 @@ BOOL is_wfdxcompat_backend_module_name( const char *path )
+            !strcasecmp( name, "wfdxbackend-d3d11.so" );
+ }
+ 
++/* MetalSharp: as on the arm64 runtime, the launcher companion hands D3D11 device creation to
++ * Mullion (graphics_policy.c), so it needs the companion and the Mullion runtime. */
++static char *wfdxcompat_launcher_path(void)
++{
++    char *runtime_dir, *companion;
++
++    if (!(runtime_dir = get_wfdxcompat_runtime_dir())) return NULL;
++    if (asprintf( &companion, "%s/x86_64-windows/wfdx-launchers-v1.dll", runtime_dir ) == -1)
++        companion = NULL;
++    free( runtime_dir );
++    return companion;
++}
++
+ BOOL wfdxcompat_launcher_runtime_available(void)
+ {
+-    char *runtime_dir, *companion = NULL;
+-    char *backend_pe = NULL, *backend_unix = NULL;
+-    BOOL available = FALSE;
+-
+-    if (!(runtime_dir = get_wfdxcompat_runtime_dir())) return FALSE;
+-    if (asprintf( &companion, "%s/x86_64-windows/wfdx-launchers-v1.dll",
+-                  runtime_dir ) == -1) companion = NULL;
+-    backend_pe = resolve_d3dmetal_pe_path( "d3d11.dll" );
+-    backend_unix = resolve_d3dmetal_unixlib_path( "d3d11.so" );
+-    available = companion && backend_pe && backend_unix &&
+-                !access( companion, R_OK ) &&
+-                !access( backend_pe, R_OK ) && !access( backend_unix, R_OK );
+-    free( backend_unix );
+-    free( backend_pe );
++    char *companion = wfdxcompat_launcher_path();
++    BOOL available = companion && !access( companion, R_OK ) && dxmt_runtime_available();
++
+     free( companion );
+-    free( runtime_dir );
+     return available;
+ }
+ 
++BOOL is_wfdxcompat_launcher_module_name( const char *path )
++{
++    return !strcasecmp( module_basename( path ), "wfdx-launchers-v1.dll" );
++}
++
++/* Only a launcher process the policy selected sees the companion. */
++char *resolve_wfdxcompat_launcher_pe_path( USHORT machine )
++{
++    char *companion;
++
++    if (!wfdxcompat_launcher_runtime_enabled() || machine != IMAGE_FILE_MACHINE_AMD64) return NULL;
++    if (!(companion = wfdxcompat_launcher_path())) return NULL;
++    if (!access( companion, R_OK )) return companion;
++    free( companion );
++    return NULL;
++}
++
+ char *resolve_wfdxcompat_frontend_pe_path( const char *module, USHORT machine )
+ {
+     const char *name = module_basename( module );
+diff --git a/dlls/ntdll/wfdxcompat_loader.c b/dlls/ntdll/wfdxcompat_loader.c
+index 070c33b6c0f..d4a51c56cb2 100644
+--- a/dlls/ntdll/wfdxcompat_loader.c
++++ b/dlls/ntdll/wfdxcompat_loader.c
+@@ -30,6 +30,19 @@
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(module);
+ 
++/* The companion's wfdx_launcher_init flags (wfdxcompat/launchers_abi.h). */
++#define WFDX_LAUNCHER_FLAG_INTERPOSE         0x00000001
++#define WFDX_LAUNCHER_FLAG_CONTEXT_STATE     0x00000002
++#define WFDX_LAUNCHER_FLAG_GDI_SURFACE       0x00000004
++#define WFDX_LAUNCHER_FLAG_SERVICE_SWAPCHAIN 0x00000008
++#define WFDX_LAUNCHER_FLAG_NATIVE_D3D10      0x00000010
++
++/* MetalSharp: the Rockstar Games Launcher and SocialClubHelper run on Mullion (graphics_policy.c),
++ * which implements D3D10 devices, device context state and GDI-compatible surfaces itself, as on
++ * the arm64 runtime: the companion only interposes device creation and leaves D3D10 to Mullion.
++ * WFDXCOMPAT_LAUNCHER_FLAGS (hex) overrides. */
++#define WFDX_LAUNCHER_ROCKSTAR_FLAGS (WFDX_LAUNCHER_FLAG_INTERPOSE | WFDX_LAUNCHER_FLAG_NATIVE_D3D10)
++
+ #ifdef _WIN64
+ static NTSTATUS get_runtime_env( const WCHAR *name, SIZE_T extra, UNICODE_STRING *ret )
+ {
+@@ -216,6 +229,31 @@ static BOOL wfdx_launcher_has_argument( const UNICODE_STRING *line, const WCHAR
+ }
+ #endif
+ 
++static UINT wfdx_launcher_rockstar_flags(void)
++{
++    WCHAR buffer[16];
++    UNICODE_STRING name, value;
++    UINT flags = 0;
++    WCHAR *p;
++
++    RtlInitUnicodeString( &name, L"WFDXCOMPAT_LAUNCHER_FLAGS" );
++    value.Buffer = buffer;
++    value.Length = 0;
++    value.MaximumLength = sizeof(buffer) - sizeof(WCHAR);
++    if (RtlQueryEnvironmentVariable_U( NULL, &name, &value )) return WFDX_LAUNCHER_ROCKSTAR_FLAGS;
++    buffer[value.Length / sizeof(WCHAR)] = 0;
++    p = buffer;
++    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) p += 2;
++    for (; *p; p++)
++    {
++        if (*p >= '0' && *p <= '9') flags = flags * 16 + (*p - '0');
++        else if (*p >= 'a' && *p <= 'f') flags = flags * 16 + (*p - 'a' + 10);
++        else if (*p >= 'A' && *p <= 'F') flags = flags * 16 + (*p - 'A' + 10);
++        else return WFDX_LAUNCHER_ROCKSTAR_FLAGS;
++    }
++    return flags | WFDX_LAUNCHER_FLAG_INTERPOSE;
++}
++
+ static UINT wfdx_launcher_process_flags(void)
+ {
+     const UNICODE_STRING *path = &NtCurrentTeb()->Peb->ProcessParameters->ImagePathName;
+@@ -225,8 +263,7 @@ static UINT wfdx_launcher_process_flags(void)
+             L"\\Rockstar Games\\Social Club\\SocialClubHelper.exe" );
+ 
+     if (rockstar)
+-        return wfdx_launcher_env_present( L"WFDXCOMPAT_RUNTIME_DIR" ) ?
+-                0x00000001 | 0x00000002 | 0x00000004 : 0;
++        return wfdx_launcher_env_present( L"WFDXCOMPAT_RUNTIME_DIR" ) ? wfdx_launcher_rockstar_flags() : 0;
+ #ifdef _WIN64
+     if (wfdx_launcher_path_has_suffix( path,
+             L"\\Epic Games\\Launcher\\Portal\\Binaries\\Win64\\EpicGamesLauncher.exe" ))
+@@ -239,7 +276,7 @@ static UINT wfdx_launcher_process_flags(void)
+              (clean && !install)) &&
+             wfdx_launcher_d3dmetal_enabled() &&
+             wfdx_launcher_env_present( L"WFDXCOMPAT_RUNTIME_DIR" ))
+-            return 0x00000001 | 0x00000008;
++            return WFDX_LAUNCHER_FLAG_INTERPOSE | WFDX_LAUNCHER_FLAG_SERVICE_SWAPCHAIN;
+     }
+ #endif
+     return 0;
+@@ -318,11 +355,11 @@ void wfdx_launcher_activate( HMODULE d3d11 )
+     }
+     if (!status)
+     {
+-        if (flags & 0x00000008)
++        if (flags & WFDX_LAUNCHER_FLAG_SERVICE_SWAPCHAIN)
+         {
+             RtlInitAnsiString( &name, supported_flags_nameA );
+             status = LdrGetProcedureAddress( companion, &name, 0, &supported_flags_proc );
+-            if (!status && !(((UINT (WINAPI *)(void))supported_flags_proc)() & 0x00000008))
++            if (!status && !(((UINT (WINAPI *)(void))supported_flags_proc)() & WFDX_LAUNCHER_FLAG_SERVICE_SWAPCHAIN))
+                 status = STATUS_NOT_SUPPORTED;
+         }
+     }
+@@ -382,7 +419,7 @@ void *WINAPI __wine_get_wfdx_d3d10_create_device(void)
+ /* WineForge-Internal: wfdxcompat/launcher-process-interposition-v1. */
+ void *wfdx_launcher_get_import( HMODULE module, const char *name )
+ {
+-    if (wfdx_launcher_interposition_active && (wfdx_launcher_flags & 0x00000008) &&
++    if (wfdx_launcher_interposition_active && (wfdx_launcher_flags & WFDX_LAUNCHER_FLAG_SERVICE_SWAPCHAIN) &&
+         module == wfdx_launcher_d3d11 && !strcmp( name, "D3D11CreateDeviceAndSwapChain" ))
+         return wfdx_launcher_create_device_and_swapchain;
+     if (wfdx_launcher_interposition_active && module == wfdx_launcher_dxgi &&
+@@ -400,7 +437,7 @@ void wfdx_launcher_fixup_imports( HMODULE importer )
+     BYTE *base = (BYTE *)importer;
+     ULONG size, image_size, i;
+ 
+-    if (!wfdx_launcher_interposition_active || !(wfdx_launcher_flags & 0x00000008)) return;
++    if (!wfdx_launcher_interposition_active || !(wfdx_launcher_flags & WFDX_LAUNCHER_FLAG_SERVICE_SWAPCHAIN)) return;
+     if (!(header = RtlImageNtHeader( importer ))) return;
+     image_size = header->OptionalHeader.SizeOfImage;
+     if (!(imports = RtlImageDirectoryEntryToData( importer, TRUE, IMAGE_DIRECTORY_ENTRY_IMPORT, &size )))
