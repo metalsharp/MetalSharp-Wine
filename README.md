@@ -30,10 +30,14 @@ The D3D11 launcher companion currently provides:
 - `ID3D11DeviceContext1` context-state switching
 - GDI-compatible `IDXGISurface` access for D3D11 textures
 - the D3D10 device bridge used by the validated Rockstar launcher path
+- opt-in rejection of swapchain creation in Wine's invisible service window
+  station, with device-only and user-station calls forwarded
 - passthrough to the canonical D3DMetal D3D11 implementation
 
 Application selection and backend routing are implemented in WineForge. This
-repository does not contain application-name routing.
+repository does not contain application-name routing. The launcher ABI exposes
+supported flags so the loader can check service-swapchain support before
+activating it. Existing context-state, GDI and D3D10 flags retain their behavior.
 
 ## Runtime files
 

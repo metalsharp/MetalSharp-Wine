@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
+#include <wchar.h>
 #include "wfdxcompat/launchers_abi.h"
 #include "wfdxcompat/d3d11_context_state.h"
 #include "wfdxcompat/d3d11_gdi_surface.h"
@@ -202,12 +203,42 @@ static LONG backend_success;
 static LONG overlay_attempts;
 static LONG overlay_success;
 static LONG overlay_failure;
+static LONG service_rejections;
+static LONG service_query_failures;
+
+UINT WINAPI wfdx_launcher_get_supported_flags(void)
+{
+    return WFDX_LAUNCHER_SUPPORTED_FLAGS;
+}
+
+static int service_window_station(void)
+{
+    USEROBJECTFLAGS flags;
+    WCHAR name[64];
+    HWINSTA station = GetProcessWindowStation();
+
+    if (!station ||
+        !GetUserObjectInformationW(station, UOI_NAME, name, sizeof(name), NULL) ||
+        !GetUserObjectInformationW(station, UOI_FLAGS, &flags, sizeof(flags), NULL))
+    {
+        InterlockedIncrement(&service_query_failures);
+        return -1;
+    }
+    return !(flags.dwFlags & WSF_VISIBLE) && !wcscmp(name, L"__wineservice_winstation");
+}
+
+void WINAPI wfdx_launcher_get_service_counters(LONG *rejections, LONG *query_failures)
+{
+    if (rejections) *rejections = InterlockedCompareExchange(&service_rejections, 0, 0);
+    if (query_failures) *query_failures = InterlockedCompareExchange(&service_query_failures, 0, 0);
+}
 
 BOOL WINAPI wfdx_launcher_init(const struct wfdx_launcher_init *init)
 {
     InterlockedIncrement(&init_calls);
     if (!init || init->size < sizeof(*init) ||
         init->abi_version != WFDX_LAUNCHERS_ABI_VERSION ||
+        (init->flags & ~WFDX_LAUNCHER_SUPPORTED_FLAGS) ||
         !(init->flags & WFDX_LAUNCHER_FLAG_INTERPOSE) ||
         !init->create_device || !init->create_device_and_swapchain)
         return FALSE;
@@ -298,6 +329,19 @@ HRESULT WINAPI wfdx_launcher_D3D11CreateDeviceAndSwapChain(IDXGIAdapter *adapter
     InterlockedIncrement(&wrapper_calls);
     if (InterlockedCompareExchange(&init_ready, 0, 0) != 1 ||
         !backend_create_device_and_swapchain) return E_UNEXPECTED;
+    /* Window presentation is unavailable in Session 0. Keep device-only
+     * creation available and reject the swapchain before backend dispatch. */
+    if ((launcher_flags & WFDX_LAUNCHER_FLAG_SERVICE_SWAPCHAIN) &&
+        service_window_station() == 1)
+    {
+        if (swapchain) *swapchain = NULL;
+        if (device) *device = NULL;
+        if (context) *context = NULL;
+        if (chosen) *chosen = 0;
+        InterlockedIncrement(&service_rejections);
+        OutputDebugStringA("WFDX_SESSION0 D3D11CreateDeviceAndSwapChain -> DXGI_ERROR_NOT_CURRENTLY_AVAILABLE\n");
+        return DXGI_ERROR_NOT_CURRENTLY_AVAILABLE;
+    }
     InterlockedIncrement(&backend_calls);
     hr = backend_create_device_and_swapchain(adapter, type,
             software, flags, levels, level_count,

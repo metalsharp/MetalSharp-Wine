@@ -30,7 +30,7 @@ mkdir -p "$OUT" "$STAGE"
     "$ROOT/src/launchers/d3d11_gdi_surface.c" \
     "$ROOT/src/launchers/d3d10_bridge.c" \
     "$ROOT/exports/wfdx-launchers-v1.def" \
-    -ldxguid -lgdi32 -o "$OUT/wfdx-launchers-v1.dll"
+    -ldxguid -lgdi32 -luser32 -o "$OUT/wfdx-launchers-v1.dll"
 "$WINEBUILD" --builtin "$OUT/wfdx-launchers-v1.dll"
 cp -f "$OUT/wfdx-launchers-v1.dll" "$STAGE/"
 echo "staged: $STAGE/wfdx-launchers-v1.dll"
