@@ -1095,7 +1095,100 @@ static void fit_launch_resolution( WCHAR **env, SIZE_T *pos, SIZE_T *size, const
     set_launch_var( env, pos, size, config_name, config );
 }
 
-static void add_launch_environment( WCHAR **env, SIZE_T *pos, SIZE_T *size, const WCHAR *image )
+/* MetalSharp: a program whose ray tracing breaks it is shown none, on Mullion (MULLION_D3D12_RAYTRACING=0) and on
+ * VKD3D-Proton (nodxr in VKD3D_CONFIG), unless its launch environment already says. Hogwarts Legacy's ray tracing
+ * pipeline froze its startup and then crashed before the menu, as it does under D3DMetal too; shown no ray tracing it
+ * runs, and loses only its optional ray-traced effects */
+static void disable_launch_ray_tracing( WCHAR **env, SIZE_T *pos, SIZE_T *size, const WCHAR *image )
+{
+    static const WCHAR hogwartsW[] = {'H','o','g','w','a','r','t','s','L','e','g','a','c','y','.','e','x','e',0};
+    static const WCHAR * const programs[] = { hogwartsW };
+    static const WCHAR mullionW[] = {'M','U','L','L','I','O','N','_','D','3','D','1','2','_','R','A','Y','T','R','A','C','I','N','G'};
+    static const WCHAR vkd3dW[] = {'V','K','D','3','D','_','C','O','N','F','I','G'};
+    const WCHAR *name, *p;
+    WCHAR *value;
+    char config[256];
+    unsigned int i;
+
+    if (!image) return;
+    for (name = p = image; *p; p++) if (*p == '\\' || *p == '/') name = p + 1;
+    for (i = 0; i < ARRAY_SIZE(programs); i++) if (!ntdll_wcsicmp( name, programs[i] )) break;
+    if (i == ARRAY_SIZE(programs)) return;
+
+    if (!(value = get_env_var( *env, *pos, mullionW, ARRAY_SIZE(mullionW) )))
+        set_launch_var( env, pos, size, "MULLION_D3D12_RAYTRACING", "0" );
+    free( value );
+    /* VKD3D_CONFIG's flags are a comma-separated list: nodxr is added to them, unless they name DXR already */
+    value = get_env_var( *env, *pos, vkd3dW, ARRAY_SIZE(vkd3dW) );
+    if (value && *value)
+    {
+        int len = ntdll_wcstoumbs( value, wcslen( value ), config, sizeof(config) - sizeof(",nodxr"), FALSE );
+
+        config[len > 0 ? len : 0] = 0;
+        if (!strstr( config, "dxr" ))
+        {
+            strcat( config, ",nodxr" );
+            set_launch_var( env, pos, size, "VKD3D_CONFIG", config );
+        }
+    }
+    else set_launch_var( env, pos, size, "VKD3D_CONFIG", "nodxr" );
+    free( value );
+}
+
+/* MetalSharp: MoltenVK compiles each pipeline on the calling thread, not later on its own queue. Its deferred and
+ * parallel-stage compiles run on a GCD concurrent queue whose blocks each wait for Metal's completion handler; a game
+ * that creates pipelines from many threads (God of War Ragnarok's sixteen PSO builders) fills all 64 of the process's
+ * GCD worker threads with those waits, Metal's completion handlers then find no thread to run on, and every compile
+ * hangs until MVK_CONFIG_METAL_COMPILE_TIMEOUT fails it (a black screen, then a crash on the failed pipeline).
+ * Compiling on the caller blocks only the game's own threads. Hogwarts Legacy keeps the deferred compiles, set
+ * explicitly so it doesn't inherit 0 from Wine Steam. Applied before launch.env and launch.local.env, which can still
+ * set either variable for a game. */
+static void set_launch_moltenvk_compiles( WCHAR **env, SIZE_T *pos, SIZE_T *size, const WCHAR *image )
+{
+    static const WCHAR hogwartsW[] = {'H','o','g','w','a','r','t','s','L','e','g','a','c','y','.','e','x','e',0};
+    static const WCHAR * const deferred_programs[] = { hogwartsW };
+    static const WCHAR deferredW[] = {'M','V','K','_','C','O','N','F','I','G','_','D','E','F','E','R','R','E','D','_',
+                                      'P','I','P','E','L','I','N','E','S'};
+    static const WCHAR parallelW[] = {'M','V','K','_','C','O','N','F','I','G','_','P','A','R','A','L','L','E','L','_',
+                                      'S','T','A','G','E','_','C','O','M','P','I','L','E'};
+    static const struct { const char *name; const WCHAR *nameW; SIZE_T len; } vars[] =
+    {
+        { "MVK_CONFIG_DEFERRED_PIPELINES",     deferredW, ARRAY_SIZE(deferredW) },
+        { "MVK_CONFIG_PARALLEL_STAGE_COMPILE", parallelW, ARRAY_SIZE(parallelW) },
+    };
+    static const WCHAR oneW[] = {'1',0}, zeroW[] = {'0',0};
+    const WCHAR *name = NULL, *p;
+    WCHAR *value;
+    unsigned int i;
+    BOOL deferred = FALSE;
+
+    if (image)
+    {
+        for (name = p = image; *p; p++) if (*p == '\\' || *p == '/') name = p + 1;
+        for (i = 0; i < ARRAY_SIZE(deferred_programs); i++)
+            if (!ntdll_wcsicmp( name, deferred_programs[i] )) deferred = TRUE;
+    }
+    for (i = 0; i < ARRAY_SIZE(vars); i++)
+    {
+        /* set_env_var, not set_launch_var: append_envA copies the name into 32 characters, and
+         * MVK_CONFIG_PARALLEL_STAGE_COMPILE is 33 */
+        if (deferred)
+        {
+            set_env_var( env, pos, size, vars[i].nameW, vars[i].len, oneW );
+            setenv( vars[i].name, "1", 1 );
+            continue;
+        }
+        if (!(value = get_env_var( *env, *pos, vars[i].nameW, vars[i].len )))
+        {
+            set_env_var( env, pos, size, vars[i].nameW, vars[i].len, zeroW );
+            setenv( vars[i].name, "0", 1 );
+        }
+        free( value );
+    }
+}
+
+static void add_launch_environment_file( WCHAR **env, SIZE_T *pos, SIZE_T *size, const WCHAR *image,
+                                         const char *name )
 {
     static const WCHAR ntprefixW[] = {'\\','?','?','\\'};
     char *unix_name = NULL, *slash, *path, *data, *line, *next;
@@ -1107,13 +1200,14 @@ static void add_launch_environment( WCHAR **env, SIZE_T *pos, SIZE_T *size, cons
     if (!wcsncmp( image, ntprefixW, ARRAY_SIZE(ntprefixW) )) image += ARRAY_SIZE(ntprefixW);
     if (ntdll_get_unix_file_name( image, &unix_name, FILE_OPEN ) || !unix_name) return;
     if (!(slash = strrchr( unix_name, '/' )) ||
-        !(path = malloc( (slash - unix_name) + sizeof("/.metalsharp/launch.env") )))
+        !(path = malloc( (slash - unix_name) + sizeof("/.metalsharp/") + strlen( name ) )))
     {
         free( unix_name );
         return;
     }
     memcpy( path, unix_name, slash - unix_name );
-    strcpy( path + (slash - unix_name), "/.metalsharp/launch.env" );
+    strcpy( path + (slash - unix_name), "/.metalsharp/" );
+    strcat( path, name );
     free( unix_name );
     fd = open( path, O_RDONLY | O_CLOEXEC );
     free( path );
@@ -1178,6 +1272,14 @@ static void add_launch_environment( WCHAR **env, SIZE_T *pos, SIZE_T *size, cons
         }
     }
     free( data );
+}
+
+/* MetalSharp: launch.env (MetalSharp's, rewritten at each launch) and then launch.local.env (the game's own settings,
+ * Game Settings > Advanced), which can change anything launch.env set */
+static void add_launch_environment( WCHAR **env, SIZE_T *pos, SIZE_T *size, const WCHAR *image )
+{
+    add_launch_environment_file( env, pos, size, image, "launch.env" );
+    add_launch_environment_file( env, pos, size, image, "launch.local.env" );
 }
 
 static void append_envA( WCHAR **env, SIZE_T *pos, SIZE_T *size, const char *name, const char *value )
@@ -2229,7 +2331,9 @@ static RTL_USER_PROCESS_PARAMETERS *build_initial_params(void)
     add_registry_environment( &env, &env_pos, &env_size );
     if (main_argv[1] && !get_full_path( main_argv[1], curdir, &nt_name ))
     {
+        set_launch_moltenvk_compiles( &env, &env_pos, &env_size, nt_name.Buffer );
         add_launch_environment( &env, &env_pos, &env_size, nt_name.Buffer );
+        disable_launch_ray_tracing( &env, &env_pos, &env_size, nt_name.Buffer );
         fit_launch_resolution( &env, &env_pos, &env_size, nt_name.Buffer );
         free( nt_name.Buffer );
     }
@@ -2377,11 +2481,12 @@ void init_startup_info(void)
 
         if (image)
         {
-            /* the strings follow the structure as curdir, dllpath, imagepath, ... (as init_startup_info reads
-             * them below): the image path is past the other two */
-            memcpy( image, (char *)(info + 1) + info->curdir_len + info->dllpath_len, info->imagepath_len );
+            /* the image path is the first string after the structure, as nt_name reads it below */
+            memcpy( image, info + 1, info->imagepath_len );
             image[info->imagepath_len / sizeof(WCHAR)] = 0;
+            set_launch_moltenvk_compiles( &env, &env_pos, &env_size, image );
             add_launch_environment( &env, &env_pos, &env_size, image );
+            disable_launch_ray_tracing( &env, &env_pos, &env_size, image );
             fit_launch_resolution( &env, &env_pos, &env_size, image );
             free( image );
         }
