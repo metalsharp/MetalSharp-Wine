@@ -265,7 +265,10 @@ def do_check(args):
         if args.worktree and os.path.exists(os.path.join(ROOT, path, '.git')):
             sub = ['git', '-C', os.path.join(ROOT, path)]
             head = subprocess.run(sub + ['rev-parse', 'HEAD'], capture_output=True, text=True).stdout.strip()
-            dirty = subprocess.run(sub + ['status', '--porcelain', '--untracked-files=no'],
+            # the submodule's own files: a build may patch its nested submodules (MetalVulkan's
+            # dxbc-spirv-moltenvk.patch, for one)
+            dirty = subprocess.run(sub + ['status', '--porcelain', '--untracked-files=no',
+                                          '--ignore-submodules=all'],
                                    capture_output=True, text=True).stdout.strip()
             if head != pin:
                 problems.append(f'{path}: checked out at {head[:10]}, not its pin {pin[:10]} '
