@@ -1543,6 +1543,28 @@ static NTSTATUS find_builtin_dll( UNICODE_STRING *nt_name, ANSI_STRING *exp_name
         goto done;
     }
 
+    /* WineForge-Internal: wfdxcompat-runtime-loader-v1. MetalSharp: the launcher companion, PE
+     * only, in the launcher processes the policy put on Mullion, as on the arm64 runtime. */
+    if (wfdxcompat_launcher_runtime_enabled() && is_wfdxcompat_launcher_module_name( file + pos + 1 ))
+    {
+        char *companion = resolve_wfdxcompat_launcher_pe_path( search_machine );
+
+        if (companion)
+        {
+            status = open_builtin_pe_file( companion, &attr, module, size_ptr, image_info,
+                                           limit_low, limit_high, load_machine, prefer_native, offset );
+            TRACE( "WFDXCompat launcher companion %s for %s -> %#lx\n",
+                   debugstr_a(companion), debugstr_us(nt_name), (long)status );
+            free( companion );
+            if (status != STATUS_DLL_NOT_FOUND)
+            {
+                ptr = file + pos;
+                wfdxcompat_runtime_pe = TRUE;  /* no unix side */
+                goto done;
+            }
+        }
+    }
+
     /* WineForge-Internal: load DXCompat before the selected D3DMetal backend. */
     if (d3dmetal_graphics_backend_enabled() &&
         is_wfdxcompat_frontend_module_name( file + pos + 1 ))

@@ -386,6 +386,8 @@ extern char *resolve_dxmt_pe_path( const char *module, USHORT machine );
 extern char *resolve_dxmt_unixlib_path( const char *path );
 extern BOOL is_wfdxcompat_frontend_module_name( const char *path );
 extern BOOL is_wfdxcompat_backend_module_name( const char *path );
+extern BOOL is_wfdxcompat_launcher_module_name( const char *path );
+extern char *resolve_wfdxcompat_launcher_pe_path( USHORT machine );
 extern char *resolve_wfdxcompat_frontend_pe_path( const char *module, USHORT machine );
 extern char *resolve_wfdxcompat_backend_pe_path( const char *module );
 extern char *resolve_wfdxcompat_backend_unixlib_path( const char *module );

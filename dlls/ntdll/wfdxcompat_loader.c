@@ -30,6 +30,19 @@
 
 WINE_DEFAULT_DEBUG_CHANNEL(module);
 
+/* The companion's wfdx_launcher_init flags (wfdxcompat/launchers_abi.h). */
+#define WFDX_LAUNCHER_FLAG_INTERPOSE         0x00000001
+#define WFDX_LAUNCHER_FLAG_CONTEXT_STATE     0x00000002
+#define WFDX_LAUNCHER_FLAG_GDI_SURFACE       0x00000004
+#define WFDX_LAUNCHER_FLAG_SERVICE_SWAPCHAIN 0x00000008
+#define WFDX_LAUNCHER_FLAG_NATIVE_D3D10      0x00000010
+
+/* MetalSharp: the Rockstar Games Launcher and SocialClubHelper run on Mullion (graphics_policy.c),
+ * which implements D3D10 devices, device context state and GDI-compatible surfaces itself, as on
+ * the arm64 runtime: the companion only interposes device creation and leaves D3D10 to Mullion.
+ * WFDXCOMPAT_LAUNCHER_FLAGS (hex) overrides. */
+#define WFDX_LAUNCHER_ROCKSTAR_FLAGS (WFDX_LAUNCHER_FLAG_INTERPOSE | WFDX_LAUNCHER_FLAG_NATIVE_D3D10)
+
 #ifdef _WIN64
 static NTSTATUS get_runtime_env( const WCHAR *name, SIZE_T extra, UNICODE_STRING *ret )
 {
@@ -216,6 +229,31 @@ static BOOL wfdx_launcher_has_argument( const UNICODE_STRING *line, const WCHAR 
 }
 #endif
 
+static UINT wfdx_launcher_rockstar_flags(void)
+{
+    WCHAR buffer[16];
+    UNICODE_STRING name, value;
+    UINT flags = 0;
+    WCHAR *p;
+
+    RtlInitUnicodeString( &name, L"WFDXCOMPAT_LAUNCHER_FLAGS" );
+    value.Buffer = buffer;
+    value.Length = 0;
+    value.MaximumLength = sizeof(buffer) - sizeof(WCHAR);
+    if (RtlQueryEnvironmentVariable_U( NULL, &name, &value )) return WFDX_LAUNCHER_ROCKSTAR_FLAGS;
+    buffer[value.Length / sizeof(WCHAR)] = 0;
+    p = buffer;
+    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) p += 2;
+    for (; *p; p++)
+    {
+        if (*p >= '0' && *p <= '9') flags = flags * 16 + (*p - '0');
+        else if (*p >= 'a' && *p <= 'f') flags = flags * 16 + (*p - 'a' + 10);
+        else if (*p >= 'A' && *p <= 'F') flags = flags * 16 + (*p - 'A' + 10);
+        else return WFDX_LAUNCHER_ROCKSTAR_FLAGS;
+    }
+    return flags | WFDX_LAUNCHER_FLAG_INTERPOSE;
+}
+
 static UINT wfdx_launcher_process_flags(void)
 {
     const UNICODE_STRING *path = &NtCurrentTeb()->Peb->ProcessParameters->ImagePathName;
@@ -225,8 +263,7 @@ static UINT wfdx_launcher_process_flags(void)
             L"\\Rockstar Games\\Social Club\\SocialClubHelper.exe" );
 
     if (rockstar)
-        return wfdx_launcher_env_present( L"WFDXCOMPAT_RUNTIME_DIR" ) ?
-                0x00000001 | 0x00000002 | 0x00000004 : 0;
+        return wfdx_launcher_env_present( L"WFDXCOMPAT_RUNTIME_DIR" ) ? wfdx_launcher_rockstar_flags() : 0;
 #ifdef _WIN64
     if (wfdx_launcher_path_has_suffix( path,
             L"\\Epic Games\\Launcher\\Portal\\Binaries\\Win64\\EpicGamesLauncher.exe" ))
@@ -239,7 +276,7 @@ static UINT wfdx_launcher_process_flags(void)
              (clean && !install)) &&
             wfdx_launcher_d3dmetal_enabled() &&
             wfdx_launcher_env_present( L"WFDXCOMPAT_RUNTIME_DIR" ))
-            return 0x00000001 | 0x00000008;
+            return WFDX_LAUNCHER_FLAG_INTERPOSE | WFDX_LAUNCHER_FLAG_SERVICE_SWAPCHAIN;
     }
 #endif
     return 0;
@@ -318,11 +355,11 @@ void wfdx_launcher_activate( HMODULE d3d11 )
     }
     if (!status)
     {
-        if (flags & 0x00000008)
+        if (flags & WFDX_LAUNCHER_FLAG_SERVICE_SWAPCHAIN)
         {
             RtlInitAnsiString( &name, supported_flags_nameA );
             status = LdrGetProcedureAddress( companion, &name, 0, &supported_flags_proc );
-            if (!status && !(((UINT (WINAPI *)(void))supported_flags_proc)() & 0x00000008))
+            if (!status && !(((UINT (WINAPI *)(void))supported_flags_proc)() & WFDX_LAUNCHER_FLAG_SERVICE_SWAPCHAIN))
                 status = STATUS_NOT_SUPPORTED;
         }
     }
@@ -382,7 +419,7 @@ void *WINAPI __wine_get_wfdx_d3d10_create_device(void)
 /* WineForge-Internal: wfdxcompat/launcher-process-interposition-v1. */
 void *wfdx_launcher_get_import( HMODULE module, const char *name )
 {
-    if (wfdx_launcher_interposition_active && (wfdx_launcher_flags & 0x00000008) &&
+    if (wfdx_launcher_interposition_active && (wfdx_launcher_flags & WFDX_LAUNCHER_FLAG_SERVICE_SWAPCHAIN) &&
         module == wfdx_launcher_d3d11 && !strcmp( name, "D3D11CreateDeviceAndSwapChain" ))
         return wfdx_launcher_create_device_and_swapchain;
     if (wfdx_launcher_interposition_active && module == wfdx_launcher_dxgi &&
@@ -400,7 +437,7 @@ void wfdx_launcher_fixup_imports( HMODULE importer )
     BYTE *base = (BYTE *)importer;
     ULONG size, image_size, i;
 
-    if (!wfdx_launcher_interposition_active || !(wfdx_launcher_flags & 0x00000008)) return;
+    if (!wfdx_launcher_interposition_active || !(wfdx_launcher_flags & WFDX_LAUNCHER_FLAG_SERVICE_SWAPCHAIN)) return;
     if (!(header = RtlImageNtHeader( importer ))) return;
     image_size = header->OptionalHeader.SizeOfImage;
     if (!(imports = RtlImageDirectoryEntryToData( importer, TRUE, IMAGE_DIRECTORY_ENTRY_IMPORT, &size )))
