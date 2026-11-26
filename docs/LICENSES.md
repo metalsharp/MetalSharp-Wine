@@ -1,7 +1,15 @@
 # Licenses
 
 - **MetalSharp Wine's own material** (scripts, docs, tests and build glue): [AGPL-3.0](../LICENSE), like MetalSharp.
-- **Wine and the Wine changes:** LGPL-2.1-or-later.
+- **Wine and the Wine changes:** LGPL-2.1-or-later. The notices of the third-party code Wine imports are in Wine's `NOTICES.md`, which both apps carry in `share/licenses/wine/`.
+- **WineForge** (Radim Vesely; [Alien4042x/WineForge](https://github.com/Alien4042x/WineForge)): LGPL-2.1-or-later, like Wine.
+  - The x86_64 build's Wine is WineForge's Wine 11.22 with MetalSharp's changes.
+  - Both builds carry WineForge's launcher, game and macOS fixes, and msync, which is WineForge's USync 6, renamed.
+  - Its notices are kept in the sources ([PROVENANCE.md](PROVENANCE.md)).
+- **WFDXCompat** (WineForge's DirectX compatibility companion, Radim Vesely): LGPL-2.1-or-later. The apps carry its license in `share/licenses/wfdxcompat/` and next to its runtime.
+- **The x86_64 build's native Steam bridge** (WineForge's, from Proton's `lsteamclient` with [NotProton](https://github.com/NotProtonNot/NotProton)'s macOS adaptations):
+  - ntdll's bridge is LGPL-2.1-or-later.
+  - `lsteamclient` comes with Valve's Steamworks SDK license, which its Steam API headers are under. The app carries it in `share/licenses/lsteamclient/`.
 - **FEX and its fork:** MIT.
 - **Mullion/DXMT:** LGPL-2.1-or-later.
 - **VKD3D-Proton:** LGPL-2.1. **DXVK and DXVK-MacOS:** zlib; DXVK-MacOS's dxbc-spirv: MIT. **MoltenVK:** Apache-2.0.

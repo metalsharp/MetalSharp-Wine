@@ -124,8 +124,11 @@ chmod +x $D/bin/wine
 echo "packaged: $D"
 
 # Licenses of everything redistributed in the bundle.
-LIC=$D/share/licenses; mkdir -p $LIC/wine $LIC/fex $LIC/llvm-mingw
-cp $ROOT/src/wine/COPYING.LIB $ROOT/src/wine/LICENSE $ROOT/src/wine/AUTHORS $LIC/wine/
+LIC=$D/share/licenses; mkdir -p $LIC/wine $LIC/fex $LIC/llvm-mingw $LIC/wfdxcompat
+# Wine's licenses, and NOTICES.md: the notices of the third-party code Wine imports
+cp $ROOT/src/wine/COPYING.LIB $ROOT/src/wine/LICENSE $ROOT/src/wine/AUTHORS $ROOT/src/wine/NOTICES.md $LIC/wine/
+# WFDXCompat, WineForge's DirectX companion by Radim Vesely (LGPL-2.1-or-later); lib/wfdxcompat has it too
+cp $ROOT/src/wfdxcompat/LICENSE $LIC/wfdxcompat/
 cp $ROOT/src/FEX/LICENSE $LIC/fex/
 cp $MINGW/LICENSE.TXT $LIC/llvm-mingw/   # libc++ / compiler-rt / mingw-w64 CRT linked into the FEX DLLs
 for p in $(ls $ROOT/deps/src); do
