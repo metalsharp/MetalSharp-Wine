@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Mullion for the x86_64 MetalSharp Wine (Wine 11.17 under Rosetta, MetalSharp's regular build): x86_64 and i386 PE
+# Mullion for the x86_64 MetalSharp Wine (Wine 11.22 under Rosetta, MetalSharp's regular build): x86_64 and i386 PE
 # modules and the x86_64 unix side, built against that Wine's build tree, laid out as the regular build's DXMT lane
 # (runtime/wine/lib/dxmt):
 #   install-x86_64/lib/dxmt/{x86_64-windows,i386-windows,x86_64-unix}
@@ -7,7 +7,7 @@
 # Mullion's DXGI trusts Mullion's NGX certificate (src/nvngx/signing/mullion-ngx.pem), as on the arm64 build. NGX checks
 # the signature of System32's nvngx.dll, which the x86_64 MetalSharp Wine takes from MetalVulkan's release
 # (signed by its CI), and then Wine loads this lane's core by name; MULLION_NGX_SIGNING_KEY_FILE signs this one too.
-#   X86_WINE_BUILD=<Wine 11.17 x86_64 build tree> build-mullion-x86_64.sh
+#   X86_WINE_BUILD=<Wine 11.22 x86_64 build tree> build-mullion-x86_64.sh
 set -e
 source ${0:A:h}/env.sh
 unset CFLAGS CXXFLAGS OBJCFLAGS LDFLAGS CPPFLAGS CC CXX OBJC  # macOS flags would reach the PE cross compilers

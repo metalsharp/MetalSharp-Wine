@@ -1,0 +1,45 @@
+From 7365b5e454ae6ab9d471bf72670d4906839e3ccd Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Wed, 25 Nov 2026 21:08:03 -0700
+Subject: [PATCH 82/82] winemac.drv: macdrv_is_remote_child() returns bool.
+
+Wine 11.22's Objective-C files include macdrv.h, where BOOL is not to be used.
+---
+ dlls/winemac.drv/macdrv.h | 2 +-
+ dlls/winemac.drv/window.c | 6 +++---
+ 2 files changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/dlls/winemac.drv/macdrv.h b/dlls/winemac.drv/macdrv.h
+index a848002b59d..35ce821dd18 100644
+--- a/dlls/winemac.drv/macdrv.h
++++ b/dlls/winemac.drv/macdrv.h
+@@ -272,7 +272,7 @@ extern struct macdrv_client_surface *impl_from_client_surface(struct client_surf
+ extern bool macdrv_client_surface_acquire_metal_swapchain(struct macdrv_client_surface *surface);
+ 
+ extern struct macdrv_win_data *get_win_data(HWND hwnd);
+-extern BOOL macdrv_is_remote_child(HWND hwnd);
++extern bool macdrv_is_remote_child(HWND hwnd);
+ extern void macdrv_ensure_remote_child(struct macdrv_win_data *data);
+ extern void macdrv_set_remote_cursor_index(WPARAM index);
+ extern void release_win_data(struct macdrv_win_data *data);
+diff --git a/dlls/winemac.drv/window.c b/dlls/winemac.drv/window.c
+index 24209b4b990..aa5b7c25aa6 100644
+--- a/dlls/winemac.drv/window.c
++++ b/dlls/winemac.drv/window.c
+@@ -577,13 +577,13 @@ static void destroy_cocoa_window(struct macdrv_win_data *data)
+  * its host's). It has no Cocoa window: it draws into a remote layer, which the top-level window's process hosts
+  * where the child is.
+  */
+-BOOL macdrv_is_remote_child(HWND hwnd)
++bool macdrv_is_remote_child(HWND hwnd)
+ {
+     HWND parent = NtUserGetAncestor(hwnd, GA_PARENT);
+     DWORD pid = 0;
+ 
+-    if (!parent || parent == NtUserGetDesktopWindow()) return FALSE;
+-    if (!NtUserGetWindowThread(parent, &pid)) return FALSE;
++    if (!parent || parent == NtUserGetDesktopWindow()) return false;
++    if (!NtUserGetWindowThread(parent, &pid)) return false;
+     return pid && pid != GetCurrentProcessId();
+ }
+ 

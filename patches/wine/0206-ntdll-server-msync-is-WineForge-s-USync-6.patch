@@ -1,0 +1,3410 @@
+From c56895ae4bf7d67c192b1caeea72c1a04c90c867 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Wed, 25 Nov 2026 20:54:34 -0700
+Subject: [PATCH 206/206] ntdll, server: msync is WineForge's USync 6
+
+msync was WineForge's WFUSync v5, renamed. WineForge has replaced that with USync 6, and the
+x86_64 runtime takes it with Wine 11.22: this brings the same msync to the arm64 runtime.
+
+USync 6 keeps events, semaphores and mutexes in process where it can: pulse, set and reset of an
+event, mutex release waking msync waiters, and WaitAny and WaitAll on local events, semaphores
+and mutexes, untimed or with a zero timeout. Its client and server files are renamed to
+msync.c and msync.h, with its functions, types and debug channel, as the x86_64 runtime has
+them. As before:
+- it is on unless WINEMSYNC=0 (WINEUSYNC and WINEWFUSYNC are read as well), and both sides
+  decide the same way;
+- the shared state is mapped in fixed 64K granules, which a wineserver with 16K pages and
+  clients with 4K pages agree on;
+- abandon_mutexes() collects the abandoned mutexes before waking their waiters.
+
+On ARM, USync 6 masks signals while it holds its locks, rather than deferring them as on x86_64,
+so signal_arm64.c is unchanged. The ARM64EC vector register context, which source/wine
+reverted, stays reverted.
+---
+ dlls/ntdll/unix/msync.c        | 1406 ++++++++++++++++++++++++--------
+ dlls/ntdll/unix/msync.h        |    5 +-
+ dlls/ntdll/unix/sync.c         |   17 +-
+ dlls/ntdll/unix/unix_private.h |    4 +
+ server/event.c                 |   23 +-
+ server/inproc_sync.c           |    5 +-
+ server/msync.c                 |  535 +++++++++---
+ server/msync.h                 |   12 +-
+ server/mutex.c                 |   11 +-
+ server/protocol.def            |   10 +-
+ server/semaphore.c             |    3 +-
+ server/thread.c                |   13 +-
+ server/thread.h                |    6 +-
+ 13 files changed, 1582 insertions(+), 468 deletions(-)
+
+diff --git a/dlls/ntdll/unix/msync.c b/dlls/ntdll/unix/msync.c
+index 2e23e9cf25c..66ce3c17c7c 100644
+--- a/dlls/ntdll/unix/msync.c
++++ b/dlls/ntdll/unix/msync.c
+@@ -1,7 +1,8 @@
+ /*
+- * WineForge userspace synchronization client state
++ * msync client shared state
++ * WineForge-Internal: msync-v6.
+  *
+- * Ported from WineForge's WFUSync (dlls/ntdll/unix/wfusync.c); MetalSharp Wine renamed it msync and modified it.
++ * Ported from WineForge's USync 6 (dlls/ntdll/unix/usync.c); MetalSharp Wine renamed it msync and modified it.
+  *
+  * Copyright (C) 2026 Radim Vesely
+  *
+@@ -25,15 +26,19 @@
+ #include <limits.h>
+ #include <pthread.h>
+ #include <sched.h>
++#include <signal.h>
+ #include <stdint.h>
+ #include <stdlib.h>
+ #include <string.h>
+ #include <sys/mman.h>
++#include <sys/stat.h>
+ #include <sys/time.h>
+ #include <sys/types.h>
++#include <time.h>
+ #include <unistd.h>
+ #ifdef __APPLE__
+ # include <AvailabilityMacros.h>
++# include <mach/mach_time.h>
+ # include <os/lock.h>
+ # ifdef MAC_OS_VERSION_14_4
+ #  include <os/os_sync_wait_on_address.h>
+@@ -49,18 +54,17 @@
+ #include "wine/debug.h"
+ 
+ #include "msync.h"
++#include "unix_private.h"
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(msync);
+ 
++/* Owned and initialized by the ntdll Unix server support. */
++extern sigset_t server_block_set;
++
+ #define MSYNC_CACHE_BLOCK_SIZE  (65536 / sizeof(struct msync_cache_entry))
+ #define MSYNC_CACHE_ENTRIES     128
+ #define MSYNC_TICKS_PER_SEC     10000000LL
+-#define MSYNC_TICKS_1601_TO_1970 ((369 * 365 + 89) * 86400 * MSYNC_TICKS_PER_SEC)
+ #define MSYNC_SPIN_LIMIT        32
+-/* Waits without a timeout wake up this often to re-check that the object is still theirs to wait on in
+- * process. Handing such a wait to the server instead put every wait longer than this (a game's main thread
+- * pacing its frames) and then every signal of its object on the server; only mutex waits still do, since
+- * only the server sees a mutex abandoned. */
+ #define MSYNC_BLOCKING_FALLBACK_NS 10000000ULL
+ 
+ #define MSYNC_KIND_UNKNOWN      0
+@@ -68,7 +72,18 @@ WINE_DEFAULT_DEBUG_CHANNEL(msync);
+ #define MSYNC_KIND_MUTEX        2
+ #define MSYNC_KIND_SEMAPHORE    3
+ #define MSYNC_KIND_UNSUPPORTED  4
+-#define MSYNC_TYPE_MASK         0x1fff
++#define MSYNC_TYPE_MASK         0x003f
++#define MSYNC_EVENT_DIRECT_PROTOCOL 0x0040
++#define MSYNC_DIRECT_WAITING       1u
++#define MSYNC_DIRECT_COMPLETED        2u
++#define MSYNC_DIRECT_MAX_GENERATION (INT_MAX >> 2)
++#define MSYNC_DIRECT_MAX_SLOT      (USHRT_MAX >> 1)
++#define MSYNC_EVENT_PROTOCOL    0x0080
++#define MSYNC_MUTEX_PROTOCOL    0x0100
++#define MSYNC_MUTEX_UNWAITED    0x0200
++#define MSYNC_SEMAPHORE_UNWAITED 0x0400
++#define MSYNC_SEMAPHORE_PROTOCOL 0x0800
++#define MSYNC_EVENT_UNWAITED    0x1000
+ #define MSYNC_STATE_LOCKED      0x2000
+ #define MSYNC_MULTI_WAITERS     0x4000
+ #define MSYNC_SERVER_WAITERS    0x8000
+@@ -90,6 +105,7 @@ struct msync_shared_state
+     unsigned short type;
+     unsigned short refcount;
+ };
++C_ASSERT( sizeof(struct msync_shared_state) == 16 );
+ 
+ struct msync_cache_entry
+ {
+@@ -118,9 +134,141 @@ static int do_msync_env_cached = -1;
+ static int msync_shared_fd = -1;
+ static __thread unsigned int msync_wait_slot_idx;
+ static __thread struct msync_shared_state *msync_wait_slot;
+-static long page_size;
++static __thread unsigned int msync_event_slot_generation;
++static NTSTATUS get_direct_event_wait_slot(void);
++static long msync_page_size;
+ 
+-static void lock_msync_cache(void)
++static __thread unsigned int msync_lock_depth;
++static __thread sigset_t msync_lock_sigset;
++
++/* Native probes supply controlled handlers. Real ARM Wine retains masking
++ * until its complete suspension and context protocol is separately verified. */
++#if defined(__APPLE__) && (defined(__x86_64__) || defined(MSYNC_GATE_NATIVE_TEST))
++#define MSYNC_USE_DEFERRED_SIGNALS
++#endif
++
++#define MSYNC_DEFER_QUIT 1
++#define MSYNC_DEFER_USR1 2
++#define MSYNC_DEFER_INT  4
++
++/* Called by Wine's own handlers after their architecture-specific setup. */
++BOOL msync_defer_signal( struct thread_data *data, int signal )
++{
++#ifdef MSYNC_USE_DEFERRED_SIGNALS
++    sig_atomic_t pending;
++
++    if (!data || !data->msync_lock_depth) return FALSE;
++    switch (signal)
++    {
++    case SIGQUIT: pending = MSYNC_DEFER_QUIT; break;
++    case SIGUSR1: pending = MSYNC_DEFER_USR1; break;
++    case SIGINT:  pending = MSYNC_DEFER_INT; break;
++    default: return FALSE;
++    }
++    data->msync_pending_signals |= pending;
++    return TRUE;
++#else
++    (void)data;
++    (void)signal;
++    return FALSE;
++#endif
++}
++
++#ifdef MSYNC_USE_DEFERRED_SIGNALS
++static void __attribute__((cold,noinline)) msync_replay_signals( struct thread_data *data )
++{
++    int saved_errno = errno;
++    sig_atomic_t pending;
++    sigset_t previous;
++
++    if (pthread_sigmask( SIG_BLOCK, &server_block_set, &previous )) abort();
++    pending = data->msync_pending_signals;
++    data->msync_pending_signals = 0;
++    TRACE( "MSYNC signal gate replay pending %#x.\n", pending );
++    if ((pending & MSYNC_DEFER_QUIT) && raise( SIGQUIT )) abort();
++    if ((pending & MSYNC_DEFER_USR1) && raise( SIGUSR1 )) abort();
++    if ((pending & MSYNC_DEFER_INT) && raise( SIGINT )) abort();
++    if (pthread_sigmask( SIG_SETMASK, &previous, NULL )) abort();
++    errno = saved_errno;
++}
++#endif
++
++/* Wine binds thread_data before entering Nt APIs. A native caller without
++ * that data retains the masked path, including protection of lazy TLS access.
++ * A scope must include required wakes as well as the shared state update. */
++static void __attribute__((cold,noinline)) msync_enter_masked_scope(void)
++{
++    sigset_t previous;
++
++    pthread_sigmask( SIG_BLOCK, &server_block_set, &previous );
++    if (!msync_lock_depth) msync_lock_sigset = previous;
++    msync_lock_depth++;
++}
++
++static void __attribute__((cold,noinline)) msync_leave_masked_scope(void)
++{
++    if (!--msync_lock_depth)
++    {
++        sigset_t previous = msync_lock_sigset;
++
++        pthread_sigmask( SIG_SETMASK, &previous, NULL );
++    }
++}
++
++/* The token belongs to this operation and uses Wine's existing thread data. */
++static inline struct thread_data *msync_enter_scope(void)
++{
++#ifdef MSYNC_USE_DEFERRED_SIGNALS
++    struct thread_data *data = get_thread_data();
++
++    if (data)
++    {
++        if (data->msync_lock_depth == INT_MAX) abort();
++        data->msync_lock_depth++;
++        return data;
++    }
++#endif
++    msync_enter_masked_scope();
++    return NULL;
++}
++
++static inline void msync_leave_scope( struct thread_data *data )
++{
++#ifdef MSYNC_USE_DEFERRED_SIGNALS
++    if (data)
++    {
++        if (data->msync_lock_depth <= 0) abort();
++        if (!--data->msync_lock_depth && data->msync_pending_signals)
++            msync_replay_signals( data );
++        return;
++    }
++#else
++    (void)data;
++#endif
++    msync_leave_masked_scope();
++}
++
++/* Legacy scoped helpers retain their existing contracts. */
++static void msync_enter_lock_scope(void)
++{
++    (void)msync_enter_scope();
++}
++
++static void msync_leave_lock_scope(void)
++{
++#ifdef MSYNC_USE_DEFERRED_SIGNALS
++    struct thread_data *data = get_thread_data();
++
++    if (data && data->msync_lock_depth)
++    {
++        msync_leave_scope( data );
++        return;
++    }
++#endif
++    msync_leave_masked_scope();
++}
++
++static void lock_msync_cache_in_scope(void)
+ {
+ #ifdef __APPLE__
+     os_unfair_lock_lock( &msync_cache_lock );
+@@ -129,7 +277,13 @@ static void lock_msync_cache(void)
+ #endif
+ }
+ 
+-static void unlock_msync_cache(void)
++static void lock_msync_cache(void)
++{
++    msync_enter_lock_scope();
++    lock_msync_cache_in_scope();
++}
++
++static void unlock_msync_cache_in_scope(void)
+ {
+ #ifdef __APPLE__
+     os_unfair_lock_unlock( &msync_cache_lock );
+@@ -138,13 +292,20 @@ static void unlock_msync_cache(void)
+ #endif
+ }
+ 
++static void unlock_msync_cache(void)
++{
++    unlock_msync_cache_in_scope();
++    msync_leave_lock_scope();
++}
++
+ int do_msync(void)
+ {
+     if (do_msync_env_cached == -1)
+     {
+-        /* on unless WINEMSYNC=0; server/msync.c decides the same way, and both sides must agree */
+         const char *env = getenv( "WINEMSYNC" );
+-        if (!env) env = getenv( "WINEWFUSYNC" );  /* upstream WineForge name */
++        if (!env) env = getenv( "WINEUSYNC" );    /* upstream WineForge name */
++        if (!env) env = getenv( "WINEWFUSYNC" );  /* earlier WineForge name */
++        /* on unless WINEMSYNC=0; server/msync.c decides the same way, and both sides must agree */
+         do_msync_env_cached = (!env || atoi( env )) ? 1 : 0;
+     }
+ 
+@@ -152,11 +313,20 @@ int do_msync(void)
+ }
+ 
+ /* Shared state is mapped in fixed 64K granules, independent of the host page size: the
+- * wineserver may run with 16K pages while entitled clients run with 4K pages. Must match
+- * MSYNC_MAP_GRANULE in server/msync.c. */
++ * wineserver may run with 16K pages while clients (x86_64 programs under FEX) run with 4K
++ * pages. Must match MSYNC_MAP_GRANULE in server/msync.c. */
++#define MSYNC_MAP_GRANULE 0x10000
++
+ static long get_page_size(void)
+ {
+-    return 0x10000;
++    if (!msync_page_size)
++    {
++        long size = MSYNC_MAP_GRANULE;
++
++        if (size <= 0 || size > UINT_MAX || size % sizeof(struct msync_shared_state)) return 0;
++        msync_page_size = size;
++    }
++    return msync_page_size;
+ }
+ 
+ static BOOL msync_handle_to_index( HANDLE handle, unsigned int *entry, unsigned int *idx )
+@@ -216,26 +386,36 @@ static unsigned char msync_type_to_kind( int type )
+ static void msync_set_handle_kind( HANDLE handle, unsigned char kind )
+ {
+     unsigned int block, idx;
++    unsigned char *table, *expected;
+ 
+     if (!msync_handle_to_index( handle, &block, &idx )) return;
+-    if (!msync_handle_kinds[block])
+-    {
+-        if (!block) msync_handle_kinds[block] = msync_handle_kinds_initial;
+-        else msync_handle_kinds[block] = calloc( MSYNC_CACHE_BLOCK_SIZE, sizeof(**msync_handle_kinds) );
++    table = __atomic_load_n( &msync_handle_kinds[block], __ATOMIC_ACQUIRE );
++    if (!table)
++    {
++        table = block ? calloc( MSYNC_CACHE_BLOCK_SIZE, sizeof(*table) ) : msync_handle_kinds_initial;
++        if (!table) return;
++        expected = NULL;
++        if (!__atomic_compare_exchange_n( &msync_handle_kinds[block], &expected, table, FALSE,
++                                          __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE ))
++        {
++            if (block) free( table );
++            table = expected;
++        }
+     }
+-    if (!msync_handle_kinds[block]) return;
+ 
+-    __atomic_store_n( &msync_handle_kinds[block][idx], kind, __ATOMIC_RELEASE );
++    __atomic_store_n( &table[idx], kind, __ATOMIC_RELEASE );
+ }
+ 
+ static unsigned char msync_get_handle_kind( HANDLE handle )
+ {
+     unsigned int block, idx;
++    unsigned char *table;
+ 
+     if (!msync_handle_to_index( handle, &block, &idx )) return MSYNC_KIND_UNKNOWN;
+-    if (!msync_handle_kinds[block]) return MSYNC_KIND_UNKNOWN;
++    if (!(table = __atomic_load_n( &msync_handle_kinds[block], __ATOMIC_ACQUIRE )))
++        return MSYNC_KIND_UNKNOWN;
+ 
+-    return __atomic_load_n( &msync_handle_kinds[block][idx], __ATOMIC_ACQUIRE );
++    return __atomic_load_n( &table[idx], __ATOMIC_ACQUIRE );
+ }
+ 
+ static BOOL msync_shm_idx_signal_unsafe( unsigned int shm_idx )
+@@ -246,7 +426,10 @@ static BOOL msync_shm_idx_signal_unsafe( unsigned int shm_idx )
+ 
+ static struct msync_shared_state *map_msync_state( unsigned int shm_idx, int fd )
+ {
+-    unsigned int page, offset;
++    unsigned int page, offset, max_pages;
++    uint64_t byte_offset = (uint64_t)shm_idx * sizeof(struct msync_shared_state);
++    long size = get_page_size();
++    struct stat st;
+     void **new_pages;
+     void *ptr;
+ 
+@@ -261,19 +444,32 @@ static struct msync_shared_state *map_msync_state( unsigned int shm_idx, int fd
+         return NULL;
+     }
+ 
+-    page = (shm_idx * sizeof(struct msync_shared_state)) / get_page_size();
+-    offset = (shm_idx * sizeof(struct msync_shared_state)) % get_page_size();
+-    if (offset + sizeof(struct msync_shared_state) > get_page_size())
++    if (size <= 0 || size > UINT_MAX || size % sizeof(struct msync_shared_state) ||
++        fstat( fd, &st ) == -1 || st.st_size <= 0 || st.st_size > UINT_MAX || st.st_size % size ||
++        byte_offset + sizeof(struct msync_shared_state) > (uint64_t)st.st_size)
+     {
+-        TRACE( "invalid index %u crosses page boundary\n", shm_idx );
++        TRACE( "fallback shm_idx %u invalid shared memory bounds\n", shm_idx );
+         return NULL;
+     }
++    page = byte_offset / size;
++    offset = byte_offset % size;
++    max_pages = st.st_size / size;
+ 
+     if (page >= msync_pages_count)
+     {
+         unsigned int new_count = msync_pages_count ? msync_pages_count * 2 : 16;
+ 
+-        while (page >= new_count) new_count *= 2;
++        while (page >= new_count)
++        {
++            if (new_count > max_pages / 2)
++            {
++                new_count = max_pages;
++                break;
++            }
++            new_count *= 2;
++        }
++        if (new_count > max_pages) new_count = max_pages;
++        if (SIZE_MAX / new_count < sizeof(*new_pages)) return NULL;
+         if (!(new_pages = realloc( msync_pages, new_count * sizeof(*msync_pages) )))
+         {
+             TRACE( "fallback shm_idx %u page %u page-cache allocation failed\n", shm_idx, page );
+@@ -286,7 +482,7 @@ static struct msync_shared_state *map_msync_state( unsigned int shm_idx, int fd
+ 
+     if (!msync_pages[page])
+     {
+-        ptr = mmap( NULL, get_page_size(), PROT_READ | PROT_WRITE, MAP_SHARED, fd, (off_t)page * get_page_size() );
++        ptr = mmap( NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, (off_t)page * size );
+         if (ptr == MAP_FAILED)
+         {
+             TRACE( "fallback shm_idx %u page %u mmap failed errno %d\n", shm_idx, page, errno );
+@@ -475,7 +671,7 @@ void msync_cache_inproc_sync( HANDLE handle, int type, unsigned int access, unsi
+ 
+     if (!shm_idx)
+     {
+-        TRACE( "fallback handle %p type %d access %#x has no MSync shm_idx\n", handle, type, access );
++        TRACE( "fallback handle %p type %d access %#x has no msync shm_idx\n", handle, type, access );
+         return;
+     }
+     if (!msync_supported_type( type ))
+@@ -486,7 +682,7 @@ void msync_cache_inproc_sync( HANDLE handle, int type, unsigned int access, unsi
+     }
+     if (!msync_handle_to_index( handle, &entry_idx, &idx ))
+     {
+-        TRACE( "fallback handle %p shm_idx %u outside MSync cache range\n", handle, shm_idx );
++        TRACE( "fallback handle %p shm_idx %u outside msync cache range\n", handle, shm_idx );
+         return;
+     }
+ 
+@@ -521,7 +717,7 @@ void msync_cache_inproc_sync( HANDLE handle, int type, unsigned int access, unsi
+         entry->valid = 1;
+         msync_set_handle_kind( handle, msync_type_to_kind( type ) );
+     }
+-    else TRACE( "fallback handle %p shm_idx %u MSync cache allocation failed\n", handle, shm_idx );
++    else TRACE( "fallback handle %p shm_idx %u msync cache allocation failed\n", handle, shm_idx );
+     unlock_msync_cache();
+ }
+ 
+@@ -646,7 +842,7 @@ static BOOL msync_try_lock_state( struct msync_shared_state *state, unsigned sho
+                                         __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST );
+ }
+ 
+-static BOOL msync_lock_state( struct msync_shared_state *state, unsigned short expected_type )
++static BOOL msync_lock_state_in_scope( struct msync_shared_state *state, unsigned short expected_type )
+ {
+     unsigned int attempts = 0;
+     unsigned short type;
+@@ -655,16 +851,56 @@ static BOOL msync_lock_state( struct msync_shared_state *state, unsigned short e
+     {
+         if (msync_try_lock_state( state, expected_type )) return TRUE;
+         type = __atomic_load_n( &state->type, __ATOMIC_SEQ_CST );
+-        if ((type & MSYNC_TYPE_MASK) != expected_type || (type & MSYNC_SERVER_WAITERS)) return FALSE;
++        if ((type & MSYNC_TYPE_MASK) != expected_type || (type & MSYNC_SERVER_WAITERS))
++        {
++            return FALSE;
++        }
+         if (!(++attempts % 64)) sched_yield();
+     }
+ }
+ 
+-static void msync_unlock_state( struct msync_shared_state *state )
++static BOOL msync_lock_state( struct msync_shared_state *state, unsigned short expected_type )
++{
++    msync_enter_lock_scope();
++    if (msync_lock_state_in_scope( state, expected_type )) return TRUE;
++    msync_leave_lock_scope();
++    return FALSE;
++}
++
++static void msync_unlock_state_in_scope( struct msync_shared_state *state )
+ {
+     __atomic_fetch_and( &state->type, ~MSYNC_STATE_LOCKED, __ATOMIC_SEQ_CST );
+ }
+ 
++static void msync_unlock_state( struct msync_shared_state *state )
++{
++    msync_unlock_state_in_scope( state );
++    msync_leave_lock_scope();
++}
++
++/* The established direct owner must finish even after another thread joins
++ * a standard server queue. Unregistered consumers retain the normal lock. */
++static BOOL msync_lock_direct_state( struct msync_shared_state *state, unsigned short expected )
++{
++    unsigned short type;
++    unsigned int attempts = 0;
++
++    msync_enter_lock_scope();
++    for (;;)
++    {
++        type = __atomic_load_n( &state->type, __ATOMIC_SEQ_CST );
++        if ((type & MSYNC_TYPE_MASK) != expected)
++        {
++            msync_leave_lock_scope();
++            return FALSE;
++        }
++        if (!(type & MSYNC_STATE_LOCKED) &&
++            __atomic_compare_exchange_n( &state->type, &type, type | MSYNC_STATE_LOCKED, FALSE,
++                                         __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST )) return TRUE;
++        if (!(++attempts % 64)) sched_yield();
++    }
++}
++
+ static BOOL msync_has_server_waiters( struct msync_shared_state *state )
+ {
+     return !!(__atomic_load_n( &state->type, __ATOMIC_SEQ_CST ) &
+@@ -726,39 +962,103 @@ static void msync_wake_waiters( unsigned int shm_idx )
+     SERVER_END_REQ;
+ }
+ 
+-NTSTATUS msync_set_event( HANDLE handle, LONG *prev_state )
++/* Keep the logical scope until all notifications are complete. Physical
++ * locks are released before either a kernel wake or a server request. */
++static void msync_complete_state_update_in_scope( struct msync_shared_state *state, unsigned int shm_idx,
++                                          int *address, BOOL wake, BOOL wake_all, BOOL wake_server )
++{
++    __atomic_fetch_and( &state->type, ~MSYNC_STATE_LOCKED, __ATOMIC_SEQ_CST );
++    if (wake) msync_wake_address( address, wake_all );
++    if (wake_server) msync_wake_waiters( shm_idx );
++}
++
++static void msync_complete_state_update( struct msync_shared_state *state, unsigned int shm_idx,
++                                          int *address, BOOL wake, BOOL wake_all, BOOL wake_server )
++{
++    msync_complete_state_update_in_scope( state, shm_idx, address, wake, wake_all, wake_server );
++    msync_leave_lock_scope();
++}
++
++/* Called with the state lock held. The server sets UNWAITED on new Events.
++ * A direct waiter clears it before rechecking. It stays clear until slot reuse,
++ * so timeout and thread exit need no cleanup. Older servers leave it clear and
++ * retain unconditional wakes. The permanent Event protocol marker keeps older
++ * clients on the server path even after UNWAITED is cleared. prev_state refers
++ * to local storage. The public caller publishes its output after wake work. */
++static int msync_set_event_state_in_scope( struct msync_shared_state *state, unsigned int shm_idx, LONG *prev_state )
++{
++    int previous = __atomic_exchange_n( &state->low, 1, __ATOMIC_SEQ_CST );
++    BOOL wake = !(__atomic_load_n( &state->type, __ATOMIC_SEQ_CST ) & MSYNC_EVENT_UNWAITED);
++
++    if (prev_state) *prev_state = previous;
++    msync_complete_state_update_in_scope( state, shm_idx, &state->low, !previous && wake,
++                                  state->high != 0, !previous && msync_has_multi_waiters( state ) );
++    return previous;
++}
++
++static int msync_set_event_state( struct msync_shared_state *state, unsigned int shm_idx, LONG *prev_state )
++{
++    int previous = msync_set_event_state_in_scope( state, shm_idx, prev_state );
++
++    msync_leave_lock_scope();
++    return previous;
++}
++
++/* Called under the cache lock. A cached page was already bounds-checked by
++ * map_msync_state() and remains mapped for the client lifetime. Slot identity
++ * and generation are still checked under the Event lock before publication. */
++static struct msync_shared_state *map_direct_event_owner( unsigned int idx )
++{
++    unsigned int page, offset;
++    long size = get_page_size();
++
++    if (!idx || idx > MSYNC_DIRECT_MAX_SLOT || size <= 0) return NULL;
++    page = (idx * sizeof(struct msync_shared_state)) / size;
++    offset = (idx * sizeof(struct msync_shared_state)) % size;
++    if (page < msync_pages_count && msync_pages[page])
++        return (struct msync_shared_state *)((char *)msync_pages[page] + offset);
++    return map_msync_state( idx, msync_shared_fd );
++}
++
++static NTSTATUS msync_set_event_in_scope( HANDLE handle, LONG *prev_state )
+ {
+     struct msync_cache_entry *entry;
+-    struct msync_shared_state *state;
+-    unsigned int generation;
++    struct msync_shared_state *state, *direct_slot = NULL;
++    unsigned int generation, shm_idx, owner = 0;
++    BOOL direct_protocol;
+     int previous;
+     NTSTATUS ret;
+ 
+-    if (!do_msync()) return STATUS_NOT_IMPLEMENTED;
+-    if (!msync_handle_kind_matches( handle, MSYNC_KIND_EVENT )) return STATUS_NOT_IMPLEMENTED;
+-
+-    lock_msync_cache();
++    lock_msync_cache_in_scope();
+     if ((ret = get_local_event_state_locked( handle, EVENT_MODIFY_STATE, &entry )))
+     {
+-        unlock_msync_cache();
++        unlock_msync_cache_in_scope();
+         return ret;
+     }
+     state = entry->state.ptr;
+     generation = entry->state.generation;
++    shm_idx = entry->state.shm_idx;
+     if (!msync_entry_signal_hotpath_enabled( "event set", handle, entry ))
+     {
+-        unlock_msync_cache();
++        unlock_msync_cache_in_scope();
+         return STATUS_NOT_IMPLEMENTED;
+     }
+     if (msync_has_server_waiters( state ))
+     {
+         TRACE( "fallback event set handle %p has server waiters\n", handle );
+-        unlock_msync_cache();
++        unlock_msync_cache_in_scope();
+         return STATUS_NOT_IMPLEMENTED;
+     }
+-    unlock_msync_cache();
++    direct_protocol = !!(state->type & MSYNC_EVENT_DIRECT_PROTOCOL);
++    if (direct_protocol) owner = __atomic_load_n( &state->refcount, __ATOMIC_SEQ_CST ) >> 1;
++    if (owner && !(direct_slot = map_direct_event_owner( owner )))
++    {
++        unlock_msync_cache_in_scope();
++        return STATUS_NOT_IMPLEMENTED;
++    }
++    unlock_msync_cache_in_scope();
+ 
+-    if (!msync_lock_state( state, INPROC_SYNC_EVENT ))
++    if (!msync_lock_state_in_scope( state, INPROC_SYNC_EVENT ))
+     {
+         TRACE( "fallback event set handle %p stale or server-owned state\n", handle );
+         return STATUS_NOT_IMPLEMENTED;
+@@ -766,19 +1066,61 @@ NTSTATUS msync_set_event( HANDLE handle, LONG *prev_state )
+     if (__atomic_load_n( &state->generation, __ATOMIC_SEQ_CST ) != generation ||
+         msync_has_server_waiters( state ))
+     {
+-        msync_unlock_state( state );
++        msync_unlock_state_in_scope( state );
+         TRACE( "fallback event set handle %p stale or server-owned state\n", handle );
+         return STATUS_NOT_IMPLEMENTED;
+     }
+-    previous = __atomic_exchange_n( &state->low, 1, __ATOMIC_SEQ_CST );
++    if (direct_protocol)
++    {
++        unsigned int word = 0;
++        BOOL wake = FALSE;
++
++        if ((__atomic_load_n( &state->refcount, __ATOMIC_SEQ_CST ) >> 1) != owner ||
++            (owner && (msync_state_type( direct_slot ) != INPROC_SYNC_INTERNAL ||
++                       msync_atomic_load( &direct_slot->high ) != (int)shm_idx ||
++                       ((unsigned int)msync_atomic_load( &direct_slot->low ) >> 2) !=
++                       __atomic_load_n( &direct_slot->generation, __ATOMIC_SEQ_CST ))))
++        {
++            msync_unlock_state_in_scope( state );
++            return STATUS_NOT_IMPLEMENTED;
++        }
++        previous = __atomic_exchange_n( &state->low, 1, __ATOMIC_SEQ_CST );
++        if (!previous && direct_slot)
++        {
++            word = msync_atomic_load( &direct_slot->low );
++            if (!(word & MSYNC_DIRECT_COMPLETED))
++            {
++                __atomic_store_n( &direct_slot->low, (word & ~MSYNC_DIRECT_WAITING) |
++                                  MSYNC_DIRECT_COMPLETED, __ATOMIC_SEQ_CST );
++                if (!state->high) __atomic_store_n( &state->low, 0, __ATOMIC_SEQ_CST );
++                wake = TRUE;
++            }
++        }
++        msync_complete_state_update_in_scope( state, shm_idx,
++                                      direct_slot ? &direct_slot->low : NULL, wake, FALSE,
++                                      !previous && msync_has_multi_waiters( state ) );
++    }
++    else msync_set_event_state_in_scope( state, shm_idx, &previous );
+     if (prev_state) *prev_state = previous;
+-    msync_unlock_state( state );
+-    if (!previous) msync_wake_address( &state->low, state->high != 0 );
+-    if (!previous && msync_has_multi_waiters( state ))
+-        msync_wake_waiters( entry->state.shm_idx );
+     return STATUS_SUCCESS;
+ }
+ 
++NTSTATUS msync_set_event( HANDLE handle, LONG *prev_state )
++{
++    struct thread_data *scope;
++    LONG previous;
++    NTSTATUS ret;
++
++    if (!do_msync()) return STATUS_NOT_IMPLEMENTED;
++    if (!msync_handle_kind_matches( handle, MSYNC_KIND_EVENT )) return STATUS_NOT_IMPLEMENTED;
++
++    scope = msync_enter_scope();
++    ret = msync_set_event_in_scope( handle, &previous );
++    msync_leave_scope( scope );
++    if (!ret && prev_state) *prev_state = previous;
++    return ret;
++}
++
+ NTSTATUS msync_reset_event( HANDLE handle, LONG *prev_state )
+ {
+     struct msync_cache_entry *entry;
+@@ -824,8 +1166,8 @@ NTSTATUS msync_reset_event( HANDLE handle, LONG *prev_state )
+         return STATUS_NOT_IMPLEMENTED;
+     }
+     previous = __atomic_exchange_n( &state->low, 0, __ATOMIC_SEQ_CST );
+-    if (prev_state) *prev_state = previous;
+     msync_unlock_state( state );
++    if (prev_state) *prev_state = previous;
+     return STATUS_SUCCESS;
+ }
+ 
+@@ -833,6 +1175,7 @@ NTSTATUS msync_query_event( HANDLE handle, EVENT_BASIC_INFORMATION *info )
+ {
+     struct msync_cache_entry *entry;
+     struct msync_shared_state *state;
++    EVENT_BASIC_INFORMATION snapshot;
+     NTSTATUS ret;
+ 
+     if (!do_msync()) return STATUS_NOT_IMPLEMENTED;
+@@ -841,43 +1184,46 @@ NTSTATUS msync_query_event( HANDLE handle, EVENT_BASIC_INFORMATION *info )
+     if (!(ret = get_local_event_state_locked( handle, EVENT_QUERY_STATE, &entry )))
+     {
+         state = entry->state.ptr;
+-        info->EventType = state->high ? NotificationEvent : SynchronizationEvent;
+-        info->EventState = msync_atomic_load( &state->low );
++        snapshot.EventType = state->high ? NotificationEvent : SynchronizationEvent;
++        snapshot.EventState = msync_atomic_load( &state->low );
+     }
+     unlock_msync_cache();
+ 
++    if (!ret)
++    {
++        info->EventType = snapshot.EventType;
++        info->EventState = snapshot.EventState;
++    }
+     return ret;
+ }
+ 
+-NTSTATUS msync_release_mutex( HANDLE handle, LONG *prev_count )
++static NTSTATUS msync_release_mutex_in_scope( HANDLE handle, int tid, LONG *prev_count )
+ {
+     struct msync_cache_entry *entry;
+     struct msync_shared_state *state;
+-    unsigned int generation;
+-    int tid = GetCurrentThreadId();
++    unsigned int generation, shm_idx;
+     int count;
++    BOOL wake;
+     NTSTATUS ret;
+ 
+-    if (!do_msync()) return STATUS_NOT_IMPLEMENTED;
+-    if (!msync_handle_kind_matches( handle, MSYNC_KIND_MUTEX )) return STATUS_NOT_IMPLEMENTED;
+-
+-    lock_msync_cache();
++    lock_msync_cache_in_scope();
+     if ((ret = get_local_mutex_state_locked( handle, 0, &entry )))
+     {
+-        unlock_msync_cache();
++        unlock_msync_cache_in_scope();
+         return ret;
+     }
+     state = entry->state.ptr;
+     generation = entry->state.generation;
++    shm_idx = entry->state.shm_idx;
+     if (msync_has_server_waiters( state ))
+     {
+         TRACE( "fallback mutex release handle %p has server waiters\n", handle );
+-        unlock_msync_cache();
++        unlock_msync_cache_in_scope();
+         return STATUS_NOT_IMPLEMENTED;
+     }
+-    unlock_msync_cache();
++    unlock_msync_cache_in_scope();
+ 
+-    if (!msync_lock_state( state, INPROC_SYNC_MUTEX ))
++    if (!msync_lock_state_in_scope( state, INPROC_SYNC_MUTEX ))
+     {
+         TRACE( "fallback mutex release handle %p stale or server-owned state\n", handle );
+         return STATUS_NOT_IMPLEMENTED;
+@@ -885,7 +1231,7 @@ NTSTATUS msync_release_mutex( HANDLE handle, LONG *prev_count )
+     if (__atomic_load_n( &state->generation, __ATOMIC_SEQ_CST ) != generation ||
+         msync_has_server_waiters( state ))
+     {
+-        msync_unlock_state( state );
++        msync_unlock_state_in_scope( state );
+         TRACE( "fallback mutex release handle %p stale or server-owned state\n", handle );
+         return STATUS_NOT_IMPLEMENTED;
+     }
+@@ -893,32 +1239,50 @@ NTSTATUS msync_release_mutex( HANDLE handle, LONG *prev_count )
+     if (__atomic_load_n( &state->low, __ATOMIC_SEQ_CST ) != tid ||
+         !(count = __atomic_load_n( &state->high, __ATOMIC_SEQ_CST )))
+     {
+-        msync_unlock_state( state );
++        msync_unlock_state_in_scope( state );
+         return STATUS_MUTANT_NOT_OWNED;
+     }
+ 
+-    if (prev_count) *prev_count = 1 - count;
+     if (count > 1)
+     {
+         __atomic_store_n( &state->high, count - 1, __ATOMIC_SEQ_CST );
+-        msync_unlock_state( state );
+-        return STATUS_SUCCESS;
++        msync_unlock_state_in_scope( state );
+     }
+-
+-    __atomic_store_n( &state->high, 0, __ATOMIC_SEQ_CST );
+-    __atomic_store_n( &state->low, 0, __ATOMIC_SEQ_CST );
+-    msync_unlock_state( state );
+-    msync_wake_address( &state->low, FALSE );
+-    if (msync_has_multi_waiters( state ))
+-        msync_wake_waiters( entry->state.shm_idx );
++    else
++    {
++        __atomic_store_n( &state->high, 0, __ATOMIC_SEQ_CST );
++        __atomic_store_n( &state->low, 0, __ATOMIC_SEQ_CST );
++        wake = !(__atomic_load_n( &state->type, __ATOMIC_SEQ_CST ) & MSYNC_MUTEX_UNWAITED);
++        msync_complete_state_update_in_scope( state, shm_idx, &state->low,
++                                      wake, FALSE, msync_has_multi_waiters( state ) );
++    }
++    if (prev_count) *prev_count = 1 - count;
+     return STATUS_SUCCESS;
+ }
+ 
++NTSTATUS msync_release_mutex( HANDLE handle, LONG *prev_count )
++{
++    struct thread_data *scope;
++    int tid = GetCurrentThreadId();
++    LONG previous;
++    NTSTATUS ret;
++
++    if (!do_msync()) return STATUS_NOT_IMPLEMENTED;
++    if (!msync_handle_kind_matches( handle, MSYNC_KIND_MUTEX )) return STATUS_NOT_IMPLEMENTED;
++
++    scope = msync_enter_scope();
++    ret = msync_release_mutex_in_scope( handle, tid, &previous );
++    msync_leave_scope( scope );
++    if (!ret && prev_count) *prev_count = previous;
++    return ret;
++}
++
+ NTSTATUS msync_query_mutex( HANDLE handle, MUTANT_BASIC_INFORMATION *info )
+ {
+     struct msync_cache_entry *entry;
+     struct msync_shared_state *state;
+     int owner, count;
++    MUTANT_BASIC_INFORMATION snapshot;
+     NTSTATUS ret;
+ 
+     if (!do_msync()) return STATUS_NOT_IMPLEMENTED;
+@@ -934,50 +1298,96 @@ NTSTATUS msync_query_mutex( HANDLE handle, MUTANT_BASIC_INFORMATION *info )
+         {
+             owner = __atomic_load_n( &state->low, __ATOMIC_SEQ_CST );
+             count = owner < 0 ? 0 : __atomic_load_n( &state->high, __ATOMIC_SEQ_CST );
+-            info->CurrentCount = 1 - count;
+-            info->OwnedByCaller = owner == (int)GetCurrentThreadId();
+-            info->AbandonedState = owner < 0;
++            snapshot.CurrentCount = 1 - count;
++            snapshot.OwnedByCaller = owner == (int)GetCurrentThreadId();
++            snapshot.AbandonedState = owner < 0;
+             msync_unlock_state( state );
+         }
+     }
+     unlock_msync_cache();
+ 
++    if (!ret)
++    {
++        info->CurrentCount = snapshot.CurrentCount;
++        info->OwnedByCaller = snapshot.OwnedByCaller;
++        info->AbandonedState = snapshot.AbandonedState;
++    }
+     return ret;
+ }
+ 
+-NTSTATUS msync_release_semaphore( HANDLE handle, ULONG count, ULONG *previous )
++/* Called with the state lock held. The permanent protocol bit keeps older
++ * clients on the server path even after UNWAITED is cleared. Output arguments
++ * refer to local storage. The public caller publishes outputs after wake work. */
++static NTSTATUS msync_release_semaphore_state_in_scope( struct msync_shared_state *state, HANDLE handle,
++                                                unsigned int shm_idx, ULONG count, ULONG *previous, int *old_count_out )
++{
++    int old_count, new_count;
++    BOOL wake;
++
++    do
++    {
++        old_count = __atomic_load_n( &state->low, __ATOMIC_SEQ_CST );
++        if ((ULONG)old_count + count < (ULONG)old_count || (ULONG)old_count + count > (ULONG)state->high)
++        {
++            TRACE( "semaphore release handle %p count %u current %d max %d exceeds limit\n",
++                   handle, count, old_count, state->high );
++            msync_unlock_state_in_scope( state );
++            return STATUS_SEMAPHORE_LIMIT_EXCEEDED;
++        }
++        new_count = old_count + count;
++    } while (!__atomic_compare_exchange_n( &state->low, &old_count, new_count, FALSE,
++                                           __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST ));
++
++    if (previous) *previous = old_count;
++    *old_count_out = old_count;
++    wake = !(__atomic_load_n( &state->type, __ATOMIC_SEQ_CST ) & MSYNC_SEMAPHORE_UNWAITED);
++    /* A prior release may have woken a thread which has not consumed yet.
++     * New units must also wake sleepers when the old count is still positive. */
++    msync_complete_state_update_in_scope( state, shm_idx, &state->low, wake, count > 1,
++                                  !old_count && msync_has_multi_waiters( state ) );
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS msync_release_semaphore_state( struct msync_shared_state *state, HANDLE handle,
++                                                unsigned int shm_idx, ULONG count, ULONG *previous, int *old_count_out )
++{
++    NTSTATUS ret = msync_release_semaphore_state_in_scope( state, handle, shm_idx, count, previous, old_count_out );
++
++    msync_leave_lock_scope();
++    return ret;
++}
++
++static NTSTATUS msync_release_semaphore_in_scope( HANDLE handle, ULONG count, ULONG *previous )
+ {
+     struct msync_cache_entry *entry;
+     struct msync_shared_state *state;
+-    unsigned int generation;
+-    int old_count, new_count;
++    unsigned int generation, shm_idx;
++    int old_count;
+     NTSTATUS ret;
+ 
+-    if (!do_msync()) return STATUS_NOT_IMPLEMENTED;
+-    if (!msync_handle_kind_matches( handle, MSYNC_KIND_SEMAPHORE )) return STATUS_NOT_IMPLEMENTED;
+-
+-    lock_msync_cache();
++    lock_msync_cache_in_scope();
+     if ((ret = get_local_semaphore_state_locked( handle, SEMAPHORE_MODIFY_STATE, &entry )))
+     {
+-        unlock_msync_cache();
++        unlock_msync_cache_in_scope();
+         return ret;
+     }
+     state = entry->state.ptr;
+     generation = entry->state.generation;
++    shm_idx = entry->state.shm_idx;
+     if (!msync_entry_signal_hotpath_enabled( "semaphore release", handle, entry ))
+     {
+-        unlock_msync_cache();
++        unlock_msync_cache_in_scope();
+         return STATUS_NOT_IMPLEMENTED;
+     }
+     if (msync_has_server_waiters( state ))
+     {
+         TRACE( "fallback semaphore release handle %p has server waiters\n", handle );
+-        unlock_msync_cache();
++        unlock_msync_cache_in_scope();
+         return STATUS_NOT_IMPLEMENTED;
+     }
+-    unlock_msync_cache();
++    unlock_msync_cache_in_scope();
+ 
+-    if (!msync_lock_state( state, INPROC_SYNC_SEMAPHORE ))
++    if (!msync_lock_state_in_scope( state, INPROC_SYNC_SEMAPHORE ))
+     {
+         TRACE( "fallback semaphore release handle %p stale or server-owned state\n", handle );
+         return STATUS_NOT_IMPLEMENTED;
+@@ -985,34 +1395,35 @@ NTSTATUS msync_release_semaphore( HANDLE handle, ULONG count, ULONG *previous )
+     if (__atomic_load_n( &state->generation, __ATOMIC_SEQ_CST ) != generation ||
+         msync_has_server_waiters( state ))
+     {
+-        msync_unlock_state( state );
++        msync_unlock_state_in_scope( state );
+         TRACE( "fallback semaphore release handle %p stale or server-owned state\n", handle );
+         return STATUS_NOT_IMPLEMENTED;
+     }
+ 
+-    do
+-    {
+-        old_count = __atomic_load_n( &state->low, __ATOMIC_SEQ_CST );
+-        if ((ULONG)old_count + count < (ULONG)old_count || (ULONG)old_count + count > (ULONG)state->high)
+-        {
+-            TRACE( "semaphore release handle %p count %u current %d max %d exceeds limit\n",
+-                   handle, count, old_count, state->high );
+-            msync_unlock_state( state );
+-            return STATUS_SEMAPHORE_LIMIT_EXCEEDED;
+-        }
+-        new_count = old_count + count;
+-    } while (!__atomic_compare_exchange_n( &state->low, &old_count, new_count, FALSE,
+-                                           __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST ));
+-
++    ret = msync_release_semaphore_state_in_scope( state, handle, shm_idx, count, NULL, &old_count );
++    if (ret) return ret;
+     if (previous) *previous = old_count;
+-    msync_unlock_state( state );
+-    if (!old_count) msync_wake_address( &state->low, count > 1 );
+-    if (!old_count && msync_has_multi_waiters( state ))
+-        msync_wake_waiters( entry->state.shm_idx );
+     return STATUS_SUCCESS;
+ }
+ 
+-NTSTATUS msync_query_semaphore( HANDLE handle, SEMAPHORE_BASIC_INFORMATION *info )
++NTSTATUS msync_release_semaphore( HANDLE handle, ULONG count, ULONG *previous )
++{
++    struct thread_data *scope;
++    ULONG old_count;
++    NTSTATUS ret;
++
++    if (!do_msync()) return STATUS_NOT_IMPLEMENTED;
++    if ((LONG)count <= 0) return STATUS_INVALID_PARAMETER;
++    if (!msync_handle_kind_matches( handle, MSYNC_KIND_SEMAPHORE )) return STATUS_NOT_IMPLEMENTED;
++
++    scope = msync_enter_scope();
++    ret = msync_release_semaphore_in_scope( handle, count, &old_count );
++    msync_leave_scope( scope );
++    if (!ret && previous) *previous = old_count;
++    return ret;
++}
++
++NTSTATUS msync_query_semaphore( HANDLE handle, SEMAPHORE_BASIC_INFORMATION *info )
+ {
+     if (!do_msync()) return STATUS_NOT_IMPLEMENTED;
+     return STATUS_NOT_IMPLEMENTED;
+@@ -1026,6 +1437,17 @@ static NTSTATUS consume_auto_event_state( struct msync_shared_state *state )
+     return STATUS_WAIT_0;
+ }
+ 
++static NTSTATUS consume_event_state_in_scope( struct msync_shared_state *state )
++{
++    NTSTATUS ret;
++
++    if (!msync_lock_state_in_scope( state, INPROC_SYNC_EVENT )) return STATUS_NOT_IMPLEMENTED;
++    ret = !msync_atomic_load( &state->low ) ? STATUS_TIMEOUT :
++          state->high ? STATUS_WAIT_0 : consume_auto_event_state( state );
++    msync_unlock_state_in_scope( state );
++    return ret;
++}
++
+ static NTSTATUS consume_event_state( struct msync_shared_state *state )
+ {
+     NTSTATUS ret;
+@@ -1037,27 +1459,164 @@ static NTSTATUS consume_event_state( struct msync_shared_state *state )
+     return ret;
+ }
+ 
+-static NTSTATUS consume_semaphore_state( struct msync_shared_state *state )
++static NTSTATUS msync_prepare_event_wait( struct msync_shared_state *state, unsigned int generation )
+ {
+-    int count;
++    NTSTATUS ret;
+ 
+-    if (!msync_lock_state( state, INPROC_SYNC_SEMAPHORE )) return STATUS_NOT_IMPLEMENTED;
++    if (!msync_lock_state( state, INPROC_SYNC_EVENT )) return STATUS_NOT_IMPLEMENTED;
++    if (__atomic_load_n( &state->generation, __ATOMIC_SEQ_CST ) != generation ||
++        msync_has_server_waiters( state ))
++    {
++        msync_unlock_state( state );
++        return STATUS_NOT_IMPLEMENTED;
++    }
++    /* Publish before rechecking under the same lock used by SetEvent. If the
++     * signal follows this check it wakes us, or the kernel's value comparison
++     * prevents sleeping after the signal. Other waiters may consume an auto
++     * Event first, in which case this waiter is still entitled to wait. */
++    if (__atomic_load_n( &state->type, __ATOMIC_SEQ_CST ) & MSYNC_EVENT_UNWAITED)
++        __atomic_fetch_and( &state->type, (unsigned short)~MSYNC_EVENT_UNWAITED, __ATOMIC_SEQ_CST );
++    ret = !msync_atomic_load( &state->low ) ? STATUS_TIMEOUT :
++          state->high ? STATUS_WAIT_0 : consume_auto_event_state( state );
++    msync_unlock_state( state );
++    return ret;
++}
++
++static NTSTATUS consume_semaphore_state_locked( struct msync_shared_state *state )
++{
++    int count;
+ 
+     do
+     {
+         count = msync_atomic_load( &state->low );
+         if (count <= 0)
+         {
+-            msync_unlock_state( state );
+             return STATUS_TIMEOUT;
+         }
+     } while (!__atomic_compare_exchange_n( &state->low, &count, count - 1, FALSE,
+                                            __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST ));
+ 
+-    msync_unlock_state( state );
+     return STATUS_WAIT_0;
+ }
+ 
++static NTSTATUS consume_semaphore_state_in_scope( struct msync_shared_state *state )
++{
++    NTSTATUS ret;
++
++    if (!msync_lock_state_in_scope( state, INPROC_SYNC_SEMAPHORE )) return STATUS_NOT_IMPLEMENTED;
++    ret = consume_semaphore_state_locked( state );
++    msync_unlock_state_in_scope( state );
++    return ret;
++}
++
++static NTSTATUS consume_semaphore_state( struct msync_shared_state *state )
++{
++    NTSTATUS ret;
++
++    if (!msync_lock_state( state, INPROC_SYNC_SEMAPHORE )) return STATUS_NOT_IMPLEMENTED;
++    ret = consume_semaphore_state_locked( state );
++    msync_unlock_state( state );
++    return ret;
++}
++
++/* The lock order is thread slot, then Event. Set/Pulse only take the Event
++ * lock and publish to the owner's slot atomically. They never take its lock. */
++static NTSTATUS msync_register_direct_event( struct msync_shared_state *state,
++                                              unsigned int event_idx, unsigned int generation )
++{
++    NTSTATUS ret = STATUS_NOT_IMPLEMENTED;
++
++    if (!generation || msync_event_slot_generation > MSYNC_DIRECT_MAX_GENERATION || !msync_wait_slot_idx ||
++        msync_wait_slot_idx > MSYNC_DIRECT_MAX_SLOT) return ret;
++    if (!msync_lock_direct_state( msync_wait_slot, INPROC_SYNC_INTERNAL )) return ret;
++    if (msync_wait_slot->generation != msync_event_slot_generation ||
++        msync_wait_slot->high || msync_atomic_load( &msync_wait_slot->low ))
++        goto done_slot;
++    if (!msync_lock_direct_state( state, INPROC_SYNC_EVENT )) goto done_slot;
++    if (state->generation != generation || !(state->type & MSYNC_EVENT_DIRECT_PROTOCOL) ||
++        msync_has_server_waiters( state )) goto done_event;
++    if (state->low)
++    {
++        if (!state->high) __atomic_store_n( &state->low, 0, __ATOMIC_SEQ_CST );
++        ret = STATUS_WAIT_0;
++        goto done_event;
++    }
++    if (__atomic_load_n( &state->refcount, __ATOMIC_SEQ_CST ) != 1) goto done_event;
++    __atomic_store_n( &msync_wait_slot->low, (msync_event_slot_generation << 2) | MSYNC_DIRECT_WAITING, __ATOMIC_SEQ_CST );
++    __atomic_store_n( &msync_wait_slot->high, event_idx, __ATOMIC_SEQ_CST );
++    __atomic_store_n( &state->refcount, (msync_wait_slot_idx << 1) | 1, __ATOMIC_SEQ_CST );
++    __atomic_fetch_and( &state->type, (unsigned short)~MSYNC_EVENT_UNWAITED, __ATOMIC_SEQ_CST );
++    TRACE( "direct Event registered handle-index %u slot %u generation %u\n",
++           event_idx, msync_wait_slot_idx, generation );
++    ret = STATUS_PENDING;
++done_event:
++    msync_unlock_state( state );
++done_slot:
++    msync_unlock_state( msync_wait_slot );
++    return ret;
++}
++
++
++static NTSTATUS msync_check_direct_event( struct msync_shared_state *state,
++                                           unsigned int generation, NTSTATUS cancel, int *comparison )
++{
++    NTSTATUS ret = STATUS_NOT_IMPLEMENTED;
++    BOOL event_locked = FALSE;
++    unsigned int word;
++
++    if (!msync_lock_direct_state( msync_wait_slot, INPROC_SYNC_INTERNAL )) return ret;
++    if (msync_wait_slot->generation != msync_event_slot_generation) goto done_slot;
++    if (!(event_locked = msync_lock_direct_state( state, INPROC_SYNC_EVENT ))) goto clear_slot;
++    if (state->generation != generation ||
++        (__atomic_load_n( &state->refcount, __ATOMIC_SEQ_CST ) >> 1) != msync_wait_slot_idx)
++        goto clear_slot;
++    word = msync_atomic_load( &msync_wait_slot->low );
++    if ((word >> 2) != msync_event_slot_generation) ret = STATUS_NOT_IMPLEMENTED;
++    else if (word & MSYNC_DIRECT_COMPLETED) ret = STATUS_WAIT_0;
++    else if (state->low)
++    {
++        if (!state->high) __atomic_store_n( &state->low, 0, __ATOMIC_SEQ_CST );
++        ret = STATUS_WAIT_0;
++    }
++    else ret = cancel;
++    if (ret == STATUS_PENDING)
++    {
++        *comparison = (msync_event_slot_generation << 2) | MSYNC_DIRECT_WAITING;
++        __atomic_store_n( &msync_wait_slot->low, *comparison, __ATOMIC_SEQ_CST );
++        goto done_event;
++    }
++    __atomic_store_n( &state->refcount, 1, __ATOMIC_SEQ_CST );
++clear_slot:
++    __atomic_store_n( &msync_wait_slot->high, 0, __ATOMIC_SEQ_CST );
++    __atomic_store_n( &msync_wait_slot->low, 0, __ATOMIC_SEQ_CST );
++done_event:
++    if (event_locked) msync_unlock_state( state );
++done_slot:
++    msync_unlock_state( msync_wait_slot );
++    return ret;
++}
++
++
++static NTSTATUS msync_prepare_semaphore_wait( struct msync_shared_state *state, unsigned int generation )
++{
++    NTSTATUS ret;
++
++    if (!msync_lock_state( state, INPROC_SYNC_SEMAPHORE )) return STATUS_NOT_IMPLEMENTED;
++    if (__atomic_load_n( &state->generation, __ATOMIC_SEQ_CST ) != generation ||
++        msync_has_server_waiters( state ))
++    {
++        msync_unlock_state( state );
++        return STATUS_NOT_IMPLEMENTED;
++    }
++    /* Register before the last count check, under the release lock. Keep the
++     * flag clear until slot reuse so timeout and thread exit need no cleanup. */
++    if (__atomic_load_n( &state->type, __ATOMIC_SEQ_CST ) & MSYNC_SEMAPHORE_UNWAITED)
++        __atomic_fetch_and( &state->type, (unsigned short)~MSYNC_SEMAPHORE_UNWAITED, __ATOMIC_SEQ_CST );
++    ret = consume_semaphore_state_locked( state );
++    msync_unlock_state( state );
++    return ret;
++}
++
+ static NTSTATUS consume_mutex_state_locked( struct msync_shared_state *state, int tid )
+ {
+     int owner, count;
+@@ -1078,7 +1637,11 @@ static NTSTATUS consume_mutex_state_locked( struct msync_shared_state *state, in
+         __atomic_store_n( &state->high, 1, __ATOMIC_SEQ_CST );
+         if (owner < 0)
+         {
+-            __atomic_add_fetch( &state->generation, 1, __ATOMIC_SEQ_CST );
++            unsigned int generation = __atomic_load_n( &state->generation, __ATOMIC_SEQ_CST );
++
++            /* Saturate so the server can retire this slot instead of reusing a wrapped generation. */
++            if (generation != UINT_MAX)
++                __atomic_store_n( &state->generation, generation + 1, __ATOMIC_SEQ_CST );
+             return STATUS_ABANDONED;
+         }
+         return STATUS_WAIT_0;
+@@ -1087,6 +1650,16 @@ static NTSTATUS consume_mutex_state_locked( struct msync_shared_state *state, in
+     return STATUS_TIMEOUT;
+ }
+ 
++static NTSTATUS consume_mutex_state_in_scope( struct msync_shared_state *state, int tid )
++{
++    NTSTATUS ret;
++
++    if (!msync_lock_state_in_scope( state, INPROC_SYNC_MUTEX )) return STATUS_NOT_IMPLEMENTED;
++    ret = consume_mutex_state_locked( state, tid );
++    msync_unlock_state_in_scope( state );
++    return ret;
++}
++
+ static NTSTATUS consume_mutex_state( struct msync_shared_state *state, int tid )
+ {
+     NTSTATUS ret;
+@@ -1097,51 +1670,82 @@ static NTSTATUS consume_mutex_state( struct msync_shared_state *state, int tid )
+     return ret;
+ }
+ 
+-static void msync_refresh_cache_generation( HANDLE handle, struct msync_shared_state *state )
++/* Publish possible sleep before the final ownership check. Capture the owner
++ * under that lock so a release cannot make us wait on an already free mutex. */
++static NTSTATUS msync_prepare_mutex_wait( struct msync_shared_state *state, unsigned int generation,
++                                           int tid, int *owner )
++{
++    NTSTATUS ret;
++
++    if (!msync_lock_state( state, INPROC_SYNC_MUTEX )) return STATUS_NOT_IMPLEMENTED;
++    if (__atomic_load_n( &state->generation, __ATOMIC_SEQ_CST ) != generation ||
++        msync_has_server_waiters( state ))
++    {
++        msync_unlock_state( state );
++        return STATUS_NOT_IMPLEMENTED;
++    }
++    /* Keep UNWAITED clear until slot reuse, including timeout and thread exit.
++     * The permanent protocol bit keeps older wait implementations on the server. */
++    if (__atomic_load_n( &state->type, __ATOMIC_SEQ_CST ) & MSYNC_MUTEX_UNWAITED)
++        __atomic_fetch_and( &state->type, (unsigned short)~MSYNC_MUTEX_UNWAITED, __ATOMIC_SEQ_CST );
++    ret = consume_mutex_state_locked( state, tid );
++    *owner = __atomic_load_n( &state->low, __ATOMIC_SEQ_CST );
++    msync_unlock_state( state );
++    return ret;
++}
++
++static void msync_refresh_cache_generation_in_scope( HANDLE handle, struct msync_shared_state *state )
+ {
+     struct msync_cache_entry *entry;
+ 
+-    lock_msync_cache();
++    lock_msync_cache_in_scope();
+     if (get_msync_cache_entry( handle, &entry ) && entry->handle == handle &&
+         entry->valid && entry->state.ptr == state)
+         entry->state.generation = __atomic_load_n( &state->generation, __ATOMIC_SEQ_CST );
+-    unlock_msync_cache();
++    unlock_msync_cache_in_scope();
+ }
+ 
+-static void get_relative_timeout_abs( const LARGE_INTEGER *timeout, struct timespec *abstime )
++static void msync_refresh_cache_generation( HANDLE handle, struct msync_shared_state *state )
+ {
+-    LONGLONG ticks = -timeout->QuadPart;
+-    struct timeval now;
+-    LONGLONG nsec;
++    struct thread_data *scope = msync_enter_scope();
+ 
+-    gettimeofday( &now, NULL );
+-    nsec = (LONGLONG)now.tv_usec * 1000 + (ticks % MSYNC_TICKS_PER_SEC) * 100;
+-    abstime->tv_sec = now.tv_sec + ticks / MSYNC_TICKS_PER_SEC + nsec / 1000000000;
+-    abstime->tv_nsec = nsec % 1000000000;
++    msync_refresh_cache_generation_in_scope( handle, state );
++    msync_leave_scope( scope );
+ }
+ 
+-/* The waits below take relative timeouts. An absolute one (100 ns ticks since 1601) becomes the time left
+- * until then, measured on the same wall clock as their deadlines; TIMEOUT_INFINITE means no timeout. */
+-static const LARGE_INTEGER *msync_relative_timeout( const LARGE_INTEGER *timeout, LARGE_INTEGER *relative )
++static void get_now_abs( struct timespec *now );
++
++static void get_relative_timeout_abs( const LARGE_INTEGER *timeout, struct timespec *abstime )
+ {
+-    struct timeval now;
+-    LONGLONG now_ticks;
++    ULONGLONG ticks = 0 - (ULONGLONG)timeout->QuadPart;
++    struct timespec now;
++    ULONGLONG nsec;
+ 
+-    if (!timeout || timeout->QuadPart <= 0) return timeout;
+-    if (timeout->QuadPart == TIMEOUT_INFINITE) return NULL;
+-    gettimeofday( &now, NULL );
+-    now_ticks = now.tv_sec * MSYNC_TICKS_PER_SEC + now.tv_usec * 10 + MSYNC_TICKS_1601_TO_1970;
+-    relative->QuadPart = timeout->QuadPart > now_ticks ? now_ticks - timeout->QuadPart : 0;
+-    return relative;
++    get_now_abs( &now );
++    nsec = now.tv_nsec + (ticks % MSYNC_TICKS_PER_SEC) * 100;
++    abstime->tv_sec = now.tv_sec + ticks / MSYNC_TICKS_PER_SEC + nsec / 1000000000;
++    abstime->tv_nsec = nsec % 1000000000;
+ }
+ 
+ static void get_now_abs( struct timespec *now )
+ {
++#ifdef __APPLE__
++    mach_timebase_info_data_t timebase;
++    __uint128_t nsec;
++
++    mach_timebase_info( &timebase );
++    nsec = (__uint128_t)mach_continuous_time() * timebase.numer / timebase.denom;
++    now->tv_sec = nsec / 1000000000;
++    now->tv_nsec = nsec % 1000000000;
++#elif defined(HAVE_CLOCK_GETTIME)
++    clock_gettime( CLOCK_MONOTONIC, now );
++#else
+     struct timeval tv;
+ 
+     gettimeofday( &tv, NULL );
+     now->tv_sec = tv.tv_sec;
+     now->tv_nsec = tv.tv_usec * 1000;
++#endif
+ }
+ 
+ static int compare_timespec( const struct timespec *left, const struct timespec *right )
+@@ -1159,141 +1763,129 @@ static BOOL msync_adaptive_spin( unsigned int *attempts )
+     return TRUE;
+ }
+ 
+-NTSTATUS msync_wait_event( HANDLE handle, BOOLEAN alertable, const LARGE_INTEGER *timeout )
++static NTSTATUS msync_try_wait_event_in_scope( HANDLE handle, unsigned char kind,
++                                                  struct msync_shared_state **state_out,
++                                                  unsigned int *generation_out, unsigned int *event_idx_out )
+ {
+-    LARGE_INTEGER relative_timeout;
+     struct msync_cache_entry *entry;
+     struct msync_shared_state *state;
+-    struct timespec deadline;
+-    unsigned int attempts = 0;
+-    unsigned int generation;
+-    unsigned char kind;
++    unsigned int generation, event_idx;
+     NTSTATUS ret;
+ 
+-    if (!do_msync()) return STATUS_NOT_IMPLEMENTED;
+-    timeout = msync_relative_timeout( timeout, &relative_timeout );
+-
+-    kind = msync_get_handle_kind( handle );
+-    if (kind && kind != MSYNC_KIND_EVENT) return STATUS_NOT_IMPLEMENTED;
+-    if (alertable)
+-        return kind == MSYNC_KIND_EVENT ? STATUS_NOT_IMPLEMENTED
+-                                          : STATUS_NOT_IMPLEMENTED;
+-    if (timeout && timeout->QuadPart > 0)
+-        return kind == MSYNC_KIND_EVENT ? STATUS_NOT_IMPLEMENTED
+-                                          : STATUS_NOT_IMPLEMENTED;
+-
+-    lock_msync_cache();
++    lock_msync_cache_in_scope();
+     if ((ret = get_local_event_state_locked( handle, SYNCHRONIZE, &entry )))
+     {
+-        unlock_msync_cache();
++        unlock_msync_cache_in_scope();
+         if (ret == STATUS_NOT_IMPLEMENTED && kind == MSYNC_KIND_EVENT)
+             return STATUS_NOT_IMPLEMENTED;
+         return ret;
+     }
+     state = entry->state.ptr;
+     generation = entry->state.generation;
++    event_idx = entry->state.shm_idx;
+     if (!msync_entry_signal_hotpath_enabled( "event wait", handle, entry ))
+     {
+-        unlock_msync_cache();
++        unlock_msync_cache_in_scope();
+         return STATUS_NOT_IMPLEMENTED;
+     }
+     if (msync_has_server_waiters( state ))
+     {
+         TRACE( "fallback event wait handle %p has server waiters\n", handle );
+-        unlock_msync_cache();
++        unlock_msync_cache_in_scope();
+         return STATUS_NOT_IMPLEMENTED;
+     }
+     if (!msync_address_wait_supported())
+     {
+-        unlock_msync_cache();
++        unlock_msync_cache_in_scope();
+         return STATUS_NOT_IMPLEMENTED;
+     }
+-    unlock_msync_cache();
++    unlock_msync_cache_in_scope();
++
++    *state_out = state;
++    *generation_out = generation;
++    *event_idx_out = event_idx;
++    return consume_event_state_in_scope( state );
++}
++
++NTSTATUS msync_wait_event( HANDLE handle, BOOLEAN alertable, const LARGE_INTEGER *timeout )
++{
++    struct msync_shared_state *state = NULL;
++    struct thread_data *scope;
++    unsigned int generation, event_idx;
++    struct timespec deadline;
++    unsigned char kind;
++    int comparison;
++    NTSTATUS ret;
+ 
+-    if ((ret = consume_event_state( state )) == STATUS_WAIT_0)
++    if (!do_msync()) return STATUS_NOT_IMPLEMENTED;
++
++    kind = msync_get_handle_kind( handle );
++    if (kind && kind != MSYNC_KIND_EVENT) return STATUS_NOT_IMPLEMENTED;
++    if (alertable)
++        return kind == MSYNC_KIND_EVENT ? STATUS_NOT_IMPLEMENTED
++                                          : STATUS_NOT_IMPLEMENTED;
++    if (timeout && timeout->QuadPart > 0)
++        return kind == MSYNC_KIND_EVENT ? STATUS_NOT_IMPLEMENTED
++                                          : STATUS_NOT_IMPLEMENTED;
++
++    scope = msync_enter_scope();
++    ret = msync_try_wait_event_in_scope( handle, kind, &state, &generation, &event_idx );
++    msync_leave_scope( scope );
++
++    if (ret == STATUS_WAIT_0)
+     {
+         return ret;
+     }
++    if (ret != STATUS_TIMEOUT || !state) return ret;
+     if (timeout && !timeout->QuadPart)
+     {
+         return STATUS_TIMEOUT;
+     }
+ 
++    if (!(state->type & MSYNC_EVENT_DIRECT_PROTOCOL))
++        return STATUS_NOT_IMPLEMENTED;
+     if (timeout) get_relative_timeout_abs( timeout, &deadline );
+-
++    if ((ret = get_direct_event_wait_slot())) return ret;
++    if ((ret = msync_register_direct_event( state, event_idx, generation )) != STATUS_PENDING) return ret;
++    /* Registration checked the level under the Event lock before publishing
++     * this generation-tagged word. A completion before the kernel call changes
++     * the word, so the address comparison prevents sleeping past that signal. */
++    comparison = (msync_event_slot_generation << 2) | MSYNC_DIRECT_WAITING;
+     for (;;)
+     {
+         struct timespec now, wait_timeout;
+         struct timespec *wait_timeout_ptr = NULL;
+         unsigned long long ns;
+ 
+-        if (msync_adaptive_spin( &attempts )) continue;
+-        if (__atomic_load_n( &state->generation, __ATOMIC_SEQ_CST ) != generation ||
+-            msync_state_type( state ) != INPROC_SYNC_EVENT ||
+-            msync_has_server_waiters( state ))
+-        {
+-            TRACE( "fallback event wait handle %p stale or server-owned state\n", handle );
+-            return STATUS_NOT_IMPLEMENTED;
+-        }
+-        if ((ret = consume_event_state( state )) == STATUS_WAIT_0) break;
+         if (timeout)
+         {
+             get_now_abs( &now );
+             ns = timespec_diff_ns( &deadline, &now );
+-            if (!ns)
+-            {
+-                return STATUS_TIMEOUT;
+-            }
++            if (!ns) return msync_check_direct_event( state, generation, STATUS_TIMEOUT, &comparison );
+             ns_to_timespec( ns, &wait_timeout );
+             wait_timeout_ptr = &wait_timeout;
+         }
+-        else
+-        {
+-            ns_to_timespec( MSYNC_BLOCKING_FALLBACK_NS, &wait_timeout );
+-            wait_timeout_ptr = &wait_timeout;
+-        }
+-        ret = msync_wait_address( &state->low, 0, wait_timeout_ptr );
+-        if (ret == STATUS_TIMEOUT)
+-        {
+-            if (!timeout) continue;  /* re-validate the state, then keep waiting here */
+-            break;
+-        }
+-        if (ret == STATUS_NOT_IMPLEMENTED)
+-            return STATUS_NOT_IMPLEMENTED;
+-        if (ret != STATUS_SUCCESS) return ret;
++        TRACE( "direct Event sleeping index %u slot %u comparison %d\n", event_idx, msync_wait_slot_idx, comparison );
++        ret = msync_wait_address( &msync_wait_slot->low, comparison, wait_timeout_ptr );
++        ret = msync_check_direct_event( state, generation,
++                                           ret == STATUS_SUCCESS ? STATUS_PENDING : ret, &comparison );
++        if (ret != STATUS_PENDING) return ret;
+     }
+-
+-    return ret;
+ }
+ 
+-NTSTATUS msync_wait_mutex( HANDLE handle, BOOLEAN alertable, const LARGE_INTEGER *timeout )
++static NTSTATUS msync_try_wait_mutex_in_scope( HANDLE handle, unsigned char kind, int tid,
++                                                  struct msync_shared_state **state_out,
++                                                  unsigned int *generation_out )
+ {
+-    LARGE_INTEGER relative_timeout;
+     struct msync_cache_entry *entry;
+     struct msync_shared_state *state;
+-    struct timespec deadline;
+-    unsigned int attempts = 0;
+     unsigned int generation;
+-    unsigned char kind;
+-    int tid = GetCurrentThreadId();
+     NTSTATUS ret;
+ 
+-    if (!do_msync()) return STATUS_NOT_IMPLEMENTED;
+-    timeout = msync_relative_timeout( timeout, &relative_timeout );
+-
+-    kind = msync_get_handle_kind( handle );
+-    if (kind && kind != MSYNC_KIND_MUTEX) return STATUS_NOT_IMPLEMENTED;
+-    if (alertable)
+-        return kind == MSYNC_KIND_MUTEX ? STATUS_NOT_IMPLEMENTED
+-                                          : STATUS_NOT_IMPLEMENTED;
+-    if (timeout && timeout->QuadPart > 0)
+-        return kind == MSYNC_KIND_MUTEX ? STATUS_NOT_IMPLEMENTED
+-                                          : STATUS_NOT_IMPLEMENTED;
+-
+-    lock_msync_cache();
++    lock_msync_cache_in_scope();
+     if ((ret = get_local_mutex_state_locked( handle, SYNCHRONIZE, &entry )))
+     {
+-        unlock_msync_cache();
++        unlock_msync_cache_in_scope();
+         if (ret == STATUS_NOT_IMPLEMENTED && kind == MSYNC_KIND_MUTEX)
+             return STATUS_NOT_IMPLEMENTED;
+         return ret;
+@@ -1303,23 +1895,54 @@ NTSTATUS msync_wait_mutex( HANDLE handle, BOOLEAN alertable, const LARGE_INTEGER
+     if (msync_has_server_waiters( state ))
+     {
+         TRACE( "fallback mutex wait handle %p has server waiters\n", handle );
+-        unlock_msync_cache();
++        unlock_msync_cache_in_scope();
+         return STATUS_NOT_IMPLEMENTED;
+     }
+     if (!msync_address_wait_supported())
+     {
+-        unlock_msync_cache();
++        unlock_msync_cache_in_scope();
+         return STATUS_NOT_IMPLEMENTED;
+     }
+-    unlock_msync_cache();
++    unlock_msync_cache_in_scope();
++
++    *state_out = state;
++    *generation_out = generation;
++    ret = consume_mutex_state_in_scope( state, tid );
++    if (ret == STATUS_ABANDONED) msync_refresh_cache_generation_in_scope( handle, state );
++    return ret;
++}
++
++NTSTATUS msync_wait_mutex( HANDLE handle, BOOLEAN alertable, const LARGE_INTEGER *timeout )
++{
++    struct msync_shared_state *state = NULL;
++    struct thread_data *scope;
++    struct timespec deadline;
++    unsigned int attempts = 0;
++    unsigned int generation;
++    unsigned char kind;
++    int tid = GetCurrentThreadId();
++    NTSTATUS ret;
++
++    if (!do_msync()) return STATUS_NOT_IMPLEMENTED;
++
++    kind = msync_get_handle_kind( handle );
++    if (kind && kind != MSYNC_KIND_MUTEX) return STATUS_NOT_IMPLEMENTED;
++    if (alertable)
++        return kind == MSYNC_KIND_MUTEX ? STATUS_NOT_IMPLEMENTED
++                                          : STATUS_NOT_IMPLEMENTED;
++    if (timeout && timeout->QuadPart > 0)
++        return kind == MSYNC_KIND_MUTEX ? STATUS_NOT_IMPLEMENTED
++                                          : STATUS_NOT_IMPLEMENTED;
++
++    scope = msync_enter_scope();
++    ret = msync_try_wait_mutex_in_scope( handle, kind, tid, &state, &generation );
++    msync_leave_scope( scope );
+ 
+-    ret = consume_mutex_state( state, tid );
+     if (ret == STATUS_WAIT_0 || ret == STATUS_ABANDONED)
+     {
+-        if (ret == STATUS_ABANDONED) msync_refresh_cache_generation( handle, state );
+         return ret;
+     }
+-    if (ret != STATUS_TIMEOUT) return ret;
++    if (ret != STATUS_TIMEOUT || !state) return ret;
+     if (timeout && !timeout->QuadPart)
+     {
+         return STATUS_TIMEOUT;
+@@ -1342,7 +1965,7 @@ NTSTATUS msync_wait_mutex( HANDLE handle, BOOLEAN alertable, const LARGE_INTEGER
+             TRACE( "fallback mutex wait handle %p stale or server-owned state\n", handle );
+             return STATUS_NOT_IMPLEMENTED;
+         }
+-        ret = consume_mutex_state( state, tid );
++        ret = msync_prepare_mutex_wait( state, generation, tid, &owner );
+         if (ret == STATUS_WAIT_0 || ret == STATUS_ABANDONED)
+         {
+             if (ret == STATUS_ABANDONED) msync_refresh_cache_generation( handle, state );
+@@ -1366,11 +1989,10 @@ NTSTATUS msync_wait_mutex( HANDLE handle, BOOLEAN alertable, const LARGE_INTEGER
+             wait_timeout_ptr = &wait_timeout;
+         }
+ 
+-        owner = msync_atomic_load( &state->low );
+         ret = msync_wait_address( &state->low, owner, wait_timeout_ptr );
+         if (ret == STATUS_TIMEOUT)
+         {
+-            if (!timeout) return STATUS_NOT_IMPLEMENTED;  /* only the server sees an owner die and abandon it */
++            if (!timeout) return STATUS_NOT_IMPLEMENTED;
+             return STATUS_TIMEOUT;
+         }
+         if (ret == STATUS_NOT_IMPLEMENTED)
+@@ -1381,33 +2003,19 @@ NTSTATUS msync_wait_mutex( HANDLE handle, BOOLEAN alertable, const LARGE_INTEGER
+     return ret;
+ }
+ 
+-NTSTATUS msync_wait_semaphore( HANDLE handle, BOOLEAN alertable, const LARGE_INTEGER *timeout )
++static NTSTATUS msync_try_wait_semaphore_in_scope( HANDLE handle, unsigned char kind,
++                                                  struct msync_shared_state **state_out,
++                                                  unsigned int *generation_out )
+ {
+-    LARGE_INTEGER relative_timeout;
+     struct msync_cache_entry *entry;
+     struct msync_shared_state *state;
+-    struct timespec deadline;
+-    unsigned int attempts = 0;
+     unsigned int generation;
+-    unsigned char kind;
+     NTSTATUS ret;
+ 
+-    if (!do_msync()) return STATUS_NOT_IMPLEMENTED;
+-    timeout = msync_relative_timeout( timeout, &relative_timeout );
+-
+-    kind = msync_get_handle_kind( handle );
+-    if (kind && kind != MSYNC_KIND_SEMAPHORE) return STATUS_NOT_IMPLEMENTED;
+-    if (alertable)
+-        return kind == MSYNC_KIND_SEMAPHORE ? STATUS_NOT_IMPLEMENTED
+-                                              : STATUS_NOT_IMPLEMENTED;
+-    if (timeout && timeout->QuadPart > 0)
+-        return kind == MSYNC_KIND_SEMAPHORE ? STATUS_NOT_IMPLEMENTED
+-                                              : STATUS_NOT_IMPLEMENTED;
+-
+-    lock_msync_cache();
++    lock_msync_cache_in_scope();
+     if ((ret = get_local_semaphore_state_locked( handle, SYNCHRONIZE, &entry )))
+     {
+-        unlock_msync_cache();
++        unlock_msync_cache_in_scope();
+         if (ret == STATUS_NOT_IMPLEMENTED && kind == MSYNC_KIND_SEMAPHORE)
+             return STATUS_NOT_IMPLEMENTED;
+         return ret;
+@@ -1416,26 +2024,57 @@ NTSTATUS msync_wait_semaphore( HANDLE handle, BOOLEAN alertable, const LARGE_INT
+     generation = entry->state.generation;
+     if (!msync_entry_signal_hotpath_enabled( "semaphore wait", handle, entry ))
+     {
+-        unlock_msync_cache();
++        unlock_msync_cache_in_scope();
+         return STATUS_NOT_IMPLEMENTED;
+     }
+     if (msync_has_server_waiters( state ))
+     {
+         TRACE( "fallback semaphore wait handle %p has server waiters\n", handle );
+-        unlock_msync_cache();
++        unlock_msync_cache_in_scope();
+         return STATUS_NOT_IMPLEMENTED;
+     }
+     if (!msync_address_wait_supported())
+     {
+-        unlock_msync_cache();
++        unlock_msync_cache_in_scope();
+         return STATUS_NOT_IMPLEMENTED;
+     }
+-    unlock_msync_cache();
++    unlock_msync_cache_in_scope();
++
++    *state_out = state;
++    *generation_out = generation;
++    return consume_semaphore_state_in_scope( state );
++}
++
++NTSTATUS msync_wait_semaphore( HANDLE handle, BOOLEAN alertable, const LARGE_INTEGER *timeout )
++{
++    struct msync_shared_state *state = NULL;
++    struct thread_data *scope;
++    struct timespec deadline;
++    unsigned int attempts = 0;
++    unsigned int generation;
++    unsigned char kind;
++    NTSTATUS ret;
++
++    if (!do_msync()) return STATUS_NOT_IMPLEMENTED;
++
++    kind = msync_get_handle_kind( handle );
++    if (kind && kind != MSYNC_KIND_SEMAPHORE) return STATUS_NOT_IMPLEMENTED;
++    if (alertable)
++        return kind == MSYNC_KIND_SEMAPHORE ? STATUS_NOT_IMPLEMENTED
++                                              : STATUS_NOT_IMPLEMENTED;
++    if (timeout && timeout->QuadPart > 0)
++        return kind == MSYNC_KIND_SEMAPHORE ? STATUS_NOT_IMPLEMENTED
++                                              : STATUS_NOT_IMPLEMENTED;
++
++    scope = msync_enter_scope();
++    ret = msync_try_wait_semaphore_in_scope( handle, kind, &state, &generation );
++    msync_leave_scope( scope );
+ 
+-    if ((ret = consume_semaphore_state( state )) == STATUS_WAIT_0)
++    if (ret == STATUS_WAIT_0)
+     {
+         return ret;
+     }
++    if (ret != STATUS_TIMEOUT || !state) return ret;
+     if (timeout && !timeout->QuadPart)
+     {
+         return STATUS_TIMEOUT;
+@@ -1457,7 +2096,8 @@ NTSTATUS msync_wait_semaphore( HANDLE handle, BOOLEAN alertable, const LARGE_INT
+             TRACE( "fallback semaphore wait handle %p stale or server-owned state\n", handle );
+             return STATUS_NOT_IMPLEMENTED;
+         }
+-        if ((ret = consume_semaphore_state( state )) == STATUS_WAIT_0) break;
++        if ((ret = msync_prepare_semaphore_wait( state, generation )) == STATUS_WAIT_0) break;
++        if (ret != STATUS_TIMEOUT) return ret;
+         if (timeout)
+         {
+             get_now_abs( &now );
+@@ -1477,7 +2117,7 @@ NTSTATUS msync_wait_semaphore( HANDLE handle, BOOLEAN alertable, const LARGE_INT
+         ret = msync_wait_address( &state->low, 0, wait_timeout_ptr );
+         if (ret == STATUS_TIMEOUT)
+         {
+-            if (!timeout) continue;  /* re-validate the state, then keep waiting here */
++            if (!timeout) return STATUS_NOT_IMPLEMENTED;
+             break;
+         }
+         if (ret == STATUS_NOT_IMPLEMENTED)
+@@ -1506,7 +2146,7 @@ static NTSTATUS get_msync_wait_slot(void)
+     }
+     SERVER_END_REQ;
+ 
+-    if (ret) return ret;
++    if (ret) return STATUS_NOT_IMPLEMENTED;
+     if (!msync_wait_slot_idx) return STATUS_NOT_IMPLEMENTED;
+ 
+     lock_msync_cache();
+@@ -1516,6 +2156,33 @@ static NTSTATUS get_msync_wait_slot(void)
+     return msync_wait_slot ? STATUS_SUCCESS : STATUS_NOT_IMPLEMENTED;
+ }
+ 
++static NTSTATUS get_direct_event_wait_slot(void)
++{
++    unsigned int generation, confirmed = 0;
++    NTSTATUS ret;
++
++    if (msync_event_slot_generation) return STATUS_SUCCESS;
++    if ((ret = get_msync_wait_slot())) return ret;
++    if (msync_wait_slot_idx > MSYNC_DIRECT_MAX_SLOT)
++    {
++        TRACE( "fallback direct Event wait slot %u exceeds owner index limit %u\n",
++               msync_wait_slot_idx, MSYNC_DIRECT_MAX_SLOT );
++        return STATUS_NOT_IMPLEMENTED;
++    }
++    generation = __atomic_load_n( &msync_wait_slot->generation, __ATOMIC_SEQ_CST );
++    SERVER_START_REQ( get_msync_wait_slot )
++    {
++        ret = wine_server_call( req );
++        if (!ret) confirmed = reply->shm_idx;
++    }
++    SERVER_END_REQ;
++    if (ret || confirmed != msync_wait_slot_idx || !generation || generation > MSYNC_DIRECT_MAX_GENERATION ||
++        __atomic_load_n( &msync_wait_slot->generation, __ATOMIC_SEQ_CST ) != generation ||
++        msync_state_type( msync_wait_slot ) != INPROC_SYNC_INTERNAL) return STATUS_NOT_IMPLEMENTED;
++    msync_event_slot_generation = generation;
++    return STATUS_SUCCESS;
++}
++
+ static NTSTATUS register_msync_wait( const unsigned int *shm_idxs, unsigned int count )
+ {
+     NTSTATUS ret;
+@@ -1541,7 +2208,7 @@ static void unregister_msync_wait(void)
+     SERVER_END_REQ;
+ }
+ 
+-static NTSTATUS try_wait_all_local( struct msync_shared_state **states,
++static NTSTATUS try_wait_all_local_in_scope( struct msync_shared_state **states,
+                                     const unsigned int *shm_idxs,
+                                     const unsigned int *generations,
+                                     const unsigned short *types, DWORD count )
+@@ -1571,7 +2238,7 @@ static NTSTATUS try_wait_all_local( struct msync_shared_state **states,
+         if (types[index] != INPROC_SYNC_EVENT && types[index] != INPROC_SYNC_SEMAPHORE &&
+             types[index] != INPROC_SYNC_MUTEX)
+             goto done;
+-        if (!msync_lock_state( states[index], types[index] )) goto done;
++        if (!msync_lock_state_in_scope( states[index], types[index] )) goto done;
+         locked++;
+ 
+         if (__atomic_load_n( &states[index]->generation, __ATOMIC_SEQ_CST ) != generations[index])
+@@ -1608,7 +2275,19 @@ static NTSTATUS try_wait_all_local( struct msync_shared_state **states,
+     ret = abandoned ? STATUS_ABANDONED_WAIT_0 : STATUS_WAIT_0;
+ 
+ done:
+-    while (locked) msync_unlock_state( states[order[--locked]] );
++    while (locked) msync_unlock_state_in_scope( states[order[--locked]] );
++    return ret;
++}
++
++static NTSTATUS try_wait_all_local( struct msync_shared_state **states,
++                                    const unsigned int *shm_idxs,
++                                    const unsigned int *generations,
++                                    const unsigned short *types, DWORD count )
++{
++    struct thread_data *scope = msync_enter_scope();
++    NTSTATUS ret = try_wait_all_local_in_scope( states, shm_idxs, generations, types, count );
++
++    msync_leave_scope( scope );
+     return ret;
+ }
+ 
+@@ -1626,6 +2305,53 @@ static NTSTATUS try_wait_all_msync( const unsigned int *entries, DWORD count, un
+     return ret;
+ }
+ 
++static NTSTATUS consume_waitany_states_in_scope( const HANDLE *handles, struct msync_shared_state **states,
++                                        const unsigned int *generations, const unsigned short *types,
++                                        DWORD count )
++{
++    int tid = GetCurrentThreadId();
++    DWORD i;
++    NTSTATUS ret;
++
++    for (i = 0; i < count; i++)
++    {
++        if (__atomic_load_n( &states[i]->generation, __ATOMIC_SEQ_CST ) != generations[i] ||
++            msync_state_type( states[i] ) != types[i])
++        {
++            TRACE( "fallback multiple wait stale state index %u\n", i );
++            return STATUS_NOT_IMPLEMENTED;
++        }
++
++        switch (types[i])
++        {
++        case INPROC_SYNC_EVENT:
++            ret = consume_event_state_in_scope( states[i] );
++            break;
++        case INPROC_SYNC_SEMAPHORE:
++            ret = consume_semaphore_state_in_scope( states[i] );
++            break;
++        case INPROC_SYNC_MUTEX:
++            ret = consume_mutex_state_in_scope( states[i], tid );
++            if (ret == STATUS_ABANDONED) msync_refresh_cache_generation_in_scope( handles[i], states[i] );
++            break;
++        default:
++            return STATUS_NOT_IMPLEMENTED;
++        }
++
++        if (ret == STATUS_WAIT_0)
++        {
++            return STATUS_WAIT_0 + i;
++        }
++        if (ret == STATUS_ABANDONED)
++        {
++            return STATUS_ABANDONED_WAIT_0 + i;
++        }
++        if (ret != STATUS_TIMEOUT) return ret;
++    }
++
++    return STATUS_TIMEOUT;
++}
++
+ static NTSTATUS consume_waitany_states( const HANDLE *handles, struct msync_shared_state **states,
+                                         const unsigned int *generations, const unsigned short *types,
+                                         DWORD count )
+@@ -1687,62 +2413,20 @@ static void refresh_waitall_mutex_generations( const HANDLE *handles, struct msy
+         if (types[i] == INPROC_SYNC_MUTEX) msync_refresh_cache_generation( handles[i], states[i] );
+ }
+ 
+-NTSTATUS msync_wait_multiple( DWORD count, const HANDLE *handles, WAIT_TYPE type,
+-                                BOOLEAN alertable, const LARGE_INTEGER *timeout )
++/* All arrays and outputs here are private copies owned by the public wrapper.
++ * Return cache preparation separately from the initial wait result so a cache
++ * rejection cannot accidentally enter the later server fallback. */
++static NTSTATUS msync_try_wait_multiple_in_scope( DWORD count, const HANDLE *handles, WAIT_TYPE type,
++                                                   struct msync_shared_state **states,
++                                                   unsigned int *shm_idxs, unsigned int *generations,
++                                                   unsigned short *types, BOOL *has_event_out,
++                                                   NTSTATUS *wait_result_out )
+ {
+-    LARGE_INTEGER relative_timeout;
+     struct msync_cache_entry *entry;
+-    struct msync_shared_state *states[64];
+-    unsigned int shm_idxs[64], generations[64];
+-    unsigned short types[64];
+-    struct timespec deadline;
+     DWORD i;
+     NTSTATUS ret;
+ 
+-    if (!do_msync()) return STATUS_NOT_IMPLEMENTED;
+-    timeout = msync_relative_timeout( timeout, &relative_timeout );
+-
+-    if (type != WaitAny && type != WaitAll)
+-        return STATUS_NOT_IMPLEMENTED;
+-    if (alertable)
+-    {
+-        TRACE( "fallback multiple wait alertable\n" );
+-        return STATUS_NOT_IMPLEMENTED;
+-    }
+-    if (timeout && timeout->QuadPart > 0)
+-    {
+-        TRACE( "fallback multiple wait absolute timeout %s\n", wine_dbgstr_longlong(timeout->QuadPart) );
+-        return STATUS_NOT_IMPLEMENTED;
+-    }
+-    if (count == 1)
+-    {
+-        /* One handle: WaitAny and WaitAll are the same single-object wait. */
+-        if ((ret = msync_wait_event( handles[0], alertable, timeout )) != STATUS_NOT_IMPLEMENTED) return ret;
+-        if ((ret = msync_wait_semaphore( handles[0], alertable, timeout )) != STATUS_NOT_IMPLEMENTED) return ret;
+-        if ((ret = msync_wait_mutex( handles[0], alertable, timeout )) != STATUS_NOT_IMPLEMENTED) return ret;
+-        if (TRACE_ON(msync))
+-        {
+-            char buf[256];
+-            OBJECT_TYPE_INFORMATION *info = (OBJECT_TYPE_INFORMATION *)buf;
+-            if (!NtQueryObject( handles[0], ObjectTypeInformation, info, sizeof(buf), NULL ))
+-                TRACE( "fallback single-handle multiple wait handle %p type %s kind %u alertable %u\n", handles[0],
+-                       debugstr_wn( info->TypeName.Buffer, info->TypeName.Length / sizeof(WCHAR) ),
+-                       msync_get_handle_kind( handles[0] ), alertable );
+-        }
+-        return STATUS_NOT_IMPLEMENTED;
+-    }
+-    if (count > ARRAY_SIZE(states))
+-    {
+-        TRACE( "fallback multiple wait unsupported count %lu\n", (unsigned long)count );
+-        return STATUS_NOT_IMPLEMENTED;
+-    }
+-    if (type == WaitAny && !msync_address_wait_supported())
+-    {
+-        TRACE( "fallback waitany address wait unsupported\n" );
+-        return STATUS_NOT_IMPLEMENTED;
+-    }
+-
+-    lock_msync_cache();
++    lock_msync_cache_in_scope();
+     for (i = 0; i < count; i++)
+     {
+         struct msync_shared_state *state;
+@@ -1760,27 +2444,15 @@ NTSTATUS msync_wait_multiple( DWORD count, const HANDLE *handles, WAIT_TYPE type
+             ret = get_local_mutex_state_locked( handles[i], SYNCHRONIZE, &entry );
+             break;
+         default:
+-            if (TRACE_ON(msync))
+-            {
+-                char buf[256];
+-                OBJECT_TYPE_INFORMATION *info = (OBJECT_TYPE_INFORMATION *)buf;
+-                if (!NtQueryObject( handles[i], ObjectTypeInformation, info, sizeof(buf), NULL ))
+-                    TRACE( "fallback multiple wait handle %p type %s count %u\n", handles[i],
+-                           debugstr_wn( info->TypeName.Buffer, info->TypeName.Length / sizeof(WCHAR) ), (unsigned int)count );
+-            }
+             TRACE( "fallback multiple wait handle %p unknown kind %u\n", handles[i], kind );
+             ret = STATUS_NOT_IMPLEMENTED;
+             break;
+         }
+         if (ret)
+         {
+-            unlock_msync_cache();
++            unlock_msync_cache_in_scope();
+             if (ret == STATUS_NOT_IMPLEMENTED)
+-            {
+-                TRACE( "fallback multiple wait handle %p kind %u not cached (%lu of %lu)\n", handles[i], kind,
+-                       (unsigned long)i, (unsigned long)count );
+                 return STATUS_NOT_IMPLEMENTED;
+-            }
+             return ret;
+         }
+         state = entry->state.ptr;
+@@ -1792,32 +2464,86 @@ NTSTATUS msync_wait_multiple( DWORD count, const HANDLE *handles, WAIT_TYPE type
+             else
+             {
+                 TRACE( "fallback multiple wait handle %p has stale generation\n", handles[i] );
+-                unlock_msync_cache();
++                unlock_msync_cache_in_scope();
+                 return STATUS_NOT_IMPLEMENTED;
+             }
+         }
+         if (type == WaitAll ? msync_has_wine_server_waiters( state ) : msync_has_server_waiters( state ))
+         {
+             TRACE( "fallback multiple wait handle %p has server waiters\n", handles[i] );
+-            unlock_msync_cache();
++            unlock_msync_cache_in_scope();
+             return STATUS_NOT_IMPLEMENTED;
+         }
+         states[i] = state;
+         shm_idxs[i] = entry->state.shm_idx;
+         generations[i] = entry->state.generation;
+         types[i] = entry->state.type;
++        if (types[i] == INPROC_SYNC_EVENT) *has_event_out = TRUE;
+     }
+-    unlock_msync_cache();
++    unlock_msync_cache_in_scope();
++
++    *wait_result_out = type == WaitAll
++        ? try_wait_all_local_in_scope( states, shm_idxs, generations, types, count )
++        : consume_waitany_states_in_scope( handles, states, generations, types, count );
++    return STATUS_SUCCESS;
++}
++
++NTSTATUS msync_wait_multiple( DWORD count, const HANDLE *handles, WAIT_TYPE type,
++                                BOOLEAN alertable, const LARGE_INTEGER *timeout )
++{
++    struct msync_shared_state *states[64];
++    HANDLE local_handles[ARRAY_SIZE(states)];
++    struct thread_data *scope;
++    unsigned int shm_idxs[64], generations[64];
++    unsigned short types[64];
++    struct timespec deadline;
++    DWORD i;
++    BOOL has_event = FALSE;
++    NTSTATUS ret, initial_ret;
++
++    if (!do_msync()) return STATUS_NOT_IMPLEMENTED;
++
++    if (type != WaitAny && type != WaitAll)
++        return STATUS_NOT_IMPLEMENTED;
++    if (alertable)
++    {
++        TRACE( "fallback multiple wait alertable\n" );
++        return STATUS_NOT_IMPLEMENTED;
++    }
++    if (timeout && timeout->QuadPart > 0)
++    {
++        TRACE( "fallback multiple wait absolute timeout %s\n", wine_dbgstr_longlong(timeout->QuadPart) );
++        return STATUS_NOT_IMPLEMENTED;
++    }
++    if (count < 2 || count > ARRAY_SIZE(states))
++    {
++        TRACE( "fallback multiple wait unsupported count %lu\n", (unsigned long)count );
++        return STATUS_NOT_IMPLEMENTED;
++    }
++    if (type == WaitAny && !msync_address_wait_supported())
++    {
++        TRACE( "fallback waitany address wait unsupported\n" );
++        return STATUS_NOT_IMPLEMENTED;
++    }
++
++    /* Copy caller memory before protecting internal state. All later paths,
++     * including abandoned refresh and blocking fallback, use this snapshot. */
++    memcpy( local_handles, handles, count * sizeof(*local_handles) );
++    scope = msync_enter_scope();
++    ret = msync_try_wait_multiple_in_scope( count, local_handles, type, states, shm_idxs,
++                                             generations, types, &has_event, &initial_ret );
++    msync_leave_scope( scope );
++    if (ret) return ret;
++    ret = initial_ret;
+ 
+     if (type == WaitAll)
+     {
+         unsigned int entries[ARRAY_SIZE(states) * 3];
+ 
+-        ret = try_wait_all_local( states, shm_idxs, generations, types, count );
+         if (ret == STATUS_WAIT_0 || ret == STATUS_ABANDONED_WAIT_0)
+         {
+             if (ret == STATUS_ABANDONED_WAIT_0)
+-                refresh_waitall_mutex_generations( handles, states, types, count );
++                refresh_waitall_mutex_generations( local_handles, states, types, count );
+             return ret;
+         }
+         if (ret == STATUS_TIMEOUT && timeout && !timeout->QuadPart)
+@@ -1837,7 +2563,7 @@ NTSTATUS msync_wait_multiple( DWORD count, const HANDLE *handles, WAIT_TYPE type
+             if (msync_waitall_ret_satisfied( ret, count ))
+             {
+                 if (ret >= STATUS_ABANDONED_WAIT_0)
+-                    refresh_waitall_mutex_generations( handles, states, types, count );
++                    refresh_waitall_mutex_generations( local_handles, states, types, count );
+                 return ret;
+             }
+             if (ret == STATUS_TIMEOUT)
+@@ -1847,6 +2573,11 @@ NTSTATUS msync_wait_multiple( DWORD count, const HANDLE *handles, WAIT_TYPE type
+             return ret == STATUS_NOT_IMPLEMENTED ? STATUS_NOT_IMPLEMENTED : ret;
+         }
+ 
++        if (has_event)
++        {
++            TRACE( "fallback blocking Event WaitAll for PulseEvent completion\n" );
++            return STATUS_NOT_IMPLEMENTED;
++        }
+         if ((ret = get_msync_wait_slot()))
+             return ret == STATUS_NOT_IMPLEMENTED ? STATUS_NOT_IMPLEMENTED : ret;
+         if (timeout) get_relative_timeout_abs( timeout, &deadline );
+@@ -1861,7 +2592,7 @@ NTSTATUS msync_wait_multiple( DWORD count, const HANDLE *handles, WAIT_TYPE type
+             if (msync_waitall_ret_satisfied( ret, count ))
+             {
+                 if (ret >= STATUS_ABANDONED_WAIT_0)
+-                    refresh_waitall_mutex_generations( handles, states, types, count );
++                    refresh_waitall_mutex_generations( local_handles, states, types, count );
+                 return ret;
+             }
+             if (ret != STATUS_PENDING)
+@@ -1901,7 +2632,6 @@ NTSTATUS msync_wait_multiple( DWORD count, const HANDLE *handles, WAIT_TYPE type
+         }
+     }
+ 
+-    ret = consume_waitany_states( handles, states, generations, types, count );
+     if (ret != STATUS_TIMEOUT)
+     {
+         if (ret == STATUS_NOT_IMPLEMENTED)
+@@ -1913,6 +2643,11 @@ NTSTATUS msync_wait_multiple( DWORD count, const HANDLE *handles, WAIT_TYPE type
+         return STATUS_TIMEOUT;
+     }
+ 
++    if (has_event)
++    {
++        TRACE( "fallback blocking Event WaitAny for PulseEvent completion\n" );
++        return STATUS_NOT_IMPLEMENTED;
++    }
+     if ((ret = get_msync_wait_slot()))
+         return ret == STATUS_NOT_IMPLEMENTED ? STATUS_NOT_IMPLEMENTED : ret;
+     if (timeout) get_relative_timeout_abs( timeout, &deadline );
+@@ -1926,7 +2661,7 @@ NTSTATUS msync_wait_multiple( DWORD count, const HANDLE *handles, WAIT_TYPE type
+         if ((ret = register_msync_wait( shm_idxs, count )))
+             return ret == STATUS_NOT_IMPLEMENTED ? STATUS_NOT_IMPLEMENTED : ret;
+ 
+-        ret = consume_waitany_states( handles, states, generations, types, count );
++        ret = consume_waitany_states( local_handles, states, generations, types, count );
+         if (ret != STATUS_TIMEOUT)
+         {
+             unregister_msync_wait();
+@@ -1957,19 +2692,14 @@ NTSTATUS msync_wait_multiple( DWORD count, const HANDLE *handles, WAIT_TYPE type
+ 
+         if (ret == STATUS_TIMEOUT)
+         {
+-            if (!timeout)
+-            {
+-                for (i = 0; i < count; i++)
+-                    if (types[i] == INPROC_SYNC_MUTEX) return STATUS_NOT_IMPLEMENTED;  /* see msync_wait_mutex */
+-                continue;  /* re-validate the state, then keep waiting here */
+-            }
++            if (!timeout) return STATUS_NOT_IMPLEMENTED;
+             return STATUS_TIMEOUT;
+         }
+         if (ret == STATUS_NOT_IMPLEMENTED)
+             return STATUS_NOT_IMPLEMENTED;
+         if (ret != STATUS_SUCCESS) return ret;
+ 
+-        ret = consume_waitany_states( handles, states, generations, types, count );
++        ret = consume_waitany_states( local_handles, states, generations, types, count );
+         if (ret != STATUS_TIMEOUT)
+         {
+             if (ret == STATUS_NOT_IMPLEMENTED)
+diff --git a/dlls/ntdll/unix/msync.h b/dlls/ntdll/unix/msync.h
+index 7f41cabbff0..86fab0a1021 100644
+--- a/dlls/ntdll/unix/msync.h
++++ b/dlls/ntdll/unix/msync.h
+@@ -1,7 +1,8 @@
+ /*
+- * WineForge userspace synchronization client state
++ * msync client shared state
++ * WineForge-Internal: msync-v6.
+  *
+- * Ported from WineForge's WFUSync (dlls/ntdll/unix/wfusync.h); MetalSharp Wine renamed it msync and modified it.
++ * Ported from WineForge's USync 6 (dlls/ntdll/unix/usync.h); MetalSharp Wine renamed it msync and modified it.
+  *
+  * Copyright (C) 2026 Radim Vesely
+  *
+diff --git a/dlls/ntdll/unix/sync.c b/dlls/ntdll/unix/sync.c
+index d77e1b90092..17c06ddea2e 100644
+--- a/dlls/ntdll/unix/sync.c
++++ b/dlls/ntdll/unix/sync.c
+@@ -1,5 +1,6 @@
+ /*
+  * Process synchronisation
++ * WineForge-Internal: msync-v6.
+  *
+  * Copyright 1996, 1997, 1998 Marcus Meissner
+  * Copyright 1997, 1999 Alexandre Julliard
+@@ -969,14 +970,24 @@ static NTSTATUS inproc_wait( DWORD count, const HANDLE *handles, WAIT_TYPE type,
+             if (ret) return ret;
+             release_inproc_sync( syncs[0] );
+         }
+-        else if (do_msync() && count > 1 && type == WaitAny)
++
++        else if (do_msync() && count > 1 && count <= ARRAY_SIZE(syncs) &&
++                 (type == WaitAny || type == WaitAll) && !alertable &&
++                 (!timeout || timeout->QuadPart <= 0))
+         {
++            enum inproc_sync_type desired[ARRAY_SIZE(syncs)];
+             int i;
+ 
+             for (i = 0; i < count; i++)
+             {
+-                if (!msync_handle_is_local_event( handles[i] )) return STATUS_NOT_IMPLEMENTED;
+-                ret = get_inproc_sync( handles[i], INPROC_SYNC_EVENT, SYNCHRONIZE, &stack[i], &syncs[i] );
++                if (msync_handle_is_local_event( handles[i] )) desired[i] = INPROC_SYNC_EVENT;
++                else if (msync_handle_is_local_semaphore( handles[i] )) desired[i] = INPROC_SYNC_SEMAPHORE;
++                else if (msync_handle_is_local_mutex( handles[i] )) desired[i] = INPROC_SYNC_MUTEX;
++                else return STATUS_NOT_IMPLEMENTED;
++            }
++            for (i = 0; i < count; i++)
++            {
++                ret = get_inproc_sync( handles[i], desired[i], SYNCHRONIZE, &stack[i], &syncs[i] );
+                 if (ret)
+                 {
+                     while (i--) release_inproc_sync( syncs[i] );
+diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
+index 10af46fa4ff..9f17249a83e 100644
+--- a/dlls/ntdll/unix/unix_private.h
++++ b/dlls/ntdll/unix/unix_private.h
+@@ -127,6 +127,8 @@ struct thread_data
+     void        *param;             /* thread entry point parameter */
+     struct list  entry;             /* entry in TEB list */
+     char         debug_info[0x800]; /* debug_info structure */
++    volatile sig_atomic_t msync_lock_depth;      /* msync: shared state locked by this thread */
++    volatile sig_atomic_t msync_pending_signals; /* msync: signals deferred while it is locked */
+     char         signal_stack[];    /* signal stack */
+     /* char kernel_stack[] */
+ };
+@@ -138,6 +140,8 @@ static inline struct thread_data *get_thread_data(void)
+     return pthread_getspecific( thread_data_key );
+ }
+ 
++extern BOOL msync_defer_signal( struct thread_data *data, int signal );
++
+ /* thread private data, stored in NtCurrentTeb()->GdiTebBatch */
+ struct teb_data
+ {
+diff --git a/server/event.c b/server/event.c
+index d6c89f6f19c..436f40aa0e5 100644
+--- a/server/event.c
++++ b/server/event.c
+@@ -1,5 +1,6 @@
+ /*
+  * Server-side event management
++ * WineForge-Internal: msync-v6.
+  *
+  * Copyright (C) 1998 Alexandre Julliard
+  *
+@@ -342,7 +343,7 @@ int get_event_msync_idx( struct object *obj, int *type )
+     if (!event->sync || event->sync->ops != &event_sync_ops) return -1;
+     sync = (struct event_sync *)event->sync;
+     if (!sync->msync) return -1;
+-    msync_grab_object( sync->msync );
++
+     *type = INPROC_SYNC_EVENT;
+     return msync_get_index( sync->msync );
+ }
+@@ -425,6 +426,26 @@ DECL_HANDLER(event_op)
+     if (event->sync->ops == &event_sync_ops)
+     {
+         sync = (struct event_sync *)event->sync;
++        if (sync->msync && req->op == PULSE_EVENT &&
++            msync_event_pulse_begin( sync->msync, &signaled ))
++        {
++            reply->state = signaled;
++            sync->signaled = 1;
++            wake_up( &sync->obj, !sync->manual );
++            msync_event_pulse_end( sync->msync );
++            sync->signaled = 0;
++            release_object( event );
++            return;
++        }
++        if (sync->msync && (req->op == SET_EVENT || req->op == RESET_EVENT) &&
++            msync_event_op( sync->msync, req->op == SET_EVENT, &signaled ))
++        {
++            reply->state = signaled;
++            sync->signaled = req->op == SET_EVENT;
++            wake_up( &sync->obj, !sync->manual );
++            release_object( event );
++            return;
++        }
+         if (!sync->msync || !msync_get_event_state( sync->msync, NULL, &signaled ))
+             signaled = sync->signaled;
+     }
+diff --git a/server/inproc_sync.c b/server/inproc_sync.c
+index 502a3a324a1..f086398d5b0 100644
+--- a/server/inproc_sync.c
++++ b/server/inproc_sync.c
+@@ -1,5 +1,6 @@
+ /*
+  * In-process synchronization primitives
++ * WineForge-Internal: msync-v6.
+  *
+  * Copyright (C) 2021-2022 Elizabeth Figura for CodeWeavers
+  *
+@@ -315,7 +316,7 @@ static void inproc_sync_dump( struct object *obj, int verbose )
+ {
+     struct inproc_sync *sync = (struct inproc_sync *)obj;
+     assert( obj->ops == &inproc_sync_ops );
+-    fprintf( stderr, "WFUSync inproc type=%d, shm_idx=%u\n",
++    fprintf( stderr, "msync inproc type=%d, shm_idx=%u\n",
+              sync->type, msync_get_index( sync->msync ) );
+ }
+ 
+@@ -395,7 +396,7 @@ static int get_obj_inproc_sync( struct object *obj, int *type )
+     if (sync->ops == &inproc_sync_ops)
+     {
+         struct inproc_sync *inproc = (struct inproc_sync *)sync;
+-        msync_grab_object( inproc->msync );
++
+         *type = inproc->type;
+         shm_idx = msync_get_index( inproc->msync );
+     }
+diff --git a/server/msync.c b/server/msync.c
+index fee960ee00c..95c80e8fe0e 100644
+--- a/server/msync.c
++++ b/server/msync.c
+@@ -1,7 +1,8 @@
+ /*
+- * WineForge userspace synchronization server state
++ * msync server shared state
++ * WineForge-Internal: msync-v6.
+  *
+- * Ported from WineForge's WFUSync (server/wfusync.c); MetalSharp Wine renamed it msync and modified it.
++ * Ported from WineForge's USync 6 (server/usync.c); MetalSharp Wine renamed it msync and modified it.
+  *
+  * Copyright (C) 2026 Radim Vesely
+  *
+@@ -28,10 +29,10 @@ int do_msync(void)
+ 
+     if (enabled == -1)
+     {
+-        /* on unless WINEMSYNC=0, as dlls/ntdll/unix/msync.c decides; WINEWFUSYNC is the upstream
+-         * WineForge name */
+         const char *env = getenv( "WINEMSYNC" );
+-        if (!env) env = getenv( "WINEWFUSYNC" );
++        if (!env) env = getenv( "WINEUSYNC" );    /* upstream WineForge name */
++        if (!env) env = getenv( "WINEWFUSYNC" );  /* earlier WineForge name */
++        /* on unless WINEMSYNC=0, as dlls/ntdll/unix/msync.c decides */
+         enabled = !env || atoi( env );
+     }
+     return enabled;
+@@ -48,16 +49,33 @@ int do_msync(void)
+ #include <stdio.h>
+ #include <string.h>
+ #include <sys/mman.h>
+-#include <time.h>
+ #include <unistd.h>
+ #include <AvailabilityMacros.h>
+ #ifdef MAC_OS_VERSION_14_4
+ # include <os/os_sync_wait_on_address.h>
+ #endif
+ 
++/* One fixed backing object on macOS, with pages mapped only as needed.
++ * Exhaustion falls back to the server until a retired slot becomes reusable. */
++#define MSYNC_SHM_SIZE (16 * 1024 * 1024)
++/* monotonic_counter() uses 100ns ticks. */
++#define MSYNC_RETRY_MIN (100 * 10000)
++#define MSYNC_RETRY_MAX (5000 * 10000)
++
+ #define UL_COMPARE_AND_WAIT_SHARED 3
+ #define ULF_WAKE_ALL               0x00000100
+-#define MSYNC_TYPE_MASK          0x1fff
++#define MSYNC_TYPE_MASK          0x003f
++#define MSYNC_EVENT_DIRECT_PROTOCOL 0x0040
++#define MSYNC_DIRECT_WAITING       1u
++#define MSYNC_DIRECT_COMPLETED        2u
++#define MSYNC_DIRECT_MAX_GENERATION (INT_MAX >> 2)
++#define MSYNC_DIRECT_MAX_SLOT      (USHRT_MAX >> 1)
++#define MSYNC_EVENT_PROTOCOL     0x0080
++#define MSYNC_MUTEX_PROTOCOL     0x0100
++#define MSYNC_MUTEX_UNWAITED     0x0200
++#define MSYNC_SEMAPHORE_UNWAITED  0x0400
++#define MSYNC_SEMAPHORE_PROTOCOL  0x0800
++#define MSYNC_EVENT_UNWAITED     0x1000
+ #define MSYNC_STATE_LOCKED       0x2000
+ #define MSYNC_MULTI_WAITERS      0x4000
+ #define MSYNC_SERVER_WAITERS     0x8000
+@@ -70,8 +88,9 @@ struct msync_state
+     int            high;
+     unsigned int   generation;
+     unsigned short type;
+-    unsigned short refcount;
++    unsigned short refcount; /* owner bit 0, direct Event slot in bits 1..15 */
+ };
++C_ASSERT( sizeof(struct msync_state) == 16 );
+ 
+ struct msync
+ {
+@@ -81,6 +100,7 @@ struct msync
+ 
+ struct msync_waiter
+ {
++    struct thread *thread;
+     unsigned int slot_idx;
+     unsigned int count;
+     unsigned int *shm_idxs;
+@@ -90,44 +110,123 @@ struct msync_waiter
+ static void **msync_pages;
+ static unsigned int msync_pages_count;
+ static unsigned int next_shm_idx = 1;
+-static unsigned int next_generation = 1;
++static unsigned int free_shm_idx;
++static unsigned long long recycled_states, retired_states;
+ static int shared_fd = -1;
+ static long page_size;
+ static struct msync_waiter *msync_waiters;
+ static unsigned int *msync_multi_waiter_counts;
+ static unsigned int msync_multi_waiter_counts_count;
+ 
+-/* Shared state is mapped in fixed 64K granules on both sides (clients may run with 4K
+- * pages, the server with 16K). The object is sized once: XNU only allows ftruncate() on a
+- * POSIX shm object once, and the pages are only backed when touched. */
+-#define MSYNC_MAP_GRANULE 0x10000
+-#define MSYNC_SHM_SIZE    0x4000000  /* 64MB: 4M slots */
+-#define MSYNC_LOCK_STEAL_NS (100 * 1000000ull)
++enum allocation_error
++{
++    ALLOC_PAGE_SIZE, ALLOC_OPEN, ALLOC_UNLINK, ALLOC_SIZE, ALLOC_CLOEXEC,
++    ALLOC_CACHE, ALLOC_MAP, ALLOC_OBJECT, ALLOC_CAPACITY, ALLOC_ERROR_COUNT
++};
+ 
+-static long get_page_size(void)
++static const char * const allocation_error_names[] =
++{
++    "page-size", "shm_open", "shm_unlink", "ftruncate", "fcntl",
++    "page-cache", "mmap", "object", "capacity"
++};
++static struct
++{
++    unsigned long long count;
++    int first_errno, last_errno;
++} allocation_errors[ALLOC_ERROR_COUNT];
++static unsigned long long allocated_states, allocation_fallbacks, allocation_suppressed;
++static timeout_t allocation_retry_after;
++static timeout_t allocation_retry_delay = MSYNC_RETRY_MIN;
++static int allocation_disabled, allocation_last_errno, allocation_stats_registered;
++static enum allocation_error allocation_last_op;
++
++static void report_allocation_stats( const char *reason )
++{
++    unsigned int i;
++
++    fprintf( stderr, "wineserver: msync allocation %s: states=%llu fallbacks=%llu suppressed=%llu disabled=%d\n",
++             reason, allocated_states, allocation_fallbacks, allocation_suppressed, allocation_disabled );
++    fprintf( stderr, "wineserver: msync slots: high-water=%u reused=%llu retired=%llu\n",
++             next_shm_idx - 1, recycled_states, retired_states );
++    for (i = 0; i < ALLOC_ERROR_COUNT; i++)
++        if (allocation_errors[i].count)
++            fprintf( stderr, "wineserver: msync allocation errors: op=%s count=%llu first_errno=%d last_errno=%d\n",
++                     allocation_error_names[i], allocation_errors[i].count,
++                     allocation_errors[i].first_errno, allocation_errors[i].last_errno );
++}
++
++static void report_allocation_exit(void)
+ {
+-    return MSYNC_MAP_GRANULE;
++    if (allocation_last_errno || debug_level) report_allocation_stats( "shutdown" );
+ }
+ 
+-static unsigned int *free_slots;
+-static unsigned int free_slots_count, free_slots_size;
++static int allocation_allowed(void)
++{
++    if (!allocation_stats_registered)
++    {
++        allocation_stats_registered = 1;
++        if (atexit( report_allocation_exit ))
++            fprintf( stderr, "wineserver: msync could not register allocation summary\n" );
++    }
++    if (!allocation_disabled &&
++        (!allocation_retry_after || monotonic_counter() >= allocation_retry_after)) return 1;
++    allocation_suppressed++;
++    errno = allocation_last_errno;
++    return 0;
++}
+ 
+-static void free_state_slot( unsigned int idx )
++static void allocation_failed( enum allocation_error op, int error, int permanent )
+ {
+-    if (free_slots_count == free_slots_size)
++    int report = !allocation_retry_after || !allocation_errors[op].count;
++
++    if (!allocation_errors[op].count++) allocation_errors[op].first_errno = error;
++    allocation_errors[op].last_errno = allocation_last_errno = error;
++    allocation_disabled = permanent;
++    allocation_last_op = op;
++    allocation_retry_after = monotonic_counter() + allocation_retry_delay;
++    if (report)
++        fprintf( stderr, "wineserver: msync allocation failed: op=%s errno=%d (%s), %s\n",
++                 allocation_error_names[op], error, strerror( error ),
++                 permanent ? (op == ALLOC_CAPACITY ? "new states use server fallback until a slot is released" :
++                               "new states disabled until server restart") : "new states use server fallback during retry delay" );
++    if (allocation_retry_delay < MSYNC_RETRY_MAX)
+     {
+-        unsigned int new_size = free_slots_size ? free_slots_size * 2 : 256;
+-        unsigned int *new_slots = realloc( free_slots, new_size * sizeof(*free_slots) );
+-        if (!new_slots) return;  /* leak the slot */
+-        free_slots = new_slots;
+-        free_slots_size = new_size;
++        allocation_retry_delay *= 2;
++        if (allocation_retry_delay > MSYNC_RETRY_MAX) allocation_retry_delay = MSYNC_RETRY_MAX;
+     }
+-    free_slots[free_slots_count++] = idx;
++    errno = error;
+ }
+ 
+-static unsigned long long monotonic_ns(void)
++static void allocation_succeeded(void)
+ {
+-    return clock_gettime_nsec_np( CLOCK_UPTIME_RAW );
++    allocated_states++;
++    if (allocation_retry_after) report_allocation_stats( "recovered" );
++    allocation_retry_after = 0;
++    allocation_retry_delay = MSYNC_RETRY_MIN;
++}
++
++#define MSYNC_MAP_GRANULE 0x10000
++
++static long get_page_size(void)
++{
++    if (!page_size)
++    {
++        long size;
++
++        /* fixed 64K granules, independent of the host page size: the wineserver may run with
++         * 16K pages while clients (x86_64 programs under FEX) run with 4K pages. Must match
++         * MSYNC_MAP_GRANULE in dlls/ntdll/unix/msync.c. */
++        errno = 0;
++        size = MSYNC_MAP_GRANULE;
++        if (size % sysconf( _SC_PAGESIZE ) || size > MSYNC_SHM_SIZE ||
++            size % sizeof(struct msync_state) || MSYNC_SHM_SIZE % size)
++        {
++            allocation_failed( ALLOC_PAGE_SIZE, size < 0 && errno ? errno : EINVAL, 1 );
++            return 0;
++        }
++        page_size = size;
++    }
++    return page_size;
+ }
+ 
+ static void wake_address( int *addr, int wake_all )
+@@ -145,9 +244,14 @@ static void wake_address( int *addr, int wake_all )
+ 
+ static struct msync_state *get_state( unsigned int idx )
+ {
+-    unsigned int entry = (idx * sizeof(struct msync_state)) / get_page_size();
+-    unsigned int offset = (idx * sizeof(struct msync_state)) % get_page_size();
++    long size = get_page_size();
++    size_t byte_offset;
++    unsigned int entry, offset;
+ 
++    if (!size || !idx || idx >= MSYNC_SHM_SIZE / sizeof(struct msync_state)) return NULL;
++    byte_offset = (size_t)idx * sizeof(struct msync_state);
++    entry = byte_offset / size;
++    offset = byte_offset % size;
+     if (entry >= msync_pages_count || !msync_pages[entry]) return NULL;
+     return (struct msync_state *)((char *)msync_pages[entry] + offset);
+ }
+@@ -160,7 +264,6 @@ static unsigned short get_state_type( struct msync_state *state )
+ static int lock_state( struct msync_state *state, unsigned short expected_type )
+ {
+     unsigned int attempts = 0;
+-    unsigned long long start = 0;
+     unsigned short type;
+ 
+     for (;;)
+@@ -171,17 +274,7 @@ static int lock_state( struct msync_state *state, unsigned short expected_type )
+             __atomic_compare_exchange_n( &state->type, &type, type | MSYNC_STATE_LOCKED, FALSE,
+                                          __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST ))
+             return 1;
+-        if (++attempts % 64) continue;
+-        sched_yield();
+-        /* Client critical sections are a handful of instructions. A lock held this long
+-         * belongs to a client thread that was suspended or killed inside one; spinning
+-         * forever would hang the whole wineserver, so take the lock over. */
+-        if (!start) start = monotonic_ns();
+-        else if (monotonic_ns() - start > MSYNC_LOCK_STEAL_NS)
+-        {
+-            fprintf( stderr, "wineserver: msync: taking over a lock held for over 100ms\n" );
+-            return 1;
+-        }
++        if (!(++attempts % 64)) sched_yield();
+     }
+ }
+ 
+@@ -196,47 +289,130 @@ int msync_get_shared_fd(void)
+     unsigned int attempt;
+ 
+     if (shared_fd != -1) return shared_fd;
++    if (!allocation_allowed() || !get_page_size()) return -1;
+ 
+     for (attempt = 0; attempt < 16; attempt++)
+     {
+         snprintf( name, sizeof(name), "/wine-msync-%x-%x", getpid(), arc4random() );
+         shared_fd = shm_open( name, O_RDWR | O_CREAT | O_EXCL, 0600 );
+         if (shared_fd != -1) break;
+-        if (errno != EEXIST) return -1;
++        if (errno != EEXIST) break;
++    }
++    if (shared_fd == -1)
++    {
++        allocation_failed( ALLOC_OPEN, errno, 0 );
++        return -1;
+     }
+-    if (shared_fd == -1) return -1;
+     if (shm_unlink( name ) == -1)
+     {
++        int error = errno;
++
+         close( shared_fd );
+         shared_fd = -1;
++        allocation_failed( ALLOC_UNLINK, error, 0 );
+         return -1;
+     }
+ 
+     if (ftruncate( shared_fd, MSYNC_SHM_SIZE ) == -1)
+     {
++        int error = errno;
++
+         close( shared_fd );
+         shared_fd = -1;
++        allocation_failed( ALLOC_SIZE, error, 0 );
++        return -1;
++    }
++
++    if (fcntl( shared_fd, F_SETFD, FD_CLOEXEC ) == -1)
++    {
++        int error = errno;
++
++        close( shared_fd );
++        shared_fd = -1;
++        allocation_failed( ALLOC_CLOEXEC, error, 0 );
+         return -1;
+     }
+-    fcntl( shared_fd, F_SETFD, FD_CLOEXEC );
+     return shared_fd;
+ }
+ 
+-static int ensure_shared_file_size( unsigned int pages )
++/* Slot ownership follows the owning Wine object, whose lifetime already covers all
++ * valid handles. Exporting an index does not create a client reference. Registered
++ * multi-waits additionally pin the slot until unregister or thread cleanup.
++ * Shared mappings stay mapped, so waking a retired address remains safe.
++ */
++static void advance_generation( struct msync_state *state )
++{
++    unsigned int generation = __atomic_load_n( &state->generation, __ATOMIC_SEQ_CST );
++
++    if (generation != UINT_MAX)
++        __atomic_store_n( &state->generation, generation + 1, __ATOMIC_SEQ_CST );
++}
++
++static void recycle_state_slot( unsigned int idx )
++{
++    struct msync_state *state = get_state( idx );
++
++    if (!state || __atomic_load_n( &state->refcount, __ATOMIC_SEQ_CST ) ||
++        (idx < msync_multi_waiter_counts_count && msync_multi_waiter_counts[idx])) return;
++    assert( get_state_type( state ) == INPROC_SYNC_UNKNOWN );
++    assert( state->high != -1 && state->high != -2 );
++    if (__atomic_load_n( &state->generation, __ATOMIC_SEQ_CST ) == UINT_MAX)
++    {
++        /* Never let a reused slot alias an old generation after wraparound. */
++        state->high = -2;
++        retired_states++;
++        return;
++    }
++    state->low = free_shm_idx;
++    state->high = -1;
++    free_shm_idx = idx;
++    if (allocation_disabled && allocation_last_op == ALLOC_CAPACITY)
++    {
++        allocation_disabled = 0;
++        allocation_retry_after = monotonic_counter();
++    }
++}
++
++static void release_state_slot( unsigned int idx )
+ {
+-    return msync_get_shared_fd() != -1 && (off_t)pages * get_page_size() <= MSYNC_SHM_SIZE;
++    struct msync_state *state = get_state( idx );
++
++    assert( state && __atomic_load_n( &state->refcount, __ATOMIC_SEQ_CST ) == 1 );
++    __atomic_store_n( &state->type, INPROC_SYNC_UNKNOWN, __ATOMIC_SEQ_CST );
++    advance_generation( state );
++    __atomic_store_n( &state->refcount, 0, __ATOMIC_SEQ_CST );
++    wake_address( &state->low, 1 );
++    recycle_state_slot( idx );
+ }
+ 
+ static struct msync_state *alloc_state_slot( unsigned int *idx )
+ {
+     struct msync_state *state;
+-    unsigned int entry, offset;
++    unsigned int entry, offset, generation;
++    long size;
++    size_t byte_offset;
+     void *page;
++    int fd;
+ 
+-    if (free_slots_count) *idx = free_slots[--free_slots_count];
+-    else *idx = next_shm_idx++;
+-    entry = (*idx * sizeof(struct msync_state)) / get_page_size();
+-    offset = (*idx * sizeof(struct msync_state)) % get_page_size();
++    if (!allocation_allowed()) goto fallback;
++    if (free_shm_idx)
++    {
++        *idx = free_shm_idx;
++        state = get_state( *idx );
++        assert( state && !__atomic_load_n( &state->refcount, __ATOMIC_SEQ_CST ) && state->high == -1 );
++        free_shm_idx = state->low;
++        recycled_states++;
++        goto initialize;
++    }
++    if (!(size = get_page_size())) goto fallback;
++    if (next_shm_idx >= MSYNC_SHM_SIZE / sizeof(struct msync_state))
++    {
++        allocation_failed( ALLOC_CAPACITY, ENOSPC, 1 );
++        goto fallback;
++    }
++    byte_offset = (size_t)next_shm_idx * sizeof(struct msync_state);
++    entry = byte_offset / size;
++    offset = byte_offset % size;
+ 
+     if (entry >= msync_pages_count)
+     {
+@@ -244,7 +420,12 @@ static struct msync_state *alloc_state_slot( unsigned int *idx )
+         void **new_pages;
+ 
+         while (entry >= new_count) new_count *= 2;
+-        if (!(new_pages = realloc( msync_pages, new_count * sizeof(*msync_pages) ))) return NULL;
++        if (new_count > MSYNC_SHM_SIZE / size) new_count = MSYNC_SHM_SIZE / size;
++        if (!(new_pages = realloc( msync_pages, new_count * sizeof(*msync_pages) )))
++        {
++            allocation_failed( ALLOC_CACHE, errno, 0 );
++            goto fallback;
++        }
+         memset( new_pages + msync_pages_count, 0, (new_count - msync_pages_count) * sizeof(*msync_pages) );
+         msync_pages = new_pages;
+         msync_pages_count = new_count;
+@@ -252,16 +433,29 @@ static struct msync_state *alloc_state_slot( unsigned int *idx )
+ 
+     if (!msync_pages[entry])
+     {
+-        if (!ensure_shared_file_size( entry + 1 )) return NULL;
+-        page = mmap( NULL, get_page_size(), PROT_READ | PROT_WRITE, MAP_SHARED,
+-                     msync_get_shared_fd(), (off_t)entry * get_page_size() );
+-        if (page == MAP_FAILED) return NULL;
++        if ((fd = msync_get_shared_fd()) == -1) goto fallback;
++        page = mmap( NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, (off_t)entry * size );
++        if (page == MAP_FAILED)
++        {
++            allocation_failed( ALLOC_MAP, errno, 0 );
++            goto fallback;
++        }
+         msync_pages[entry] = page;
+     }
+ 
++    *idx = next_shm_idx++;
+     state = (struct msync_state *)((char *)msync_pages[entry] + offset);
++initialize:
++    generation = __atomic_load_n( &state->generation, __ATOMIC_SEQ_CST );
++    assert( generation != UINT_MAX );
+     memset( state, 0, sizeof(*state) );
++    __atomic_store_n( &state->generation, generation + 1, __ATOMIC_SEQ_CST );
++    allocation_succeeded();
+     return state;
++
++fallback:
++    allocation_fallbacks++;
++    return NULL;
+ }
+ 
+ struct msync *create_msync( int low, int high, enum inproc_sync_type type )
+@@ -269,7 +463,17 @@ struct msync *create_msync( int low, int high, enum inproc_sync_type type )
+     struct msync_state *state;
+     struct msync *sync;
+ 
+-    if (!(sync = mem_alloc( sizeof(*sync) ))) return NULL;
++    if (!allocation_allowed())
++    {
++        allocation_fallbacks++;
++        return NULL;
++    }
++    if (!(sync = mem_alloc( sizeof(*sync) )))
++    {
++        allocation_failed( ALLOC_OBJECT, ENOMEM, 0 );
++        allocation_fallbacks++;
++        return NULL;
++    }
+     if (!(state = alloc_state_slot( &sync->shm_idx )))
+     {
+         free( sync );
+@@ -278,9 +482,11 @@ struct msync *create_msync( int low, int high, enum inproc_sync_type type )
+ 
+     state->low = low;
+     state->high = high;
+-    state->generation = next_generation++;
+-    state->type = type;
+-    state->refcount = 1; /* server-owned object reference */
++    state->type = type | (type == INPROC_SYNC_EVENT ? MSYNC_EVENT_UNWAITED | MSYNC_EVENT_PROTOCOL | MSYNC_EVENT_DIRECT_PROTOCOL :
++                         type == INPROC_SYNC_SEMAPHORE ?
++                         MSYNC_SEMAPHORE_PROTOCOL | MSYNC_SEMAPHORE_UNWAITED :
++                         type == INPROC_SYNC_MUTEX ? MSYNC_MUTEX_PROTOCOL | MSYNC_MUTEX_UNWAITED : 0);
++    __atomic_store_n( &state->refcount, 1, __ATOMIC_SEQ_CST ); /* server-owned object reference */
+     sync->server_waiters = 0;
+ 
+     return sync;
+@@ -329,7 +535,7 @@ static int add_multi_waiter( unsigned int shm_idx )
+     default:
+         return 0;
+     }
+-    if (!ensure_multi_waiter_count( shm_idx )) return 0;
++    if (!ensure_multi_waiter_count( shm_idx ) || msync_multi_waiter_counts[shm_idx] == UINT_MAX) return 0;
+ 
+     msync_multi_waiter_counts[shm_idx]++;
+     __atomic_fetch_or( &state->type, MSYNC_MULTI_WAITERS, __ATOMIC_SEQ_CST );
+@@ -344,9 +550,10 @@ static void remove_multi_waiter( unsigned int shm_idx )
+ 
+     if (--msync_multi_waiter_counts[shm_idx]) return;
+     __atomic_fetch_and( &state->type, ~MSYNC_MULTI_WAITERS, __ATOMIC_SEQ_CST );
++    if (!__atomic_load_n( &state->refcount, __ATOMIC_SEQ_CST )) recycle_state_slot( shm_idx );
+ }
+ 
+-static void remove_waiter( unsigned int slot_idx )
++static void remove_waiter( unsigned int slot_idx, struct thread *thread )
+ {
+     struct msync_waiter **ptr = &msync_waiters;
+ 
+@@ -354,7 +561,7 @@ static void remove_waiter( unsigned int slot_idx )
+     {
+         struct msync_waiter *waiter = *ptr;
+ 
+-        if (waiter->slot_idx == slot_idx)
++        if (thread ? waiter->thread == thread : waiter->slot_idx == slot_idx)
+         {
+             unsigned int i;
+ 
+@@ -412,13 +619,15 @@ unsigned int msync_alloc_wait_slot(void)
+     struct msync_state *state;
+     unsigned int shm_idx;
+ 
++    if (!current || current->state == TERMINATED) return 0;
++    if (current->msync_wait_slot) return current->msync_wait_slot;
+     if (!(state = alloc_state_slot( &shm_idx ))) return 0;
+ 
+     state->low = 0;
+     state->high = 0;
+-    state->generation = next_generation++;
+     state->type = INPROC_SYNC_INTERNAL;
+-    state->refcount = 1;
++    __atomic_store_n( &state->refcount, 1, __ATOMIC_SEQ_CST );
++    current->msync_wait_slot = shm_idx;
+ 
+     return shm_idx;
+ }
+@@ -429,12 +638,13 @@ int msync_register_wait( unsigned int slot_idx, const unsigned int *shm_idxs, un
+     struct msync_state *slot = get_state( slot_idx );
+     unsigned int i;
+ 
+-    if (!slot || get_state_type( slot ) != INPROC_SYNC_INTERNAL || !count || count > 64) return 0;
++    if (!current || current->state == TERMINATED || current->msync_wait_slot != slot_idx || !slot ||
++        get_state_type( slot ) != INPROC_SYNC_INTERNAL || !count || count > 64 ||
++        __atomic_load_n( &slot->high, __ATOMIC_SEQ_CST )) return 0;
+ 
+-    remove_waiter( slot_idx );
++    remove_waiter( slot_idx, NULL );
+ 
+     __atomic_store_n( &slot->low, 1, __ATOMIC_SEQ_CST );
+-    slot->generation = next_generation++;
+ 
+     for (i = 0; i < count; i++)
+     {
+@@ -470,6 +680,7 @@ int msync_register_wait( unsigned int slot_idx, const unsigned int *shm_idxs, un
+     }
+ 
+     memcpy( waiter->shm_idxs, shm_idxs, count * sizeof(*waiter->shm_idxs) );
++    waiter->thread = current;
+     waiter->slot_idx = slot_idx;
+     waiter->count = count;
+ 
+@@ -499,37 +710,88 @@ int msync_register_wait( unsigned int slot_idx, const unsigned int *shm_idxs, un
+     return 1;
+ }
+ 
+-void msync_free_wait_slot( unsigned int slot_idx )
++void msync_unregister_wait( unsigned int slot_idx )
+ {
+     struct msync_state *slot;
+ 
+-    if (!slot_idx || !(slot = get_state( slot_idx ))) return;
+-    remove_waiter( slot_idx );
+-    __atomic_store_n( &slot->type, INPROC_SYNC_UNKNOWN, __ATOMIC_SEQ_CST );
+-    __atomic_store_n( &slot->generation, next_generation++, __ATOMIC_SEQ_CST );
+-    free_state_slot( slot_idx );
++    if (!current || current->msync_wait_slot != slot_idx) return;
++    slot = get_state( slot_idx );
++    if (slot && __atomic_load_n( &slot->high, __ATOMIC_SEQ_CST )) return;
++    remove_waiter( slot_idx, NULL );
++    if ((slot = get_state( slot_idx ))) wake_wait_slot( slot );
+ }
+ 
+-void msync_unregister_wait( unsigned int slot_idx )
++/* Called with the Event lock held. Slot cleanup takes its lock first, then
++ * this Event lock, and cannot recycle the slot until the owner is cleared. */
++static struct msync_state *get_direct_event_slot( struct msync_state *state, unsigned int event_idx )
+ {
++    unsigned int idx = __atomic_load_n( &state->refcount, __ATOMIC_SEQ_CST ) >> 1;
+     struct msync_state *slot;
+ 
+-    remove_waiter( slot_idx );
+-    if ((slot = get_state( slot_idx ))) wake_wait_slot( slot );
++    if (!(__atomic_load_n( &state->type, __ATOMIC_SEQ_CST ) & MSYNC_EVENT_DIRECT_PROTOCOL) ||
++        !idx || !(slot = get_state( idx )) || get_state_type( slot ) != INPROC_SYNC_INTERNAL ||
++        __atomic_load_n( &slot->high, __ATOMIC_SEQ_CST ) != (int)event_idx ||
++        ((unsigned int)__atomic_load_n( &slot->low, __ATOMIC_SEQ_CST ) >> 2) != slot->generation)
++        return NULL;
++    return slot;
+ }
+ 
+-int msync_wake_waiters( unsigned int shm_idx )
++static struct msync_state *signal_direct_event_slot( struct msync_state *state,
++                                                       unsigned int event_idx )
+ {
+-    if (!get_state( shm_idx )) return 0;
+-    wake_waiters_for_object( shm_idx );
+-    return 1;
++    struct msync_state *slot = get_direct_event_slot( state, event_idx );
++    unsigned int word;
++
++    if (!slot) return NULL;
++    word = __atomic_load_n( &slot->low, __ATOMIC_SEQ_CST );
++    if (word & MSYNC_DIRECT_COMPLETED) return NULL;
++    __atomic_store_n( &slot->low, (word & ~MSYNC_DIRECT_WAITING) |
++                      MSYNC_DIRECT_COMPLETED, __ATOMIC_SEQ_CST );
++    return slot;
+ }
+ 
+-void msync_grab_object( struct msync *sync )
++static void cancel_direct_event_slot( struct msync_state *state, unsigned int event_idx )
+ {
+-    struct msync_state *state;
++    struct msync_state *slot = get_direct_event_slot( state, event_idx );
+ 
+-    if (!sync || !(state = get_state( sync->shm_idx ))) return;
++    if (slot)
++    {
++        __atomic_store_n( &slot->high, 0, __ATOMIC_SEQ_CST );
++        __atomic_store_n( &slot->low, 0, __ATOMIC_SEQ_CST );
++        wake_address( &slot->low, 1 );
++    }
++    __atomic_fetch_and( &state->refcount, 1, __ATOMIC_SEQ_CST );
++}
++
++void msync_cleanup_thread( struct thread *thread )
++{
++    struct msync_state *slot, *state;
++    unsigned int event_idx;
++
++    remove_waiter( 0, thread );
++    if (!thread->msync_wait_slot) return;
++    slot = get_state( thread->msync_wait_slot );
++    if (slot && lock_state( slot, INPROC_SYNC_INTERNAL ))
++    {
++        event_idx = __atomic_load_n( &slot->high, __ATOMIC_SEQ_CST );
++        if (event_idx && (state = get_state( event_idx )) && lock_state( state, INPROC_SYNC_EVENT ))
++        {
++            if ((__atomic_load_n( &state->refcount, __ATOMIC_SEQ_CST ) >> 1) == thread->msync_wait_slot)
++                cancel_direct_event_slot( state, event_idx );
++            unlock_state( state );
++        }
++        /* Invalidating the type while holding the slot lock prevents a late
++         * client registration from publishing after termination cleanup. */
++        release_state_slot( thread->msync_wait_slot );
++    }
++    thread->msync_wait_slot = 0;
++}
++
++int msync_wake_waiters( unsigned int shm_idx )
++{
++    if (!get_state( shm_idx )) return 0;
++    wake_waiters_for_object( shm_idx );
++    return 1;
+ }
+ 
+ void msync_destroy( struct msync *sync )
+@@ -537,13 +799,10 @@ void msync_destroy( struct msync *sync )
+     struct msync_state *state;
+ 
+     if (!sync) return;
+-    if ((state = get_state( sync->shm_idx )))
+-    {
+-        __atomic_store_n( &state->type, INPROC_SYNC_UNKNOWN, __ATOMIC_SEQ_CST );
+-        __atomic_store_n( &state->generation, next_generation++, __ATOMIC_SEQ_CST );
+-        /* clients revalidate the generation on every operation, so the slot can be reused */
+-        free_state_slot( sync->shm_idx );
+-    }
++    state = get_state( sync->shm_idx );
++    if (state && get_state_type( state ) == INPROC_SYNC_EVENT && lock_state( state, INPROC_SYNC_EVENT ))
++        cancel_direct_event_slot( state, sync->shm_idx );
++    release_state_slot( sync->shm_idx );
+     free( sync );
+ }
+ 
+@@ -608,16 +867,20 @@ void msync_event_satisfied( struct msync *sync )
+ 
+ void msync_set_event( struct msync *sync )
+ {
+-    struct msync_state *state;
++    struct msync_state *state, *slot = NULL;
+     unsigned short type;
+-    int previous;
++    int previous, legacy;
+ 
+     if (!sync || !(state = get_state( sync->shm_idx ))) return;
+     type = get_state_type( state );
+     if ((type != INPROC_SYNC_EVENT && type != INPROC_SYNC_INTERNAL) || !lock_state( state, type )) return;
+     previous = __atomic_exchange_n( &state->low, 1, __ATOMIC_SEQ_CST );
++    legacy = !(state->type & MSYNC_EVENT_DIRECT_PROTOCOL);
++    if (!previous) slot = signal_direct_event_slot( state, sync->shm_idx );
++    if (slot && !state->high) __atomic_store_n( &state->low, 0, __ATOMIC_SEQ_CST );
+     unlock_state( state );
+-    if (!previous) wake_address( &state->low, state->high );
++    if (slot) wake_address( &slot->low, 0 );
++    else if (!previous && legacy) wake_address( &state->low, state->high );
+     wake_waiters_for_object( sync->shm_idx );
+ }
+ 
+@@ -633,6 +896,55 @@ void msync_reset_event( struct msync *sync )
+     unlock_state( state );
+ }
+ 
++int msync_event_op( struct msync *sync, int signal, int *previous )
++{
++    struct msync_state *state, *slot = NULL;
++    unsigned short type;
++    int old, legacy;
++
++    if (!sync || !(state = get_state( sync->shm_idx ))) return 0;
++    type = get_state_type( state );
++    if ((type != INPROC_SYNC_EVENT && type != INPROC_SYNC_INTERNAL) || !lock_state( state, type )) return 0;
++    old = __atomic_exchange_n( &state->low, !!signal, __ATOMIC_SEQ_CST );
++    legacy = !(state->type & MSYNC_EVENT_DIRECT_PROTOCOL);
++    if (signal && !old) slot = signal_direct_event_slot( state, sync->shm_idx );
++    if (slot && !state->high) __atomic_store_n( &state->low, 0, __ATOMIC_SEQ_CST );
++    unlock_state( state );
++    if (previous) *previous = old;
++    if (signal)
++    {
++        if (slot) wake_address( &slot->low, 0 );
++        else if (!old && legacy) wake_address( &state->low, state->high );
++        wake_waiters_for_object( sync->shm_idx );
++    }
++    return 1;
++}
++
++int msync_event_pulse_begin( struct msync *sync, int *previous )
++{
++    struct msync_state *state, *slot;
++    int manual;
++
++    if (!sync || !(state = get_state( sync->shm_idx )) || !lock_state( state, INPROC_SYNC_EVENT )) return 0;
++    *previous = __atomic_load_n( &state->low, __ATOMIC_SEQ_CST );
++    /* Keep ordinary userspace consumers out of the transient server pulse.
++     * Queue removals cannot clear this temporary server-waiter reference. */
++    sync->server_waiters++;
++    __atomic_fetch_or( &state->type, MSYNC_SERVER_WAITERS, __ATOMIC_SEQ_CST );
++    slot = signal_direct_event_slot( state, sync->shm_idx );
++    manual = state->high;
++    __atomic_store_n( &state->low, manual || !slot, __ATOMIC_SEQ_CST );
++    unlock_state( state );
++    if (slot) wake_address( &slot->low, 0 );
++    return 1;
++}
++
++void msync_event_pulse_end( struct msync *sync )
++{
++    msync_reset_event( sync );
++    msync_remove_server_waiter( sync );
++}
++
+ int msync_semaphore_signaled( struct msync *sync )
+ {
+     struct msync_state *state;
+@@ -690,7 +1002,7 @@ int msync_release_semaphore( struct msync *sync, unsigned int count, unsigned in
+ 
+     if (prev) *prev = old_count;
+     unlock_state( state );
+-    if (!old_count) wake_address( &state->low, count > 1 );
++    wake_address( &state->low, count > 1 );
+     return 1;
+ }
+ 
+@@ -744,7 +1056,7 @@ int msync_mutex_satisfied( struct msync *sync, thread_id_t tid, int *abandoned )
+     {
+         __atomic_store_n( &state->low, (int)tid, __ATOMIC_SEQ_CST );
+         __atomic_store_n( &state->high, 1, __ATOMIC_SEQ_CST );
+-        if (owner < 0) state->generation++;
++        if (owner < 0) advance_generation( state );
+         if (abandoned) *abandoned = owner < 0;
+         unlock_state( state );
+         return 1;
+@@ -815,7 +1127,7 @@ int msync_abandon_mutex( struct msync *sync, thread_id_t tid )
+ 
+     state->low = -(int)tid;
+     state->high = 0;
+-    state->generation++;
++    advance_generation( state );
+     unlock_state( state );
+     wake_address( &state->low, 1 );
+     return 1;
+@@ -839,6 +1151,9 @@ unsigned int msync_try_wait_all( const unsigned int *entries, unsigned int count
+         unsigned short state_type;
+ 
+         if (!state) goto done;
++        /* Direct Event completion may proceed with ordinary server waiters.
++         * It must never run inside this legacy SERVER_WAITERS atomic guard. */
++        if (type == INPROC_SYNC_EVENT && (state->type & MSYNC_EVENT_DIRECT_PROTOCOL)) goto done;
+         state_type = __atomic_load_n( &state->type, __ATOMIC_SEQ_CST );
+         if ((state_type & (MSYNC_STATE_LOCKED | MSYNC_SERVER_WAITERS)) ||
+             (state_type & MSYNC_TYPE_MASK) != type ||
+@@ -920,7 +1235,7 @@ unsigned int msync_try_wait_all( const unsigned int *entries, unsigned int count
+             }
+             else if (!state->low || state->low < 0)
+             {
+-                if (state->low < 0) state->generation++;
++                if (state->low < 0) advance_generation( state );
+                 state->low = tid;
+                 state->high = 1;
+             }
+@@ -988,9 +1303,7 @@ DECL_HANDLER(get_msync_wait_slot)
+         set_error( STATUS_NOT_IMPLEMENTED );
+         return;
+     }
+-    /* one wait slot per thread, released in msync_free_wait_slot() when the thread goes away */
+-    if (!current->msync_wait_slot) current->msync_wait_slot = msync_alloc_wait_slot();
+-    if (!(reply->shm_idx = current->msync_wait_slot)) set_error( STATUS_NO_MEMORY );
++    if (!(reply->shm_idx = msync_alloc_wait_slot())) set_error( STATUS_NO_MEMORY );
+ #else
+     set_error( STATUS_NOT_IMPLEMENTED );
+ #endif
+@@ -1045,7 +1358,7 @@ DECL_HANDLER(try_wait_all_msync)
+ #ifdef __APPLE__
+     const unsigned int *entries = get_req_data();
+     data_size_t size = get_req_data_size();
+-    unsigned int attempts, count, status, wait_count;
++    unsigned int attempts, count, status, wait_count, i;
+     unsigned int shm_idxs[64];
+ 
+     if (!do_msync() || !size || size % (3 * sizeof(unsigned int)))
+@@ -1062,6 +1375,20 @@ DECL_HANDLER(try_wait_all_msync)
+     }
+ 
+     if (req->slot_idx) msync_unregister_wait( req->slot_idx );
++    /* Older clients can reach this request after rejecting the Event protocol
++     * bit locally. A blocking WaitAll containing any Event needs the standard
++     * server queue, even when only another member is currently unsignaled. */
++    if (req->slot_idx)
++    {
++        for (i = 0; i < count; i++)
++        {
++            if (entries[i * 3 + 2] == INPROC_SYNC_EVENT)
++            {
++                set_error( STATUS_NOT_IMPLEMENTED );
++                return;
++            }
++        }
++    }
+     for (attempts = 0; ; attempts++)
+     {
+         status = msync_try_wait_all( entries, count, req->tid );
+diff --git a/server/msync.h b/server/msync.h
+index b1a7b957c7a..ac7d0b8e365 100644
+--- a/server/msync.h
++++ b/server/msync.h
+@@ -1,7 +1,8 @@
+ /*
+- * WineForge userspace synchronization server state
++ * msync server shared state
++ * WineForge-Internal: msync-v6.
+  *
+- * Ported from WineForge's WFUSync (server/wfusync.h); MetalSharp Wine renamed it msync and modified it.
++ * Ported from WineForge's USync 6 (server/usync.h); MetalSharp Wine renamed it msync and modified it.
+  *
+  * Copyright (C) 2026 Radim Vesely
+  *
+@@ -14,6 +15,7 @@
+ extern int do_msync(void);
+ 
+ struct msync;
++struct thread;
+ 
+ #ifdef __APPLE__
+ 
+@@ -23,9 +25,8 @@ extern unsigned int msync_get_index( struct msync *sync );
+ extern unsigned int msync_alloc_wait_slot(void);
+ extern int msync_register_wait( unsigned int slot_idx, const unsigned int *shm_idxs, unsigned int count );
+ extern void msync_unregister_wait( unsigned int slot_idx );
+-extern void msync_free_wait_slot( unsigned int slot_idx );
++extern void msync_cleanup_thread( struct thread *thread );
+ extern int msync_wake_waiters( unsigned int shm_idx );
+-extern void msync_grab_object( struct msync *sync );
+ extern void msync_destroy( struct msync *sync );
+ extern void msync_add_server_waiter( struct msync *sync );
+ extern void msync_remove_server_waiter( struct msync *sync );
+@@ -34,6 +35,9 @@ extern int msync_event_signaled( struct msync *sync );
+ extern void msync_event_satisfied( struct msync *sync );
+ extern void msync_set_event( struct msync *sync );
+ extern void msync_reset_event( struct msync *sync );
++extern int msync_event_op( struct msync *sync, int signal, int *previous );
++extern int msync_event_pulse_begin( struct msync *sync, int *previous );
++extern void msync_event_pulse_end( struct msync *sync );
+ extern int msync_semaphore_signaled( struct msync *sync );
+ extern void msync_semaphore_satisfied( struct msync *sync );
+ extern int msync_release_semaphore( struct msync *sync, unsigned int count, unsigned int *prev );
+diff --git a/server/mutex.c b/server/mutex.c
+index 6d6ba1de49b..c5d029d47ce 100644
+--- a/server/mutex.c
++++ b/server/mutex.c
+@@ -1,5 +1,6 @@
+ /*
+  * Server-side mutex management
++ * WineForge-Internal: msync-v6.
+  *
+  * Copyright (C) 1998 Alexandre Julliard
+  *
+@@ -57,7 +58,7 @@ struct mutex_sync
+     unsigned int        count;              /* recursion count */
+     int                 abandoned;          /* has it been abandoned? */
+     struct list         entry;              /* entry in owner thread mutex list */
+-    struct list         msync_entry;      /* entry in WFUSync mutex list */
++    struct list         msync_entry;      /* entry in msync mutex list */
+     struct msync     *msync;            /* optional shared fast-path state */
+ };
+ 
+@@ -321,7 +322,11 @@ static int mutex_signal( struct object *obj, unsigned int access, int signal )
+ 
+         if (!msync_release_mutex( ((struct mutex_sync *)mutex->sync)->msync, current->id, &prev ))
+             return 0;
+-        if (prev == 1) wake_up( mutex->sync, 0 );
++        if (prev == 1)
++        {
++            wake_up( mutex->sync, 0 );
++            msync_wake_waiters( msync_get_index( ((struct mutex_sync *)mutex->sync)->msync ) );
++        }
+         return 1;
+     }
+     return do_release( (struct mutex_sync *)mutex->sync, current, 1 );
+@@ -344,7 +349,7 @@ int get_mutex_msync_idx( struct object *obj, int *type )
+     if (!mutex->sync || mutex->sync->ops != &mutex_sync_ops) return -1;
+     sync = (struct mutex_sync *)mutex->sync;
+     if (!sync->msync) return -1;
+-    msync_grab_object( sync->msync );
++
+     *type = INPROC_SYNC_MUTEX;
+     return msync_get_index( sync->msync );
+ }
+diff --git a/server/protocol.def b/server/protocol.def
+index 76e288e7573..580b8853b64 100644
+--- a/server/protocol.def
++++ b/server/protocol.def
+@@ -4230,29 +4230,29 @@ enum inproc_sync_type
+     unsigned int shm_idx;       /* optional for index-based sync implementations */
+ @END
+ 
+-/* Get a per-thread WFUSync wait slot */
++/* Get a per-thread msync wait slot */
+ @REQ(get_msync_wait_slot)
+ @REPLY
+     unsigned int shm_idx;       /* shared-memory index of the wait slot */
+ @END
+ 
+-/* Register a WFUSync WaitAny wait */
++/* Register a msync WaitAny wait */
+ @REQ(register_msync_wait)
+     unsigned int slot_idx;      /* wait slot shared-memory index */
+     VARARG(shm_idxs,uints);     /* object shared-memory indexes */
+ @END
+ 
+-/* Unregister a WFUSync WaitAny wait */
++/* Unregister a msync WaitAny wait */
+ @REQ(unregister_msync_wait)
+     unsigned int slot_idx;      /* wait slot shared-memory index */
+ @END
+ 
+-/* Wake WFUSync WaitAny wait slots for a signaled object */
++/* Wake msync WaitAny wait slots for a signaled object */
+ @REQ(wake_msync_waiters)
+     unsigned int shm_idx;       /* object shared-memory index */
+ @END
+ 
+-/* Try to satisfy WFUSync WaitAll, optionally registering a wait slot */
++/* Try to satisfy msync WaitAll, optionally registering a wait slot */
+ @REQ(try_wait_all_msync)
+     thread_id_t  tid;           /* waiting thread id */
+     unsigned int slot_idx;      /* wait slot index, or zero for a nonblocking try */
+diff --git a/server/semaphore.c b/server/semaphore.c
+index 61c9b0e854b..72408d65431 100644
+--- a/server/semaphore.c
++++ b/server/semaphore.c
+@@ -1,5 +1,6 @@
+ /*
+  * Server-side semaphore management
++ * WineForge-Internal: msync-v6.
+  *
+  * Copyright (C) 1998 Alexandre Julliard
+  *
+@@ -281,7 +282,7 @@ int get_semaphore_msync_idx( struct object *obj, int *type )
+     if (!sem->sync || sem->sync->ops != &semaphore_sync_ops) return -1;
+     sync = (struct semaphore_sync *)sem->sync;
+     if (!sync->msync) return -1;
+-    msync_grab_object( sync->msync );
++
+     *type = INPROC_SYNC_SEMAPHORE;
+     return msync_get_index( sync->msync );
+ #else
+diff --git a/server/thread.c b/server/thread.c
+index e429b24141b..b8f5af8f98c 100644
+--- a/server/thread.c
++++ b/server/thread.c
+@@ -1,5 +1,6 @@
+ /*
+  * Server-side thread management
++ * WineForge-Internal: msync-v6.
+  *
+  * Copyright (C) 1998 Alexandre Julliard
+  *
+@@ -349,13 +350,15 @@ static inline void init_thread_structure( struct thread *thread )
+ 
+     thread->sync            = NULL;
+     thread->alert_sync      = NULL;
++#ifdef __APPLE__
++    thread->msync_wait_slot = 0;
++#endif
+     thread->unix_pid        = -1;  /* not known yet */
+     thread->unix_tid        = -1;  /* not known yet */
+     thread->context         = NULL;
+     thread->teb             = 0;
+     thread->entry_point     = 0;
+     thread->system_regs     = 0;
+-    thread->msync_wait_slot = 0;
+     thread->queue           = NULL;
+     thread->wait            = NULL;
+     thread->error           = 0;
+@@ -562,11 +565,10 @@ static void cleanup_thread( struct thread *thread )
+ {
+     int i;
+ 
+-    cleanup_thread_completion( thread );
+ #ifdef __APPLE__
+-    msync_free_wait_slot( thread->msync_wait_slot );
+-    thread->msync_wait_slot = 0;
++    msync_cleanup_thread( thread );
+ #endif
++    cleanup_thread_completion( thread );
+     if (thread->context)
+     {
+         thread->context->status = STATUS_ACCESS_DENIED;
+@@ -1603,6 +1605,9 @@ void kill_thread( struct thread *thread, int violent_death )
+         /* if it is waiting on the socket, we don't need to send a SIGQUIT */
+         violent_death = 0;
+     }
++#ifdef __APPLE__
++    msync_cleanup_thread( thread );
++#endif
+     kill_console_processes( thread, 0 );
+     abandon_mutexes( thread );
+     signal_sync( thread->sync );
+diff --git a/server/thread.h b/server/thread.h
+index 54c236b1c8d..4420decfff7 100644
+--- a/server/thread.h
++++ b/server/thread.h
+@@ -1,5 +1,6 @@
+ /*
+  * Wine server threads
++ * WineForge-Internal: msync-v6.
+  *
+  * Copyright (C) 1998 Alexandre Julliard
+  *
+@@ -52,6 +53,10 @@ struct thread
+     struct object          obj;           /* object header */
+     struct object         *sync;          /* sync object for wait/signal */
+     struct inproc_sync    *alert_sync;    /* inproc sync for user apc alerts */
++#ifdef __APPLE__
++
++    unsigned int           msync_wait_slot; /* owned until thread cleanup */
++#endif
+     struct list            entry;         /* entry in system-wide thread list */
+     struct list            proc_entry;    /* entry in per-process thread list */
+     struct list            desktop_entry; /* entry in per-desktop thread list */
+@@ -60,7 +65,6 @@ struct thread
+     struct list            mutex_list;    /* list of currently owned mutexes */
+     struct list            d3dkmt_mutexes;/* list of currently owned d3dkmt mutexes */
+     unsigned int           system_regs;   /* which system regs have been set */
+-    unsigned int           msync_wait_slot; /* msync shared wait slot (0 if none) */
+     struct msg_queue      *queue;         /* message queue */
+     struct thread_wait    *wait;          /* current wait condition if sleeping */
+     struct list            system_apc;    /* queue of system async procedure calls */

@@ -1,0 +1,64 @@
+From 452eb83b8784ca05bb12f91204787e469309fe3d Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Wed, 25 Nov 2026 21:11:34 -0700
+Subject: [PATCH 84/84] ntdll, server: Say where msync comes from.
+
+---
+ dlls/ntdll/unix/msync.c | 2 ++
+ dlls/ntdll/unix/msync.h | 2 ++
+ server/msync.c          | 2 ++
+ server/msync.h          | 2 ++
+ 4 files changed, 8 insertions(+)
+
+diff --git a/dlls/ntdll/unix/msync.c b/dlls/ntdll/unix/msync.c
+index 3c2e1eccd36..3c9ce6e3935 100644
+--- a/dlls/ntdll/unix/msync.c
++++ b/dlls/ntdll/unix/msync.c
+@@ -2,6 +2,8 @@
+  * msync client shared state
+  * WineForge-Internal: msync-v6.
+  *
++ * Ported from WineForge's USync 6 (dlls/ntdll/unix/usync.c); MetalSharp Wine renamed it msync and modified it.
++ *
+  * Copyright (C) 2026 Radim Vesely
+  *
+  * This library is free software; you can redistribute it and/or
+diff --git a/dlls/ntdll/unix/msync.h b/dlls/ntdll/unix/msync.h
+index 33419d09ee5..86fab0a1021 100644
+--- a/dlls/ntdll/unix/msync.h
++++ b/dlls/ntdll/unix/msync.h
+@@ -2,6 +2,8 @@
+  * msync client shared state
+  * WineForge-Internal: msync-v6.
+  *
++ * Ported from WineForge's USync 6 (dlls/ntdll/unix/usync.h); MetalSharp Wine renamed it msync and modified it.
++ *
+  * Copyright (C) 2026 Radim Vesely
+  *
+  * This library is free software; you can redistribute it and/or
+diff --git a/server/msync.c b/server/msync.c
+index 19b50fc3105..5ae399cccac 100644
+--- a/server/msync.c
++++ b/server/msync.c
+@@ -2,6 +2,8 @@
+  * msync server shared state
+  * WineForge-Internal: msync-v6.
+  *
++ * Ported from WineForge's USync 6 (server/usync.c); MetalSharp Wine renamed it msync and modified it.
++ *
+  * Copyright (C) 2026 Radim Vesely
+  *
+  * This library is free software; you can redistribute it and/or
+diff --git a/server/msync.h b/server/msync.h
+index d80882b159d..ac7d0b8e365 100644
+--- a/server/msync.h
++++ b/server/msync.h
+@@ -2,6 +2,8 @@
+  * msync server shared state
+  * WineForge-Internal: msync-v6.
+  *
++ * Ported from WineForge's USync 6 (server/usync.h); MetalSharp Wine renamed it msync and modified it.
++ *
+  * Copyright (C) 2026 Radim Vesely
+  *
+  * This library is free software; you can redistribute it and/or

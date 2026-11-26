@@ -4,7 +4,10 @@
 Every submodule in .gitmodules names the branch it follows (`branch = source/wine`). main must
 pin each one to that branch's tip, so a release never builds from a commit the branch has moved
 past. For the trees exported as patch series (PATCH_DIRS), every commit a pin move brings in must
-also have its `git format-patch` file in patches/.
+also have its `git format-patch` file in patches/. A submodule's `upstream` in .gitmodules (a
+commit of the tree it is built on, such as the WineForge or Wine release merged into it) marks
+that tree's commits: a pin move that merges a newer upstream needs patches only for the commits
+the upstream doesn't have.
 
   pins.py check [--base REV] [--worktree] [--offline-ok]
       Fails if a pin (in the index) isn't its branch's tip, or if a commit between the pins in
@@ -60,7 +63,8 @@ def submodules():
         name = key[len('submodule.'):-len('.path')]
         url = git('config', '-f', '.gitmodules', f'submodule.{name}.url').strip()
         branch = git('config', '-f', '.gitmodules', f'submodule.{name}.branch', check=False).strip()
-        subs.append({'path': path, 'url': url, 'branch': branch})
+        upstream = git('config', '-f', '.gitmodules', f'submodule.{name}.upstream', check=False).strip()
+        subs.append({'path': path, 'url': url, 'branch': branch, 'upstream': upstream or None})
     return subs
 
 
@@ -122,13 +126,28 @@ def api(path, accept='application/vnd.github+json'):
     return body if accept.endswith('patch') else json.loads(body)
 
 
-def commit_range(repo, base, head):
-    """Non-merge commits head has and base hasn't (a rewritten branch's new side too), oldest
-    first, or None if there are more than MAX_EXPORT of them."""
+def compare_commits(repo, base, head):
+    """Commits head has and base hasn't (a rewritten branch's new side too), oldest first, or None
+    if there are more than the 250 GitHub lists."""
     cmp = api(f'repos/{repo}/compare/{base}...{head}?per_page=250')
     if cmp['status'] == 'behind' or cmp['ahead_by'] > 250:
         return None
-    commits = [c for c in cmp['commits'] if len(c['parents']) == 1]
+    return cmp['commits']
+
+
+def commit_range(repo, base, head, upstream=None):
+    """Non-merge commits head has and base hasn't, without the upstream's, oldest first, or None
+    if there are more than MAX_EXPORT of them."""
+    commits = compare_commits(repo, base, head)
+    if commits is not None and upstream:
+        own = compare_commits(repo, upstream, head)
+        if own is None:
+            return None
+        own = {c['sha'] for c in own}
+        commits = [c for c in commits if c['sha'] in own]
+    if commits is None:
+        return None
+    commits = [c for c in commits if len(c['parents']) == 1]
     return None if len(commits) > MAX_EXPORT else commits
 
 
@@ -164,10 +183,10 @@ def existing_patches(pdir):
     return shas, subjects, last
 
 
-def missing_patches(path, repo, base, head):
+def missing_patches(path, repo, base, head, upstream=None):
     """(missing commits, error) for the pin move base -> head of a patched submodule."""
     pdir = PATCH_DIRS[path]
-    commits = commit_range(repo, base, head)
+    commits = commit_range(repo, base, head, upstream)
     if commits is None:
         return None, (f'{base[:10]}..{head[:10]} is not a plain run of at most {MAX_EXPORT} commits '
                       f'(a rebase or a new upstream release): re-export {pdir} by hand')
@@ -237,7 +256,7 @@ def do_check(args):
         old = tree_pin(base, path) if base else None
         repo = github_repo(s['url'])
         if path in PATCH_DIRS and old and old != pin and repo:
-            missing, err = missing_patches(path, repo, old, pin)
+            missing, err = missing_patches(path, repo, old, pin, s['upstream'])
             if err and not patch_dir_changed(base, PATCH_DIRS[path]):
                 problems.append(f'{path}: {err}')
             for c in missing or []:
@@ -275,7 +294,7 @@ def do_update(args):
         old = (tree_pin(base, path) if base else None) or pin
         repo = github_repo(s['url'])
         if path in PATCH_DIRS and old != tip and repo:
-            missing, err = missing_patches(path, repo, old, tip)
+            missing, err = missing_patches(path, repo, old, tip, s['upstream'])
             if err:
                 if not patch_dir_changed(base, PATCH_DIRS[path]):
                     print(f'{path}: {err}; pin left at {pin[:10]}', file=sys.stderr)

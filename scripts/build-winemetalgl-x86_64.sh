@@ -1,5 +1,5 @@
 #!/bin/zsh
-# WineMetalGL (OpenGL 1.0-4.6 on Metal) for the x86_64 MetalSharp Wine (Wine 11.17 under Rosetta, MetalSharp's
+# WineMetalGL (OpenGL 1.0-4.6 on Metal) for the x86_64 MetalSharp Wine (Wine 11.22 under Rosetta, MetalSharp's
 # regular build), from the same source as build-winemetalgl.sh: the x86_64 core and the Wine module for x86_64 hosts.
 # Installs install-x86_64/winemetalgl/
 #   wine/{x86_64,i386}-windows/winemetalgl.dll    WGL and GL entry points (builtin)
