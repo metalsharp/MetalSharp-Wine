@@ -32,7 +32,7 @@ Set these before the `$WINE` command, like `WINEPREFIX`.
 * VKD3D-Proton: run it with WINEDEBUG=-all. With Wine's default debug channels, device creation can fail ("Lacking support for single texel alignment").
 * OpenGL: WineMetalGL 4.6 is the default. OPENGL_BACKEND=wine switches back to Wine’s own.
 * Sync: msync is on by default and is much faster than going through the wineserver. WINEMSYNC=0 turns it off.
-* Memory ordering: FEX runs x86 code with its TSO emulation on by default, which games that hand data between threads with plain stores need (Red Dead Redemption 2 hangs without it). FEX_TSOENABLED=0 turns it off, which is faster for programs that don't need it.
+* Memory ordering: FEX runs x86 code with its TSO emulation off by default, which games that hand data between threads with plain stores need (Red Dead Redemption 2 hangs without it). FEX_TSOENABLED=1 turns it on, which is slower for programs that don't need it.
 * x87: 32-bit programs run x87 floating point in double precision by default, as under Rosetta; full 80-bit emulation is much slower (it made Ori's FMOD audio stutter). FEX_X87REDUCEDPRECISION=0 restores full precision for a program that needs it.
 * Mouse: setting UseGCMouse to N (in HKCU\Software\Wine\Mac Driver) goes back to the old mouse input path if GCMouse raw input misbehaves in a game.
 * Cursor: a fullscreen game started by Steam or MetalSharp keeps the cursor inside its window. Windowed programs, launchers among them, leave it free. Cmd+left click in a window locks the cursor in it or frees it. METALSHARP_CONFINE_CURSOR=0 turns off the fullscreen default.
