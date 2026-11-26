@@ -1,0 +1,49 @@
+From 8d773ffc1bdd09a034c18577cbbe647636889bdd Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Sat, 21 Nov 2026 12:51:09 -0700
+Subject: [PATCH 97/97] kernelbase: Battle.net's browser composites in software.
+
+Ported from the FEX tree (677b715fa11): Battle.net.exe gets --disable-gpu-compositing
+with --in-process-gpu, without which its login and main windows stayed black
+(metalsharp/MetalSharp-Wine#50). Its direct start already gets these from MetalSharp.
+---
+ dlls/kernelbase/launchers.c | 13 ++++++++++---
+ 1 file changed, 10 insertions(+), 3 deletions(-)
+
+diff --git a/dlls/kernelbase/launchers.c b/dlls/kernelbase/launchers.c
+index a5f7375b5e6..f9de24af6ba 100644
+--- a/dlls/kernelbase/launchers.c
++++ b/dlls/kernelbase/launchers.c
+@@ -33,6 +33,13 @@ struct launcher_process_policy
+     const WCHAR *append_args;
+ };
+ 
++/* MetalSharp: what Battle.net's browser (Battle.net.exe) gets: the GPU in process, and compositing in software. With
++ * GPU compositing its login window and its main window stayed black: the browser drew its pages, but what the GPU
++ * composited never reached the window. WebGL keeps the GPU (metalsharp/MetalSharp-Wine#50). */
++#define BATTLENET_ARGS L" --in-process-gpu --disable-gpu-compositing"
++/* A command line that already has them. */
++#define BATTLENET_MARKER L"--disable-gpu-compositing"
++
+ static const struct launcher_process_policy launcher_process_policies[] =
+ {
+     /* MetalSharp-Internal: launcher-compat/steam-cef-swiftshader-v1. */
+@@ -71,15 +78,15 @@ static const struct launcher_process_policy launcher_process_policies[] =
+         {L"--type=", L"--in-process-gpu", NULL},
+         L" --in-process-gpu",
+     },
+-    /* MetalSharp-Internal: launcher-compat/battlenet-in-process-gpu-v1. */
++    /* MetalSharp-Internal: launcher-compat/battlenet-in-process-gpu-v1, composited in software (BATTLENET_ARGS). */
+     {
+         L"Battle.net.exe",
+         L"\\Program Files (x86)\\Battle.net\\",
+         L"/Program Files (x86)/Battle.net/",
+         NULL,
+         NULL,
+-        {L"--type=", L"--in-process-gpu", NULL},
+-        L" --in-process-gpu",
++        {L"--type=", BATTLENET_MARKER, NULL},
++        BATTLENET_ARGS,
+     },
+     /* MetalSharp-Internal: launcher-compat/ubisoft-connect-in-process-gpu-v1. */
+     {

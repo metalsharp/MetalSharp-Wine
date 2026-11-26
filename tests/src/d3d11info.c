@@ -6,6 +6,7 @@
 #include <d3d11.h>
 #include <dxgi.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 int main(void)
 {
@@ -24,7 +25,8 @@ int main(void)
     WCHAR path[MAX_PATH];
     HWND hwnd;
     HRESULT hr;
-    int i;
+    int i, frames = 30;
+    char *count = getenv( "D3D11INFO_FRAMES" );  /* longer, to see the Metal HUD over it */
 
     hwnd = CreateWindowA( "static", "d3d11info", WS_OVERLAPPEDWINDOW | WS_VISIBLE, 100, 100, 320, 240, 0, 0, 0, 0 );
     sd.BufferCount = 2;
@@ -50,13 +52,17 @@ int main(void)
 
     hr = IDXGISwapChain_GetBuffer( swap, 0, &IID_ID3D11Texture2D, (void **)&back );
     if (SUCCEEDED(hr)) hr = ID3D11Device_CreateRenderTargetView( device, (ID3D11Resource *)back, NULL, &rtv );
-    for (i = 0; SUCCEEDED(hr) && i < 30; i++)
+    if (count && atoi( count ) > 0) frames = atoi( count );
+    for (i = 0; SUCCEEDED(hr) && i < frames; i++)
     {
         const float color[4] = { 0.1f, 0.4f * (i % 2), 0.8f, 1.0f };
         ID3D11DeviceContext_OMSetRenderTargets( ctx, 1, &rtv, NULL );
         ID3D11DeviceContext_ClearRenderTargetView( ctx, rtv, color );
         hr = IDXGISwapChain_Present( swap, 1, 0 );
     }
-    printf( "30 frames presented: %s (%#lx)\n", SUCCEEDED(hr) ? "ok" : "FAILED", hr );
+    printf( "%d frames presented: %s (%#lx)\n", frames, SUCCEEDED(hr) ? "ok" : "FAILED", hr );
+    /* what MetalSharp's launch.env gave this program (scripts/smoke-routes.sh checks it) */
+    printf( "MTL_HUD_ENABLED: %s\n", getenv( "MTL_HUD_ENABLED" ) ? getenv( "MTL_HUD_ENABLED" ) : "unset" );
+    printf( "GRAPHICS_BACKEND: %s\n", getenv( "GRAPHICS_BACKEND" ) ? getenv( "GRAPHICS_BACKEND" ) : "unset" );
     return FAILED(hr);
 }

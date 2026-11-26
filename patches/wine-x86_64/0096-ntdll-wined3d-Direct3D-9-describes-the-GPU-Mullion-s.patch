@@ -1,0 +1,126 @@
+From 8bde38dd36c2556a4b5a48b3efd363785ad88bf8 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Sun, 22 Nov 2026 19:21:14 -0700
+Subject: [PATCH 96/96] ntdll, wined3d: Direct3D 9 describes the GPU Mullion's DXGI
+ does.
+
+For a game MetalSharp starts on Mullion, wined3d now reports the same GPU
+as Mullion's DXGI, as Windows shows every API the same one:
+- the GPU MetalSharp shows the game (a DLSS game's NVIDIA one, or its
+  winemac.conf section's);
+- else the one MULLION_CONFIG names (dxgi.customVendorId and
+  dxgi.customDeviceId);
+- else Mullion's AMD Radeon RX 7900 XTX (1002:744c), now in wined3d's GPU
+  table with its RX-series driver (Adrenalin 23.12.1, 31.0.23013.1023).
+
+ntdll passes it on through WINE_D3D_CONFIG's VideoPciVendorID and
+VideoPciDeviceID, and keeps any the user set.
+
+wined3d's own choice for a GPU it does not know, Apple's, was a GeForce
+GTX 470 with a 2010 driver (31.0.13.9135). Counter-Strike 2 takes its
+driver version from Direct3D 9's adapter identifier and its vendor from
+DXGI. It compared that driver against its minimum for AMD
+(31.0.21904.28649) and said the graphics driver was out of date.
+
+With this, CS2 reads 31.0.23013.1023 for the AMD adapter and no longer
+warns.
+
+(cherry picked from commit 42a3f0e3a2b096b8817ef1ea654dfa50e2f8c145)
+---
+ dlls/ntdll/unix/env.c          | 50 ++++++++++++++++++++++++++++++++++
+ dlls/wined3d/directx.c         |  1 +
+ dlls/wined3d/wined3d_private.h |  1 +
+ 3 files changed, 52 insertions(+)
+
+diff --git a/dlls/ntdll/unix/env.c b/dlls/ntdll/unix/env.c
+index f54a7529deb..f0b2954bf71 100644
+--- a/dlls/ntdll/unix/env.c
++++ b/dlls/ntdll/unix/env.c
+@@ -1008,6 +1008,55 @@ static void set_launch_var( WCHAR **env, SIZE_T *pos, SIZE_T *size, const char *
+     else unsetenv( name );
+ }
+ 
++/* MetalSharp: Direct3D 9 (wined3d) describes the GPU Mullion's DXGI does, as Windows shows every API the same one: the
++ * one MetalSharp shows the game (a DLSS game's NVIDIA one, its winemac.conf section's), the one MULLION_CONFIG names
++ * (dxgi.customVendorId, dxgi.customDeviceId), else Mullion's AMD Radeon RX 7900 XTX. wined3d's own choice for a GPU it
++ * does not know, Apple's, was a GeForce GTX 470 with a 2010 driver: Counter-Strike 2 checked that driver version
++ * against its minimum for the vendor DXGI gave (AMD's) and said the graphics driver was out of date. A
++ * VideoPciVendorID or VideoPciDeviceID already in WINE_D3D_CONFIG is kept. */
++static void set_wined3d_gpu( WCHAR **env, SIZE_T *pos, SIZE_T *size, const char *backend )
++{
++    static const WCHAR d3d_configW[] = {'W','I','N','E','_','D','3','D','_','C','O','N','F','I','G'};
++    static const WCHAR mullion_configW[] = {'M','U','L','L','I','O','N','_','C','O','N','F','I','G'};
++    unsigned int vendor = 0x1002, device = 0x744c, override_vendor, override_device;
++    const char *description, *driver_version, *id;
++    char config[512], mullion[512];
++    WCHAR *value;
++    int len = 0;
++
++    if (!backend || (strcasecmp( backend, "dxmt" ) && strcasecmp( backend, "mullion" ))) return;
++    switch (ntdll_get_gpu_override( &override_vendor, &override_device, &description, &driver_version ))
++    {
++    case -1: return;  /* not a game MetalSharp started */
++    case 1:
++        vendor = override_vendor;
++        device = override_device;
++        break;
++    default:
++        if ((value = get_env_var( *env, *pos, mullion_configW, ARRAY_SIZE(mullion_configW) )))
++        {
++            len = ntdll_wcstoumbs( value, wcslen( value ), mullion, sizeof(mullion) - 1, FALSE );
++            free( value );
++            mullion[len < 0 ? 0 : len] = 0;
++            if ((id = strstr( mullion, "dxgi.customVendorId=" ))) vendor = strtoul( id + 20, NULL, 16 );
++            if ((id = strstr( mullion, "dxgi.customDeviceId=" ))) device = strtoul( id + 20, NULL, 16 );
++            len = 0;
++        }
++        break;
++    }
++    if ((value = get_env_var( *env, *pos, d3d_configW, ARRAY_SIZE(d3d_configW) )))
++    {
++        len = ntdll_wcstoumbs( value, wcslen( value ), config, sizeof(config) - 64, FALSE );
++        free( value );
++        if (len < 0) return;
++    }
++    config[len] = 0;
++    if (strstr( config, "VideoPci" )) return;
++    snprintf( config + len, sizeof(config) - len, "%sVideoPciVendorID=0x%04x,VideoPciDeviceID=0x%04x",
++              len ? "," : "", vendor, device );
++    set_launch_var( env, pos, size, "WINE_D3D_CONFIG", config );
++}
++
+ /* MetalSharp: a game's saved resolution follows the main display, and a DLSS game is set up for it
+  * (saved_resolution.c): a game shown an NVIDIA GPU is shown one by Mullion, or DXVK's DXGI on VKD3D-Proton's lane,
+  * as well (their NVIDIA extension on,
+@@ -1042,6 +1091,7 @@ static void fit_launch_resolution( WCHAR **env, SIZE_T *pos, SIZE_T *size, const
+     /* a launched game's programs are set up as it is (saved_resolution.c) */
+     if (metalsharp_launched_by()) set_launch_var( env, pos, size, "METALSHARP_LAUNCHED_BY", metalsharp_launched_by() );
+     set_launch_var( env, pos, size, "METALSHARP_HIDE_WINE_EXPORTS", metalsharp_dlss_game() & 2 ? "1" : NULL );
++    set_wined3d_gpu( env, pos, size, backend );
+     if (!metalsharp_dlss_game() ||
+         ntdll_get_gpu_override( &vendor, &device, &description, &driver_version ) != 1 || vendor != 0x10de)
+         return;
+diff --git a/dlls/wined3d/directx.c b/dlls/wined3d/directx.c
+index b8bd2c629e8..2759bd69fcc 100644
+--- a/dlls/wined3d/directx.c
++++ b/dlls/wined3d/directx.c
+@@ -573,6 +573,7 @@ static const struct wined3d_gpu_description gpu_description_table[] =
+     {HW_VENDOR_AMD,        CARD_AMD_RADEON_RX_NAVI_10,     "Radeon RX 5700 / 5700 XT",         DRIVER_AMD_RX,           8192},
+     {HW_VENDOR_AMD,        CARD_AMD_RADEON_RX_NAVI_14,     "Radeon RX 5500M",                  DRIVER_AMD_RX,           4096},
+     {HW_VENDOR_AMD,        CARD_AMD_RADEON_RX_NAVI_21,     "Radeon RX 6800/6800 XT / 6900 XT", DRIVER_AMD_RX,          16384},
++    {HW_VENDOR_AMD,        CARD_AMD_RADEON_RX_NAVI_31,     "AMD Radeon RX 7900 XTX",           DRIVER_AMD_RX,          24576},
+     {HW_VENDOR_AMD,        CARD_AMD_RADEON_680M,           "AMD Radeon(TM) Graphics",          DRIVER_AMD_RX,           8192},
+     {HW_VENDOR_AMD,        CARD_AMD_RADEON_RX_NAVI_44,     "AMD Radeon RX 9060 XT",            DRIVER_AMD_RX,           16384},
+     {HW_VENDOR_AMD,        CARD_AMD_RADEON_PRO_V620,       "Radeon Pro V620",                  DRIVER_AMD_RX,          32768},
+diff --git a/dlls/wined3d/wined3d_private.h b/dlls/wined3d/wined3d_private.h
+index dcce9a3f8ff..0b8480cdf70 100644
+--- a/dlls/wined3d/wined3d_private.h
++++ b/dlls/wined3d/wined3d_private.h
+@@ -2158,6 +2158,7 @@ enum wined3d_pci_device
+     CARD_AMD_RADEON_RX_NAVI_10      = 0x731f,
+     CARD_AMD_RADEON_RX_NAVI_14      = 0x7340,
+     CARD_AMD_RADEON_RX_NAVI_21      = 0x73bf,
++    CARD_AMD_RADEON_RX_NAVI_31      = 0x744c,
+     CARD_AMD_RADEON_680M            = 0x1681,
+     CARD_AMD_RADEON_RX_NAVI_44      = 0x7590,
+     CARD_AMD_RADEON_PRO_V620        = 0x73a1,

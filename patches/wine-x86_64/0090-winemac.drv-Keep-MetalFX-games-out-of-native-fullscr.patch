@@ -1,0 +1,32 @@
+From 3fd2f80c4a9ad9c4c1fe46968a7fd42c37030e18 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Sun, 1 Nov 2026 18:53:29 -0700
+Subject: [PATCH 90/90] winemac.drv: Keep MetalFX games out of native fullscreen.
+
+A game shown a display divided by its MetalFX factor runs at an emulated mode. In native macOS
+fullscreen, macOS sizing the window to the screen raced the emulated mode's scaling of the game's
+window, which was sometimes left at the mode's size in a corner of the screen, with nothing for
+MetalFX to upscale it to (Sons of the Forest). Wine's own fullscreen scales it to the screen. The
+NativeFullscreen option still overrides this.
+
+(cherry picked from commit a767d5b4e5302f736b5d2def07db83a4e5e079ea)
+---
+ dlls/winemac.drv/macdrv_main.c | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/dlls/winemac.drv/macdrv_main.c b/dlls/winemac.drv/macdrv_main.c
+index 86cf4304668..5e51d7328ab 100644
+--- a/dlls/winemac.drv/macdrv_main.c
++++ b/dlls/winemac.drv/macdrv_main.c
+@@ -359,6 +359,11 @@ static void setup_options(void)
+         static const WCHAR eldenringW[] = {'e','l','d','e','n','r','i','n','g','.','e','x','e',0};
+         if (!wcsicmp(appname, eldenringW)) native_fullscreen = false;
+     }
++    /* MetalSharp: a game shown a display divided by its MetalFX factor (an emulated mode) stays out of native
++     * fullscreen too: macOS sizing the window to the screen raced the emulated mode's scaling of the game's
++     * window, which was sometimes left at the mode's size in a corner of the screen, with nothing for MetalFX
++     * to upscale it to. Wine's own fullscreen scales it to the screen. */
++    if (ntdll_get_metalfx_scale() > 1.0) native_fullscreen = false;
+     if (!get_config_key(hkey, appkey, "NativeFullscreen", buffer, sizeof(buffer)))
+         native_fullscreen = IS_OPTION_TRUE(buffer[0]);
+ 

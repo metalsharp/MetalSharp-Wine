@@ -89,8 +89,10 @@ Each step is also its own script:
 - `build-innoextract.sh` and `build-cabextract.sh`
 - `fetch-metalsharp-assets.sh`, `stage-metalsharp-assets.sh` and `stage-metalsharp-redist.sh`
 - `build-kosmickrisp.sh`, which fetches Mesa and applies `patches/mesa`, then `build-zink.sh`
-- `build-tests.sh`, `audit-macho.sh`, `package.sh` and `sign-app.sh`
+- `build-tests.sh`, `audit-macho.sh`, `package.sh`, `sign-app.sh` and `smoke-routes.sh`
 
 **The x86_64 build** (`MetalSharp-Wine-x86_64.app`) has its own scripts, all named `*-x86_64.sh`: `build-wine-x86_64.sh`, `build-deps-x86_64.sh`, `build-mullion-x86_64.sh`, `build-winemetalgl-x86_64.sh` and `package-x86_64.sh`. The steps are in [`docs/X86_64.md`](X86_64.md).
 
 `sign-app.sh` builds `MetalSharp-Wine.app` with the hardened runtime and compiles the icon (`actool`, from Xcode). It needs a Developer ID certificate and a provisioning profile with the cross-architecture entitlement.
+
+**`smoke-routes.sh <app>`** runs last, on the signed app (build-all.sh's `smoke` step; `package-x86_64.sh` runs it on the x86_64 app). For each graphics lane (Mullion and VKD3D / DXVK, and D3DMetal on x86_64) it starts the D3D11 probe and NVAPI probe from a folder with a `.metalsharp/launch.env` and DLSS, both directly and from `cmd.exe` as Steam starts games, and fails unless they get the launch environment (`GRAPHICS_BACKEND`, `MTL_HUD_ENABLED`), the NVIDIA GPU (RTX 4080), NVAPI and, on Mullion, Mullion's log. It needs the Mac's GPU, so it runs where the apps are built, not in CI; an app it fails is not released.
