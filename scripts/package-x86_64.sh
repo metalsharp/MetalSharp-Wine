@@ -1,5 +1,5 @@
 #!/bin/bash
-# Builds MetalSharp-Wine-x86_64.app: the regular build's x86_64 runtime (Wine 11.17 under Rosetta) as one signed
+# Builds MetalSharp-Wine-x86_64.app: the regular build's x86_64 runtime (Wine 11.22 under Rosetta) as one signed
 # app, as MetalSharp-Wine.app is for the FEX build. Its layout is the x86_64 install's:
 #
 #   Contents/MacOS, bin -> MacOS       runtime/wine/bin's Mach-O programs (wine, wineserver, tools)
@@ -39,8 +39,11 @@
 #   BUNDLES=<dir with the bundles release's .tar.zst> MULLION=<lib/dxmt> DXVK=<dxvk-macos-vX-x86_64 release dir>
 #   DXVK_I386=<dxvk-macos-vX-i386 release dir> VKD3D=<vkd3d-proton-vX-x86_64 release dir> MOLTENVK=<moltenvk-vX-universal dir> NGX=<x86_64 nvngx/nvapi64 dir>
 #   WFDXCOMPAT_X86_64=<source/wfdxcompat lib/wfdxcompat/x86_64-windows> (optional): the D3D11 frontend for D3DMetal
-#   WINE_BUILD=<the x86_64 Wine's build tree> WINE_MODULES="ntdll win32u ..." (modules rebuilt there with MetalSharp
-#   Wine's fixes, which replace the bundle's; server for the wineserver)
+#   WINE_INSTALL=<install of src/wine-x86_64 from build-wine-x86_64.sh>: the Wine, which replaces the bundle's (its
+#   programs, lib/wine, share/wine and include/wine); the bundle keeps only what its Wine didn't build, such as the
+#   libraries the unix side loads (lib/wine/x86_64-unix/*.dylib) and MetalSharp's mscompatdb.so
+#   [or, for a Wine of the bundle's version only: WINE_BUILD=<the x86_64 Wine's build tree> WINE_MODULES="ntdll win32u
+#   ..." (modules rebuilt there, which replace the bundle's; server for the wineserver)]
 #   WINEMETALGL=<install-x86_64/winemetalgl> VCRUN_X64=<Microsoft's x64 VC++ runtime DLLs> DEPS_SRC=<deps/src-x86_64:deps/src> LICENSES_EXTRA=<dir of license folders> (share/licenses)
 #   [ZINK=<install-x86_64/zink, from build-zink.sh x86_64>: OpenGL on Zink with SharpGL_Switch=1]
 #   [KOSMICKRISP=<install-x86_64/kosmickrisp, from build-kosmickrisp.sh x86_64>: Vulkan on KosmicKrisp with SharpVK_Switch=1]
@@ -103,9 +106,30 @@ ln -s MacOS "$C/bin"
 cp -Rp "$RT/wine/lib" "$RT/wine/share" "$RT/wine/include" "$C/"
 rm -rf "$C/lib64"  # empty in the bundle
 
-# The x86_64 Wine's modules rebuilt with MetalSharp Wine's fixes (merged-wine-11.17, branch metalsharp-fex-fixes):
-# each module's unix library and its x86_64 and i386 PE builds, over the bundle's
-if [ -n "${WINE_BUILD:-}" ]; then
+# The x86_64 Wine (src/wine-x86_64) in place of the bundle's: first the bundle's own Wine goes, its programs, its
+# builtin PE modules (which carry Wine's "Wine builtin DLL" mark), its unix modules and import libraries, and
+# share/wine's generated files; what Wine didn't build stays (the dylibs the unix side loads, mscompatdb.so, DXVK's
+# files). Then the install's Wine goes over it.
+is_wine_builtin() { [ "$(dd if="$1" bs=1 skip=64 count=16 2>/dev/null)" = "Wine builtin DLL" ]; }
+if [ -n "${WINE_INSTALL:-}" ]; then
+  need "$WINE_INSTALL/bin/wine"
+  for f in "$WINE_INSTALL/bin/"*; do
+    if file -b "$f" | grep -q Mach-O; then cp -p "$f" "$C/MacOS/"; fi
+  done
+  for a in x86_64-windows i386-windows; do
+    for f in "$C/lib/wine/$a/"*; do
+      case $f in *.a) rm -f "$f"; continue ;; esac
+      [ -f "$f" ] && is_wine_builtin "$f" && rm -f "$f"
+    done
+  done
+  for f in "$C/lib/wine/x86_64-unix/"*; do
+    case $(basename "$f") in mscompatdb.so|lib*.dylib|x87sidecar) ;; *.so|*.so.*) rm -f "$f" ;; esac
+  done
+  rm -rf "$C/share/wine/fonts" "$C/share/wine/nls" "$C/include/wine"
+  cp -Rp "$WINE_INSTALL/lib/wine/." "$C/lib/wine/"
+  cp -Rp "$WINE_INSTALL/share/wine/." "$C/share/wine/"
+  mkdir -p "$C/include" && cp -Rp "$WINE_INSTALL/include/wine" "$C/include/"
+elif [ -n "${WINE_BUILD:-}" ]; then
   for m in ${WINE_MODULES:-}; do
     if [ "$m" = server ]; then cp -p "$WINE_BUILD/server/wineserver" "$C/MacOS/wineserver"; continue; fi
     if [ "$m" = loader ]; then cp -p "$WINE_BUILD/loader/wine" "$C/MacOS/wine"; continue; fi
@@ -204,8 +228,8 @@ U="$C/lib/wine/x86_64-unix"
 rm -f "$U/libMoltenVK.dylib" "$U/libMoltenVK.1.dylib"
 cp -p "$MOLTENVK/libMoltenVK.dylib" "$U/libMoltenVK.1.dylib"
 ln -s libMoltenVK.1.dylib "$U/libMoltenVK.dylib"
-# Wine 11.17's winevulkan opens libvulkan.dylib (SONAME_LIBVULKAN), which the bundle has as an older x86_64-only
-# MoltenVK without geometry shaders: every Vulkan lane takes this MoltenVK through it
+# winevulkan opens libMoltenVK.dylib or libvulkan.dylib (SONAME_LIBVULKAN, as its tree was configured), and the bundle
+# has libvulkan.dylib as an older x86_64-only MoltenVK without geometry shaders: every Vulkan lane takes this MoltenVK
 rm -f "$U/libvulkan.dylib"
 ln -s libMoltenVK.1.dylib "$U/libvulkan.dylib"
 for f in libmetalirconverter.dylib libdxbcconverter.dylib; do
@@ -398,7 +422,7 @@ cat > "$C/Info.plist" <<EOF
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>CFBundleVersion</key><string>$VERSION</string>
-  <key>CFBundleGetInfoString</key><string>MetalSharp Wine $VERSION (Wine 11.17, x86_64, Rosetta)</string>
+  <key>CFBundleGetInfoString</key><string>MetalSharp Wine $VERSION (Wine 11.22, x86_64, Rosetta)</string>
   <key>LSArchitecturePriority</key><array><string>x86_64</string></array>
   <key>LSMinimumSystemVersion</key><string>15.0</string>
   <key>LSApplicationCategoryType</key><string>public.app-category.games</string>
@@ -420,7 +444,8 @@ touch "$C/share/wine/wine.inf"
   echo "vkd3d-proton: $(cat "$VKD3D/VERSION" 2>/dev/null || basename "$VKD3D")"
   echo "moltenvk: $(basename "$MOLTENVK")"
   [ -n "${METALVR:-}" ] && echo "metalvr: $(cat "$METALVR/lib/metalvr/VERSION")"
-  [ -n "${WINE_BUILD:-}" ] && echo "wine: $(git -C "$WINE_SRC" describe --always --dirty 2>/dev/null || echo rebuilt) ($WINE_MODULES)"
+  if [ -n "${WINE_INSTALL:-}" ]; then echo "wine: $(git -C "$WINE_SRC" describe --always --dirty 2>/dev/null || echo built) (all of it)"
+  elif [ -n "${WINE_BUILD:-}" ]; then echo "wine: $(git -C "$WINE_SRC" describe --always --dirty 2>/dev/null || echo rebuilt) ($WINE_MODULES)"; fi
   echo "media: $(ls "$MEDIA"/lib/libgstreamer-1.0.*.dylib | head -1 | xargs basename), $(ls "$MEDIA"/lib/libavcodec.*.*.dylib | head -1 | xargs basename)"
   echo "d3dmetal: $(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' \
     "$D3DMETAL/external/D3DMetal.framework/Resources/Info.plist") (macOS 27 and later), $(/usr/libexec/PlistBuddy \

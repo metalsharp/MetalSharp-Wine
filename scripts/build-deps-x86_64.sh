@@ -1,5 +1,5 @@
 #!/bin/zsh
-# The x86_64 MetalSharp Wine's media libraries (Wine 11.17 under Rosetta, MetalSharp's regular build): GStreamer for
+# The x86_64 MetalSharp Wine's media libraries (Wine 11.22 under Rosetta, MetalSharp's regular build): GStreamer for
 # winegstreamer.so and FFmpeg for winedmo.so, as x86_64, minos 15.0, into deps/prefix-x86_64. They are the bundles'
 # missing pieces: the shipped modules link @rpath/libgst*-1.0.0.dylib (GStreamer 1.26), @rpath/libglib-2.0.0.dylib
 # and friends, a bare libintl.dylib, and @rpath/libav{format,codec}.61 / libavutil.59 (FFmpeg 7.1).
