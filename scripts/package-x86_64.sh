@@ -312,12 +312,12 @@ xcrun actool "$HERE/x86_64/$ICON.icon" --compile "$C/Resources" --app-icon "$ICO
   --platform macosx --minimum-deployment-target 15.0 --output-partial-info-plist "$WORK/icon-partial.plist" >/dev/null
 # Zink (OpenGL on Vulkan; ZINK: build-zink.sh x86_64's install-x86_64/zink), which ntdll serves for opengl32.dll in
 # WineMetalGL's place with SharpGL_Switch=1
-if [ -n "$ZINK" ]; then
+if [ -n "${ZINK:-}" ]; then
   rm -rf "$C/lib/zink"; cp -Rp "$ZINK" "$C/lib/zink"
 fi
 # KosmicKrisp (Vulkan on Metal; KOSMICKRISP: build-kosmickrisp.sh x86_64's install-x86_64/kosmickrisp): with
 # SharpVK_Switch=1 win32u opens its Khronos loader (lib/kosmickrisp/libvulkan_loader.dylib) in MoltenVK's place
-if [ -n "$KOSMICKRISP" ]; then
+if [ -n "${KOSMICKRISP:-}" ]; then
   rm -rf "$C/lib/kosmickrisp"; cp -Rp "$KOSMICKRISP" "$C/lib/kosmickrisp"
 fi
 
