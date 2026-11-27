@@ -5983,10 +5983,12 @@ NTSTATUS WINAPI NtProtectVirtualMemory( HANDLE process, PVOID *addr_ptr, SIZE_T 
         {
             old = get_win32_prot( vprot, view->protect );
 #ifdef __APPLE__
-            /* WineForge-Internal: launcher-compat/battlenet-cef-cow-protection-v1.
-             * Battle.net's CEF renderer expects image pages it made writable to report RW. */
-            if (battlenet_cef_cow_compat_enabled() && (view->protect & SEC_IMAGE) &&
-                (new_prot & 0xff) == PAGE_READONLY)
+            /* Windows reports a PAGE_WRITECOPY page as PAGE_READWRITE once it has been written. Here
+             * copy-on-write image pages are written without a fault, so nothing records that.
+             * V8 makes the data it wrote read-only and checks that it was PAGE_READWRITE
+             * ("Check failed: 0x04 == old_protection"): Battle.net's CEF renderer and Phantom Blade
+             * Zero stopped there. Data made read-only has been written, so report it that way. */
+            if ((view->protect & SEC_IMAGE) && (new_prot & 0xff) == PAGE_READONLY)
             {
                 if ((old & 0xff) == PAGE_WRITECOPY)
                     old = (old & ~0xff) | PAGE_READWRITE;
