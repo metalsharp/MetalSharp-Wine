@@ -2,6 +2,14 @@
 
 The [release notes](https://github.com/metalsharp/MetalSharp-Wine/releases) have the full list for each release.
 
+## Unreleased
+
+Both builds:
+
+- **Mullion `e2c7adc1`** (from `2702d6e1`):
+  - **DLSS Frame Generation without flicker or ghosting.** Generated frames are made from the frame without UI with the presented frame as MetalFX's composited UI, so what the game draws over the scene after it (the blurred, darkened background of Unreal's menus) is kept: Phantom Blade Zero's menus no longer flicker between a sharp, bright frame and a dark one. The interpolator reads depth and motion vectors where their content is in a larger texture (dynamic resolution renders into its top left), which made everything that moved ghost. It is given the camera where a game gives it (`DLSSG.CameraPos` and the like).
+  - **A shader cache keeps a newer Mullion's files**, so the FEX and x86_64 builds can share a game's cache (metalsharp/MetalSharp#848) without removing each other's.
+
 ## 10.5
 
 x86_64 build:
