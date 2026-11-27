@@ -1,0 +1,28 @@
+From e9d8bc7a374c049a8db8ba4f2865015ab4f47c6a Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Fri, 27 Nov 2026 14:25:18 -0700
+Subject: [PATCH 105/105] wine.inf: Turn on hardware-accelerated GPU scheduling.
+
+Windows keeps the setting as HwSchMode under
+HKLM\System\CurrentControlSet\Control\GraphicsDrivers, 2 when it is on.
+D3DKMTQueryAdapterInfo already reports it on (KMTQAITYPE_WDDM_2_7_CAPS),
+which is what Streamline reads, but games read the registry value too:
+Black Myth: Wukong left DLSS Frame Generation greyed out in its menu, and
+said to turn hardware-accelerated GPU scheduling on, while Streamline ran
+it. A value already in a prefix is kept.
+---
+ loader/wine.inf.in | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/loader/wine.inf.in b/loader/wine.inf.in
+index 9e5ecf0d6cb..5f2b5f91e9e 100644
+--- a/loader/wine.inf.in
++++ b/loader/wine.inf.in
+@@ -637,6 +637,7 @@ HKLM,Software\Policies,,16
+ HKLM,Software\Registered Applications,,16
+ HKLM,System\CurrentControlSet\Control\Filesystem,"NtfsDisable8dot3NameCreation",0x10003,0
+ HKLM,System\CurrentControlSet\Control\Filesystem,"NtfsDisableLastAccessUpdate",0x10003,0x80000002
++HKLM,System\CurrentControlSet\Control\GraphicsDrivers,"HwSchMode",0x10003,2
+ HKLM,System\CurrentControlSet\Control\hivelist,,16
+ HKLM,System\CurrentControlSet\Control\Lsa,"Security Packages",0x10002,kerberos,schannel
+ HKLM,System\CurrentControlSet\Control\Lsa\Kerberos,,16
