@@ -1,0 +1,37 @@
+From 01d4939db98324351f57cf5fa0830caffd77ba04 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Fri, 27 Nov 2026 08:22:34 -0700
+Subject: [PATCH 211/211] ntdll: Report written PAGE_WRITECOPY image pages as
+ PAGE_READWRITE when made read-only.
+
+Windows reports a write-copy page as PAGE_READWRITE once it has been
+written. Copy-on-write image pages here are written without a fault, so
+nothing records it. V8 makes the data it wrote read-only and checks that
+it was PAGE_READWRITE ("Check failed: 0x04 == old_protection"), which
+stopped Battle.net's CEF renderer and Phantom Blade Zero. Generalize the
+Battle.net-only report to every image view.
+---
+ dlls/ntdll/unix/virtual.c | 10 ++++++----
+ 1 file changed, 6 insertions(+), 4 deletions(-)
+
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index bc2971d0069..ce3230f515f 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -5983,10 +5983,12 @@ NTSTATUS WINAPI NtProtectVirtualMemory( HANDLE process, PVOID *addr_ptr, SIZE_T
+         {
+             old = get_win32_prot( vprot, view->protect );
+ #ifdef __APPLE__
+-            /* WineForge-Internal: launcher-compat/battlenet-cef-cow-protection-v1.
+-             * Battle.net's CEF renderer expects image pages it made writable to report RW. */
+-            if (battlenet_cef_cow_compat_enabled() && (view->protect & SEC_IMAGE) &&
+-                (new_prot & 0xff) == PAGE_READONLY)
++            /* Windows reports a PAGE_WRITECOPY page as PAGE_READWRITE once it has been written. Here
++             * copy-on-write image pages are written without a fault, so nothing records that.
++             * V8 makes the data it wrote read-only and checks that it was PAGE_READWRITE
++             * ("Check failed: 0x04 == old_protection"): Battle.net's CEF renderer and Phantom Blade
++             * Zero stopped there. Data made read-only has been written, so report it that way. */
++            if ((view->protect & SEC_IMAGE) && (new_prot & 0xff) == PAGE_READONLY)
+             {
+                 if ((old & 0xff) == PAGE_WRITECOPY)
+                     old = (old & ~0xff) | PAGE_READWRITE;

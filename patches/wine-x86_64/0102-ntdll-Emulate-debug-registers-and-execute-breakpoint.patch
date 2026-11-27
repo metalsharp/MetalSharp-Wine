@@ -1,0 +1,326 @@
+From 967eed0157e09fb516214fc63e99363bde959b0f Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Fri, 27 Nov 2026 11:38:08 -0700
+Subject: [PATCH 102/102] ntdll: Emulate debug registers and execute breakpoints under
+ Rosetta.
+
+Rosetta has no debug registers: the wineserver cannot set them and reads
+back zeros, and setting them was only faked. Denuvo keeps values in them
+and reads them back, and arms an execute breakpoint (DR7 type 00) that it
+expects to stop the thread (EXCEPTION_SINGLE_STEP) before code that faults
+on purpose. Phantom Blade Zero's Denuvo looped on the same access
+violation forever.
+
+A thread's own debug registers are now given back as it set them. A page
+with an armed execute breakpoint is made not executable: Rosetta faults on
+entering it with the instruction pointer at the instruction, also for code
+it translated already. The thread whose breakpoint it is gets
+EXCEPTION_SINGLE_STEP with DR6 naming the breakpoint and the resume flag
+set; any other instruction on the page runs once with the page executable
+and the trap flag set, and the page is made not executable again at the
+trap. A handler that resumes with the resume flag passes the breakpoint
+once, as on Windows.
+
+A test program arms DR0 on a function with SetThreadContext: it stops
+before each call with DR6 0xffff0ff1, resumes, and a function on the same
+page runs as usual. Phantom Blade Zero gets past Denuvo on x86_64.
+---
+ dlls/ntdll/unix/signal_x86_64.c | 222 +++++++++++++++++++++++++++++++-
+ 1 file changed, 218 insertions(+), 4 deletions(-)
+
+diff --git a/dlls/ntdll/unix/signal_x86_64.c b/dlls/ntdll/unix/signal_x86_64.c
+index 0cee6519215..63445466584 100644
+--- a/dlls/ntdll/unix/signal_x86_64.c
++++ b/dlls/ntdll/unix/signal_x86_64.c
+@@ -34,6 +34,9 @@
+ #include <stdarg.h>
+ #include <stdio.h>
+ #include <sys/types.h>
++#ifdef __APPLE__
++#include <sys/sysctl.h>
++#endif
+ #include <sys/mman.h>
+ #include <unistd.h>
+ #ifdef HAVE_LINK_H
+@@ -492,6 +495,10 @@ struct amd64_thread_data
+     DWORD                 fs;            /* 0338 WOW TEB selector */
+     DWORD                 mxcsr;         /* 033c Unix-side mxcsr register */
+     char                  syscall_dispatch; /* 0340 */
++    /* emulated execute breakpoints (Rosetta): the page an instruction is being stepped over on, its low bit set
++     * where the program had the trap flag set itself; and where the resume flag lets a breakpoint pass once */
++    DWORD_PTR             bp_step;       /* 0348 */
++    DWORD_PTR             bp_resume;     /* 0350 */
+ };
+ 
+ C_ASSERT( sizeof(struct amd64_thread_data) <= sizeof(((struct teb_data *)0)->cpu_data) );
+@@ -979,6 +986,165 @@ void *get_wow_context( CONTEXT *context )
+ }
+ 
+ 
++#ifdef __APPLE__
++/* Rosetta has no debug registers: the wineserver cannot set them, and reads back zeros. A thread's own are then
++ * the ones it set (amd64_thread_data), as Windows gives them back, and exception contexts already report those.
++ * Denuvo keeps values in them and reads them back; given zeros, it computed a wild pointer, and its handler retried
++ * the faulting access forever (Phantom Blade Zero) */
++static BOOL debug_registers_virtual(void)
++{
++    static int translated = -1;
++
++    if (translated == -1)
++    {
++        int ret = 0;
++        size_t size = sizeof(ret);
++        translated = !sysctlbyname( "sysctl.proc_translated", &ret, &size, NULL, 0 ) && ret;
++    }
++    return translated;
++}
++
++/* Rosetta has no breakpoints either, and Denuvo arms an execute breakpoint (DR7 type 00) and resumes, expecting
++ * the processor to stop at it (EXCEPTION_SINGLE_STEP) before it reaches code that faults on purpose. A page with
++ * an armed execute breakpoint is made not executable: Rosetta faults on entering it, with the instruction pointer at
++ * the instruction, also for code it has translated already. A thread whose breakpoint that is gets the exception;
++ * any other instruction on the page runs once with the page executable and the trap flag set (Rosetta traps after
++ * one instruction, as a processor does), and the page is made not executable again at the trap. The pages are the
++ * process's, the breakpoints each thread's own, as in Windows. */
++#define BP_MAX_PAGES 16
++static struct { ULONG_PTR page; LONG refs; } bp_pages[BP_MAX_PAGES];
++static pthread_mutex_t bp_mutex = PTHREAD_MUTEX_INITIALIZER;
++
++static ULONG_PTR bp_page_size(void)
++{
++    static ULONG_PTR size;
++    if (!size) size = sysconf( _SC_PAGESIZE );
++    return size;
++}
++
++/* the address of breakpoint i where it is an enabled execute breakpoint, else 0 */
++static ULONG_PTR bp_exec_address( DWORD_PTR dr7, const DWORD_PTR *dr, int i )
++{
++    if (!((dr7 >> (2 * i)) & 3)) return 0;
++    if ((dr7 >> (16 + 4 * i)) & 3) return 0;
++    return dr[i];
++}
++
++/* the unix protection Wine's view gives the page */
++static int bp_view_prot( ULONG_PTR page )
++{
++    MEMORY_BASIC_INFORMATION info;
++    ULONG protect;
++
++    if (NtQueryVirtualMemory( GetCurrentProcess(), (void *)page, MemoryBasicInformation, &info, sizeof(info), NULL ))
++        return -1;
++    if (info.State != MEM_COMMIT) return -1;
++    protect = info.Protect & 0xff;
++    switch (protect)
++    {
++    case PAGE_EXECUTE: return PROT_READ | PROT_EXEC;
++    case PAGE_EXECUTE_READ: return PROT_READ | PROT_EXEC;
++    case PAGE_EXECUTE_READWRITE:
++    case PAGE_EXECUTE_WRITECOPY: return PROT_READ | PROT_WRITE | PROT_EXEC;
++    case PAGE_READONLY: return PROT_READ;
++    case PAGE_READWRITE:
++    case PAGE_WRITECOPY: return PROT_READ | PROT_WRITE;
++    default: return -1;
++    }
++}
++
++static int bp_find( ULONG_PTR page )
++{
++    int i;
++    for (i = 0; i < BP_MAX_PAGES; i++)
++        if (bp_pages[i].refs > 0 && bp_pages[i].page == page) return i;
++    return -1;
++}
++
++/* the page's protection without execute while a breakpoint is armed on it, else as Wine's view has it */
++static void bp_protect( ULONG_PTR page, BOOL trapped )
++{
++    int prot = bp_view_prot( page );
++    if (prot == -1) return;
++    if (trapped) prot &= ~PROT_EXEC;
++    mprotect( (void *)page, bp_page_size(), prot );
++}
++
++/* the thread's execute breakpoints change from old to new: count their pages */
++static void bp_update( const DWORD_PTR *old_dr, DWORD_PTR old_dr7, const DWORD_PTR *new_dr, DWORD_PTR new_dr7 )
++{
++    ULONG_PTR mask = ~(bp_page_size() - 1);
++    int i, j;
++
++    if (!debug_registers_virtual()) return;
++    pthread_mutex_lock( &bp_mutex );
++    for (i = 0; i < 4; i++)
++    {
++        ULONG_PTR addr = bp_exec_address( old_dr7, old_dr, i );
++        if (!addr || (j = bp_find( addr & mask )) == -1) continue;
++        if (!--bp_pages[j].refs) bp_protect( bp_pages[j].page, FALSE );
++    }
++    for (i = 0; i < 4; i++)
++    {
++        ULONG_PTR addr = bp_exec_address( new_dr7, new_dr, i ), page = addr & mask;
++        int prot;
++        if (!addr) continue;
++        if ((j = bp_find( page )) != -1) { bp_pages[j].refs++; continue; }
++        /* a breakpoint on memory that is not executable never stops anything */
++        if ((prot = bp_view_prot( page )) == -1 || !(prot & PROT_EXEC)) continue;
++        for (j = 0; j < BP_MAX_PAGES; j++) if (bp_pages[j].refs <= 0) break;
++        if (j == BP_MAX_PAGES) { FIXME_(seh)( "too many breakpoint pages\n" ); continue; }
++        bp_pages[j].page = page;
++        bp_pages[j].refs = 1;
++        bp_protect( page, TRUE );
++        TRACE_(seh)( "execute breakpoint %d at %p\n", i, (void *)addr );
++    }
++    pthread_mutex_unlock( &bp_mutex );
++}
++
++/* a fault entering a page with breakpoints: 1 where the thread's breakpoint stops it (dr6 says which), -1 where
++ * the instruction is stepped over, 0 where the fault is not one of them */
++static int bp_fault( struct thread_data *data, siginfo_t *siginfo, ucontext_t *sigcontext )
++{
++    struct amd64_thread_data *amd64_data = amd64_thread_data( data );
++    ULONG_PTR rip = RIP_sig(sigcontext), page = rip & ~(bp_page_size() - 1);
++    int i, j;
++
++    if (!debug_registers_virtual() || (ULONG_PTR)siginfo->si_addr != rip) return 0;
++    if ((j = bp_find( page )) == -1) return 0;
++    for (i = 0; i < 4; i++)
++    {
++        if (bp_exec_address( amd64_data->dr7, &amd64_data->dr0, i ) != rip) continue;
++        if (amd64_data->bp_resume == rip) break;  /* the resume flag lets it pass once */
++        amd64_data->bp_resume = 0;
++        amd64_data->dr6 = 0xffff0ff0 | (1 << i);
++        return 1;
++    }
++    amd64_data->bp_resume = 0;
++    mprotect( (void *)page, bp_page_size(), bp_view_prot( page ) == -1 ? PROT_READ | PROT_EXEC : bp_view_prot( page ) );
++    amd64_data->bp_step = page | ((EFL_sig(sigcontext) & 0x100) ? 1 : 0);
++    EFL_sig(sigcontext) |= 0x100;
++    return -1;
++}
++
++/* the trap after a stepped instruction: TRUE where it was only that */
++static BOOL bp_stepped( struct thread_data *data, ucontext_t *sigcontext )
++{
++    struct amd64_thread_data *amd64_data = amd64_thread_data( data );
++    ULONG_PTR step = amd64_data->bp_step, page = step & ~(ULONG_PTR)1;
++
++    if (!step) return FALSE;
++    amd64_data->bp_step = 0;
++    if (bp_find( page ) != -1) bp_protect( page, TRUE );
++    if (step & 1) return FALSE;  /* the program was stepping itself */
++    EFL_sig(sigcontext) &= ~0x100;
++    return TRUE;
++}
++#else
++static BOOL debug_registers_virtual(void) { return FALSE; }
++static void bp_update( const DWORD_PTR *old_dr, DWORD_PTR old_dr7, const DWORD_PTR *new_dr, DWORD_PTR new_dr7 ) {}
++#endif
++
+ /***********************************************************************
+  *              NtSetContextThread  (NTDLL.@)
+  *              ZwSetContextThread  (NTDLL.@)
+@@ -1031,6 +1197,8 @@ NTSTATUS WINAPI NtSetContextThread( HANDLE handle, const CONTEXT *context )
+         if (ret || !self) return ret;
+         if (flags & CONTEXT_DEBUG_REGISTERS)
+         {
++            const DWORD_PTR new_dr[4] = { context->Dr0, context->Dr1, context->Dr2, context->Dr3 };
++            bp_update( &amd64_data->dr0, amd64_data->dr7, new_dr, context->Dr7 );
+             amd64_data->dr0 = context->Dr0;
+             amd64_data->dr1 = context->Dr1;
+             amd64_data->dr2 = context->Dr2;
+@@ -1063,6 +1231,10 @@ NTSTATUS WINAPI NtSetContextThread( HANDLE handle, const CONTEXT *context )
+         frame->rsp    = context->Rsp;
+         frame->rip    = context->Rip;
+         frame->eflags = context->EFlags;
++#ifdef __APPLE__
++        /* the resume flag: an emulated breakpoint at the instruction lets it pass once */
++        amd64_data->bp_resume = (context->EFlags & 0x10000) && debug_registers_virtual() ? context->Rip : 0;
++#endif
+     }
+     if (flags & CONTEXT_FLOATING_POINT)
+     {
+@@ -1091,6 +1263,7 @@ NTSTATUS WINAPI NtSetContextThread( HANDLE handle, const CONTEXT *context )
+  *              NtGetContextThread  (NTDLL.@)
+  *              ZwGetContextThread  (NTDLL.@)
+  */
++
+ NTSTATUS WINAPI NtGetContextThread( HANDLE handle, CONTEXT *context )
+ {
+     struct thread_data *data = get_thread_data();
+@@ -1214,8 +1387,17 @@ NTSTATUS WINAPI NtGetContextThread( HANDLE handle, CONTEXT *context )
+             frame->restore_flags |= CONTEXT_XSTATE;
+         }
+     }
+-    /* update the cached version of the debug registers */
+-    if (needed_flags & CONTEXT_DEBUG_REGISTERS)
++    /* update the cached version of the debug registers, or give them back where they are only cached */
++    if ((needed_flags & CONTEXT_DEBUG_REGISTERS) && debug_registers_virtual())
++    {
++        context->Dr0 = amd64_data->dr0;
++        context->Dr1 = amd64_data->dr1;
++        context->Dr2 = amd64_data->dr2;
++        context->Dr3 = amd64_data->dr3;
++        context->Dr6 = amd64_data->dr6;
++        context->Dr7 = amd64_data->dr7;
++    }
++    else if (needed_flags & CONTEXT_DEBUG_REGISTERS)
+     {
+         amd64_data->dr0 = context->Dr0;
+         amd64_data->dr1 = context->Dr1;
+@@ -1367,8 +1549,17 @@ NTSTATUS get_thread_wow64_context( HANDLE handle, void *ctx, ULONG size )
+     {
+         NTSTATUS ret = get_thread_context( handle, context, &self, IMAGE_FILE_MACHINE_I386 );
+         if (ret || !self) return ret;
+-        /* update the cached version of the debug registers */
+-        if (needed_flags & CONTEXT_I386_DEBUG_REGISTERS)
++        /* update the cached version of the debug registers, or give them back where they are only cached */
++        if ((needed_flags & CONTEXT_I386_DEBUG_REGISTERS) && debug_registers_virtual())
++        {
++            context->Dr0 = amd64_data->dr0;
++            context->Dr1 = amd64_data->dr1;
++            context->Dr2 = amd64_data->dr2;
++            context->Dr3 = amd64_data->dr3;
++            context->Dr6 = amd64_data->dr6;
++            context->Dr7 = amd64_data->dr7;
++        }
++        else if (needed_flags & CONTEXT_I386_DEBUG_REGISTERS)
+         {
+             amd64_data->dr0 = context->Dr0;
+             amd64_data->dr1 = context->Dr1;
+@@ -2384,6 +2575,22 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
+     struct xcontext context;
+     EXCEPTION_RECORD rec = { .ExceptionAddress = (void *)RIP_sig(sigcontext) };
+ 
++#ifdef __APPLE__
++    switch (bp_fault( data, siginfo, sigcontext ))
++    {
++    case -1:
++        leave_handler( data, sigcontext );
++        return;
++    case 1:
++        /* an instruction breakpoint stops before the instruction; the resume flag in the context lets a
++         * handler that resumes there pass it once, as the processor's does */
++        save_context( data, &context, sigcontext );
++        context.c.EFlags |= 0x10000;
++        rec.ExceptionCode = EXCEPTION_SINGLE_STEP;
++        setup_raise_exception( data, sigcontext, &rec, &context );
++        return;
++    }
++#endif
+     save_context( data, &context, sigcontext );
+ 
+     switch(TRAP_sig(sigcontext))
+@@ -2482,6 +2689,13 @@ static void trap_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
+     EXCEPTION_RECORD rec = { .ExceptionAddress = (void *)RIP_sig(sigcontext) };
+ 
+     if (handle_syscall_trap( data, sigcontext, siginfo )) return;
++#ifdef __APPLE__
++    if (TRAP_sig(sigcontext) == TRAP_x86_TRCTRAP && bp_stepped( data, sigcontext ))
++    {
++        leave_handler( data, sigcontext );
++        return;
++    }
++#endif
+ 
+     save_context( data, &context, sigcontext );
+ 
