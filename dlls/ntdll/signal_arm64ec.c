@@ -712,10 +712,15 @@ NTSTATUS SYSCALL_API NtWriteVirtualMemory( HANDLE process, void *addr, const voi
     NTSTATUS status = syscall_NtWriteVirtualMemory( process, addr, buffer, size, bytes_written );
 
     /* Let the target's emulator drop translations of code an injector (overlay, launcher,
-     * debugger) wrote with plain NtWriteVirtualMemory instead of WriteProcessMemory. */
-    if (!status && size && !RtlIsCurrentProcess( process ) && enter_syscall_callback())
+     * debugger) wrote with plain NtWriteVirtualMemory instead of WriteProcessMemory. A process
+     * writing into itself is told too: Denuvo rewrites its code that way, through a direct
+     * syscall and without NtFlushInstructionCache, and FEX kept running the old translation. */
+    if (!status && size && enter_syscall_callback())
     {
-        send_cross_process_notification( process, CrossProcessMemoryWrite, addr, size, 0 );
+        if (!RtlIsCurrentProcess( process ))
+            send_cross_process_notification( process, CrossProcessMemoryWrite, addr, size, 0 );
+        else if (pBTCpu64NotifyMemoryDirty)
+            pBTCpu64NotifyMemoryDirty( addr, size );
         leave_syscall_callback();
     }
     return status;
