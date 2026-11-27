@@ -666,6 +666,137 @@ NTSTATUS exec_wineloader( char **argv, int socketfd, const struct pe_image_info 
 }
 
 
+#ifdef __APPLE__
+
+/* `env` with each of `vars` (NAME=value, NULL entries skipped) in place of the variable of its name */
+static char **spawn_environment( char **env, char * const *vars, int nb_vars )
+{
+    char **ret;
+    int i, j, count = 0, pos = 0;
+
+    while (env[count]) count++;
+    if (!(ret = malloc( (count + nb_vars + 1) * sizeof(*ret) ))) return NULL;
+    for (i = 0; i < count; i++)
+    {
+        for (j = 0; j < nb_vars; j++)
+        {
+            const char *eq;
+            if (!vars[j] || !(eq = strchr( vars[j], '=' ))) continue;
+            if (!strncmp( env[i], vars[j], eq - vars[j] + 1 )) break;
+        }
+        if (j == nb_vars) ret[pos++] = env[i];
+    }
+    for (j = 0; j < nb_vars; j++) if (vars[j]) ret[pos++] = vars[j];
+    ret[pos] = NULL;
+    return ret;
+}
+
+/* posix_spawn the loader at `path` (argv[1]) as preloader_exec execs it: its preloader if there is one, with
+ * 4K pages on aarch64 when entitled, else as it is */
+static int spawn_loader( pid_t *pid, char **argv, char **env, const posix_spawn_file_actions_t *actions,
+                         short flags, const sigset_t *sigdefault )
+{
+    posix_spawnattr_t attr;
+    int err = ENOEXEC;
+
+#ifdef HAVE_WINE_PRELOADER
+    if (asprintf( &argv[0], "%s-preloader", argv[1] ) != -1)
+    {
+        posix_spawnattr_init( &attr );
+        posix_spawnattr_setflags( &attr, flags | _POSIX_SPAWN_DISABLE_ASLR );
+        posix_spawnattr_setsigdefault( &attr, sigdefault );
+        err = posix_spawn( pid, argv[0], actions, &attr, argv, env );
+        posix_spawnattr_destroy( &attr );
+        free( argv[0] );
+        if (!err) return 0;
+    }
+#endif
+#ifdef __aarch64__
+    if (__builtin_available( macOS 26.0, * ))
+    {
+        const char *use4k = getenv( "WINE_4K_PAGES" );
+        if (use4k ? atoi( use4k ) : has_cross_arch_entitlement())
+        {
+            posix_spawnattr_init( &attr );
+            posix_spawnattr_setflags( &attr, flags );
+            posix_spawnattr_setsigdefault( &attr, sigdefault );
+            if (!posix_spawnattr_set_4k_page_size_np( &attr ))
+            {
+                err = posix_spawn( pid, argv[1], actions, &attr, argv + 1, env );
+                TRACE( "4K page spawn of %s: %s\n", argv[1], err ? strerror( err ) : "ok" );
+            }
+            posix_spawnattr_destroy( &attr );
+            if (!err) return 0;
+        }
+    }
+#endif
+    posix_spawnattr_init( &attr );
+    posix_spawnattr_setflags( &attr, flags );
+    posix_spawnattr_setsigdefault( &attr, sigdefault );
+    err = posix_spawn( pid, argv[1], actions, &attr, argv + 1, env );
+    posix_spawnattr_destroy( &attr );
+    return err;
+}
+
+/***********************************************************************
+ *           spawn_wineloader
+ *
+ * MetalSharp: exec_wineloader as a posix_spawn, for spawn_process on macOS. A fork copies the address
+ * space map of the whole process, which takes seconds in a game that maps tens of thousands of regions,
+ * and libc and the Objective-C runtime hold their locks for all of it: every thread that allocates waits
+ * (Black Myth: Wukong froze for 4 s and more each time it started a program). posix_spawn copies nothing
+ * and takes no lock. The new process gets the environment exec_wineloader gives it (`winedebug`, the
+ * server socket, the preload reservation, WINELOADERNOEXEC) and SIGPIPE's default action; `actions` and
+ * `flags` set up its stdio, directory and session. argv[0] and argv[1] are reserved as for exec_wineloader.
+ */
+NTSTATUS spawn_wineloader( pid_t *pid, char **argv, int socketfd, const struct pe_image_info *pe_info,
+                           char *winedebug, const posix_spawn_file_actions_t *actions, short flags )
+{
+    static char noexec[] = "WINELOADERNOEXEC=1";
+    WORD machine = pe_info->machine;
+    char preloader_reserve[64], socket_env[64], *vars[4], **env;
+    sigset_t sigdefault;
+    int err;
+
+    if (pe_info->image_flags & IMAGE_FLAGS_ComPlusNativeReady)
+        machine = is_machine_64bit( native_machine ) ? IMAGE_FILE_MACHINE_AMD64 : native_machine;
+
+    snprintf( socket_env, sizeof(socket_env), "WINESERVERSOCKET=%u", socketfd );
+    vars[0] = socket_env;
+    vars[1] = NULL;
+    if (!is_machine_64bit( pe_info->machine ) && pe_info->base && !pe_info->wine_fakedll)
+    {
+        snprintf( preloader_reserve, sizeof(preloader_reserve), "WINEPRELOADRESERVE=%x-%x",
+                  (UINT)pe_info->base, (UINT)(pe_info->base + pe_info->map_size) );
+        vars[1] = preloader_reserve;
+    }
+    vars[2] = noexec;
+    vars[3] = winedebug;
+    if (!(env = spawn_environment( *_NSGetEnviron(), vars, ARRAY_SIZE(vars) ))) return STATUS_NO_MEMORY;
+
+    sigemptyset( &sigdefault );
+    sigaddset( &sigdefault, SIGPIPE );
+    flags |= POSIX_SPAWN_SETSIGDEF;
+
+    err = ENOEXEC;
+    if ((argv[1] = get_alternate_wineloader( machine )))
+    {
+        err = spawn_loader( pid, argv, env, actions, flags, &sigdefault );
+        free( argv[1] );
+    }
+    if (err && (argv[1] = strdup( wineloader )))
+    {
+        err = spawn_loader( pid, argv, env, actions, flags, &sigdefault );
+        free( argv[1] );
+    }
+    free( env );
+    if (err) ERR( "could not start the loader: %s\n", strerror( err ));
+    return err ? STATUS_INVALID_IMAGE_FORMAT : STATUS_SUCCESS;
+}
+
+#endif
+
+
 /***********************************************************************
  *           exec_wineserver
  *
