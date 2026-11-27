@@ -28,6 +28,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <pthread.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -396,6 +397,35 @@ static BOOL is_unix_console_handle( HANDLE handle )
 }
 
 
+#ifdef __APPLE__
+static void *reap_child_thread( void *arg )
+{
+    pid_t pid = (pid_t)(intptr_t)arg;
+
+    while (waitpid( pid, NULL, 0 ) == -1 && errno == EINTR);
+    return NULL;
+}
+
+/* a spawned process is this one's child, where the forks made it a grandchild: a thread of its own waits
+ * for it, so that it leaves no zombie. the thread blocks every signal, as it has no TEB for Wine's handlers */
+static void reap_child( pid_t pid )
+{
+    pthread_attr_t attr;
+    pthread_t thread;
+    sigset_t all, old;
+
+    sigfillset( &all );
+    pthread_sigmask( SIG_SETMASK, &all, &old );
+    pthread_attr_init( &attr );
+    pthread_attr_setdetachstate( &attr, PTHREAD_CREATE_DETACHED );
+    pthread_attr_setstacksize( &attr, 64 * 1024 );
+    if (pthread_create( &thread, &attr, reap_child_thread, (void *)(intptr_t)pid ))
+        ERR( "no thread to wait for process %d\n", (int)pid );
+    pthread_attr_destroy( &attr );
+    pthread_sigmask( SIG_SETMASK, &old, NULL );
+}
+#endif
+
 /***********************************************************************
  *           spawn_process
  */
@@ -414,6 +444,47 @@ static NTSTATUS spawn_process( const RTL_USER_PROCESS_PARAMETERS *params, int so
     if (wine_server_handle_to_fd( params->hStdOutput, FILE_WRITE_DATA, &stdout_fd, NULL ) &&
         isatty(1) && is_unix_console_handle( params->hStdOutput ))
         stdout_fd = 1;
+
+#ifdef __APPLE__
+    {
+        /* MetalSharp: posix_spawn instead of the two forks, which freeze every thread of a large
+         * process while its address space is copied (spawn_wineloader) */
+        posix_spawn_file_actions_t actions;
+        short flags = 0;
+
+        posix_spawn_file_actions_init( &actions );
+        if ((peb && peb->ProcessParameters &&
+             params->ProcessGroupId != peb->ProcessParameters->ProcessGroupId) ||
+            params->ConsoleHandle == CONSOLE_HANDLE_ALLOC ||
+            params->ConsoleHandle == CONSOLE_HANDLE_ALLOC_NO_WINDOW ||
+            params->ConsoleHandle == NULL)
+        {
+            flags |= POSIX_SPAWN_SETSID;
+            posix_spawn_file_actions_addopen( &actions, 0, "/dev/null", O_RDWR, 0 );
+            posix_spawn_file_actions_adddup2( &actions, 0, 1 );
+        }
+        else
+        {
+            /* set_stdio_fd: the handle's fd, else /dev/null */
+            if (stdin_fd == -1) posix_spawn_file_actions_addopen( &actions, 0, "/dev/null", O_RDWR, 0 );
+            else if (stdin_fd != 0) posix_spawn_file_actions_adddup2( &actions, stdin_fd, 0 );
+            if (stdout_fd == -1) posix_spawn_file_actions_addopen( &actions, 1, "/dev/null", O_RDWR, 0 );
+            else if (stdout_fd != 1) posix_spawn_file_actions_adddup2( &actions, stdout_fd, 1 );
+        }
+        if (unixdir != -1) posix_spawn_file_actions_addfchdir_np( &actions, unixdir );
+
+        argv = build_argv( &params->CommandLine, 2 );
+        status = argv ? spawn_wineloader( &pid, argv, socketfd, pe_info, winedebug, &actions, flags )
+                      : STATUS_NO_MEMORY;
+        posix_spawn_file_actions_destroy( &actions );
+        free( argv );
+        if (!status) reap_child( pid );
+
+        if (stdin_fd != -1 && stdin_fd != 0) close( stdin_fd );
+        if (stdout_fd != -1 && stdout_fd != 1) close( stdout_fd );
+        return status;
+    }
+#endif
 
     if (!(pid = fork()))  /* child */
     {
