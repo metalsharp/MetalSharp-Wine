@@ -863,6 +863,23 @@ NTSTATUS SYSCALL_API NtQuerySystemInformation( SYSTEM_INFORMATION_CLASS class, v
 {
     NTSTATUS status = syscall_NtQuerySystemInformation( class, info, size, ret_size );
 
+    /* The emulator write-protects pages it translated code from, and the buffer can share one
+     * (Denuvo's firmware table query in Phantom Blade Zero does). The unix side then faults where
+     * Windows writes, so have the emulator open the buffer as it does for a file read into it,
+     * and ask again: a query has no side effects to repeat. */
+    if (status == STATUS_ACCESS_VIOLATION && info && size && pBTCpu64NotifyReadFile &&
+        enter_syscall_callback())
+    {
+        pBTCpu64NotifyReadFile( NULL, info, size, FALSE, 0 );
+        leave_syscall_callback();
+        status = syscall_NtQuerySystemInformation( class, info, size, ret_size );
+        if (enter_syscall_callback())
+        {
+            pBTCpu64NotifyReadFile( NULL, info, size, TRUE, status );
+            leave_syscall_callback();
+        }
+    }
+
     if (!status && class == SystemCpuInformation && pUpdateProcessorInformation) pUpdateProcessorInformation( info );
     return status;
 }
