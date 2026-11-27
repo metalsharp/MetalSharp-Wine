@@ -1,0 +1,283 @@
+From 0ea16a81020b2f2ff8790f81d137b6ef23a94297 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Fri, 27 Nov 2026 13:50:14 -0700
+Subject: [PATCH 214/214] ntdll: Start Windows processes with posix_spawn on macOS.
+
+spawn_process forked twice. A fork copies the address space map of the
+whole process, which takes seconds in a game that maps tens of thousands
+of regions, and libc and the Objective-C runtime hold their locks while it
+runs: every other thread that allocates waits. Black Myth: Wukong froze
+for 4 s and more each time it started a program (a sample showed its
+render thread, Mullion's threads, Metal's completion queue and the main
+thread all waiting on malloc and Objective-C locks, behind one thread in
+fork from NtCreateUserProcess).
+
+On macOS the loader is now posix_spawned, which copies nothing and takes
+no lock. The new process gets what the forked child set up: a new session
+and /dev/null for stdio, or the console's stdin and stdout; the working
+directory; SIGPIPE's default action; and exec_wineloader's environment
+(WINEDEBUG, WINESERVERSOCKET, WINEPRELOADRESERVE, WINELOADERNOEXEC), built
+for it without changing this process's. The loaders are tried in the same
+order, the preloader and 4K pages as before. The process is now a child
+rather than a grandchild, so a detached thread that blocks all signals
+waits for it.
+---
+ dlls/ntdll/unix/loader.c       | 131 +++++++++++++++++++++++++++++++++
+ dlls/ntdll/unix/process.c      |  71 ++++++++++++++++++
+ dlls/ntdll/unix/unix_private.h |   5 ++
+ 3 files changed, 207 insertions(+)
+
+diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
+index ee7fbd2ceba..42f23134e34 100644
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -653,6 +653,137 @@ NTSTATUS exec_wineloader( char **argv, int socketfd, const struct pe_image_info
+ }
+ 
+ 
++#ifdef __APPLE__
++
++/* `env` with each of `vars` (NAME=value, NULL entries skipped) in place of the variable of its name */
++static char **spawn_environment( char **env, char * const *vars, int nb_vars )
++{
++    char **ret;
++    int i, j, count = 0, pos = 0;
++
++    while (env[count]) count++;
++    if (!(ret = malloc( (count + nb_vars + 1) * sizeof(*ret) ))) return NULL;
++    for (i = 0; i < count; i++)
++    {
++        for (j = 0; j < nb_vars; j++)
++        {
++            const char *eq;
++            if (!vars[j] || !(eq = strchr( vars[j], '=' ))) continue;
++            if (!strncmp( env[i], vars[j], eq - vars[j] + 1 )) break;
++        }
++        if (j == nb_vars) ret[pos++] = env[i];
++    }
++    for (j = 0; j < nb_vars; j++) if (vars[j]) ret[pos++] = vars[j];
++    ret[pos] = NULL;
++    return ret;
++}
++
++/* posix_spawn the loader at `path` (argv[1]) as preloader_exec execs it: its preloader if there is one, with
++ * 4K pages on aarch64 when entitled, else as it is */
++static int spawn_loader( pid_t *pid, char **argv, char **env, const posix_spawn_file_actions_t *actions,
++                         short flags, const sigset_t *sigdefault )
++{
++    posix_spawnattr_t attr;
++    int err = ENOEXEC;
++
++#ifdef HAVE_WINE_PRELOADER
++    if (asprintf( &argv[0], "%s-preloader", argv[1] ) != -1)
++    {
++        posix_spawnattr_init( &attr );
++        posix_spawnattr_setflags( &attr, flags | _POSIX_SPAWN_DISABLE_ASLR );
++        posix_spawnattr_setsigdefault( &attr, sigdefault );
++        err = posix_spawn( pid, argv[0], actions, &attr, argv, env );
++        posix_spawnattr_destroy( &attr );
++        free( argv[0] );
++        if (!err) return 0;
++    }
++#endif
++#ifdef __aarch64__
++    if (__builtin_available( macOS 26.0, * ))
++    {
++        const char *use4k = getenv( "WINE_4K_PAGES" );
++        if (use4k ? atoi( use4k ) : has_cross_arch_entitlement())
++        {
++            posix_spawnattr_init( &attr );
++            posix_spawnattr_setflags( &attr, flags );
++            posix_spawnattr_setsigdefault( &attr, sigdefault );
++            if (!posix_spawnattr_set_4k_page_size_np( &attr ))
++            {
++                err = posix_spawn( pid, argv[1], actions, &attr, argv + 1, env );
++                TRACE( "4K page spawn of %s: %s\n", argv[1], err ? strerror( err ) : "ok" );
++            }
++            posix_spawnattr_destroy( &attr );
++            if (!err) return 0;
++        }
++    }
++#endif
++    posix_spawnattr_init( &attr );
++    posix_spawnattr_setflags( &attr, flags );
++    posix_spawnattr_setsigdefault( &attr, sigdefault );
++    err = posix_spawn( pid, argv[1], actions, &attr, argv + 1, env );
++    posix_spawnattr_destroy( &attr );
++    return err;
++}
++
++/***********************************************************************
++ *           spawn_wineloader
++ *
++ * MetalSharp: exec_wineloader as a posix_spawn, for spawn_process on macOS. A fork copies the address
++ * space map of the whole process, which takes seconds in a game that maps tens of thousands of regions,
++ * and libc and the Objective-C runtime hold their locks for all of it: every thread that allocates waits
++ * (Black Myth: Wukong froze for 4 s and more each time it started a program). posix_spawn copies nothing
++ * and takes no lock. The new process gets the environment exec_wineloader gives it (`winedebug`, the
++ * server socket, the preload reservation, WINELOADERNOEXEC) and SIGPIPE's default action; `actions` and
++ * `flags` set up its stdio, directory and session. argv[0] and argv[1] are reserved as for exec_wineloader.
++ */
++NTSTATUS spawn_wineloader( pid_t *pid, char **argv, int socketfd, const struct pe_image_info *pe_info,
++                           char *winedebug, const posix_spawn_file_actions_t *actions, short flags )
++{
++    static char noexec[] = "WINELOADERNOEXEC=1";
++    WORD machine = pe_info->machine;
++    char preloader_reserve[64], socket_env[64], *vars[4], **env;
++    sigset_t sigdefault;
++    int err;
++
++    if (pe_info->image_flags & IMAGE_FLAGS_ComPlusNativeReady)
++        machine = is_machine_64bit( native_machine ) ? IMAGE_FILE_MACHINE_AMD64 : native_machine;
++
++    snprintf( socket_env, sizeof(socket_env), "WINESERVERSOCKET=%u", socketfd );
++    vars[0] = socket_env;
++    vars[1] = NULL;
++    if (!is_machine_64bit( pe_info->machine ) && pe_info->base && !pe_info->wine_fakedll)
++    {
++        snprintf( preloader_reserve, sizeof(preloader_reserve), "WINEPRELOADRESERVE=%x-%x",
++                  (UINT)pe_info->base, (UINT)(pe_info->base + pe_info->map_size) );
++        vars[1] = preloader_reserve;
++    }
++    vars[2] = noexec;
++    vars[3] = winedebug;
++    if (!(env = spawn_environment( *_NSGetEnviron(), vars, ARRAY_SIZE(vars) ))) return STATUS_NO_MEMORY;
++
++    sigemptyset( &sigdefault );
++    sigaddset( &sigdefault, SIGPIPE );
++    flags |= POSIX_SPAWN_SETSIGDEF;
++
++    err = ENOEXEC;
++    if ((argv[1] = get_alternate_wineloader( machine )))
++    {
++        err = spawn_loader( pid, argv, env, actions, flags, &sigdefault );
++        free( argv[1] );
++    }
++    if (err && (argv[1] = strdup( wineloader )))
++    {
++        err = spawn_loader( pid, argv, env, actions, flags, &sigdefault );
++        free( argv[1] );
++    }
++    free( env );
++    if (err) ERR( "could not start the loader: %s\n", strerror( err ));
++    return err ? STATUS_INVALID_IMAGE_FORMAT : STATUS_SUCCESS;
++}
++
++#endif
++
++
+ /***********************************************************************
+  *           exec_wineserver
+  *
+diff --git a/dlls/ntdll/unix/process.c b/dlls/ntdll/unix/process.c
+index 1d109484aa4..bc58ec4b01d 100644
+--- a/dlls/ntdll/unix/process.c
++++ b/dlls/ntdll/unix/process.c
+@@ -28,6 +28,7 @@
+ #include <errno.h>
+ #include <fcntl.h>
+ #include <signal.h>
++#include <pthread.h>
+ #include <stdarg.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+@@ -396,6 +397,35 @@ static BOOL is_unix_console_handle( HANDLE handle )
+ }
+ 
+ 
++#ifdef __APPLE__
++static void *reap_child_thread( void *arg )
++{
++    pid_t pid = (pid_t)(intptr_t)arg;
++
++    while (waitpid( pid, NULL, 0 ) == -1 && errno == EINTR);
++    return NULL;
++}
++
++/* a spawned process is this one's child, where the forks made it a grandchild: a thread of its own waits
++ * for it, so that it leaves no zombie. the thread blocks every signal, as it has no TEB for Wine's handlers */
++static void reap_child( pid_t pid )
++{
++    pthread_attr_t attr;
++    pthread_t thread;
++    sigset_t all, old;
++
++    sigfillset( &all );
++    pthread_sigmask( SIG_SETMASK, &all, &old );
++    pthread_attr_init( &attr );
++    pthread_attr_setdetachstate( &attr, PTHREAD_CREATE_DETACHED );
++    pthread_attr_setstacksize( &attr, 64 * 1024 );
++    if (pthread_create( &thread, &attr, reap_child_thread, (void *)(intptr_t)pid ))
++        ERR( "no thread to wait for process %d\n", (int)pid );
++    pthread_attr_destroy( &attr );
++    pthread_sigmask( SIG_SETMASK, &old, NULL );
++}
++#endif
++
+ /***********************************************************************
+  *           spawn_process
+  */
+@@ -415,6 +445,47 @@ static NTSTATUS spawn_process( const RTL_USER_PROCESS_PARAMETERS *params, int so
+         isatty(1) && is_unix_console_handle( params->hStdOutput ))
+         stdout_fd = 1;
+ 
++#ifdef __APPLE__
++    {
++        /* MetalSharp: posix_spawn instead of the two forks, which freeze every thread of a large
++         * process while its address space is copied (spawn_wineloader) */
++        posix_spawn_file_actions_t actions;
++        short flags = 0;
++
++        posix_spawn_file_actions_init( &actions );
++        if ((peb && peb->ProcessParameters &&
++             params->ProcessGroupId != peb->ProcessParameters->ProcessGroupId) ||
++            params->ConsoleHandle == CONSOLE_HANDLE_ALLOC ||
++            params->ConsoleHandle == CONSOLE_HANDLE_ALLOC_NO_WINDOW ||
++            params->ConsoleHandle == NULL)
++        {
++            flags |= POSIX_SPAWN_SETSID;
++            posix_spawn_file_actions_addopen( &actions, 0, "/dev/null", O_RDWR, 0 );
++            posix_spawn_file_actions_adddup2( &actions, 0, 1 );
++        }
++        else
++        {
++            /* set_stdio_fd: the handle's fd, else /dev/null */
++            if (stdin_fd == -1) posix_spawn_file_actions_addopen( &actions, 0, "/dev/null", O_RDWR, 0 );
++            else if (stdin_fd != 0) posix_spawn_file_actions_adddup2( &actions, stdin_fd, 0 );
++            if (stdout_fd == -1) posix_spawn_file_actions_addopen( &actions, 1, "/dev/null", O_RDWR, 0 );
++            else if (stdout_fd != 1) posix_spawn_file_actions_adddup2( &actions, stdout_fd, 1 );
++        }
++        if (unixdir != -1) posix_spawn_file_actions_addfchdir_np( &actions, unixdir );
++
++        argv = build_argv( &params->CommandLine, 2 );
++        status = argv ? spawn_wineloader( &pid, argv, socketfd, pe_info, winedebug, &actions, flags )
++                      : STATUS_NO_MEMORY;
++        posix_spawn_file_actions_destroy( &actions );
++        free( argv );
++        if (!status) reap_child( pid );
++
++        if (stdin_fd != -1 && stdin_fd != 0) close( stdin_fd );
++        if (stdout_fd != -1 && stdout_fd != 1) close( stdout_fd );
++        return status;
++    }
++#endif
++
+     if (!(pid = fork()))  /* child */
+     {
+         if (!(pid = fork()))  /* grandchild */
+diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
+index 9f17249a83e..455e945756a 100644
+--- a/dlls/ntdll/unix/unix_private.h
++++ b/dlls/ntdll/unix/unix_private.h
+@@ -249,6 +249,11 @@ extern void *create_startup_info( const UNICODE_STRING *nt_image, ULONG process_
+                                   const struct pe_image_info *pe_info, DWORD *info_size );
+ extern char *get_alternate_wineloader( WORD machine );
+ extern NTSTATUS exec_wineloader( char **argv, int socketfd, const struct pe_image_info *pe_info );
++#ifdef __APPLE__
++#include <spawn.h>
++extern NTSTATUS spawn_wineloader( pid_t *pid, char **argv, int socketfd, const struct pe_image_info *pe_info,
++                                  char *winedebug, const posix_spawn_file_actions_t *actions, short flags );
++#endif
+ extern NTSTATUS load_builtin( struct pe_mapping_info *pe_mapping, USHORT machine,
+                               SECTION_IMAGE_INFORMATION *info, void **module, SIZE_T *size,
+                               ULONG_PTR limit_low, ULONG_PTR limit_high, off_t offset );

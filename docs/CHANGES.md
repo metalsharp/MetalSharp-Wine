@@ -9,10 +9,12 @@ Both builds:
 - **Mullion `e2c7adc1`** (from `2702d6e1`):
   - **DLSS Frame Generation without flicker or ghosting.** Generated frames are made from the frame without UI with the presented frame as MetalFX's composited UI, so what the game draws over the scene after it (the blurred, darkened background of Unreal's menus) is kept: Phantom Blade Zero's menus no longer flicker between a sharp, bright frame and a dark one. The interpolator reads depth and motion vectors where their content is in a larger texture (dynamic resolution renders into its top left), which made everything that moved ghost. It is given the camera where a game gives it (`DLSSG.CameraPos` and the like).
   - **A shader cache keeps a newer Mullion's files**, so the FEX and x86_64 builds can share a game's cache (metalsharp/MetalSharp#848) without removing each other's.
+- **No more whole-game freezes when a game starts a program** (#141, #142). Wine started each Windows program with two forks. On macOS a fork copies the address space map of the whole process, which takes seconds in a large game, and every thread that allocates memory waits until it finishes: Black Myth: Wukong froze for about 14 s each time. Programs are now started with `posix_spawn`, which copies nothing.
+- **DLSS Frame Generation can be turned on in Black Myth: Wukong** (#141, #142). New and updated prefixes have hardware-accelerated GPU scheduling on (`HwSchMode` = 2 under `HKLM\System\CurrentControlSet\Control\GraphicsDrivers`). Wukong reads it and greyed Frame Generation out without it. A value already set in a prefix is kept.
 
 FEX build:
 
-- **Phantom Blade Zero starts** (#135, #137). Wine reserves 4 GB above the aarch64 loader before malloc starts, so a game's low allocations fit on 8 GB Macs. Denuvo's code, which rewrites itself with `NtWriteVirtualMemory` and reads firmware tables into pages FEX has write-protected, is told to FEX and retried. V8's `0x04 == old_protection` check passes: a written `PAGE_WRITECOPY` image page made read-only is reported as `PAGE_READWRITE`.
+- **Phantom Blade Zero starts** (#135, #137). Wine reserves 4 GB above the aarch64 loader before malloc starts, so a game's low allocations fit on 8 GB Macs, and an executable without relocations at 0x140000000 always maps (Black Myth: Wukong's `c0000018`, #136). Denuvo's code, which rewrites itself with `NtWriteVirtualMemory` and reads firmware tables into pages FEX has write-protected, is told to FEX and retried. V8's `0x04 == old_protection` check passes: a written `PAGE_WRITECOPY` image page made read-only is reported as `PAGE_READWRITE`.
 
 x86_64 build:
 
