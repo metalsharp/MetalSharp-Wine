@@ -521,6 +521,8 @@ protected:
 
   Ref InvalidNode {};
   Ref CurrentCodeBlock {};
+  // MetalSharp: the block CreateNewCodeBlockAtEnd appended last, where the search for the last block starts
+  Ref LastCodeBlockHint {};
   fextl::vector<Ref> CodeBlocks;
   uint64_t Entry {};
   bool SupportsTSOImm9 {};

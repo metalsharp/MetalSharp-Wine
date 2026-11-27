@@ -94,6 +94,7 @@ void IREmitter::ResetWorkingList() {
   InvalidNode = reinterpret_cast<Ref>(DualListData.ListAllocate(sizeof(OrderedNode)));
   memset(InvalidNode, 0, sizeof(OrderedNode));
   CurrentCodeBlock = nullptr;
+  LastCodeBlockHint = nullptr;
 }
 
 void IREmitter::ReplaceAllUsesWithRange(Ref Node, Ref NewNode, AllNodesIterator Begin, AllNodesIterator End) {
@@ -166,8 +167,10 @@ IREmitter::IRPair<IROp_CodeBlock> IREmitter::CreateNewCodeBlockAfter(Ref insertA
   } else {
     LOGMAN_THROW_A_FMT(CurrentCodeBlock != nullptr, "CurrentCodeBlock must not be null here");
 
-    // Find last block
-    auto LastBlock = CurrentCodeBlock;
+    // Find last block. MetalSharp: from the block appended last, which every block added since follows, rather than
+    // from the current one: a multiblock appends a block for each branch target, and walking all blocks each time
+    // made building one quadratic (about an eighth of compile time in Overwatch's obfuscated startup code)
+    auto LastBlock = LastCodeBlockHint ? LastCodeBlockHint : CurrentCodeBlock;
 
     while (LastBlock->Header.Next.GetNode(DualListData.ListBegin()) != InvalidNode) {
       LastBlock = LastBlock->Header.Next.GetNode(DualListData.ListBegin());
@@ -175,6 +178,7 @@ IREmitter::IRPair<IROp_CodeBlock> IREmitter::CreateNewCodeBlockAfter(Ref insertA
 
     // Append it after the last block
     LinkCodeBlocks(LastBlock, CodeNode);
+    LastCodeBlockHint = CodeNode;
   }
 
   SetWriteCursor(OldCursor);
