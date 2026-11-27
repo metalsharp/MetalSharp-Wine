@@ -622,6 +622,7 @@ static void *anon_mmap_tryfixed( void *start, size_t size, int prot, int flags )
     return ptr;
 }
 
+
 static void reserve_area( void *addr, void *end )
 {
     /* use a larger alignment for 64-bit space, we don't need to reserve every single block */
@@ -718,6 +719,25 @@ static void release_low_pagezero(void)
     if (!munmap( (void *)0x10000, end - 0x10000 ))
         TRACE( "released PAGEZERO reservation 0x10000-%#llx\n", end );
 }
+
+/***********************************************************************
+ *           explain_no_low_memory
+ *
+ * Without the entitlement nothing below 4GB can be mapped, and 32-bit programs fail with an out
+ * of memory error that doesn't say why. Say it once per process.
+ */
+static void explain_no_low_memory( const void *addr )
+{
+    static BOOL done;
+
+    if (done || cross_arch_entitled || (UINT_PTR)addr >= 0x100000000) return;
+    done = TRUE;
+    MESSAGE( "wine: macOS gave this process no memory below 4GB, which 32-bit Windows programs need. "
+             "MetalSharp-Wine.app gets it from Apple's cross-architecture entitlement, on macOS 26.4 "
+             "or later, when the app's signature and embedded provisioning profile are intact.\n" );
+}
+#else
+static inline void explain_no_low_memory( const void *addr ) { }
 #endif
 
 /***********************************************************************
@@ -1404,6 +1424,7 @@ static void* try_map_free_area( void *base, void *end, ptrdiff_t step,
         {
             ERR( "mmap() error %s, range %p-%p, unix_prot %#x.\n",
                  strerror(errno), start, (char *)start + size, unix_prot );
+            if (errno == ENOMEM) explain_no_low_memory( start );
             return NULL;
         }
         if ((step > 0 && (char *)end - (char *)start < step) ||
@@ -2217,6 +2238,7 @@ failed:
     if (errno == ENOMEM)
     {
         ERR( "out of memory for %p-%p\n", base, (char *)base + size );
+        explain_no_low_memory( base );
         status = STATUS_NO_MEMORY;
     }
     else if (errno == EEXIST) status = STATUS_CONFLICTING_ADDRESSES;
@@ -3727,6 +3749,14 @@ void virtual_init(void)
         void *addr = preload_info[i].addr;
         size_t size = preload_info[i].size;
 
+#if defined(__APPLE__) && defined(__aarch64__)
+        /* the loader is position independent: its reserve only has page alignment */
+        {
+            char *end = ROUND_ADDR( (char *)addr + size, granularity_mask );
+            addr = ROUND_ADDR( (char *)addr + granularity_mask, granularity_mask );
+            size = end - (char *)addr;
+        }
+#endif
         dos_space_start = min( dos_space_start, addr );
         if (addr < low_64k)
         {
@@ -3737,14 +3767,19 @@ void virtual_init(void)
 
         if (addr < high_range.start) low_range.end = max( (char *)low_range.end, (char *)addr + size );
     }
+#if defined(__APPLE__) && defined(__aarch64__)
+    /* The loader's WINE_RESERVE section only covers part of the low 8GB (see loader/main.c):
+     * reserve the rest as well, including the low 4GB PAGEZERO when entitled. */
+    if (is_win64) release_low_pagezero();
+    reserve_area( low_range.start, max( (char *)low_range.end, (char *)0x200000000 ));
+    if (!is_win64) reserve_area( high_range.start, high_range.end );
+#else
     else
     {
-#if defined(__APPLE__) && defined(__aarch64__)
-        if (is_win64) release_low_pagezero();
-#endif
         reserve_area( low_range.start, low_range.end );
         if (!is_win64) reserve_area( high_range.start, high_range.end );
     }
+#endif
 
     if (high_range.start > host_addr_space_limit)
         high_range.start = high_range.end = ROUND_ADDR( host_addr_space_limit, limit_4g - 1 );
