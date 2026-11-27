@@ -1,0 +1,156 @@
+From 9924153549da7b0f5700cf79b9657117e2da01a9 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Fri, 27 Nov 2026 06:14:59 -0700
+Subject: [PATCH 210/210] loader, ntdll: Reserve 4GB above the aarch64 loader before
+ malloc starts.
+
+A 64-bit executable without relocations has to be mapped at its own base,
+usually 0x140000000. On aarch64 macOS only the low 4GB was reserved, and
+ntdll reserves the rest of the low 8GB only once it runs, so malloc's first
+regions could already sit in that range: Phantom Blade Zero
+(platform/steam/PBZ.exe, 330MB, base 0x140000000, relocations stripped)
+failed with STATUS_CONFLICTING_ADDRESSES on some launches (issue #135). A
+test executable like it failed 3 of 40 launches.
+
+The loader now has the zero-fill WINE_RESERVE section the x86_64 loader has:
+4GB right after the loader, which the kernel maps at exec. ntdll takes it over
+as reserved space, then reserves the rest of the low 8GB and, when entitled,
+the low 4GB as before. The test executable maps at 0x140000000 in 40 of 40
+launches.
+
+Without the cross-architecture entitlement nothing below 4GB can be mapped,
+and 32-bit programs failed with "not enough memory" or an assertion without
+saying why. The first such failure in a process now says so.
+---
+ dlls/ntdll/unix/virtual.c | 41 ++++++++++++++++++++++++++++++++++++---
+ loader/main.c             | 14 +++++++++++--
+ 2 files changed, 50 insertions(+), 5 deletions(-)
+
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index 0556e0cb8a2..bc2971d0069 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -622,6 +622,7 @@ static void *anon_mmap_tryfixed( void *start, size_t size, int prot, int flags )
+     return ptr;
+ }
+ 
++
+ static void reserve_area( void *addr, void *end )
+ {
+     /* use a larger alignment for 64-bit space, we don't need to reserve every single block */
+@@ -718,6 +719,25 @@ static void release_low_pagezero(void)
+     if (!munmap( (void *)0x10000, end - 0x10000 ))
+         TRACE( "released PAGEZERO reservation 0x10000-%#llx\n", end );
+ }
++
++/***********************************************************************
++ *           explain_no_low_memory
++ *
++ * Without the entitlement nothing below 4GB can be mapped, and 32-bit programs fail with an out
++ * of memory error that doesn't say why. Say it once per process.
++ */
++static void explain_no_low_memory( const void *addr )
++{
++    static BOOL done;
++
++    if (done || cross_arch_entitled || (UINT_PTR)addr >= 0x100000000) return;
++    done = TRUE;
++    MESSAGE( "wine: macOS gave this process no memory below 4GB, which 32-bit Windows programs need. "
++             "MetalSharp-Wine.app gets it from Apple's cross-architecture entitlement, on macOS 26.4 "
++             "or later, when the app's signature and embedded provisioning profile are intact.\n" );
++}
++#else
++static inline void explain_no_low_memory( const void *addr ) { }
+ #endif
+ 
+ /***********************************************************************
+@@ -1404,6 +1424,7 @@ static void* try_map_free_area( void *base, void *end, ptrdiff_t step,
+         {
+             ERR( "mmap() error %s, range %p-%p, unix_prot %#x.\n",
+                  strerror(errno), start, (char *)start + size, unix_prot );
++            if (errno == ENOMEM) explain_no_low_memory( start );
+             return NULL;
+         }
+         if ((step > 0 && (char *)end - (char *)start < step) ||
+@@ -2217,6 +2238,7 @@ static NTSTATUS map_fixed_area( void *base, size_t size, int unix_prot )
+     if (errno == ENOMEM)
+     {
+         ERR( "out of memory for %p-%p\n", base, (char *)base + size );
++        explain_no_low_memory( base );
+         status = STATUS_NO_MEMORY;
+     }
+     else if (errno == EEXIST) status = STATUS_CONFLICTING_ADDRESSES;
+@@ -3727,6 +3749,14 @@ void virtual_init(void)
+         void *addr = preload_info[i].addr;
+         size_t size = preload_info[i].size;
+ 
++#if defined(__APPLE__) && defined(__aarch64__)
++        /* the loader is position independent: its reserve only has page alignment */
++        {
++            char *end = ROUND_ADDR( (char *)addr + size, granularity_mask );
++            addr = ROUND_ADDR( (char *)addr + granularity_mask, granularity_mask );
++            size = end - (char *)addr;
++        }
++#endif
+         dos_space_start = min( dos_space_start, addr );
+         if (addr < low_64k)
+         {
+@@ -3737,14 +3767,19 @@ void virtual_init(void)
+ 
+         if (addr < high_range.start) low_range.end = max( (char *)low_range.end, (char *)addr + size );
+     }
++#if defined(__APPLE__) && defined(__aarch64__)
++    /* The loader's WINE_RESERVE section only covers part of the low 8GB (see loader/main.c):
++     * reserve the rest as well, including the low 4GB PAGEZERO when entitled. */
++    if (is_win64) release_low_pagezero();
++    reserve_area( low_range.start, max( (char *)low_range.end, (char *)0x200000000 ));
++    if (!is_win64) reserve_area( high_range.start, high_range.end );
++#else
+     else
+     {
+-#if defined(__APPLE__) && defined(__aarch64__)
+-        if (is_win64) release_low_pagezero();
+-#endif
+         reserve_area( low_range.start, low_range.end );
+         if (!is_win64) reserve_area( high_range.start, high_range.end );
+     }
++#endif
+ 
+     if (high_range.start > host_addr_space_limit)
+         high_range.start = high_range.end = ROUND_ADDR( host_addr_space_limit, limit_4g - 1 );
+diff --git a/loader/main.c b/loader/main.c
+index 3402247d02c..cf23b8cb09f 100644
+--- a/loader/main.c
++++ b/loader/main.c
+@@ -40,19 +40,29 @@
+ 
+ #include "main.h"
+ 
+-#if defined(__APPLE__) && defined(__x86_64__) && !defined(HAVE_WINE_PRELOADER)
++#if defined(__APPLE__) && (defined(__x86_64__) || defined(__aarch64__)) && !defined(HAVE_WINE_PRELOADER)
+ 
+ /* Not using the preloader on x86_64:
+  * Reserve the same areas as the preloader does, but using zero-fill sections
+  * (the only way to prevent system frameworks from using them, including allocations
+  * before main() runs).
++ *
++ * On aarch64 the loader is position independent and sits right above the 4GB PAGEZERO, so the
++ * section can't have a fixed address. 4GB right after the loader still covers 0x140000000, the
++ * usual base of 64-bit executables: without it, malloc's first regions could land there before
++ * ntdll reserves anything, and an executable without relocations then can't be mapped
++ * (STATUS_CONFLICTING_ADDRESSES).
+  */
+ __asm__(".zerofill WINE_RESERVE,WINE_RESERVE");
++#ifdef __aarch64__
++static char __wine_reserve[0x100000000] __attribute__((section("WINE_RESERVE, WINE_RESERVE")));
++#else
+ static char __wine_reserve[0x1fffff000] __attribute__((section("WINE_RESERVE, WINE_RESERVE")));
++#endif
+ 
+ static const struct wine_preload_info preload_info[] =
+ {
+-    { __wine_reserve,  sizeof(__wine_reserve)  }, /*         0x1000 -    0x200000000: low 8GB */
++    { __wine_reserve,  sizeof(__wine_reserve)  }, /* x86_64: 0x1000 - 0x200000000: low 8GB; aarch64: 4GB above the loader */
+     { 0, 0 }                                      /* end of list */
+ };
+ 

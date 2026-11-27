@@ -1,0 +1,44 @@
+From e8e508034f118544e9072e65c54174b2eeff6fb3 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Fri, 27 Nov 2026 08:22:34 -0700
+Subject: [PATCH 213/213] ntdll: Retry NtQuerySystemInformation on ARM64EC after
+ opening an emulator-trapped buffer.
+
+FEX write-protects pages it translated code from, and a query buffer can
+share one: Denuvo's firmware table query in Phantom Blade Zero does. The
+unix side then faults where Windows writes, the query returns
+STATUS_ACCESS_VIOLATION and Denuvo crashes. Have the emulator open the
+buffer as for a file read into it, and ask again; a query has no side
+effects to repeat.
+---
+ dlls/ntdll/signal_arm64ec.c | 17 +++++++++++++++++
+ 1 file changed, 17 insertions(+)
+
+diff --git a/dlls/ntdll/signal_arm64ec.c b/dlls/ntdll/signal_arm64ec.c
+index 0f8f74e3aea..a3be3a4eec2 100644
+--- a/dlls/ntdll/signal_arm64ec.c
++++ b/dlls/ntdll/signal_arm64ec.c
+@@ -863,6 +863,23 @@ NTSTATUS SYSCALL_API NtQuerySystemInformation( SYSTEM_INFORMATION_CLASS class, v
+ {
+     NTSTATUS status = syscall_NtQuerySystemInformation( class, info, size, ret_size );
+ 
++    /* The emulator write-protects pages it translated code from, and the buffer can share one
++     * (Denuvo's firmware table query in Phantom Blade Zero does). The unix side then faults where
++     * Windows writes, so have the emulator open the buffer as it does for a file read into it,
++     * and ask again: a query has no side effects to repeat. */
++    if (status == STATUS_ACCESS_VIOLATION && info && size && pBTCpu64NotifyReadFile &&
++        enter_syscall_callback())
++    {
++        pBTCpu64NotifyReadFile( NULL, info, size, FALSE, 0 );
++        leave_syscall_callback();
++        status = syscall_NtQuerySystemInformation( class, info, size, ret_size );
++        if (enter_syscall_callback())
++        {
++            pBTCpu64NotifyReadFile( NULL, info, size, TRUE, status );
++            leave_syscall_callback();
++        }
++    }
++
+     if (!status && class == SystemCpuInformation && pUpdateProcessorInformation) pUpdateProcessorInformation( info );
+     return status;
+ }

@@ -10,6 +10,14 @@ Both builds:
   - **DLSS Frame Generation without flicker or ghosting.** Generated frames are made from the frame without UI with the presented frame as MetalFX's composited UI, so what the game draws over the scene after it (the blurred, darkened background of Unreal's menus) is kept: Phantom Blade Zero's menus no longer flicker between a sharp, bright frame and a dark one. The interpolator reads depth and motion vectors where their content is in a larger texture (dynamic resolution renders into its top left), which made everything that moved ghost. It is given the camera where a game gives it (`DLSSG.CameraPos` and the like).
   - **A shader cache keeps a newer Mullion's files**, so the FEX and x86_64 builds can share a game's cache (metalsharp/MetalSharp#848) without removing each other's.
 
+FEX build:
+
+- **Phantom Blade Zero starts** (#135, #137). Wine reserves 4 GB above the aarch64 loader before malloc starts, so a game's low allocations fit on 8 GB Macs. Denuvo's code, which rewrites itself with `NtWriteVirtualMemory` and reads firmware tables into pages FEX has write-protected, is told to FEX and retried. V8's `0x04 == old_protection` check passes: a written `PAGE_WRITECOPY` image page made read-only is reported as `PAGE_READWRITE`.
+
+x86_64 build:
+
+- **Phantom Blade Zero starts** (#138). Rosetta has no debug registers: Wine keeps them per thread and emulates execute breakpoints by making the page non-executable, raising `EXCEPTION_SINGLE_STEP` on a hit and single-stepping the rest of the page. The V8 write-copy fix applies to every image.
+
 ## 10.5
 
 x86_64 build:

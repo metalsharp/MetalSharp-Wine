@@ -1,0 +1,36 @@
+From e64bfacee138708059530e6e1613b1a5a78ddfbd Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Fri, 27 Nov 2026 08:22:34 -0700
+Subject: [PATCH 212/212] ntdll: Tell the emulator when an ARM64EC process writes into
+ itself with NtWriteVirtualMemory.
+
+Only writes into other processes were reported. Denuvo rewrites its own
+code with a direct NtWriteVirtualMemory syscall and no
+NtFlushInstructionCache, and FEX kept running the old translation.
+---
+ dlls/ntdll/signal_arm64ec.c | 11 ++++++++---
+ 1 file changed, 8 insertions(+), 3 deletions(-)
+
+diff --git a/dlls/ntdll/signal_arm64ec.c b/dlls/ntdll/signal_arm64ec.c
+index c319dd552b8..0f8f74e3aea 100644
+--- a/dlls/ntdll/signal_arm64ec.c
++++ b/dlls/ntdll/signal_arm64ec.c
+@@ -712,10 +712,15 @@ NTSTATUS SYSCALL_API NtWriteVirtualMemory( HANDLE process, void *addr, const voi
+     NTSTATUS status = syscall_NtWriteVirtualMemory( process, addr, buffer, size, bytes_written );
+ 
+     /* Let the target's emulator drop translations of code an injector (overlay, launcher,
+-     * debugger) wrote with plain NtWriteVirtualMemory instead of WriteProcessMemory. */
+-    if (!status && size && !RtlIsCurrentProcess( process ) && enter_syscall_callback())
++     * debugger) wrote with plain NtWriteVirtualMemory instead of WriteProcessMemory. A process
++     * writing into itself is told too: Denuvo rewrites its code that way, through a direct
++     * syscall and without NtFlushInstructionCache, and FEX kept running the old translation. */
++    if (!status && size && enter_syscall_callback())
+     {
+-        send_cross_process_notification( process, CrossProcessMemoryWrite, addr, size, 0 );
++        if (!RtlIsCurrentProcess( process ))
++            send_cross_process_notification( process, CrossProcessMemoryWrite, addr, size, 0 );
++        else if (pBTCpu64NotifyMemoryDirty)
++            pBTCpu64NotifyMemoryDirty( addr, size );
+         leave_syscall_callback();
+     }
+     return status;
