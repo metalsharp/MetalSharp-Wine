@@ -40,19 +40,29 @@
 
 #include "main.h"
 
-#if defined(__APPLE__) && defined(__x86_64__) && !defined(HAVE_WINE_PRELOADER)
+#if defined(__APPLE__) && (defined(__x86_64__) || defined(__aarch64__)) && !defined(HAVE_WINE_PRELOADER)
 
 /* Not using the preloader on x86_64:
  * Reserve the same areas as the preloader does, but using zero-fill sections
  * (the only way to prevent system frameworks from using them, including allocations
  * before main() runs).
+ *
+ * On aarch64 the loader is position independent and sits right above the 4GB PAGEZERO, so the
+ * section can't have a fixed address. 4GB right after the loader still covers 0x140000000, the
+ * usual base of 64-bit executables: without it, malloc's first regions could land there before
+ * ntdll reserves anything, and an executable without relocations then can't be mapped
+ * (STATUS_CONFLICTING_ADDRESSES).
  */
 __asm__(".zerofill WINE_RESERVE,WINE_RESERVE");
+#ifdef __aarch64__
+static char __wine_reserve[0x100000000] __attribute__((section("WINE_RESERVE, WINE_RESERVE")));
+#else
 static char __wine_reserve[0x1fffff000] __attribute__((section("WINE_RESERVE, WINE_RESERVE")));
+#endif
 
 static const struct wine_preload_info preload_info[] =
 {
-    { __wine_reserve,  sizeof(__wine_reserve)  }, /*         0x1000 -    0x200000000: low 8GB */
+    { __wine_reserve,  sizeof(__wine_reserve)  }, /* x86_64: 0x1000 - 0x200000000: low 8GB; aarch64: 4GB above the loader */
     { 0, 0 }                                      /* end of list */
 };
 
