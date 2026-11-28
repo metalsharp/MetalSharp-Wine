@@ -2281,6 +2281,23 @@ static NTSTATUS perform_relocations( void *module, IMAGE_NT_HEADERS *nt, SIZE_T 
                                 &size, protect_old[i], &protect_old[i] );
     }
 
+    /* As on Windows, the header of a relocated image gives the base it was loaded at, as the dynamic base
+     * relocation in the unix side already does: programs compute addresses from ImageBase plus an RVA. */
+    {
+        void *addr = nt;
+        SIZE_T size = sizeof(*nt);
+        ULONG old_prot;
+
+        if (!NtProtectVirtualMemory( NtCurrentProcess(), &addr, &size, PAGE_READWRITE, &old_prot ))
+        {
+            if (nt->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC)
+                ((IMAGE_NT_HEADERS64 *)nt)->OptionalHeader.ImageBase = (ULONG_PTR)module;
+            else
+                ((IMAGE_NT_HEADERS32 *)nt)->OptionalHeader.ImageBase = (ULONG_PTR)module;
+            NtProtectVirtualMemory( NtCurrentProcess(), &addr, &size, old_prot, &old_prot );
+        }
+    }
+
 done:
     RtlFreeHeap( GetProcessHeap(), 0, protect_old );
     return status;
