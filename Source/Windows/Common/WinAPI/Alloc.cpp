@@ -108,6 +108,22 @@ DLLEXPORT_FUNC(WINBOOL, VirtualFree, (void* lpAddress, SIZE_T dwSize, DWORD dwFr
 }
 
 DLLEXPORT_FUNC(WINBOOL, FlushInstructionCache, (HANDLE hProcess, const void* lpBaseAddress, SIZE_T dwSize)) {
+#ifdef _M_ARM64EC
+  // MetalSharp: only FEX calls this, after writing its own code (FlushCodeWrites), so Wine can switch W^X-emulated
+  // pages back. Wine reports every NtFlushInstructionCache to the emulator unless InSyscallCallback is set, and
+  // BTCpu64FlushInstructionCache takes ThreadCreationMutex, then the code invalidation lock. Unlinking blocks during an
+  // invalidation flushes with the code invalidation lock held, so the report waited on ThreadCreationMutex while
+  // NotifyUnmapViewOfSection held that and waited for the code invalidation lock: Overwatch stalled at startup. FEX's
+  // code isn't guest code, so there is nothing to report.
+  auto* CpuArea = *reinterpret_cast<CHPE_V2_CPU_AREA_INFO**>(reinterpret_cast<uintptr_t>(NtCurrentTeb()) + 0x1788); // TEB->ChpeV2CpuAreaInfo
+  if (CpuArea) {
+    const auto Prev = CpuArea->InSyscallCallback;
+    CpuArea->InSyscallCallback = TRUE;
+    const auto Status = NtFlushInstructionCache(hProcess, const_cast<void*>(lpBaseAddress), dwSize);
+    CpuArea->InSyscallCallback = Prev;
+    return WinAPIReturn(Status);
+  }
+#endif
   return WinAPIReturn(NtFlushInstructionCache(hProcess, const_cast<void*>(lpBaseAddress), dwSize));
 }
 
