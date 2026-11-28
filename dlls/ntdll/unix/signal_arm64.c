@@ -447,7 +447,14 @@ NTSTATUS WINAPI NtSetContextThread( HANDLE handle, const CONTEXT *context )
         frame->sp    = context->Sp;
         frame->pc    = context->Pc;
         frame->cpsr  = context->Cpsr & cpsr_user_mask;
-        if (is_emulated_code( frame->pc )) flags |= RESTORE_FLAGS_EMULATION;
+        if (is_emulated_code( frame->pc ))
+        {
+            flags |= RESTORE_FLAGS_EMULATION;
+            /* x86 PF, AF and DF have no NZCV equivalent: the emulator carries them in RES0 bits 16-18, with bit 19
+             * saying they are valid; the emulation dispatcher hands them back to it, and they never reach the hardware
+             * (see usr2_handler) */
+            frame->cpsr |= context->Cpsr & 0x000f0000;
+        }
         else frame->restore_flags &= ~RESTORE_FLAGS_EMULATION;
     }
     if (flags & CONTEXT_FLOATING_POINT)
@@ -1882,7 +1889,7 @@ static void usr2_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
     }
     FP_sig(sigcontext)     = frame->fp;
     LR_sig(sigcontext)     = frame->lr;
-    PSTATE_sig(sigcontext) = (PSTATE_sig(sigcontext) & cpsr_host_mask) | frame->cpsr;
+    PSTATE_sig(sigcontext) = (PSTATE_sig(sigcontext) & cpsr_host_mask) | (frame->cpsr & cpsr_user_mask);
     for (i = 0; i <= 28; i++) REGn_sig( i, sigcontext ) = frame->x[i];
 
 #ifdef linux
