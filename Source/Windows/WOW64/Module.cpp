@@ -632,7 +632,10 @@ void BTCpuThreadInit() {
   Thread->FrontendPtr = new FrontendThreadData(TLS);
 
   auto ThreadTID = GetCurrentThreadId();
-  Threads.emplace(ThreadTID, Thread);
+  {
+    std::unique_lock ThreadsMapLock(InvalidationTracker->ThreadsLock);
+    Threads.emplace(ThreadTID, Thread);
+  }
   if (StatAllocHandler) {
     Thread->ThreadStats = StatAllocHandler->AllocateSlot(ThreadTID);
   }
@@ -680,7 +683,10 @@ void BTCpuThreadTerm(HANDLE Thread, LONG ExitCode) {
       return;
     }
 
-    Threads.erase(it);
+    {
+      std::unique_lock ThreadsMapLock(InvalidationTracker->ThreadsLock);
+      Threads.erase(it);
+    }
     if (StatAllocHandler) {
       StatAllocHandler->DeallocateSlot(TLS.ThreadState()->ThreadStats);
     }

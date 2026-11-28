@@ -25,6 +25,10 @@ class InvalidationTracker {
 public:
   InvalidationTracker(FEXCore::Context::Context& CTX, const std::unordered_map<DWORD, FEXCore::Core::InternalThreadState*>& Threads);
   void HandleMemoryProtectionNotification(uint64_t Address, uint64_t Size, ULONG Prot);
+
+  // MetalSharp: guards the thread map passed in. Code invalidation walks it without `ThreadCreationMutex`, so the
+  // frontends take this one, exclusively, around adding and removing threads. Taken last: nothing is locked under it.
+  std::shared_mutex ThreadsLock;
   void HandleProcessExecuteFlagsChange(ULONG Flags);
   void HandleImageMap(std::string_view Name, uint64_t Address);
   struct InvalidateContainingSectionResult {
