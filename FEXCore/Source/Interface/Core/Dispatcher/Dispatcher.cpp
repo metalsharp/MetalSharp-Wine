@@ -214,6 +214,9 @@ void Dispatcher::EmitDispatcher() {
     ldp<ARMEmitter::IndexType::OFFSET>(TMP2, TMP1, TMP1, 0);
     sub(TMP1, TMP1, RipReg);
     (void)cbnz(ARMEmitter::Size::i64Bit, TMP1, &l_L1Miss);
+    // An empty entry is {0, 0}: it matches RIP 0, and branching to its host code would jump to address 0 natively,
+    // raising the guest's null-call fault with FEX's stack and registers instead of the guest's.
+    (void)cbz(ARMEmitter::Size::i64Bit, TMP2, &l_L1Miss);
     br(TMP2);
     (void)Bind(&l_L1Miss);
   }
