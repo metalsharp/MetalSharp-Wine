@@ -1,0 +1,98 @@
+From aaee375438b10f07ed11bf383c8f4515c1bd7589 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Fri, 27 Nov 2026 19:39:00 -0700
+Subject: [PATCH 217/217] ntdll: Keep the x86 parity flag across ARM64EC exception
+ handlers.
+
+An ARM64EC context had no room for PF: converting an x64 context to an ARM64
+one dropped it, so exception handlers were given PF = 0, and the emulator then
+resumed the thread with its own PF, which after a handler is the handler's.
+On Windows the code a handler resumes continues with the PF it had.
+
+Decrypt-on-execute protection depends on this. In Overwatch, a jp at the end
+of one page jumps to the next, still encrypted, page; the handler decrypts it
+and continues, and the jp there, which must be taken, fell through into a
+fault while loading into a match.
+
+- eflags_to_cpsr()/cpsr_to_eflags() carry PF in RES0 bit 18, next to AF and DF
+  in bits 17 and 16, and set bit 19 to say these three are valid.
+- NtSetContextThread() keeps bits 16-19 in the frame of a thread resuming
+  emulated code, which the emulation dispatcher hands back to the emulator;
+  usr2_handler() still gives the hardware only the architectural bits.
+- dispatch_emulation() tells the emulator, in the reserved EFLAGS bit 3 of the
+  context it starts from (never one a handler sees), that PF and DF are valid,
+  so it takes them from the context. Paths that keep only architectural bits,
+  such as a context set through the server, don't set it and behave as before.
+---
+ dlls/ntdll/signal_arm64ec.c    |  4 ++++
+ dlls/ntdll/unix/signal_arm64.c | 11 +++++++++--
+ dlls/ntdll/unwind.h            |  3 +++
+ 3 files changed, 16 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/ntdll/signal_arm64ec.c b/dlls/ntdll/signal_arm64ec.c
+index a3be3a4eec2..5b3357aafa1 100644
+--- a/dlls/ntdll/signal_arm64ec.c
++++ b/dlls/ntdll/signal_arm64ec.c
+@@ -1350,6 +1350,10 @@ NTSTATUS call_seh_handlers( EXCEPTION_RECORD *rec, CONTEXT *orig_context )
+ void dispatch_emulation( ARM64_NT_CONTEXT *arm_ctx )
+ {
+     context_arm_to_x64( get_arm64ec_cpu_area()->ContextAmd64, arm_ctx );
++    /* Tell the emulator that PF, AF and DF in this context are valid (see eflags_to_cpsr), in EFLAGS bit 3, which is
++     * reserved and only seen here, in the context it starts from: it takes them from the context then, and keeps its
++     * own otherwise. Without PF, code resumed by an exception handler continued with the handler's PF. */
++    if (arm_ctx->Cpsr & 0x00080000) get_arm64ec_cpu_area()->ContextAmd64->AMD64_EFlags |= 0x0008;
+     pBeginSimulation();
+ }
+ __ASM_GLOBAL_FUNC( "#KiUserEmulationDispatcher",
+diff --git a/dlls/ntdll/unix/signal_arm64.c b/dlls/ntdll/unix/signal_arm64.c
+index a845b8405a3..4753e3e13dc 100644
+--- a/dlls/ntdll/unix/signal_arm64.c
++++ b/dlls/ntdll/unix/signal_arm64.c
+@@ -447,7 +447,14 @@ NTSTATUS WINAPI NtSetContextThread( HANDLE handle, const CONTEXT *context )
+         frame->sp    = context->Sp;
+         frame->pc    = context->Pc;
+         frame->cpsr  = context->Cpsr & cpsr_user_mask;
+-        if (is_emulated_code( frame->pc )) flags |= RESTORE_FLAGS_EMULATION;
++        if (is_emulated_code( frame->pc ))
++        {
++            flags |= RESTORE_FLAGS_EMULATION;
++            /* x86 PF, AF and DF have no NZCV equivalent: the emulator carries them in RES0 bits 16-18, with bit 19
++             * saying they are valid; the emulation dispatcher hands them back to it, and they never reach the hardware
++             * (see usr2_handler) */
++            frame->cpsr |= context->Cpsr & 0x000f0000;
++        }
+         else frame->restore_flags &= ~RESTORE_FLAGS_EMULATION;
+     }
+     if (flags & CONTEXT_FLOATING_POINT)
+@@ -1882,7 +1889,7 @@ static void usr2_handler( int signal, siginfo_t *siginfo, void *_sigcontext )
+     }
+     FP_sig(sigcontext)     = frame->fp;
+     LR_sig(sigcontext)     = frame->lr;
+-    PSTATE_sig(sigcontext) = (PSTATE_sig(sigcontext) & cpsr_host_mask) | frame->cpsr;
++    PSTATE_sig(sigcontext) = (PSTATE_sig(sigcontext) & cpsr_host_mask) | (frame->cpsr & cpsr_user_mask);
+     for (i = 0; i <= 28; i++) REGn_sig( i, sigcontext ) = frame->x[i];
+ 
+ #ifdef linux
+diff --git a/dlls/ntdll/unwind.h b/dlls/ntdll/unwind.h
+index b4aca06cede..3f8d84e5138 100644
+--- a/dlls/ntdll/unwind.h
++++ b/dlls/ntdll/unwind.h
+@@ -63,8 +63,10 @@ static inline UINT eflags_to_cpsr( UINT eflags )
+     if (eflags & 0x0100) ret |= 0x00200000;  /* trap */
+     if (eflags & 0x0800) ret |= 0x10000000;  /* overflow */
+     /* not representable in NZCV: kept in RES0 bits, which never reach the hardware PSTATE */
++    if (eflags & 0x0004) ret |= 0x00040000;  /* parity */
+     if (eflags & 0x0010) ret |= 0x00020000;  /* auxiliary carry */
+     if (eflags & 0x0400) ret |= 0x00010000;  /* direction */
++    ret |= 0x00080000;  /* the three bits above are valid: paths that keep only architectural bits clear it too */
+     return ret;
+ }
+ 
+@@ -77,6 +79,7 @@ static inline UINT cpsr_to_eflags( UINT cpsr )
+     if (cpsr & 0x20000000) ret |= 0x0001;  /* carry */
+     if (cpsr & 0x40000000) ret |= 0x0040;  /* zero */
+     if (cpsr & 0x80000000) ret |= 0x0080;  /* negative */
++    if (cpsr & 0x00040000) ret |= 0x0004;  /* parity */
+     if (cpsr & 0x00020000) ret |= 0x0010;  /* auxiliary carry */
+     if (cpsr & 0x00010000) ret |= 0x0400;  /* direction */
+     return ret;

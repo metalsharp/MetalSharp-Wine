@@ -1,0 +1,71 @@
+From 1e0c92bda621ecccdfed423635daa7039d4bd550 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Fri, 27 Nov 2026 19:39:40 -0700
+Subject: [PATCH 50/50] FEXCore: Don't take an empty lookup entry as a hit for RIP 0
+
+An empty L1 cache entry is {0, 0}, as is a call-ret entry pushed without a
+return block, and both match a guest RIP of 0. The dispatcher's L1 check,
+the JIT's inline L1 lookup and its call-ret check then branched to host
+address 0, so a guest call through a null pointer raised its fault with
+FEX's emulator stack and registers rather than the guest's, and a handler
+meant to recover from it couldn't (Overwatch's protection, at startup).
+
+A match whose host code is 0 now goes through the dispatcher, which
+compiles a block for RIP 0 that raises the execute fault with the guest's
+own state.
+---
+ .../Source/Interface/Core/Dispatcher/Dispatcher.cpp |  3 +++
+ FEXCore/Source/Interface/Core/JIT/BranchOps.cpp     | 13 +++++++++++--
+ 2 files changed, 14 insertions(+), 2 deletions(-)
+
+diff --git a/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp b/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp
+index 920e88dade6..31782423e85 100644
+--- a/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp
++++ b/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp
+@@ -214,6 +214,9 @@ void Dispatcher::EmitDispatcher() {
+     ldp<ARMEmitter::IndexType::OFFSET>(TMP2, TMP1, TMP1, 0);
+     sub(TMP1, TMP1, RipReg);
+     (void)cbnz(ARMEmitter::Size::i64Bit, TMP1, &l_L1Miss);
++    // An empty entry is {0, 0}: it matches RIP 0, and branching to its host code would jump to address 0 natively,
++    // raising the guest's null-call fault with FEX's stack and registers instead of the guest's.
++    (void)cbz(ARMEmitter::Size::i64Bit, TMP2, &l_L1Miss);
+     br(TMP2);
+     (void)Bind(&l_L1Miss);
+   }
+diff --git a/FEXCore/Source/Interface/Core/JIT/BranchOps.cpp b/FEXCore/Source/Interface/Core/JIT/BranchOps.cpp
+index 466bd4154f8..9a66c2090cf 100644
+--- a/FEXCore/Source/Interface/Core/JIT/BranchOps.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/BranchOps.cpp
+@@ -193,13 +193,20 @@ DEF_OP(ExitFunction) {
+ #endif
+   } else {
+     ARMEmitter::ForwardLabel SkipFullLookup;
++    ARMEmitter::ForwardLabel FullLookup;
+     auto RipReg = GetReg(Op->NewRIP);
+ 
++    // An entry whose host code is 0 is empty ({0, 0} in a zeroed L1 cache, or a call-ret entry pushed without a
++    // return block) and matches RIP 0: branching to it jumps to address 0 natively, so the guest's null-call fault
++    // arrives with FEX's stack and registers instead of the guest's. Such a match goes through the dispatcher.
+     if (Op->Hint == IR::BranchHint::Return) {
+       // First try to pop from the call-ret stack, otherwise follow the normal path (but ending in a ret)
++      ARMEmitter::ForwardLabel CallRetMiss;
+       ldp<ARMEmitter::IndexType::POST>(TMP1, TMP2, REG_CALLRET_SP, 0x10);
+       sub(TMP1, TMP1, RipReg.X());
+-      (void)cbz(ARMEmitter::Size::i64Bit, TMP1, &SkipFullLookup);
++      (void)cbnz(ARMEmitter::Size::i64Bit, TMP1, &CallRetMiss);
++      (void)cbnz(ARMEmitter::Size::i64Bit, TMP2, &SkipFullLookup);
++      (void)Bind(&CallRetMiss);
+     }
+ 
+     // L1 Cache
+@@ -214,7 +221,9 @@ DEF_OP(ExitFunction) {
+ 
+     // Note: sub+cbnz used over cmp+br to preserve flags.
+     sub(TMP1, TMP1, RipReg.X());
+-    (void)cbz(ARMEmitter::Size::i64Bit, TMP1, &SkipFullLookup);
++    (void)cbnz(ARMEmitter::Size::i64Bit, TMP1, &FullLookup);
++    (void)cbnz(ARMEmitter::Size::i64Bit, TMP2, &SkipFullLookup);
++    (void)Bind(&FullLookup);
+     ldr(TMP2, STATE, offsetof(FEXCore::Core::CpuStateFrame, Pointers.DispatcherLoopTop));
+     str(RipReg.X(), STATE, offsetof(FEXCore::Core::CpuStateFrame, State.rip));
+ 

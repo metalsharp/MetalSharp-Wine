@@ -15,6 +15,13 @@ Both builds:
 FEX build:
 
 - **Phantom Blade Zero starts** (#135, #137). Wine reserves 4 GB above the aarch64 loader before malloc starts, so a game's low allocations fit on 8 GB Macs, and an executable without relocations at 0x140000000 always maps (Black Myth: Wukong's `c0000018`, #136). Denuvo's code, which rewrites itself with `NtWriteVirtualMemory` and reads firmware tables into pages FEX has write-protected, is told to FEX and retried. V8's `0x04 == old_protection` check passes: a written `PAGE_WRITECOPY` image page made read-only is reported as `PAGE_READWRITE`.
+- **Overwatch starts** (#147). FEX stalled the game at startup:
+  - **Deadlock.** The flush FEX makes after writing its own code was reported back to FEX, and with its code-invalidation lock held that report waited on a thread that was waiting for the same lock. FEX no longer reports its own flushes.
+  - **Null calls.** A guest call through a null pointer jumped to address 0 in FEX's own context, so the game's handler for it got FEX's registers. It now faults with the guest's own state.
+- **Two crashes while Overwatch loads into a match are fixed** (#146, #147). Both were already in 9.0. They aren't confirmed in a match yet.
+  - **Relocated DLLs.** A DLL Wine couldn't load at its preferred base kept that base in its header, where Windows gives the real one. Overwatch computes addresses from it in Steam's `tier0_s64.dll`.
+  - **Parity flag.** It was lost across exception handlers, so the decrypt-on-execute protection branched the wrong way after decrypting a page.
+- **JIT compiles are faster** (#145). IR blocks are appended without walking the block list, and the per-op IR properties are inline tables. Overwatch's startup code compiles in about 12 s instead of 14.
 
 x86_64 build:
 
