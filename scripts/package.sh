@@ -3,7 +3,7 @@
 # All dependency references become @rpath, absolute rpaths are removed, binaries are re-signed.
 set -e
 source ${0:A:h}/env.sh
-NAME=${1:-metalsharp-wine-10.5-arm64}
+NAME=${1:-metalsharp-wine-11.0-arm64}
 D=$ROOT/dist/$NAME
 rm -rf $D; mkdir -p $D
 rsync -a --exclude=/share/wine/shadercompilers/x64 $ROOT/install/ $D/  # x64: the x86_64 app's (package-x86_64.sh)

@@ -2,7 +2,7 @@
 
 The [release notes](https://github.com/metalsharp/MetalSharp-Wine/releases) have the full list for each release.
 
-## Unreleased
+## 11.0
 
 Both builds:
 
