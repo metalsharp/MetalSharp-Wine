@@ -21,6 +21,7 @@ FEX build:
 - **Two crashes while Overwatch loads into a match are fixed** (#146, #147). Both were already in 9.0. They aren't confirmed in a match yet.
   - **Relocated DLLs.** A DLL Wine couldn't load at its preferred base kept that base in its header, where Windows gives the real one. Overwatch computes addresses from it in Steam's `tier0_s64.dll`.
   - **Parity flag.** It was lost across exception handlers, so the decrypt-on-execute protection branched the wrong way after decrypting a page.
+- **Age of Empires II: Definitive Edition starts and plays** (#152, #7). It froze on its splash screen, or crashed soon after. FEX's code invalidation walks the list of the game's threads without the lock that thread creation and exit hold when changing it, so a thread starting or exiting meanwhile sent it into freed memory. The list has a lock of its own now.
 - **JIT compiles are faster** (#145). IR blocks are appended without walking the block list, and the per-op IR properties are inline tables. Overwatch's startup code compiles in about 12 s instead of 14.
 
 x86_64 build:

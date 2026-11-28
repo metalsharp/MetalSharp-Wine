@@ -1,0 +1,118 @@
+From 2b0ddfd848aee1cfadfea0b371b3f7ed16a9e855 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Fri, 27 Nov 2026 20:20:41 -0700
+Subject: [PATCH 52/52] Windows: Lock the thread map that code invalidation
+ walks
+
+InvalidateIntervalInternalLocked walks the thread map to drop every
+thread's cached code, but the paths that reach it no longer take
+ThreadCreationMutex, which deadlocked against code invalidation. Thread
+creation and exit still add and remove map entries under that mutex
+alone. A thread starting or exiting during an invalidation left the walk
+on a freed node, and InvalidateThreadCachedCodeRange was called with a
+garbage thread state.
+
+In Age of Empires II: Definitive Edition this faulted reading 0x145 in
+InvalidateThreadCachedCodeRange (thread state 0x11d), inside the game's
+handler for its decrypt-on-execute illegal instructions. The fault was
+then unwound through FEX's own frames forever, and the game froze on the
+splash screen.
+
+Give the map a lock of its own in the tracker: shared while invalidation
+walks it, exclusive around adding and removing threads in both
+frontends. Nothing is locked under it, so it can't wait on the
+code-invalidation lock or ThreadCreationMutex.
+---
+ Source/Windows/ARM64EC/Module.cpp             | 10 ++++++++--
+ Source/Windows/Common/InvalidationTracker.cpp |  2 ++
+ Source/Windows/Common/InvalidationTracker.h   |  4 ++++
+ Source/Windows/WOW64/Module.cpp               | 10 ++++++++--
+ 4 files changed, 22 insertions(+), 4 deletions(-)
+
+diff --git a/Source/Windows/ARM64EC/Module.cpp b/Source/Windows/ARM64EC/Module.cpp
+index bee05ef3e8a..ba579c88a2b 100644
+--- a/Source/Windows/ARM64EC/Module.cpp
++++ b/Source/Windows/ARM64EC/Module.cpp
+@@ -1187,7 +1187,10 @@ NTSTATUS ThreadInit() {
+ 
+   {
+     auto ThreadTID = GetCurrentThreadId();
+-    Threads.emplace(ThreadTID, Thread);
++    {
++      std::unique_lock ThreadsMapLock(InvalidationTracker->ThreadsLock);
++      Threads.emplace(ThreadTID, Thread);
++    }
+     if (!PendingDebugRegisters.contains(ThreadTID)) {
+       // A new thread has no debug registers set, whatever an earlier thread with this TID had.
+       std::scoped_lock ShadowLock(DebugShadowLock);
+@@ -1246,7 +1249,10 @@ NTSTATUS ThreadTerm(HANDLE Thread, LONG ExitCode) {
+       return STATUS_SUCCESS;
+     }
+ 
+-    Threads.erase(it);
++    {
++      std::unique_lock ThreadsMapLock(InvalidationTracker->ThreadsLock);
++      Threads.erase(it);
++    }
+     {
+       std::scoped_lock ShadowLock(DebugShadowLock);
+       DebugShadow.erase(ThreadTID);
+diff --git a/Source/Windows/Common/InvalidationTracker.cpp b/Source/Windows/Common/InvalidationTracker.cpp
+index 77ac638f4ea..181f0bc4893 100644
+--- a/Source/Windows/Common/InvalidationTracker.cpp
++++ b/Source/Windows/Common/InvalidationTracker.cpp
+@@ -455,6 +455,8 @@ void InvalidationTracker::InvalidateIntervalInternal(uint64_t Address, uint64_t
+ void InvalidationTracker::InvalidateIntervalInternalLocked(uint64_t Address, uint64_t Size) {
+   // NOTE: This assumes CodeInvalidationMutex is locked by the caller
+   CTX.InvalidateCodeBuffersCodeRange(Address, Size);
++  // A thread starting or exiting meanwhile would leave this loop on a freed node (a garbage thread state).
++  std::shared_lock ThreadsMapLock(ThreadsLock);
+   for (auto Thread : Threads) {
+     CTX.InvalidateThreadCachedCodeRange(Thread.second, Address, Size);
+   }
+diff --git a/Source/Windows/Common/InvalidationTracker.h b/Source/Windows/Common/InvalidationTracker.h
+index 8a7bb0eab55..ede7c0d943b 100644
+--- a/Source/Windows/Common/InvalidationTracker.h
++++ b/Source/Windows/Common/InvalidationTracker.h
+@@ -25,6 +25,10 @@ class InvalidationTracker {
+ public:
+   InvalidationTracker(FEXCore::Context::Context& CTX, const std::unordered_map<DWORD, FEXCore::Core::InternalThreadState*>& Threads);
+   void HandleMemoryProtectionNotification(uint64_t Address, uint64_t Size, ULONG Prot);
++
++  // MetalSharp: guards the thread map passed in. Code invalidation walks it without `ThreadCreationMutex`, so the
++  // frontends take this one, exclusively, around adding and removing threads. Taken last: nothing is locked under it.
++  std::shared_mutex ThreadsLock;
+   void HandleProcessExecuteFlagsChange(ULONG Flags);
+   void HandleImageMap(std::string_view Name, uint64_t Address);
+   struct InvalidateContainingSectionResult {
+diff --git a/Source/Windows/WOW64/Module.cpp b/Source/Windows/WOW64/Module.cpp
+index 8948d8048b0..cbfa61535d2 100644
+--- a/Source/Windows/WOW64/Module.cpp
++++ b/Source/Windows/WOW64/Module.cpp
+@@ -632,7 +632,10 @@ void BTCpuThreadInit() {
+   Thread->FrontendPtr = new FrontendThreadData(TLS);
+ 
+   auto ThreadTID = GetCurrentThreadId();
+-  Threads.emplace(ThreadTID, Thread);
++  {
++    std::unique_lock ThreadsMapLock(InvalidationTracker->ThreadsLock);
++    Threads.emplace(ThreadTID, Thread);
++  }
+   if (StatAllocHandler) {
+     Thread->ThreadStats = StatAllocHandler->AllocateSlot(ThreadTID);
+   }
+@@ -680,7 +683,10 @@ void BTCpuThreadTerm(HANDLE Thread, LONG ExitCode) {
+       return;
+     }
+ 
+-    Threads.erase(it);
++    {
++      std::unique_lock ThreadsMapLock(InvalidationTracker->ThreadsLock);
++      Threads.erase(it);
++    }
+     if (StatAllocHandler) {
+       StatAllocHandler->DeallocateSlot(TLS.ThreadState()->ThreadStats);
+     }
+-- 
+2.54.0 (Apple Git-157)
+
