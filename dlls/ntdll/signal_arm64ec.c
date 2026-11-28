@@ -1350,6 +1350,10 @@ NTSTATUS call_seh_handlers( EXCEPTION_RECORD *rec, CONTEXT *orig_context )
 void dispatch_emulation( ARM64_NT_CONTEXT *arm_ctx )
 {
     context_arm_to_x64( get_arm64ec_cpu_area()->ContextAmd64, arm_ctx );
+    /* Tell the emulator that PF, AF and DF in this context are valid (see eflags_to_cpsr), in EFLAGS bit 3, which is
+     * reserved and only seen here, in the context it starts from: it takes them from the context then, and keeps its
+     * own otherwise. Without PF, code resumed by an exception handler continued with the handler's PF. */
+    if (arm_ctx->Cpsr & 0x00080000) get_arm64ec_cpu_area()->ContextAmd64->AMD64_EFlags |= 0x0008;
     pBeginSimulation();
 }
 __ASM_GLOBAL_FUNC( "#KiUserEmulationDispatcher",
