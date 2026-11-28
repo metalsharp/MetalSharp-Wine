@@ -1,0 +1,64 @@
+From 81efcf7f66f7fc63e64f516c44a1e881c6ce24bf Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Fri, 27 Nov 2026 19:39:40 -0700
+Subject: [PATCH 51/51] Arm64EC: Keep PF across exception handlers
+
+PF has no NZCV equivalent, and SyncThreadContext took it, with DF, from
+the JIT state rather than from the context it was given, because an
+ARM64EC context couldn't carry it. After an exception handler continues a
+thread, the JIT state is the handler's, so the code it resumed continued
+with the handler's PF. On Windows it keeps its own.
+
+Decrypt-on-execute protection depends on it: in Overwatch a jp at the end
+of one page jumps to the next, still encrypted page, the handler decrypts
+it and continues, and the jp there, which must be taken, fell through into
+a fault while loading into a match.
+
+Pack PF into the RES0 CPSR bit 18 beside DF and AF, and bit 19 to say the
+three are valid, as Wine now does when converting contexts. Wine marks the
+context the emulator starts from with the reserved EFLAGS bit 3 when they
+are; SyncThreadContext then takes PF and DF from it. Unmarked contexts,
+from paths that keep only architectural CPSR bits, behave as before.
+---
+ Source/Windows/ARM64EC/Module.cpp | 18 ++++++++++++++++--
+ 1 file changed, 16 insertions(+), 2 deletions(-)
+
+diff --git a/Source/Windows/ARM64EC/Module.cpp b/Source/Windows/ARM64EC/Module.cpp
+index f87885e46c9..bee05ef3e8a 100644
+--- a/Source/Windows/ARM64EC/Module.cpp
++++ b/Source/Windows/ARM64EC/Module.cpp
+@@ -562,9 +562,13 @@ static ARM64_NT_CONTEXT StoreStateToPackedECContext(FEXCore::Core::InternalThrea
+   ECContext.Cpsr |= (EFlags & (1U << FEXCore::X86State::RFLAG_CF_RAW_LOC)) ? (1U << 29) : 0;
+   ECContext.Cpsr |= (EFlags & (1U << FEXCore::X86State::RFLAG_ZF_RAW_LOC)) ? (1U << 30) : 0;
+   ECContext.Cpsr |= (EFlags & (1U << FEXCore::X86State::RFLAG_SF_RAW_LOC)) ? (1U << 31) : 0;
+-  // DF and AF have no NZCV equivalent; Wine carries them in the RES0 CPSR bits 16 and 17.
++  // DF, AF and PF have no NZCV equivalent; Wine carries them in the RES0 CPSR bits 16, 17 and 18, with bit 19 saying
++  // they are valid. Without PF, a handler that continues the thread (decrypt-on-execute protections do this for every
++  // page) brought it back as 0.
+   ECContext.Cpsr |= (EFlags & (1U << FEXCore::X86State::RFLAG_DF_RAW_LOC)) ? (1U << 16) : 0;
+   ECContext.Cpsr |= (EFlags & (1U << FEXCore::X86State::RFLAG_AF_RAW_LOC)) ? (1U << 17) : 0;
++  ECContext.Cpsr |= (EFlags & (1U << FEXCore::X86State::RFLAG_PF_RAW_LOC)) ? (1U << 18) : 0;
++  ECContext.Cpsr |= 1U << 19;
+ 
+   ECContext.Fpcr = FPCR;
+   ECContext.Fpsr = FPSR;
+@@ -681,8 +685,18 @@ extern "C" void SyncThreadContext(CONTEXT* Context) {
+   // DF is reported in exception contexts but merged back from the JIT state: Wine's NtContinue path
+   // only preserves the architectural CPSR bits, so a context's DF can't be trusted on the way in.
+ 
++  // MetalSharp: Wine sets the reserved EFLAGS bit 3 when the context's PF and DF are valid too, which they are when it
++  // was converted from an x64 context or packed by us (CPSR bits 16-19). Code an exception handler resumed then
++  // continues with its own PF, rather than the handler's, as on Windows: decrypt-on-execute protection branched on PF
++  // set before the fault (Overwatch, when loading into a match). Paths that keep only architectural CPSR bits don't
++  // set it, and those keep the JIT state's as before.
++  uint32_t ValidMask = ECValidEFlagsMask;
++  if (Context->EFlags & 0x8) {
++    ValidMask |= (1U << FEXCore::X86State::RFLAG_PF_RAW_LOC) | (1U << FEXCore::X86State::RFLAG_DF_RAW_LOC);
++    Context->EFlags &= ~0x8U;
++  }
+   uint32_t StateEFlags = CTX->ReconstructCompactedEFLAGS(Thread, false, nullptr, 0);
+-  Context->EFlags = (Context->EFlags & ECValidEFlagsMask) | (StateEFlags & ~ECValidEFlagsMask);
++  Context->EFlags = (Context->EFlags & ValidMask) | (StateEFlags & ~ValidMask);
+ 
+   // The x87 control, status and tag words are lost the same way: an ARM64EC context has no room for them, so a context
+   // converted from one (every exception a guest handler continues from, through NtContinue) carries zeros. Loading those

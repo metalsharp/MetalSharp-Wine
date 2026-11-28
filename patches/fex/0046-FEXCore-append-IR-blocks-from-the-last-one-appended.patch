@@ -1,0 +1,62 @@
+From 07fe53cbdd0fdee4a14098f788b101d5d1d79e6a Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Fri, 27 Nov 2026 15:05:20 -0700
+Subject: [PATCH 46/46] FEXCore: append IR blocks from the last one appended
+
+CreateNewCodeBlockAtEnd walked from the current block to the last one each
+time, and a multiblock appends a block for each branch target, so building
+one was quadratic in its blocks: about an eighth of compile time in
+Overwatch's obfuscated startup code. The walk now starts from the block
+appended last (reset with the working list), which every later block
+follows, so the block found is the same.
+---
+ FEXCore/Source/Interface/IR/IREmitter.cpp | 8 ++++++--
+ FEXCore/Source/Interface/IR/IREmitter.h   | 2 ++
+ 2 files changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/FEXCore/Source/Interface/IR/IREmitter.cpp b/FEXCore/Source/Interface/IR/IREmitter.cpp
+index f305ad3e88a..9bc4ef0684c 100644
+--- a/FEXCore/Source/Interface/IR/IREmitter.cpp
++++ b/FEXCore/Source/Interface/IR/IREmitter.cpp
+@@ -94,6 +94,7 @@ void IREmitter::ResetWorkingList() {
+   InvalidNode = reinterpret_cast<Ref>(DualListData.ListAllocate(sizeof(OrderedNode)));
+   memset(InvalidNode, 0, sizeof(OrderedNode));
+   CurrentCodeBlock = nullptr;
++  LastCodeBlockHint = nullptr;
+ }
+ 
+ void IREmitter::ReplaceAllUsesWithRange(Ref Node, Ref NewNode, AllNodesIterator Begin, AllNodesIterator End) {
+@@ -166,8 +167,10 @@ IREmitter::IRPair<IROp_CodeBlock> IREmitter::CreateNewCodeBlockAfter(Ref insertA
+   } else {
+     LOGMAN_THROW_A_FMT(CurrentCodeBlock != nullptr, "CurrentCodeBlock must not be null here");
+ 
+-    // Find last block
+-    auto LastBlock = CurrentCodeBlock;
++    // Find last block. MetalSharp: from the block appended last, which every block added since follows, rather than
++    // from the current one: a multiblock appends a block for each branch target, and walking all blocks each time
++    // made building one quadratic (about an eighth of compile time in Overwatch's obfuscated startup code)
++    auto LastBlock = LastCodeBlockHint ? LastCodeBlockHint : CurrentCodeBlock;
+ 
+     while (LastBlock->Header.Next.GetNode(DualListData.ListBegin()) != InvalidNode) {
+       LastBlock = LastBlock->Header.Next.GetNode(DualListData.ListBegin());
+@@ -175,6 +178,7 @@ IREmitter::IRPair<IROp_CodeBlock> IREmitter::CreateNewCodeBlockAfter(Ref insertA
+ 
+     // Append it after the last block
+     LinkCodeBlocks(LastBlock, CodeNode);
++    LastCodeBlockHint = CodeNode;
+   }
+ 
+   SetWriteCursor(OldCursor);
+diff --git a/FEXCore/Source/Interface/IR/IREmitter.h b/FEXCore/Source/Interface/IR/IREmitter.h
+index aba0c1f5fbc..834fbee0f2f 100644
+--- a/FEXCore/Source/Interface/IR/IREmitter.h
++++ b/FEXCore/Source/Interface/IR/IREmitter.h
+@@ -521,6 +521,8 @@ class IREmitter {
+ 
+   Ref InvalidNode {};
+   Ref CurrentCodeBlock {};
++  // MetalSharp: the block CreateNewCodeBlockAtEnd appended last, where the search for the last block starts
++  Ref LastCodeBlockHint {};
+   fextl::vector<Ref> CodeBlocks;
+   uint64_t Entry {};
+   bool SupportsTSOImm9 {};

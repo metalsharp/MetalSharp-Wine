@@ -1,0 +1,207 @@
+From 88b173db56a05ede57db9479b49f0d0739a7e082 Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Fri, 27 Nov 2026 15:38:25 -0700
+Subject: [PATCH 48/48] FEXCore: inline the per-op IR property lookups
+
+GetRAArgs, GetArgs, GetRegClass, HasSideEffects, ImplicitFlagClobber,
+GetHasDest, LoweredX87 and TiedSource were table lookups behind
+out-of-line functions: gnu::const doesn't let a call be skipped across
+translation units, so every pass made a function call per op and property
+(register allocation, the x87 stack pass, flag elimination, the JIT).
+The generator now emits their tables in the IROP_SIZES section of the
+header with inline getters, as it does for GetSize; the values are the
+same, and the old out-of-line sections are empty.
+---
+ FEXCore/Scripts/json_ir_generator.py | 140 ++++++++++-----------------
+ 1 file changed, 52 insertions(+), 88 deletions(-)
+
+diff --git a/FEXCore/Scripts/json_ir_generator.py b/FEXCore/Scripts/json_ir_generator.py
+index 4678ddd8647..a79223923b2 100755
+--- a/FEXCore/Scripts/json_ir_generator.py
++++ b/FEXCore/Scripts/json_ir_generator.py
+@@ -409,23 +409,18 @@ def print_ir_sizes():
+ 
+     [[nodiscard]] inline size_t GetSize(IROps Op) { return IRSizes[Op]; }
+     [[nodiscard, gnu::const]] std::string_view const& GetName(IROps Op);
+-    [[nodiscard, gnu::const]] uint8_t GetArgs(IROps Op);
+-    [[nodiscard, gnu::const]] uint8_t GetRAArgs(IROps Op);
+-    [[nodiscard, gnu::const]] FEXCore::IR::RegClass GetRegClass(IROps Op);
+-    [[nodiscard, gnu::const]] bool HasSideEffects(IROps Op);
+-    [[nodiscard, gnu::const]] bool ImplicitFlagClobber(IROps Op);
+-    [[nodiscard, gnu::const]] bool GetHasDest(IROps Op);
+-    [[nodiscard, gnu::const]] bool LoweredX87(IROps Op);
+-    [[nodiscard, gnu::const]] int8_t TiedSource(IROps Op);
+-
+-    #undef IROP_SIZES
+-    #endif
+     """))
+ 
+-def print_ir_reg_classes():
+-    output_file.write("#ifdef IROP_REG_CLASSES_IMPL\n")
++    # MetalSharp: the per-op properties the passes ask about every op, as inline lookups in the header like GetSize.
++    # Out of line (gnu::const doesn't let a call be skipped across translation units) they were a function call per
++    # op and property in every pass, a large part of compile time with big multiblocks.
++    print_op_property_tables()
++
++    output_file.write("#undef IROP_SIZES\n")
++    output_file.write("#endif\n")
+ 
+-    output_file.write("constexpr std::array<FEXCore::IR::RegClass, IROps::OP_LAST + 1> IRRegClasses = {\n")
++def print_op_property_tables():
++    output_file.write("inline constexpr std::array<FEXCore::IR::RegClass, IROps::OP_LAST + 1> IRRegClasses = {\n")
+     for op in IROps:
+         if op.Name == "Last":
+             output_file.write("\tRegClass::Invalid,\n")
+@@ -440,19 +435,54 @@ def print_ir_reg_classes():
+             else:
+                 # No destination so it has an invalid destination class
+                 output_file.write("\tRegClass::Invalid, // No destination\n")
+-
+-
+     output_file.write("};\n\n")
+-
+     output_file.write("// Make sure our array maps directly to the IROps enum\n")
+     output_file.write("static_assert(IRRegClasses[IROps::OP_LAST] == RegClass::Invalid);\n\n")
++    output_file.write("[[nodiscard]] inline FEXCore::IR::RegClass GetRegClass(IROps Op) { return IRRegClasses[Op]; }\n\n")
++
++    output_file.write("inline constexpr std::array<uint8_t, OP_LAST + 1> IRRAArgs = {\n")
++    for op in IROps:
++        SSAArgs = op.SSAArgNum
++        if op.RAOverride != -1:
++            if op.RAOverride > op.SSAArgNum:
++                ExitError("Op {} has RA override of {} which is more than total SSA values {}. This doesn't work".format(op.Name, op.RAOverride, op.SSAArgNum))
++            SSAArgs = op.RAOverride
++        output_file.write("\t{},\n".format(SSAArgs))
++    output_file.write("};\n\n")
++    output_file.write("inline constexpr std::array<uint8_t, OP_LAST + 1> IRArgs = {\n")
++    for op in IROps:
++        output_file.write("\t{},\n".format(op.SSAArgNum))
++    output_file.write("};\n\n")
++    output_file.write("[[nodiscard]] inline uint8_t GetRAArgs(IROps Op) { return IRRAArgs[Op]; }\n")
++    output_file.write("[[nodiscard]] inline uint8_t GetArgs(IROps Op) { return IRArgs[Op]; }\n\n")
++
++    for prop, T in [
++        ("HasSideEffects", "bool"),
++        ("ImplicitFlagClobber", "bool"),
++        ("LoweredX87", "bool"),
++        ("TiedSource", "int8_t"),
++    ]:
++        output_file.write(f"inline constexpr std::array<{'uint8_t' if T == 'bool' else T}, OP_LAST + 1> {prop}_ = {{\n")
++        for op in IROps:
++            if T == "bool":
++                output_file.write("\t{},\n".format(("true" if getattr(op, prop) else "false")))
++            else:
++                output_file.write(f"\t{getattr(op, prop)},\n")
++        output_file.write("};\n\n")
++        output_file.write(f"[[nodiscard]] inline {T} {prop}(IROps Op) {{ return {prop}_[Op]; }}\n\n")
+ 
+-    output_file.write("FEXCore::IR::RegClass GetRegClass(IROps Op) { return IRRegClasses[Op]; }\n\n")
++    output_file.write("inline constexpr std::array<bool, OP_LAST + 1> IRDest = {\n")
++    for op in IROps:
++        output_file.write("\ttrue,\n" if op.HasDest else "\tfalse,\n")
++    output_file.write("};\n\n")
++    output_file.write("[[nodiscard]] inline bool GetHasDest(IROps Op) { return IRDest[Op]; }\n\n")
+ 
++def print_ir_reg_classes():
++    # MetalSharp: emitted inline in the IROP_SIZES section (print_op_property_tables)
++    output_file.write("#ifdef IROP_REG_CLASSES_IMPL\n")
+     output_file.write("#undef IROP_REG_CLASSES_IMPL\n")
+     output_file.write("#endif\n\n")
+ 
+-# Print out the name printer implementation
+ def print_ir_getname():
+     output_file.write("#ifdef IROP_GETNAME_IMPL\n")
+     output_file.write("constexpr std::array<std::string_view const, OP_LAST + 1> IRNames = {\n")
+@@ -472,89 +502,23 @@ def print_ir_getname():
+ 
+ # Print out the number of SSA args that need to be RA'd
+ def print_ir_getraargs():
++    # MetalSharp: emitted inline in the IROP_SIZES section (print_op_property_tables)
+     output_file.write("#ifdef IROP_GETRAARGS_IMPL\n")
+-
+-    output_file.write("constexpr std::array<uint8_t, OP_LAST + 1> IRRAArgs = {\n")
+-    for op in IROps:
+-        SSAArgs = op.SSAArgNum
+-
+-        if op.RAOverride != -1:
+-            if op.RAOverride > op.SSAArgNum:
+-                ExitError("Op {} has RA override of {} which is more than total SSA values {}. This doesn't work".format(op.Name, op.RAOverride, op.SSAArgNum))
+-            SSAArgs = op.RAOverride
+-
+-        output_file.write("\t{},\n".format(SSAArgs))
+-
+-    output_file.write("};\n\n")
+-
+-
+-    output_file.write("constexpr std::array<uint8_t, OP_LAST + 1> IRArgs = {\n")
+-    for op in IROps:
+-        SSAArgs = op.SSAArgNum
+-        output_file.write("\t{},\n".format(SSAArgs))
+-
+-    output_file.write("};\n\n")
+-
+-    output_file.write("uint8_t GetRAArgs(IROps Op) {\n")
+-    output_file.write("  return IRRAArgs[Op];\n")
+-    output_file.write("}\n")
+-
+-    output_file.write("uint8_t GetArgs(IROps Op) {\n")
+-    output_file.write("  return IRArgs[Op];\n")
+-    output_file.write("}\n")
+-
+     output_file.write("#undef IROP_GETRAARGS_IMPL\n")
+     output_file.write("#endif\n\n")
+ 
+ def print_ir_hassideeffects():
++    # MetalSharp: emitted inline in the IROP_SIZES section (print_op_property_tables)
+     output_file.write("#ifdef IROP_HASSIDEEFFECTS_IMPL\n")
+-
+-    for prop, T in [
+-        ("HasSideEffects", "bool"),
+-        ("ImplicitFlagClobber", "bool"),
+-        ("LoweredX87", "bool"),
+-        ("TiedSource", "int8_t"),
+-    ]:
+-        output_file.write(
+-            f"constexpr std::array<{'uint8_t' if T == 'bool' else T}, OP_LAST + 1> {prop}_ = {{\n"
+-        )
+-        for op in IROps:
+-            if T == "bool":
+-                output_file.write(
+-                    "\t{},\n".format(("true" if getattr(op, prop) else "false"))
+-                )
+-            else:
+-                output_file.write(f"\t{getattr(op, prop)},\n")
+-
+-        output_file.write("};\n\n")
+-
+-        output_file.write(f"{T} {prop}(IROps Op) {{\n")
+-        output_file.write(f"  return {prop}_[Op];\n")
+-        output_file.write("}\n")
+-
+     output_file.write("#undef IROP_HASSIDEEFFECTS_IMPL\n")
+     output_file.write("#endif\n\n")
+ 
+ def print_ir_gethasdest():
++    # MetalSharp: emitted inline in the IROP_SIZES section (print_op_property_tables)
+     output_file.write("#ifdef IROP_GETHASDEST_IMPL\n")
+-
+-    output_file.write("constexpr std::array<bool, OP_LAST + 1> IRDest = {\n")
+-    for op in IROps:
+-        if op.HasDest:
+-            output_file.write("\ttrue,\n")
+-        else:
+-            output_file.write("\tfalse,\n")
+-
+-    output_file.write("};\n\n")
+-
+-    output_file.write("bool GetHasDest(IROps Op) {\n")
+-    output_file.write("  return IRDest[Op];\n")
+-    output_file.write("}\n")
+-
+     output_file.write("#undef IROP_GETHASDEST_IMPL\n")
+     output_file.write("#endif\n\n")
+ 
+-# Print out IR argument printing
+ def print_ir_arg_printer():
+     output_file.write("#ifdef IROP_ARGPRINTER_HELPER\n")
+     output_file.write("switch (IROp->Op) {\n")

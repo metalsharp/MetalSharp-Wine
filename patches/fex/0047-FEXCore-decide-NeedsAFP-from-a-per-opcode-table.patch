@@ -1,0 +1,136 @@
+From 7f576fa2f7fb3f29526c853b42c2887c490c9fca Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Fri, 27 Nov 2026 15:05:20 -0700
+Subject: [PATCH 47/47] FEXCore: decide NeedsAFP from a per-opcode table
+
+NeedsAFP runs on most IR ops of a block while code is emitted, and it read
+three out-of-line opcode tables per op (GetHasDest, GetRegClass,
+GetRAArgs): about a seventh of compile time in Overwatch's startup code.
+What the opcode decides (never, always, or which register arguments to
+check) is now computed once per process; the decision is the same.
+---
+ FEXCore/Source/Interface/Core/JIT/JIT.cpp | 108 +++++++++++++---------
+ 1 file changed, 64 insertions(+), 44 deletions(-)
+
+diff --git a/FEXCore/Source/Interface/Core/JIT/JIT.cpp b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+index ff6f5f08fd6..3183e7913fc 100644
+--- a/FEXCore/Source/Interface/Core/JIT/JIT.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+@@ -844,53 +844,73 @@ void Arm64JITCore::EmitSuspendInterruptCheck() {
+ #endif
+ }
+ 
++// What an op of each kind needs to know whether it needs the AFP bits: 0 never, AFP_ALWAYS always, else the number of
++// its register arguments, any of which in an FPR does. MetalSharp: NeedsAFP runs on most ops of a block, and the
++// opcode tables it read (three out-of-line calls per op) were a seventh of compile time in Overwatch's startup code.
++static constexpr uint8_t AFP_ALWAYS = 0xFF;
++
+ bool Arm64JITCore::NeedsAFP(const IR::IROp_Header* IROp) const {
+-  // Moving FPR data around (loads, stores, register moves, inserts and extracts) doesn't depend on the AFP bits,
+-  // so a vectorized memcpy loop doesn't need them.
+-  switch (IROp->Op) {
+-  case IR::OP_LOADREGISTER:
+-  case IR::OP_STOREREGISTER:
+-  case IR::OP_LOADCONTEXT:
+-  case IR::OP_LOADCONTEXTPAIR:
+-  case IR::OP_STORECONTEXT:
+-  case IR::OP_STORECONTEXTPAIR:
+-  case IR::OP_LOADCONTEXTINDEXED:
+-  case IR::OP_STORECONTEXTINDEXED:
+-  case IR::OP_SPILLREGISTER:
+-  case IR::OP_FILLREGISTER:
+-  case IR::OP_LOADMEM:
+-  case IR::OP_LOADMEMPAIR:
+-  case IR::OP_STOREMEM:
+-  case IR::OP_STOREMEMPAIR:
+-  case IR::OP_LOADMEMTSO:
+-  case IR::OP_STOREMEMTSO:
+-  case IR::OP_VLOADVECTORMASKED:
+-  case IR::OP_VSTOREVECTORMASKED:
+-  case IR::OP_VLOADVECTORELEMENT:
+-  case IR::OP_VSTOREVECTORELEMENT:
+-  case IR::OP_VBROADCASTFROMMEM:
+-  case IR::OP_VSTORENONTEMPORAL:
+-  case IR::OP_VSTORENONTEMPORALPAIR:
+-  case IR::OP_VLOADNONTEMPORAL:
+-  case IR::OP_VMOV:
+-  case IR::OP_LOADNAMEDVECTORCONSTANT:
+-  case IR::OP_LOADNAMEDVECTORINDEXEDCONSTANT:
+-  case IR::OP_VDUPELEMENT:
+-  case IR::OP_VINSELEMENT:
+-  case IR::OP_VINSGPR:
+-  case IR::OP_VDUPFROMGPR:
+-  case IR::OP_VLOADTWOGPRS:
+-  case IR::OP_VEXTRACTTOGPR:
+-    return false;
+-  // FPCR is saved and restored around these, or written with FIZ: set the AFP bits first so they stay set with the rest.
+-  case IR::OP_PUSHROUNDINGMODE:
+-  case IR::OP_SETROUNDINGMODE: return true;
+-  default: break;
+-  }
+-  if (IR::GetHasDest(IROp->Op) && IsFPR(IR::GetRegClass(IROp->Op))) {
++  const auto AFPKind = [](IR::IROps Op) -> uint8_t {
++    // Moving FPR data around (loads, stores, register moves, inserts and extracts) doesn't depend on the AFP bits,
++    // so a vectorized memcpy loop doesn't need them.
++    switch (Op) {
++    case IR::OP_LOADREGISTER:
++    case IR::OP_STOREREGISTER:
++    case IR::OP_LOADCONTEXT:
++    case IR::OP_LOADCONTEXTPAIR:
++    case IR::OP_STORECONTEXT:
++    case IR::OP_STORECONTEXTPAIR:
++    case IR::OP_LOADCONTEXTINDEXED:
++    case IR::OP_STORECONTEXTINDEXED:
++    case IR::OP_SPILLREGISTER:
++    case IR::OP_FILLREGISTER:
++    case IR::OP_LOADMEM:
++    case IR::OP_LOADMEMPAIR:
++    case IR::OP_STOREMEM:
++    case IR::OP_STOREMEMPAIR:
++    case IR::OP_LOADMEMTSO:
++    case IR::OP_STOREMEMTSO:
++    case IR::OP_VLOADVECTORMASKED:
++    case IR::OP_VSTOREVECTORMASKED:
++    case IR::OP_VLOADVECTORELEMENT:
++    case IR::OP_VSTOREVECTORELEMENT:
++    case IR::OP_VBROADCASTFROMMEM:
++    case IR::OP_VSTORENONTEMPORAL:
++    case IR::OP_VSTORENONTEMPORALPAIR:
++    case IR::OP_VLOADNONTEMPORAL:
++    case IR::OP_VMOV:
++    case IR::OP_LOADNAMEDVECTORCONSTANT:
++    case IR::OP_LOADNAMEDVECTORINDEXEDCONSTANT:
++    case IR::OP_VDUPELEMENT:
++    case IR::OP_VINSELEMENT:
++    case IR::OP_VINSGPR:
++    case IR::OP_VDUPFROMGPR:
++    case IR::OP_VLOADTWOGPRS:
++    case IR::OP_VEXTRACTTOGPR:
++      return 0;
++    // FPCR is saved and restored around these, or written with FIZ: set the AFP bits first so they stay set with the rest.
++    case IR::OP_PUSHROUNDINGMODE:
++    case IR::OP_SETROUNDINGMODE: return AFP_ALWAYS;
++    default: break;
++    }
++    if (IR::GetHasDest(Op) && IsFPR(IR::GetRegClass(Op))) {
++      return AFP_ALWAYS;
++    }
++    return IR::GetRAArgs(Op);
++  };
++  static const auto Kinds = [&] {
++    std::array<uint8_t, IR::IROps::OP_LAST + 1> Kinds {};
++    for (size_t Op = 0; Op < Kinds.size(); Op++) {
++      Kinds[Op] = AFPKind(static_cast<IR::IROps>(Op));
++    }
++    return Kinds;
++  }();
++
++  const uint8_t Kind = Kinds[IROp->Op];
++  if (Kind == AFP_ALWAYS) {
+     return true;
+   }
+-  for (int s = 0; s < IR::GetRAArgs(IROp->Op); s++) {
++  for (int s = 0; s < Kind; s++) {
+     // After RA, register arguments are immediates holding their PhysicalRegister; the rest (inline constants)
+     // still reference nodes.
+     const auto& Arg = IROp->Args[s];

@@ -1,0 +1,47 @@
+From cc3b6701bcd97782a87f88e9f5eeb21bd9ec21ab Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Fri, 27 Nov 2026 19:39:00 -0700
+Subject: [PATCH 216/216] ntdll: Give a relocated image's header the base it was loaded
+ at.
+
+When an image can't be mapped at its preferred base, the loader relocates it
+but left OptionalHeader.ImageBase at the preferred address. Windows writes the
+actual base there, as the unix side already does for images it relocates to a
+dynamic base, and programs compute addresses as ImageBase plus an RVA.
+
+Overwatch's protection walks the export names of Steam's tier0_s64.dll that
+way while a match loads. tier0_s64.dll prefers 0x6ffff2a80000, inside the range
+Wine gives its own DLLs, so it was loaded elsewhere, and the names were read
+from where nothing is mapped: a crash at 0x6ffff2afdf48 on every match.
+---
+ dlls/ntdll/loader.c | 17 +++++++++++++++++
+ 1 file changed, 17 insertions(+)
+
+diff --git a/dlls/ntdll/loader.c b/dlls/ntdll/loader.c
+index 58883dbfe54..0b760c876fd 100644
+--- a/dlls/ntdll/loader.c
++++ b/dlls/ntdll/loader.c
+@@ -2281,6 +2281,23 @@ static NTSTATUS perform_relocations( void *module, IMAGE_NT_HEADERS *nt, SIZE_T
+                                 &size, protect_old[i], &protect_old[i] );
+     }
+ 
++    /* As on Windows, the header of a relocated image gives the base it was loaded at, as the dynamic base
++     * relocation in the unix side already does: programs compute addresses from ImageBase plus an RVA. */
++    {
++        void *addr = nt;
++        SIZE_T size = sizeof(*nt);
++        ULONG old_prot;
++
++        if (!NtProtectVirtualMemory( NtCurrentProcess(), &addr, &size, PAGE_READWRITE, &old_prot ))
++        {
++            if (nt->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC)
++                ((IMAGE_NT_HEADERS64 *)nt)->OptionalHeader.ImageBase = (ULONG_PTR)module;
++            else
++                ((IMAGE_NT_HEADERS32 *)nt)->OptionalHeader.ImageBase = (ULONG_PTR)module;
++            NtProtectVirtualMemory( NtCurrentProcess(), &addr, &size, old_prot, &old_prot );
++        }
++    }
++
+ done:
+     RtlFreeHeap( GetProcessHeap(), 0, protect_old );
+     return status;

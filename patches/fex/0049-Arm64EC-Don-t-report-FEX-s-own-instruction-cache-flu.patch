@@ -1,0 +1,51 @@
+From 4fda5a219f1a4482b455bb31d9204ade5521dd9f Mon Sep 17 00:00:00 2001
+From: Avery Felts <averyfelts@aol.com>
+Date: Fri, 27 Nov 2026 19:39:40 -0700
+Subject: [PATCH 49/49] Arm64EC: Don't report FEX's own instruction cache flushes to
+ itself
+
+FlushCodeWrites flushes after FEX writes its own code, so that Wine can
+switch W^X-emulated pages back. Wine reports every NtFlushInstructionCache
+to the emulator unless InSyscallCallback is set, and the report,
+BTCpu64FlushInstructionCache, takes ThreadCreationMutex and then the code
+invalidation lock.
+
+Unlinking blocks during an invalidation flushes with the code invalidation
+lock held. The report then waited for ThreadCreationMutex while another
+thread in NotifyUnmapViewOfSection held it and waited for the code
+invalidation lock, and every thread that needed code compiled stopped
+behind them: Overwatch stalled at startup.
+
+FEX's code isn't guest code, so there is nothing to report: flush with
+InSyscallCallback set.
+---
+ Source/Windows/Common/WinAPI/Alloc.cpp | 16 ++++++++++++++++
+ 1 file changed, 16 insertions(+)
+
+diff --git a/Source/Windows/Common/WinAPI/Alloc.cpp b/Source/Windows/Common/WinAPI/Alloc.cpp
+index ded646b0c5f..44813bc4c98 100644
+--- a/Source/Windows/Common/WinAPI/Alloc.cpp
++++ b/Source/Windows/Common/WinAPI/Alloc.cpp
+@@ -108,6 +108,22 @@ DLLEXPORT_FUNC(WINBOOL, VirtualFree, (void* lpAddress, SIZE_T dwSize, DWORD dwFr
+ }
+ 
+ DLLEXPORT_FUNC(WINBOOL, FlushInstructionCache, (HANDLE hProcess, const void* lpBaseAddress, SIZE_T dwSize)) {
++#ifdef _M_ARM64EC
++  // MetalSharp: only FEX calls this, after writing its own code (FlushCodeWrites), so Wine can switch W^X-emulated
++  // pages back. Wine reports every NtFlushInstructionCache to the emulator unless InSyscallCallback is set, and
++  // BTCpu64FlushInstructionCache takes ThreadCreationMutex, then the code invalidation lock. Unlinking blocks during an
++  // invalidation flushes with the code invalidation lock held, so the report waited on ThreadCreationMutex while
++  // NotifyUnmapViewOfSection held that and waited for the code invalidation lock: Overwatch stalled at startup. FEX's
++  // code isn't guest code, so there is nothing to report.
++  auto* CpuArea = *reinterpret_cast<CHPE_V2_CPU_AREA_INFO**>(reinterpret_cast<uintptr_t>(NtCurrentTeb()) + 0x1788); // TEB->ChpeV2CpuAreaInfo
++  if (CpuArea) {
++    const auto Prev = CpuArea->InSyscallCallback;
++    CpuArea->InSyscallCallback = TRUE;
++    const auto Status = NtFlushInstructionCache(hProcess, const_cast<void*>(lpBaseAddress), dwSize);
++    CpuArea->InSyscallCallback = Prev;
++    return WinAPIReturn(Status);
++  }
++#endif
+   return WinAPIReturn(NtFlushInstructionCache(hProcess, const_cast<void*>(lpBaseAddress), dwSize));
+ }
+ 
