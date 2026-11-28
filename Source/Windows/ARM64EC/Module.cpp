@@ -1187,7 +1187,10 @@ NTSTATUS ThreadInit() {
 
   {
     auto ThreadTID = GetCurrentThreadId();
-    Threads.emplace(ThreadTID, Thread);
+    {
+      std::unique_lock ThreadsMapLock(InvalidationTracker->ThreadsLock);
+      Threads.emplace(ThreadTID, Thread);
+    }
     if (!PendingDebugRegisters.contains(ThreadTID)) {
       // A new thread has no debug registers set, whatever an earlier thread with this TID had.
       std::scoped_lock ShadowLock(DebugShadowLock);
@@ -1246,7 +1249,10 @@ NTSTATUS ThreadTerm(HANDLE Thread, LONG ExitCode) {
       return STATUS_SUCCESS;
     }
 
-    Threads.erase(it);
+    {
+      std::unique_lock ThreadsMapLock(InvalidationTracker->ThreadsLock);
+      Threads.erase(it);
+    }
     {
       std::scoped_lock ShadowLock(DebugShadowLock);
       DebugShadow.erase(ThreadTID);

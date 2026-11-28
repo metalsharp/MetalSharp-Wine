@@ -455,6 +455,8 @@ void InvalidationTracker::InvalidateIntervalInternal(uint64_t Address, uint64_t 
 void InvalidationTracker::InvalidateIntervalInternalLocked(uint64_t Address, uint64_t Size) {
   // NOTE: This assumes CodeInvalidationMutex is locked by the caller
   CTX.InvalidateCodeBuffersCodeRange(Address, Size);
+  // A thread starting or exiting meanwhile would leave this loop on a freed node (a garbage thread state).
+  std::shared_lock ThreadsMapLock(ThreadsLock);
   for (auto Thread : Threads) {
     CTX.InvalidateThreadCachedCodeRange(Thread.second, Address, Size);
   }
