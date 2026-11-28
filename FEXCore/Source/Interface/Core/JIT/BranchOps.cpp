@@ -193,13 +193,20 @@ DEF_OP(ExitFunction) {
 #endif
   } else {
     ARMEmitter::ForwardLabel SkipFullLookup;
+    ARMEmitter::ForwardLabel FullLookup;
     auto RipReg = GetReg(Op->NewRIP);
 
+    // An entry whose host code is 0 is empty ({0, 0} in a zeroed L1 cache, or a call-ret entry pushed without a
+    // return block) and matches RIP 0: branching to it jumps to address 0 natively, so the guest's null-call fault
+    // arrives with FEX's stack and registers instead of the guest's. Such a match goes through the dispatcher.
     if (Op->Hint == IR::BranchHint::Return) {
       // First try to pop from the call-ret stack, otherwise follow the normal path (but ending in a ret)
+      ARMEmitter::ForwardLabel CallRetMiss;
       ldp<ARMEmitter::IndexType::POST>(TMP1, TMP2, REG_CALLRET_SP, 0x10);
       sub(TMP1, TMP1, RipReg.X());
-      (void)cbz(ARMEmitter::Size::i64Bit, TMP1, &SkipFullLookup);
+      (void)cbnz(ARMEmitter::Size::i64Bit, TMP1, &CallRetMiss);
+      (void)cbnz(ARMEmitter::Size::i64Bit, TMP2, &SkipFullLookup);
+      (void)Bind(&CallRetMiss);
     }
 
     // L1 Cache
@@ -214,7 +221,9 @@ DEF_OP(ExitFunction) {
 
     // Note: sub+cbnz used over cmp+br to preserve flags.
     sub(TMP1, TMP1, RipReg.X());
-    (void)cbz(ARMEmitter::Size::i64Bit, TMP1, &SkipFullLookup);
+    (void)cbnz(ARMEmitter::Size::i64Bit, TMP1, &FullLookup);
+    (void)cbnz(ARMEmitter::Size::i64Bit, TMP2, &SkipFullLookup);
+    (void)Bind(&FullLookup);
     ldr(TMP2, STATE, offsetof(FEXCore::Core::CpuStateFrame, Pointers.DispatcherLoopTop));
     str(RipReg.X(), STATE, offsetof(FEXCore::Core::CpuStateFrame, State.rip));
 
